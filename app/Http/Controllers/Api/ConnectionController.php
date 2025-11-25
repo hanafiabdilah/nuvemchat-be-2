@@ -5,11 +5,20 @@ namespace App\Http\Controllers\Api;
 use App\Enums\Connection\Channel;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
+use App\Models\Connection;
+use App\Services\Connections\ConnectionService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ConnectionController extends Controller
 {
+    public function __construct(
+        protected ConnectionService $connectionService,
+    ){
+        //
+    }
+
     public function index()
     {
         $connections = request()->user()->connections()->get();
@@ -33,5 +42,25 @@ class ConnectionController extends Controller
             'message' => 'Connection created successfully',
             'data' => $connection->toResource(ConnectionResource::class),
         ], 201);
+    }
+
+    public function connect(int $id, Request $request)
+    {
+        $connection = Connection::where('user_id', request()->user()->id)->findOrFail($id);
+
+        try {
+            $this->connectionService->connect($connection, $request->all());
+
+            return response()->json([
+                'message' => 'Running connection successfully',
+                'data' => $connection->toResource(ConnectionResource::class),
+            ], 200);
+        } catch(ValidationException $th) {
+            throw $th;
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => $th->getMessage(),
+            ], 400);
+        }
     }
 }
