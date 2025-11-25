@@ -4,9 +4,7 @@ namespace App\Enums\Connection;
 
 enum Channel: string
 {
-    case Whatsapp = 'whatsapp';
+    case WhatsappOfficial = 'whatsapp_official';
+    case WhatsappWApi = 'whatsapp_w_api';
     case Telegram = 'telegram';
-    case Messenger = 'messenger';
-    case Instagram = 'instagram';
-    case Twitter = 'twitter';
 }

@@ -17,7 +17,6 @@ class ConnectionResource extends JsonResource
         return [
             'id' => $this->id,
             'channel' => $this->channel,
-            'provider' => $this->provider,
             'name' => $this->name,
             'color' => $this->color,
             'status' => $this->status,

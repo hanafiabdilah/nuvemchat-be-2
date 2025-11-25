@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Connection\Channel;
-use App\Enums\Connection\Provider;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use Illuminate\Http\Request;
@@ -24,7 +23,6 @@ class ConnectionController extends Controller
     {
         $validated = $request->validate([
             'channel' => ['required', Rule::enum(Channel::class)],
-            'provider' => ['required', Rule::enum(Provider::class)],
             'name' => ['required', 'string', 'max:100'],
             'color' => ['nullable', 'hex_color', 'max:7'],
         ]);

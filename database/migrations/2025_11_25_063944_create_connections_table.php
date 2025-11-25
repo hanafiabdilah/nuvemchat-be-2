@@ -15,7 +15,6 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->constrained()->onDelete('cascade');
             $table->string('channel', 50);
-            $table->string('provider', 50);
             $table->string('name', 100);
             $table->string('color', 7)->nullable();
             $table->string('status', 20)->default('inactive');
