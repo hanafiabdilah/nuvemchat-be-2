@@ -3,7 +3,7 @@
 namespace App\Services\Connections\Channels;
 
 use App\Models\Connection;
-use App\Services\Connections\Contracts\ChannelInterface;
+use App\Services\Connections\ChannelInterface;
 
 class WhatsappOfficialChannel implements ChannelInterface
 {

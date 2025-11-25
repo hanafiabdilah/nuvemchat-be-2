@@ -3,8 +3,9 @@
 namespace App\Services\Connections\Channels;
 
 use App\Models\Connection;
+use App\Services\Connections\ChannelInterface;
 
-class WhatsappWApiChannel
+class WhatsappWApiChannel implements ChannelInterface
 {
     /**
      * Create a new class instance.

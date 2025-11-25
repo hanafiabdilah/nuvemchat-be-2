@@ -3,7 +3,7 @@
 namespace App\Services\Connections;
 
 use App\Models\Connection;
-use App\Services\Connections\Factory\ChannelFactory;
+use App\Services\Connections\ChannelFactory;
 
 class ConnectionService
 {

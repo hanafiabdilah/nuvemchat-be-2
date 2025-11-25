@@ -15,4 +15,6 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::get('/connections', [ConnectionController::class, 'index']);
     Route::post('/connections', [ConnectionController::class, 'store']);
     Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect']);
+
+
 });

@@ -4,7 +4,7 @@ namespace App\Services\Connections\Channels;
 
 use App\Enums\Connection\Status;
 use App\Models\Connection;
-use App\Services\Connections\Contracts\ChannelInterface;
+use App\Services\Connections\ChannelInterface;
 use Exception;
 use InvalidArgumentException;
 use Telegram\Bot\Api;
