@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Services\Connections\Channels;
+namespace App\Services\Connection\Channels;
 
 use App\Enums\Connection\Status;
 use App\Models\Connection;
-use App\Services\Connections\ChannelInterface;
+use App\Services\Connection\ChannelInterface;
 use Exception;
 use InvalidArgumentException;
 use Telegram\Bot\Api;

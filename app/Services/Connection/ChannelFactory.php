@@ -1,12 +1,12 @@
 <?php
 
-namespace App\Services\Connections;
+namespace App\Services\Connection;
 
 use App\Enums\Connection\Channel;
-use App\Services\Connections\Channels\TelegramChannel;
-use App\Services\Connections\Channels\WhatsappOfficialChannel;
-use App\Services\Connections\Channels\WhatsappWApiChannel;
-use App\Services\Connections\ChannelInterface;
+use App\Services\Connection\Channels\TelegramChannel;
+use App\Services\Connection\Channels\WhatsappOfficialChannel;
+use App\Services\Connection\Channels\WhatsappWApiChannel;
+use App\Services\Connection\ChannelInterface;
 
 class ChannelFactory
 {

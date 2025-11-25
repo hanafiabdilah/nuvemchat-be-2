@@ -1,9 +1,9 @@
 <?php
 
-namespace App\Services\Connections;
+namespace App\Services\Connection;
 
 use App\Models\Connection;
-use App\Services\Connections\ChannelFactory;
+use App\Services\Connection\ChannelFactory;
 
 class ConnectionService
 {

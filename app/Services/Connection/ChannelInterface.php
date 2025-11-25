@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Connections;
+namespace App\Services\Connection;
 
 use App\Models\Connection;
 

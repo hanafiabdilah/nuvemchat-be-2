@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Services\Connections\Channels;
+namespace App\Services\Connection\Channels;
 
 use App\Models\Connection;
-use App\Services\Connections\ChannelInterface;
+use App\Services\Connection\ChannelInterface;
 
-class WhatsappWApiChannel implements ChannelInterface
+class WhatsappOfficialChannel implements ChannelInterface
 {
     /**
      * Create a new class instance.
@@ -17,11 +17,11 @@ class WhatsappWApiChannel implements ChannelInterface
 
     public function connect(Connection $connection, array $data)
     {
-        //
+
     }
 
     public function disconnect()
     {
-        //
+
     }
 }
