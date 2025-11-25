@@ -50,4 +50,9 @@ class User extends Authenticatable
             'two_factor_confirmed_at' => 'datetime',
         ];
     }
+
+    public function connections()
+    {
+        return $this->hasMany(Connection::class);
+    }
 }

@@ -19,7 +19,7 @@ return new class extends Migration
             $table->string('name', 100);
             $table->string('color', 7)->nullable();
             $table->string('status', 20)->default('inactive');
-            $table->json('credentials');
+            $table->json('credentials')->nullable();
             $table->timestamps();
         });
     }
