@@ -2,7 +2,7 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
-use App\Http\Controllers\API\V1\SendMessageController;
+use App\Http\Controllers\Api\V1\SendMessageController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
