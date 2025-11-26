@@ -59,8 +59,9 @@ class ConnectionController extends Controller
             throw $th;
         } catch (\Throwable $th) {
             return response()->json([
-                'message' => $th->getMessage(),
-            ], 400);
+                'message' => 'Failed to run connection',
+                'error' => $th->getMessage(),
+            ], 500);
         }
     }
 
