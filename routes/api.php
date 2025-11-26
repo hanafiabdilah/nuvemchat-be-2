@@ -19,6 +19,6 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey']);
 });
 
-Route::prefix('/v1')->middleware([])->group(function(){
+Route::prefix('/v1')->group(function(){
     Route::post('send-message', [SendMessageController::class, 'handle']);
 });

@@ -6,7 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Connection;
 use App\Services\V1\SendMessage\SendMessageService;
 use Illuminate\Http\Request;
-use League\Config\Exception\ValidationException;
+use Illuminate\Validation\ValidationException;
 
 class SendMessageController extends Controller
 {
@@ -25,7 +25,7 @@ class SendMessageController extends Controller
                 'message' => 'Message sent successfully'
             ], 201);
         } catch(ValidationException $th){
-            return $th;
+            throw $th;
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to send message',
