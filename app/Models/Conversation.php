@@ -16,6 +16,11 @@ class Conversation extends Model
         'last_message_at' => 'timestamp',
     ];
 
+    public function getLastMessageAttribute()
+    {
+        return $this->messages()->latest('sent_at')->first();
+    }
+
     public function connection()
     {
         return $this->belongsTo(Connection::class);

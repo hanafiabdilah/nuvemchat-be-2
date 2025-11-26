@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
+use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\V1\SendMessageController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -12,6 +13,9 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::get('/user', function (Request $request) {
         return $request->user();
     });
+
+    Route::get('/conversations', [ConversationController::class, 'index']);
+    Route::get('/conversations/{id}', [ConversationController::class, 'show']);
 
     Route::get('/connections', [ConnectionController::class, 'index']);
     Route::post('/connections', [ConnectionController::class, 'store']);
