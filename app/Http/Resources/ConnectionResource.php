@@ -21,6 +21,7 @@ class ConnectionResource extends JsonResource
             'color' => $this->color,
             'status' => $this->status,
             'credentials' => $this->credentials,
+            'api_key' => $this->api_key,
             'created_at' => $this->created_at,
         ];
     }

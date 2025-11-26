@@ -63,4 +63,15 @@ class ConnectionController extends Controller
             ], 400);
         }
     }
+
+    public function generateApiKey(int $id)
+    {
+        $connection = Connection::where('user_id', request()->user()->id)->findOrFail($id);
+        $this->connectionService->generateApiKey($connection);
+
+        return response()->json([
+            'message' => 'API Key generated successfully',
+            'data' => $connection->toResource(ConnectionResource::class),
+        ], 200);
+    }
 }

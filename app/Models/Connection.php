@@ -15,6 +15,7 @@ class Connection extends Model
         'color',
         'status',
         'credentials',
+        'api_key',
     ];
 
     protected $casts = [
