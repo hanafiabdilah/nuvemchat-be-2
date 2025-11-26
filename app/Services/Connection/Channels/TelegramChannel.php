@@ -39,6 +39,10 @@ class TelegramChannel implements ChannelInterface
                     'token' => $data['token'],
                 ],
             ]);
+
+            $telegram->setWebhook([
+                'url' => route('webhook.chat', $connection->id),
+            ]);
         } catch(TelegramResponseException $th){
             throw new Exception('Invalid Telegram Bot Token provided.');
         } catch (\Throwable $th) {
