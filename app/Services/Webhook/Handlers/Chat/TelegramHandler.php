@@ -6,6 +6,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Connection;
 use App\Models\Conversation;
+use App\Models\Message;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
 
@@ -45,9 +46,10 @@ class TelegramHandler implements ChatHandlerInterface
             'external_id'   => $conversationId,
         ]);
 
-        $conversation->messages()->updateOrCreate([
+        if(Message::where('external_id', $messageId)->exists()) return;
+
+        $conversation->messages()->create([
             'external_id' => $messageId,
-        ], [
             'sender_type' => SenderType::Incoming,
             'message_type' => MessageType::Text,
             'body' => $this->getMessageBody($payload),
