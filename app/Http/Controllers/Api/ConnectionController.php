@@ -6,7 +6,7 @@ use App\Enums\Connection\Channel;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
-use App\Services\Connections\ConnectionService;
+use App\Services\Connection\ConnectionService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
