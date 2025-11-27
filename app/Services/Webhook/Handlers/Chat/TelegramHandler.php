@@ -27,7 +27,7 @@ class TelegramHandler implements ChatHandlerInterface
         return $payload['message']['text'] ?? null;
     }
 
-    public function getMessageType(array $payload): ?MessageType
+    public function getMessageType(array $payload): MessageType
     {
         return MessageType::Text;
     }

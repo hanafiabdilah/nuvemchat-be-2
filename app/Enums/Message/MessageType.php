@@ -11,4 +11,5 @@ enum MessageType: string
     case File = 'file';
     case Location = 'location';
     case Contact = 'contact';
+    case Unsupported = 'unsupported';
 }

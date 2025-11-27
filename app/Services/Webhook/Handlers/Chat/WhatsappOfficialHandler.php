@@ -35,12 +35,12 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
         return $payload['entry'][0]['changes'][0]['value']['messages'][0]['text']['body'] ?? null;
     }
 
-    public function getMessageType(array $payload): ?MessageType
+    public function getMessageType(array $payload): MessageType
     {
         return match($payload['entry'][0]['changes'][0]['value']['messages'][0]['type'] ?? null) {
             'text' => MessageType::Text,
             'image' => MessageType::Image,
-            default => null,
+            default => MessageType::Unsupported,
         };
     }
 
