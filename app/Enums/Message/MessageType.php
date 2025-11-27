@@ -8,7 +8,7 @@ enum MessageType: string
     case Image = 'image';
     case Video = 'video';
     case Audio = 'audio';
-    case File = 'file';
+    case Document = 'document';
     case Location = 'location';
     case Contact = 'contact';
     case Unsupported = 'unsupported';
