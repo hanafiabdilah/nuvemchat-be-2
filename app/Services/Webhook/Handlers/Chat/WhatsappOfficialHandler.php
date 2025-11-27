@@ -9,6 +9,8 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Storage;
 
 class WhatsappOfficialHandler implements ChatHandlerInterface
 {
@@ -24,7 +26,22 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
 
     public function getMessageBody(array $payload): ?string
     {
+        $messageType = $this->getMessageType($payload);
+
+        if ($messageType === MessageType::Image) {
+            return $payload['entry'][0]['changes'][0]['value']['messages'][0]['image']['caption'] ?? null;
+        }
+
         return $payload['entry'][0]['changes'][0]['value']['messages'][0]['text']['body'] ?? null;
+    }
+
+    public function getMessageType(array $payload): ?MessageType
+    {
+        return match($payload['entry'][0]['changes'][0]['value']['messages'][0]['type'] ?? null) {
+            'text' => MessageType::Text,
+            'image' => MessageType::Image,
+            default => null,
+        };
     }
 
     public function getMessageSentAt(array $payload): Carbon
@@ -38,8 +55,9 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
     {
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
+        $messageType = $this->getMessageType($payload);
 
-        if (!$conversationId || !$messageId) return;
+        if (!$conversationId || !$messageId || !$messageType) return;
 
         $conversation = Conversation::firstOrCreate([
             'connection_id' => $connection->id,
@@ -48,13 +66,52 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
 
         if(Message::where('external_id', $messageId)->exists()) return;
 
-        $conversation->messages()->create([
+        $message = $conversation->messages()->create([
             'external_id' => $messageId,
             'sender_type' => SenderType::Incoming,
-            'message_type' => MessageType::Text,
+            'message_type' => $messageType,
             'body' => $this->getMessageBody($payload),
             'sent_at' => $this->getMessageSentAt($payload),
             'meta' => $payload,
         ]);
+
+        if(in_array($messageType, [MessageType::Image])) {
+            $this->handleMediaMessage($message, $payload, $messageType);
+        }
+    }
+
+    private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
+    {
+        $mediaUrl = $payload['entry'][0]['changes'][0]['value']['messages'][0]['image']['url'];
+        $extension = $this->getExtensionFromMimeType($payload['entry'][0]['changes'][0]['value']['messages'][0]['image']['mime_type']);
+
+        if(!$mediaUrl || !$extension) return;
+
+        $connectionCredentials = $message->conversation->connection->credentials;
+        $accessToken = $connectionCredentials['access_token'] ?? null;
+        $phoneNumberId = $connectionCredentials['phone_number_id'] ?? null;
+
+        if(!$accessToken || !$phoneNumberId) return;
+
+        $response = Http::withToken($accessToken)->get($mediaUrl);
+
+        if(!$response->successful()) return;
+
+        $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+        Storage::disk('local')->put($mediaPath, $response->body());
+
+        $message->update([
+            'attachment' => $mediaPath,
+        ]);
+    }
+
+    private function getExtensionFromMimeType(string $mimeType): ?string
+    {
+        return match($mimeType) {
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/gif' => 'gif',
+            default => null,
+        };
     }
 }

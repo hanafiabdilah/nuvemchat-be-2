@@ -27,6 +27,11 @@ class TelegramHandler implements ChatHandlerInterface
         return $payload['message']['text'] ?? null;
     }
 
+    public function getMessageType(array $payload): ?MessageType
+    {
+        return MessageType::Text;
+    }
+
     public function getMessageSentAt(array $payload): Carbon
     {
         if (isset($payload['message']['date'])) return Carbon::createFromTimestamp($payload['message']['date']);
@@ -38,8 +43,9 @@ class TelegramHandler implements ChatHandlerInterface
     {
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
+        $messageType = $this->getMessageType($payload);
 
-        if (!$conversationId || !$messageId) return;
+        if (!$conversationId || !$messageId || !$messageType) return;
 
         $conversation = Conversation::firstOrCreate([
             'connection_id' => $connection->id,
@@ -51,7 +57,7 @@ class TelegramHandler implements ChatHandlerInterface
         $conversation->messages()->create([
             'external_id' => $messageId,
             'sender_type' => SenderType::Incoming,
-            'message_type' => MessageType::Text,
+            'message_type' => $messageType,
             'body' => $this->getMessageBody($payload),
             'sent_at' => $this->getMessageSentAt($payload),
             'meta' => $payload,
