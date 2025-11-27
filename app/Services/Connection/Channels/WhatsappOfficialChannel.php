@@ -27,7 +27,7 @@ class WhatsappOfficialChannel implements ChannelInterface
         $response = Http::get('https://graph.facebook.com/me?access_token=' . $data['access_token']);
 
         if(!$response->successful()) {
-            throw new \Exception('Invalid Access Token provided.');
+            throw new \Exception('Invalid Access Token provided.', 401);
         }
 
         $connection->update([

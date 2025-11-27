@@ -58,9 +58,14 @@ class ConnectionController extends Controller
         } catch(ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
+            if($th->getCode() === 401) {
+                return response()->json([
+                    'message' => 'Invalid Access Token provided.',
+                ], 401);
+            }
+
             return response()->json([
                 'message' => 'Failed to run connection',
-                'error' => $th->getMessage(),
             ], 500);
         }
     }
