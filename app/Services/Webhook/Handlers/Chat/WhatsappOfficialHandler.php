@@ -40,6 +40,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
         return match($payload['entry'][0]['changes'][0]['value']['messages'][0]['type'] ?? null) {
             'text' => MessageType::Text,
             'image' => MessageType::Image,
+            'video' => MessageType::Video,
             default => MessageType::Unsupported,
         };
     }
@@ -75,15 +76,23 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             'meta' => $payload,
         ]);
 
-        if(in_array($messageType, [MessageType::Image])) {
+        if(in_array($messageType, [MessageType::Image, MessageType::Video])) {
             $this->handleMediaMessage($message, $payload, $messageType);
         }
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
     {
-        $mediaUrl = $payload['entry'][0]['changes'][0]['value']['messages'][0]['image']['url'];
-        $extension = $this->getExtensionFromMimeType($payload['entry'][0]['changes'][0]['value']['messages'][0]['image']['mime_type']);
+        $mediaKey = match($messageType) {
+            MessageType::Image => 'image',
+            MessageType::Video => 'video',
+            default => null,
+        };
+
+        if(!$mediaKey) return;
+
+        $mediaUrl = $payload['entry'][0]['changes'][0]['value']['messages'][0][$mediaKey]['url'];
+        $extension = $this->getExtensionFromMimeType($payload['entry'][0]['changes'][0]['value']['messages'][0][$mediaKey]['mime_type']);
 
         if(!$mediaUrl || !$extension) return;
 
@@ -111,6 +120,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             'image/jpeg' => 'jpg',
             'image/png' => 'png',
             'image/gif' => 'gif',
+            'video/mp4' => 'mp4',
             default => null,
         };
     }
