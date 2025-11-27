@@ -42,6 +42,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             'image' => MessageType::Image,
             'video' => MessageType::Video,
             'document' => MessageType::Document,
+            'audio' => MessageType::Audio,
             default => MessageType::Unsupported,
         };
     }
@@ -77,7 +78,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             'meta' => $payload,
         ]);
 
-        if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document])) {
+        if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
             $this->handleMediaMessage($message, $payload, $messageType);
         }
     }
@@ -88,6 +89,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             MessageType::Image => 'image',
             MessageType::Video => 'video',
             MessageType::Document => 'document',
+            MessageType::Audio => 'audio',
             default => null,
         };
 
@@ -129,6 +131,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             'application/json' => 'json',
             'application/x-zip-compressed' => 'zip',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+            'audio/ogg; codecs=opus' => 'ogg',
             default => null,
         };
     }
