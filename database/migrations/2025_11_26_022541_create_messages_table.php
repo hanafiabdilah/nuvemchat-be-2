@@ -13,7 +13,7 @@ return new class extends Migration
     {
         Schema::create('messages', function (Blueprint $table) {
             $table->id();
-            $table->string('external_id')->nullable()->unique();
+            $table->string('external_id')->nullable();
             $table->foreignId('conversation_id')->constrained()->onDelete('cascade');
             $table->string('sender_type', 20);
             $table->string('message_type', 20);
