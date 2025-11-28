@@ -10,7 +10,7 @@ class ChatService
 {
     public function handle(Connection $connection, array $payload)
     {
-        Log::info('Handling chat webhook for connection ID: ' . $connection->id, ['payload' => $payload]);
+        Log::info('Handling chat webhook for connection ID: ' . $connection->id, ['payload' => json_encode($payload)]);
 
         $handler = ChatFactory::make($connection->channel);
         $handler->handle($connection, $payload);

@@ -26,7 +26,7 @@ class ChatController extends Controller
             ], 404);
         };
 
-        $this->chatService->handle($connection, json_decode($request->getContent(), true));
+        $this->chatService->handle($connection, $request->all());
 
         return response()->json([
             'message' => 'Webhook received successfully',
