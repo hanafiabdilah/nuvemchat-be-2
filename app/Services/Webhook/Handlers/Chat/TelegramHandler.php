@@ -35,6 +35,8 @@ class TelegramHandler implements ChatHandlerInterface
             return MessageType::Text;
         } elseif (isset($payload['message']['voice'])) {
             return MessageType::Audio;
+        } elseif (isset($payload['message']['photo'])) {
+            return MessageType::Image;
         }
 
         return MessageType::Unsupported;
@@ -71,7 +73,7 @@ class TelegramHandler implements ChatHandlerInterface
             'meta' => $payload,
         ]);
 
-         if(in_array($messageType, [MessageType::Audio])) {
+         if(in_array($messageType, [MessageType::Audio, MessageType::Image])) {
             $this->handleMediaMessage($message, $payload, $messageType);
         }
     }
@@ -80,46 +82,41 @@ class TelegramHandler implements ChatHandlerInterface
     {
         $mediaKey = match($messageType) {
             MessageType::Audio => 'voice',
+            MessageType::Image => 'photo',
             default => null,
         };
 
+        $media = $payload['message'][$mediaKey];
+
+        if(isset($media[0])) {
+            $media = $payload['message'][$mediaKey][count($payload['message'][$mediaKey]) - 1];
+        }
+
         $response = Http::get("https://api.telegram.org/bot{$message->conversation->connection->credentials['token']}/getFile", [
-            'file_id' => $payload['message']['voice']['file_id'],
+            'file_id' => $media['file_id'],
         ]);
 
         if ($response->failed()) return;
 
         $filePath = $response->json('result.file_path');
         $fileUrl = "https://api.telegram.org/file/bot{$message->conversation->connection->credentials['token']}/{$filePath}";
-        $extension = $this->getExtensionFromMimeType($payload['message'][$mediaKey]['mime_type']);
+        $extension = $this->getExtensionFromFilePath($filePath);
 
         if(!$fileUrl || !$extension) return;
 
         $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
 
-        Storage::disk('local')->put($mediaPath, $response->body());
+        Storage::disk('local')->put($mediaPath, Http::get($fileUrl)->body());
 
         $message->update([
             'attachment' => $mediaPath,
         ]);
     }
 
-    private function getExtensionFromMimeType(string $mimeType): ?string
+    private function getExtensionFromFilePath(string $filePath): ?string
     {
-        return match($mimeType) {
-            'image/jpeg' => 'jpg',
-            'image/png' => 'png',
-            'image/gif' => 'gif',
-            'video/mp4' => 'mp4',
-            'application/pdf' => 'pdf',
-            'application/msword' => 'doc',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
-            'application/json' => 'json',
-            'application/x-zip-compressed' => 'zip',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
-            'audio/ogg; codecs=opus' => 'ogg',
-            'audio/ogg' => 'ogg',
-            default => null,
-        };
+        $parts = explode('.', $filePath);
+
+        return end($parts) ?: null;
     }
 }
