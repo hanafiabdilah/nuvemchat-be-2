@@ -22,6 +22,7 @@ class ConnectionResource extends JsonResource
             'status' => $this->status,
             'credentials' => $this->credentials,
             'api_key' => $this->api_key,
+            'webhook_url' => route('webhook.chat', $this->id),
             'created_at' => $this->created_at,
         ];
     }
