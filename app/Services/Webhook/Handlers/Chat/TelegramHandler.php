@@ -26,7 +26,7 @@ class TelegramHandler implements ChatHandlerInterface
 
     public function getMessageBody(array $payload): ?string
     {
-        return $payload['message']['text'] ?? null;
+        return $payload['message']['text'] ?? $payload['message']['caption'] ?? null;
     }
 
     public function getMessageType(array $payload): MessageType
