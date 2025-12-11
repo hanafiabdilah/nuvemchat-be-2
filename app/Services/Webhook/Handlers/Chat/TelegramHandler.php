@@ -39,6 +39,8 @@ class TelegramHandler implements ChatHandlerInterface
             return MessageType::Image;
         } elseif(isset($payload['message']['video'])) {
             return MessageType::Video;
+        } elseif(isset($payload['message']['document'])) {
+            return MessageType::Document;
         }
 
         return MessageType::Unsupported;
@@ -75,7 +77,7 @@ class TelegramHandler implements ChatHandlerInterface
             'meta' => $payload,
         ]);
 
-         if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video])) {
+         if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
             $this->handleMediaMessage($message, $payload, $messageType);
         }
     }
@@ -86,6 +88,7 @@ class TelegramHandler implements ChatHandlerInterface
             MessageType::Audio => 'voice',
             MessageType::Image => 'photo',
             MessageType::Video => 'video',
+            MessageType::Document => 'document',
             default => null,
         };
 
