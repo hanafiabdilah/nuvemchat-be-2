@@ -26,6 +26,17 @@ class Message extends Model
         'meta' => 'array',
     ];
 
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::created(function ($message) {
+            $message->conversation->update([
+                'last_message_at' => $message->sent_at,
+            ]);
+        });
+    }
+
     public function conversation()
     {
         return $this->belongsTo(Conversation::class);
