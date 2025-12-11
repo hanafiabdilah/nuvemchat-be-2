@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\V1\SendMessageController;
+use App\Http\Middleware\V1\Auth;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -25,6 +26,6 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey']);
 });
 
-Route::prefix('/v1')->group(function(){
+Route::prefix('/v1')->middleware(Auth::class)->group(function(){
     Route::post('send-message', [SendMessageController::class, 'handle']);
 });
