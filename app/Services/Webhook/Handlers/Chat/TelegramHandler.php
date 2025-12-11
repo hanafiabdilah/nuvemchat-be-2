@@ -37,6 +37,8 @@ class TelegramHandler implements ChatHandlerInterface
             return MessageType::Audio;
         } elseif (isset($payload['message']['photo'])) {
             return MessageType::Image;
+        } elseif(isset($payload['message']['video'])) {
+            return MessageType::Video;
         }
 
         return MessageType::Unsupported;
@@ -73,7 +75,7 @@ class TelegramHandler implements ChatHandlerInterface
             'meta' => $payload,
         ]);
 
-         if(in_array($messageType, [MessageType::Audio, MessageType::Image])) {
+         if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video])) {
             $this->handleMediaMessage($message, $payload, $messageType);
         }
     }
@@ -83,6 +85,7 @@ class TelegramHandler implements ChatHandlerInterface
         $mediaKey = match($messageType) {
             MessageType::Audio => 'voice',
             MessageType::Image => 'photo',
+            MessageType::Video => 'video',
             default => null,
         };
 
@@ -96,7 +99,15 @@ class TelegramHandler implements ChatHandlerInterface
             'file_id' => $media['file_id'],
         ]);
 
-        if ($response->failed()) return;
+        if ($response->failed()){
+            if($response->status() === 400) {
+                $message->update([
+                    'error' => $response->json('description'),
+                ]);
+            }
+
+            return;
+        }
 
         $filePath = $response->json('result.file_path');
         $fileUrl = "https://api.telegram.org/file/bot{$message->conversation->connection->credentials['token']}/{$filePath}";

@@ -18,6 +18,7 @@ class Message extends Model
         'attachment',
         'sent_at',
         'meta',
+        'error'
     ];
 
     protected $casts = [
