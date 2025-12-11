@@ -132,6 +132,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             'application/x-zip-compressed' => 'zip',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
             'audio/ogg; codecs=opus' => 'ogg',
+            'audio/ogg' => 'ogg',
             default => null,
         };
     }
