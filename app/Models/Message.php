@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 
 class Message extends Model
@@ -32,7 +33,7 @@ class Message extends Model
 
         static::created(function ($message) {
             $message->conversation->update([
-                'last_message_at' => $message->sent_at,
+                'last_message_at' => Carbon::createFromTimestamp($message->sent_at),
             ]);
         });
     }
