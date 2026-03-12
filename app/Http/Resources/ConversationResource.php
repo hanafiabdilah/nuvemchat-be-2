@@ -16,6 +16,7 @@ class ConversationResource extends JsonResource
     {
         return [
             'id' => $this->id,
+            'connection_id' => $this->connection_id,
             'last_message' => $this->last_message->toResource(MessageResource::class),
             'last_message_at' => $this->last_message_at,
             'created_at' => $this->created_at,
