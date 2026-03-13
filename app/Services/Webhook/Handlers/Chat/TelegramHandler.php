@@ -106,7 +106,7 @@ class TelegramHandler implements ChatHandlerInterface
                 'external_id'   => $conversationId,
             ]);
 
-            if(Message::where('external_id', $messageId)->lockForUpdate()->exists()) return;
+            if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
 
             return $conversation->messages()->create([
                 'external_id' => $messageId,
