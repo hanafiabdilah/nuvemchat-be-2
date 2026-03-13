@@ -4,6 +4,7 @@ namespace App\Services\Webhook\Handlers\Chat;
 
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Events\MessageReceived;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -77,7 +78,9 @@ class TelegramHandler implements ChatHandlerInterface
             'meta' => $payload,
         ]);
 
-         if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
+        broadcast(new MessageReceived($message));
+
+        if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
             $this->handleMediaMessage($message, $payload, $messageType);
         }
     }
