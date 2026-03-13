@@ -34,7 +34,7 @@ class MessageReceived implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('conversation'),
+            new Channel('conversation-channel'),
         ];
     }
 
