@@ -7,6 +7,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Models\Connection;
+use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -55,15 +56,40 @@ class TelegramHandler implements ChatHandlerInterface
         return Carbon::now();
     }
 
+    public function getContactName(array $payload): ?string
+    {
+        if (isset($payload['message']['from']['first_name']) && isset($payload['message']['from']['last_name'])) {
+            return $payload['message']['from']['first_name'] . ' ' . $payload['message']['from']['last_name'];
+        }
+
+        return $payload['message']['from']['first_name'] ?? null;
+    }
+
+    public function getContactUsername(array $payload): ?string
+    {
+        return $payload['message']['from']['username'] ?? null;
+    }
+
+    public function getContactExternalId(array $payload): ?string
+    {
+        return $payload['message']['from']['id'] ?? null;
+    }
+
     public function handle(Connection $connection, array $payload)
     {
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
+        $contactExternalId = $this->getContactExternalId($payload);
+        $contactName = $this->getContactName($payload);
+        $contactUsername = $this->getContactUsername($payload);
 
-        if (!$conversationId || !$messageId || !$messageType) return;
+        if (!$conversationId || !$messageId || !$messageType || !$contactExternalId || !$contactName || !$contactUsername) return;
+
+        $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
 
         $conversation = Conversation::firstOrCreate([
+            'contact_id' => $contact->id,
             'connection_id' => $connection->id,
             'external_id'   => $conversationId,
         ]);

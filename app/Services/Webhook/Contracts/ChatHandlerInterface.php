@@ -12,6 +12,9 @@ interface ChatHandlerInterface
     public function getMessageBody(array $payload): ?string;
     public function getMessageType(array $payload): MessageType;
     public function getMessageSentAt(array $payload): \Carbon\Carbon;
+    public function getContactName(array $payload): ?string;
+    public function getContactUsername(array $payload): ?string;
+    public function getContactExternalId(array $payload): ?string;
 
     public function handle(Connection $connection, array $payload);
 }

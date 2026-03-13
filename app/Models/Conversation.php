@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class Conversation extends Model
 {
     protected $fillable = [
+        'contact_id',
         'external_id',
         'connection_id',
         'last_message_at',
@@ -19,6 +20,11 @@ class Conversation extends Model
     public function getLastMessageAttribute()
     {
         return $this->messages()->latest('sent_at')->latest('id')->first();
+    }
+
+    public function contact()
+    {
+        return $this->belongsTo(Contact::class);
     }
 
     public function connection()
