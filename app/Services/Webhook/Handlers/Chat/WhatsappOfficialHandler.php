@@ -4,6 +4,7 @@ namespace App\Services\Webhook\Handlers\Chat;
 
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Events\MessageReceived;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -77,6 +78,8 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             'sent_at' => $this->getMessageSentAt($payload),
             'meta' => $payload,
         ]);
+
+        broadcast(new MessageReceived($message));
 
         if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
             $this->handleMediaMessage($message, $payload, $messageType);
