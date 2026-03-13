@@ -2,6 +2,7 @@
 
 namespace App\Events;
 
+use App\Http\Resources\ConversationResource;
 use App\Models\Conversation;
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
@@ -40,5 +41,15 @@ class ConversationUpdated implements ShouldBroadcast
     public function broadcastAs(): string
     {
         return 'conversation-updated';
+    }
+
+    /**
+     * Get the data to broadcast.
+     *
+     * @return array
+     */
+    public function broadcastWith(): array
+    {
+        return (new ConversationResource($this->conversation))->resolve();
     }
 }
