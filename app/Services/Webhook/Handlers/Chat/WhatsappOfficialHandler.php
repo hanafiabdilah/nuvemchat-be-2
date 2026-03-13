@@ -14,6 +14,7 @@ use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 class WhatsappOfficialHandler implements ChatHandlerInterface
@@ -75,16 +76,24 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
 
     public function handle(Connection $connection, array $payload)
     {
-        DB::transaction(function() use ($connection, $payload) {
-            $conversationId = $this->getConversationId($payload);
-            $messageId = $this->getMessageId($payload);
-            $messageType = $this->getMessageType($payload);
-            $contactExternalId = $this->getContactExternalId($payload);
-            $contactName = $this->getContactName($payload);
-            $contactUsername = $this->getContactUsername($payload);
+        $conversationId = $this->getConversationId($payload);
+        $messageId = $this->getMessageId($payload);
+        $messageType = $this->getMessageType($payload);
+        $contactExternalId = $this->getContactExternalId($payload);
+        $contactName = $this->getContactName($payload);
+        $contactUsername = $this->getContactUsername($payload);
 
-            if (!$conversationId || !$messageId || !$contactExternalId || !$contactName) return;
+        if (!$conversationId || !$messageId || !$contactExternalId || !$contactName){
+            Log::warning('WhatsappOfficialHandler: Missing required data in payload', [
+                'conversation_id' => $conversationId,
+                'message_id' => $messageId,
+                'contact_external_id' => $contactExternalId,
+                'contact_name' => $contactName,
+            ]);
+            return;
+        }
 
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
 
             $conversation = Conversation::firstOrCreate([
@@ -95,7 +104,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
 
             if(Message::where('external_id', $messageId)->lockForUpdate()->exists()) return;
 
-            $message = $conversation->messages()->create([
+            return $conversation->messages()->create([
                 'external_id' => $messageId,
                 'sender_type' => SenderType::Incoming,
                 'message_type' => $messageType,
@@ -103,14 +112,16 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
                 'sent_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
             ]);
+        });
 
+        if($message){
             broadcast(new MessageReceived($message));
-            broadcast(new ConversationUpdated($conversation));
+            broadcast(new ConversationUpdated($message->conversation));
 
             if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
                 $this->handleMediaMessage($message, $payload, $messageType);
             }
-        });
+        }
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
