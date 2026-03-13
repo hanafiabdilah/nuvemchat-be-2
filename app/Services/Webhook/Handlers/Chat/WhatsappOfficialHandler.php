@@ -81,7 +81,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
         ]);
 
         broadcast(new MessageReceived($message));
-        broadcast(new ConversationUpdated($message));
+        broadcast(new ConversationUpdated($conversation));
 
         if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
             $this->handleMediaMessage($message, $payload, $messageType);

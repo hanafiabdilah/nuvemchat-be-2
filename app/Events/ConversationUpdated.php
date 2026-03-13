@@ -2,7 +2,7 @@
 
 namespace App\Events;
 
-use App\Models\Message;
+use App\Models\Conversation;
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PresenceChannel;
@@ -19,7 +19,7 @@ class ConversationUpdated implements ShouldBroadcast
      * Create a new event instance.
      */
     public function __construct(
-        public Message $message
+        public Conversation $conversation
     )
     {
         //
@@ -33,7 +33,7 @@ class ConversationUpdated implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('workspace-channel.' . $this->message->conversation->connection->user_id),
+            new Channel('workspace-channel.' . $this->conversation->connection->user_id),
         ];
     }
 
