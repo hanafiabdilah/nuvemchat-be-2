@@ -18,7 +18,7 @@ class Conversation extends Model
 
     public function getLastMessageAttribute()
     {
-        return $this->messages()->latest('sent_at')->first();
+        return $this->messages()->latest('sent_at')->latest('id')->first();
     }
 
     public function connection()
