@@ -9,7 +9,5 @@ enum MessageType: string
     case Video = 'video';
     case Audio = 'audio';
     case Document = 'document';
-    case Location = 'location';
-    case Contact = 'contact';
     case Unsupported = 'unsupported';
 }
