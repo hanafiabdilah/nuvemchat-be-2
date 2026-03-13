@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Events\ConversationUpdated;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConversationResource;
 use App\Http\Resources\MessageResource;
@@ -59,6 +60,8 @@ class ConversationController extends Controller
 
         try {
             $message = $messageService->sendMessage($conversation, $request->all());
+
+            broadcast(new ConversationUpdated($conversation));
 
             return response()->json([
                 'data' => new MessageResource($message),
