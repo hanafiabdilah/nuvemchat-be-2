@@ -2,6 +2,7 @@
 
 namespace App\Events;
 
+use App\Http\Resources\MessageResource;
 use App\Models\Message;
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
@@ -33,12 +34,22 @@ class MessageReceived implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('conversation-channel'),
+            new PrivateChannel('conversation.' . $this->message->conversation_id),
         ];
     }
 
     public function broadcastAs(): string
     {
         return 'message-received';
+    }
+
+    /**
+     * Get the data to broadcast.
+     *
+     * @return array
+     */
+    public function broadcastWith(): array
+    {
+        return (new MessageResource($this->message))->resolve();
     }
 }
