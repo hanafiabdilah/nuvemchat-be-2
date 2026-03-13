@@ -17,7 +17,7 @@ class ConversationController extends Controller
     {
         $conversations = Conversation::whereHas('connection', function($q){
             $q->where('user_id', Auth::id());
-        })->orderBy('created_at', 'DESC')->get();
+        })->orderBy('last_message_at', 'DESC')->get();
 
         return response()->json([
             'data' => $conversations->toResourceCollection(ConversationResource::class),
