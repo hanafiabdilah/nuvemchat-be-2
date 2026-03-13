@@ -14,7 +14,7 @@ class Contact extends Model
         'meta'
     ];
 
-    public static function createFromExternalData(Connection $connection, string $externalId, string $name, string $username): self
+    public static function createFromExternalData(Connection $connection, string $externalId, string $name, ?string $username = null): self
     {
         $contact = self::firstOrCreate([
             'external_id' => $externalId,
