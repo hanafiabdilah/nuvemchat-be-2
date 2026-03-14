@@ -20,7 +20,7 @@ class ConversationResource extends JsonResource
             'last_message' => $this->last_message->toResource(MessageResource::class),
             'last_message_at' => $this->last_message_at,
             'unread' => $this->messages()->whereNull('read_at')->count(),
-            'contact' => new ContactResource($this->whenLoaded('contact')),
+            'contact' => new ContactResource($this->contact),
             'created_at' => $this->created_at,
         ];
     }

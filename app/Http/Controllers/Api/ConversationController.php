@@ -27,7 +27,7 @@ class ConversationController extends Controller
 
     public function show(int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
+        $conversation = Conversation::with('contact')->whereHas('connection', function($q){
             $q->where('user_id', Auth::id());
         })->findOrFail($id);
 
