@@ -62,6 +62,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
                 'message_type' => MessageType::Text,
                 'body' => $data['message'],
                 'sent_at' => $this->getMessageSentAt($responseArray),
+                'read_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
 
