@@ -46,7 +46,7 @@ class ConversationController extends Controller
         })->findOrFail($id);
 
         $conversation->messages()->whereNull('read_at')->update(['read_at' => now()]);
-        broadcast(new ConversationUpdated($conversation));
+        broadcast(new ConversationUpdated($conversation))->toOthers();
 
         $messages = $conversation->messages()->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->paginate($per_page, ['*'], 'page', $page);
 
