@@ -46,11 +46,25 @@ class ConversationController extends Controller
         })->findOrFail($id);
 
         $conversation->messages()->whereNull('read_at')->update(['read_at' => now()]);
-        broadcast(new ConversationUpdated($conversation))->toOthers();
+        broadcast(new ConversationUpdated($conversation));
 
         $messages = $conversation->messages()->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->paginate($per_page, ['*'], 'page', $page);
 
         return MessageResource::collection($messages)->response();
+    }
+
+    public function read(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('user_id', Auth::id());
+        })->findOrFail($id);
+
+        $conversation->messages()->whereNull('read_at')->update(['read_at' => now()]);
+        broadcast(new ConversationUpdated($conversation));
+
+        return response()->json([
+            'message' => 'Conversation marked as read',
+        ]);
     }
 
     public function sendMessage(Request $request, int $id)
