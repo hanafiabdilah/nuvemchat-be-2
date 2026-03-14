@@ -119,14 +119,14 @@ class TelegramHandler implements ChatHandlerInterface
         });
 
         if($message){
-            broadcast(new MessageReceived($message));
-            broadcast(new ConversationUpdated($message->conversation));
-
             if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
                 $this->handleMediaMessage($message, $payload, $messageType);
             }
+
+            broadcast(new MessageReceived($message));
+            broadcast(new ConversationUpdated($message->conversation));
         }
-        }
+    }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
     {

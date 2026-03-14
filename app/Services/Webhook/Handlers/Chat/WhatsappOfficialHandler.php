@@ -115,12 +115,12 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
         });
 
         if($message){
-            broadcast(new MessageReceived($message));
-            broadcast(new ConversationUpdated($message->conversation));
-
             if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
                 $this->handleMediaMessage($message, $payload, $messageType);
             }
+
+            broadcast(new MessageReceived($message));
+            broadcast(new ConversationUpdated($message->conversation));
         }
     }
 
