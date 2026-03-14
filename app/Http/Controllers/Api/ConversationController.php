@@ -16,7 +16,7 @@ class ConversationController extends Controller
 {
     public function index()
     {
-        $conversations = Conversation::whereHas('connection', function($q){
+        $conversations = Conversation::with('contact')->whereHas('connection', function($q){
             $q->where('user_id', Auth::id());
         })->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
 
