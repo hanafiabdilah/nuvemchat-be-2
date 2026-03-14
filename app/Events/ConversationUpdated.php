@@ -50,6 +50,6 @@ class ConversationUpdated implements ShouldBroadcast
      */
     public function broadcastWith(): array
     {
-        return (new ConversationResource($this->conversation))->resolve();
+        return (new ConversationResource($this->conversation->with('contact')))->resolve();
     }
 }
