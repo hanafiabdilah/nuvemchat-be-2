@@ -14,11 +14,6 @@ use Illuminate\Support\Facades\Log;
 
 class WhatsappWApiHandler implements MessageHandlerInterface
 {
-    public function getConversationId(array $payload): string
-    {
-        return '';
-    }
-
     public function getMessageId(array $payload): string
     {
         return $payload['messageId'];
@@ -47,11 +42,6 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             ]);
 
             $responseArray = $response->json();
-
-            $conversation = Conversation::firstOrCreate([
-                'connection_id' => $connection->id,
-                'external_id'   => $this->getConversationId($responseArray),
-            ]);
 
             $message = $conversation->messages()->create([
                 'external_id' => $this->getMessageId($responseArray),

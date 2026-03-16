@@ -14,11 +14,6 @@ use Telegram\Bot\Api;
 
 class TelegramHandler implements MessageHandlerInterface
 {
-    public function getConversationId(array $payload): string
-    {
-        return $payload['chat']['id'];
-    }
-
     public function getMessageId(array $payload): string
     {
         return $payload['message_id'];
@@ -47,11 +42,6 @@ class TelegramHandler implements MessageHandlerInterface
             ]);
 
             $responseArray = $response->toArray();
-
-            $conversation = Conversation::firstOrCreate([
-                'connection_id' => $connection->id,
-                'external_id'   => $this->getConversationId($responseArray),
-            ]);
 
             $message = $conversation->messages()->create([
                 'external_id' => $this->getMessageId($responseArray),
