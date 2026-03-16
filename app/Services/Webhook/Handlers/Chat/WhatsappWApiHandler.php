@@ -5,6 +5,7 @@ namespace App\Services\Webhook\Handlers\Chat;
 use App\Enums\Connection\Status;
 use App\Enums\Message\MessageType;
 use App\Events\ConnectionUpdated;
+use App\Events\ConversationUpdated;
 use App\Models\Connection;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
@@ -83,7 +84,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
         Log::info('Whatsapp WAPI connected', ['connection' => $connection]);
 
-        broadcast(new ConnectionUpdated($connection->fresh()));
+        broadcast(new ConnectionUpdated($connection));
     }
 
     private function handleDisconnected(Connection $connection, array $payload)
@@ -98,7 +99,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
         Log::info('Whatsapp WAPI disconnected', ['connection' => $connection]);
 
-        broadcast(new ConnectionUpdated($connection->fresh()));
+        broadcast(new ConnectionUpdated($connection));
     }
 }
 
