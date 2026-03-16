@@ -10,6 +10,7 @@ use App\Services\Message\MessageHandlerInterface;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class WhatsappOfficialHandler implements MessageHandlerInterface
 {
@@ -68,6 +69,12 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
 
             return $message;
         } catch (\Throwable $th) {
+            Log::error('WhatsappOfficialHandler: Failed to send message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
             throw new Exception('Failed to send WhatsApp message');
         }
     }

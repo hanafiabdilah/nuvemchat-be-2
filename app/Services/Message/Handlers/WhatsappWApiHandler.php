@@ -21,7 +21,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
 
     public function getMessageId(array $payload): string
     {
-        return $payload['messages']['messageId'];
+        return $payload['message']['messageId'];
     }
 
     public function getMessageSentAt(array $payload): Carbon
@@ -70,6 +70,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
             ]);
+
             throw new Exception('Failed to send WhatsApp message');
         }
     }

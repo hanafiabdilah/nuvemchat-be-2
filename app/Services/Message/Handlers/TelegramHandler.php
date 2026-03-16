@@ -9,6 +9,7 @@ use App\Models\Message;
 use App\Services\Message\MessageHandlerInterface;
 use Carbon\Carbon;
 use Exception;
+use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 
 class TelegramHandler implements MessageHandlerInterface
@@ -64,6 +65,12 @@ class TelegramHandler implements MessageHandlerInterface
 
             return $message;
         } catch (\Throwable $th) {
+            Log::error('TelegramHandler: Failed to send message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
             throw new Exception('Failed to send Telegram message');
         }
     }
