@@ -36,14 +36,22 @@ class WhatsappWApiChannel implements ChannelInterface
         // check status
         $status = Http::withHeaders([
             'Authorization' => 'Bearer ' . $data['token'],
-        ])->get('https://api.w-api.app/v1/instance/status-instance?instanceId=' . $connection->credentials['instance_id'])->json();
+        ])->get('https://api.w-api.app/v1/instance/status-instance?instanceId=' . $connection->credentials['instance_id']);
+        $statusJson = $status->json();
 
-        Log::info('Whatsapp WApi status response', ['response' => $status]);
+        Log::info('Whatsapp WApi status response', ['response' => $statusJson, 'status code' => $status->status()]);
+
+        if($status->status() !== 200){
+            if($status->status() === 403){
+                throw new \Exception($statusJson['response']['message'], 403);
+            }
+
+            throw new \Exception('Failed to check status of Whatsapp WApi instance.', 500);
+        }
 
         // setup webhhook
 
-        // if status oke, update connection to active and save credentials, and return
-        if($status['connected'] === true){
+        if($statusJson['connected'] === true){
             $connection->update([
                 'status' => Status::Active,
             ]);
@@ -54,17 +62,22 @@ class WhatsappWApiChannel implements ChannelInterface
         // generate qr
         $qr = Http::withHeaders([
             'Authorization' => 'Bearer ' . $data['token'],
-        ])->get('https://api.w-api.app/v1/instance/qr-code?instanceId=' . $connection->credentials['instance_id']);
+        ])->get('https://api.w-api.app/v1/instance/qr-code?image=disable&instanceId=' . $connection->credentials['instance_id']);
+        $qrJson = $qr->json();
 
-        Log::info('Whatsapp WApi QR response', ['response' => $qr->json(), 'status code' => $qr->status()]);
+        Log::info('Whatsapp WApi QR response', ['response' => $qrJson, 'status code' => $qr->status()]);
 
-        if(!isset($qr->json()['qrcode'])){
-            return;
+        if($qr->status() !== 200){
+            if($qr->status() === 403){
+                throw new \Exception($qrJson['response']['message'], 403);
+            }
+
+            throw new \Exception('Failed to generate QR code for Whatsapp WApi.', 500);
         }
 
         $connection->update([
             'credentials' => array_merge($connection->credentials, [
-                'qr_code' => $qr->json()['qrcode'],
+                'qr_code' => $qrJson['qrcode'],
             ]),
         ]);
     }

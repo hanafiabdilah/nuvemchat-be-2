@@ -62,6 +62,10 @@ class ConnectionController extends Controller
                 return response()->json([
                     'message' => 'Invalid Access Token provided.',
                 ], 401);
+            }elseif($th->getCode() === 403) {
+                return response()->json([
+                    'message' => $th->getMessage(),
+                ], 403);
             }
 
             return response()->json([
