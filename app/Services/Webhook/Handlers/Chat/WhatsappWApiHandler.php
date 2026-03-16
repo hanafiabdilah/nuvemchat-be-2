@@ -208,29 +208,28 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
-        $contactExternalId = $this->getContactExternalId($payload);
-        $contactName = $this->getContactName($payload);
-        $contactUsername = $this->getContactUsername($payload);
 
-        if (!$conversationId || !$messageId || !$contactExternalId || !$contactName){
+        if (!$conversationId || !$messageId){
             Log::warning('WhatsappWApiHandler: Missing required data in payload', [
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
-                'contact_external_id' => $contactExternalId,
-                'contact_name' => $contactName,
             ]);
 
             return;
         }
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
-            $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType) {
+            $conversation = Conversation::where('connection_id', $connection->id)
+                ->where('external_id', $conversationId)
+                ->first();
 
-            $conversation = Conversation::firstOrCreate([
-                'contact_id' => $contact->id,
-                'connection_id' => $connection->id,
-                'external_id'   => $conversationId,
-            ]);
+            if(!$conversation){
+                Log::warning('WhatsappWApiHandler: Conversation not found for delivery receipt', [
+                    'conversation_id' => $conversationId,
+                    'connection_id' => $connection->id,
+                ]);
+                return;
+            }
 
             if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
 
