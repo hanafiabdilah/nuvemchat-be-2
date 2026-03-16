@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Connection\Channel;
+use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
@@ -57,17 +58,9 @@ class ConnectionController extends Controller
             ], 200);
         } catch(ValidationException $th) {
             throw $th;
+        } catch(ConnectionException $th){
+            throw $th;
         } catch (\Throwable $th) {
-            if($th->getCode() === 401) {
-                return response()->json([
-                    'message' => 'Invalid Access Token provided.',
-                ], 401);
-            }elseif($th->getCode() === 403) {
-                return response()->json([
-                    'message' => $th->getMessage(),
-                ], 403);
-            }
-
             return response()->json([
                 'message' => 'Failed to run connection',
             ], 500);

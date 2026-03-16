@@ -3,6 +3,7 @@
 namespace App\Services\Connection\Channels;
 
 use App\Enums\Connection\Status;
+use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use Illuminate\Support\Facades\Http;
@@ -27,7 +28,7 @@ class WhatsappOfficialChannel implements ChannelInterface
         $response = Http::get('https://graph.facebook.com/me?access_token=' . $data['access_token']);
 
         if(!$response->successful()) {
-            throw new \Exception('Invalid Access Token provided.', 401);
+            throw new ConnectionException('Invalid Access Token provided.', 401);
         }
 
         $connection->update([
