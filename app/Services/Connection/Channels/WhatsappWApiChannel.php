@@ -58,7 +58,7 @@ class WhatsappWApiChannel implements ChannelInterface
         foreach($webhookPaths as $webhookPath){
             $webhook = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $data['token'],
-            ])->post('https://api.w-api.app/v1/instance/' . $webhookPath, [
+            ])->post('https://api.w-api.app/v1/webhook/' . $webhookPath, [
                 'value' => route('webhook.chat', ['id' => $connection->id]),
             ]);
             $webhookJson = $webhook->json();
