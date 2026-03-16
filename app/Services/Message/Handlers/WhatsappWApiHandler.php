@@ -21,7 +21,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
 
     public function getMessageId(array $payload): string
     {
-        return $payload['message']['messageId'];
+        return $payload['messageId'];
     }
 
     public function getMessageSentAt(array $payload): Carbon
