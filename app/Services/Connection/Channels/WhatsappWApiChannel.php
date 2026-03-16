@@ -19,7 +19,6 @@ class WhatsappWApiChannel implements ChannelInterface
     public function connect(Connection $connection, array $data)
     {
         validator($data, [
-            'host' => ['required', 'string'],
             'instance_id' => ['required', 'string'],
             'token' => ['required', 'string'],
         ])->validate();
@@ -27,7 +26,6 @@ class WhatsappWApiChannel implements ChannelInterface
         $connection->update([
             'status' => Status::Pending,
             'credentials' => [
-                'host' => $data['host'],
                 'instance_id' => $data['instance_id'],
                 'token' => $data['token'],
             ],
