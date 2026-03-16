@@ -201,12 +201,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         }
 
         $media = $payload['msgContent'][$mediaKey];
-        $instanceId = $payload['instanceId'] ?? null;
-
-        if (!$instanceId) {
-            Log::error('WhatsappWApiHandler: Missing instanceId in payload');
-            return;
-        }
 
         $mediaKeyValue = $media['mediaKey'] ?? null;
         $directPath = $media['directPath'] ?? null;
@@ -224,7 +218,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
         try {
             // Step 1: Request decrypted file link from W-API
-            $response = Http::timeout(30)->post("https://api.w-api.app/v1/message/download-media?instanceId={$instanceId}", [
+            $response = Http::timeout(30)->withHeaders([
+                'Authorization' => 'Bearer ' . $message->conversation->connection->credentials['token'],
+            ])->post("https://api.w-api.app/v1/message/download-media?instanceId=" . $message->conversation->connection->credentials['instance_id'], [
                 'mediaKey' => $mediaKeyValue,
                 'directPath' => $directPath,
                 'type' => $messageType->value,
