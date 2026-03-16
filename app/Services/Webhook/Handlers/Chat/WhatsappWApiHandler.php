@@ -99,6 +99,10 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 $this->handleReceived($connection, $payload);
                 break;
 
+            case 'webhookDelivery':
+                $this->handleDelivery($connection, $payload);
+                break;
+
             default:
                 throw new \Exception('Event not supported');
                 break;
@@ -169,6 +173,65 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return $conversation->messages()->create([
                 'external_id' => $messageId,
                 'sender_type' => SenderType::Incoming,
+                'message_type' => $messageType,
+                'body' => $this->getMessageBody($payload),
+                'sent_at' => $this->getMessageSentAt($payload),
+                'meta' => $payload,
+            ]);
+        });
+
+        if($message){
+            if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
+                $this->handleMediaMessage($message, $payload, $messageType);
+            }
+
+            broadcast(new MessageReceived($message));
+            broadcast(new ConversationUpdated($message->conversation));
+        }
+    }
+
+    private function handleDelivery(Connection $connection, array $payload)
+    {
+        $fromMe = $payload['fromMe'] ?? false; // Only from me messages have delivery receipts in W-API
+        $fromApi = $payload['fromApi'] ?? false; // True = send via panel, False = send via another device (like whatsapp web, whatsapp desktop or another phone)
+
+        if(!$fromMe || !$fromApi) {
+            Log::info('WhatsappWApiHandler: Ignoring delivery receipt for non-outgoing or non-API message');
+            return;
+        }
+
+        $conversationId = $this->getConversationId($payload);
+        $messageId = $this->getMessageId($payload);
+        $messageType = $this->getMessageType($payload);
+        $contactExternalId = $this->getContactExternalId($payload);
+        $contactName = $this->getContactName($payload);
+        $contactUsername = $this->getContactUsername($payload);
+
+        if (!$conversationId || !$messageId || !$contactExternalId || !$contactName){
+            Log::warning('WhatsappWApiHandler: Missing required data in payload', [
+                'conversation_id' => $conversationId,
+                'message_id' => $messageId,
+                'contact_external_id' => $contactExternalId,
+                'contact_name' => $contactName,
+            ]);
+
+            return;
+        }
+
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
+            $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
+
+            $conversation = Conversation::firstOrCreate([
+                'contact_id' => $contact->id,
+                'connection_id' => $connection->id,
+                'external_id'   => $conversationId,
+            ]);
+
+            if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
+
+            return $conversation->messages()->create([
+                'external_id' => $messageId,
+                'sender_type' => SenderType::Outgoing,
                 'message_type' => $messageType,
                 'body' => $this->getMessageBody($payload),
                 'sent_at' => $this->getMessageSentAt($payload),
