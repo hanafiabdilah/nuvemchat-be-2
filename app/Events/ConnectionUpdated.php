@@ -20,7 +20,7 @@ class ConnectionUpdated implements ShouldBroadcast
      * Create a new event instance.
      */
     public function __construct(
-        public Connection $connection
+        public Connection $conn
     )
     {
         //
@@ -34,7 +34,7 @@ class ConnectionUpdated implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('workspace-channel.' . $this->connection->user_id),
+            new Channel('workspace-channel.' . $this->conn->user_id),
         ];
     }
 
@@ -45,6 +45,6 @@ class ConnectionUpdated implements ShouldBroadcast
 
     public function broadcastWith(): array
     {
-        return (new ConnectionResource($this->connection))->resolve();
+        return (new ConnectionResource($this->conn))->resolve();
     }
 }
