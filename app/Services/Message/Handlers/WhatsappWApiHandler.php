@@ -4,6 +4,7 @@ namespace App\Services\Message\Handlers;
 
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Events\MessageReceived;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\MessageHandlerInterface;
@@ -52,6 +53,8 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'read_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
+
+            broadcast(new MessageReceived($message))->toOthers();
 
             return $message;
         } catch (\Throwable $th) {
