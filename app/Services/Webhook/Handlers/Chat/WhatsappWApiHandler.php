@@ -201,31 +201,77 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         }
 
         $media = $payload['msgContent'][$mediaKey];
-        $fileUrl = $media['url'] ?? null;
+        $instanceId = $payload['instanceId'] ?? null;
+
+        if (!$instanceId) {
+            Log::error('WhatsappWApiHandler: Missing instanceId in payload');
+            return;
+        }
+
+        $mediaKeyValue = $media['mediaKey'] ?? null;
+        $directPath = $media['directPath'] ?? null;
         $mimeType = $media['mimetype'] ?? null;
 
-        if (!$fileUrl || !$mimeType) {
+        if (!$mediaKeyValue || !$directPath || !$mimeType) {
+            Log::error('WhatsappWApiHandler: Missing media data', [
+                'message_id' => $message->id,
+                'has_mediaKey' => isset($media['mediaKey']),
+                'has_directPath' => isset($media['directPath']),
+                'has_mimetype' => isset($media['mimetype']),
+            ]);
             return;
         }
 
         try {
-            $response = Http::timeout(30)->get($fileUrl);
+            // Step 1: Request decrypted file link from W-API
+            $response = Http::timeout(30)->post("https://api.w-api.app/v1/message/download-media?instanceId={$instanceId}", [
+                'mediaKey' => $mediaKeyValue,
+                'directPath' => $directPath,
+                'type' => $messageType->value,
+                'mimetype' => $mimeType,
+            ]);
 
-            if ($response->failed()) {
+            if ($response->failed() || $response->json('error') === true) {
+                $message->update([
+                    'error' => 'Failed to get media download link',
+                ]);
+                return;
+            }
+
+            $fileLink = $response->json('fileLink');
+
+            if (!$fileLink) {
+                $message->update([
+                    'error' => 'No file link returned from API',
+                ]);
+                return;
+            }
+
+            // Step 2: Download the decrypted file
+            $fileResponse = Http::timeout(60)->get($fileLink);
+
+            if ($fileResponse->failed()) {
                 $message->update([
                     'error' => 'Failed to download media file',
                 ]);
                 return;
             }
 
+            // Step 3: Save to storage
             $extension = $this->getExtensionFromMimeType($mimeType);
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
 
-            Storage::disk('local')->put($mediaPath, $response->body());
+            Storage::disk('local')->put($mediaPath, $fileResponse->body());
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
+
+            Log::info('WhatsappWApiHandler: Media downloaded successfully', [
+                'message_id' => $message->id,
+                'media_path' => $mediaPath,
+            ]);
+
         } catch (\Exception $e) {
             Log::error('WhatsappWApiHandler: Failed to handle media message', [
                 'message_id' => $message->id,
