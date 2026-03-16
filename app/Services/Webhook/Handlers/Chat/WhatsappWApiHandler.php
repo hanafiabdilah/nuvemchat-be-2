@@ -74,6 +74,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     {
         $connection->update([
             'status' => $payload['connected'] == true ? Status::Active : Status::Inactive,
+            'credentials' => array_merge($connection->credentials ?? [], [
+                'qr_code' => null,
+            ]),
         ]);
 
         broadcast(new ConnectionUpdated($connection->fresh()));
@@ -83,6 +86,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     {
         $connection->update([
             'status' => Status::Inactive,
+            'credentials' => array_merge($connection->credentials ?? [], [
+                'qr_code' => null,
+            ]),
         ]);
 
         broadcast(new ConnectionUpdated($connection->fresh()));
