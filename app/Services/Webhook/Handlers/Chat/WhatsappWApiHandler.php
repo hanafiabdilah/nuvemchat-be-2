@@ -8,6 +8,7 @@ use App\Events\ConnectionUpdated;
 use App\Models\Connection;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
 
 class WhatsappWApiHandler implements ChatHandlerInterface
 {
@@ -80,6 +81,8 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             'credentials' => $credentials,
         ]);
 
+        Log::info('Whatsapp WAPI connected', ['connection' => $connection]);
+
         broadcast(new ConnectionUpdated($connection->fresh()));
     }
 
@@ -92,6 +95,8 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             'status' => Status::Inactive,
             'credentials' => $credentials,
         ]);
+
+        Log::info('Whatsapp WAPI disconnected', ['connection' => $connection]);
 
         broadcast(new ConnectionUpdated($connection->fresh()));
     }
