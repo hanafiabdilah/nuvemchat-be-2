@@ -82,6 +82,8 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     {
         $event = $payload['event'] ?? null;
 
+        if(!$event) return;
+
         switch ($event) {
             case 'webhookConnected':
                 $this->handleConnected($connection, $payload);
