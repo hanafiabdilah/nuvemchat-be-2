@@ -40,11 +40,9 @@ class WhatsappWApiChannel implements ChannelInterface
         ])->get('https://api.w-api.app/v1/instance/status-instance?instanceId=' . $connection->credentials['instance_id']);
         $statusJson = $status->json();
 
-        Log::info('Whatsapp WApi status response', ['connection' => $connection, 'response' => $statusJson, 'status code' => $status->status()]);
-
         if($status->failed()){
             Log::error('Whatsapp WApi status request failed', ['connection' => $connection, 'response' => $statusJson, 'status code' => $status->status()]);
-            throw new ConnectionException($statusJson['response']['message'] ?? 'Failed to connect to Whatsapp WApi', $status->status());
+            throw new ConnectionException($statusJson['message'] ?? 'Failed to connect to Whatsapp WApi', $status->status());
         }
 
         // setup webhhook
@@ -62,11 +60,9 @@ class WhatsappWApiChannel implements ChannelInterface
         ])->get('https://api.w-api.app/v1/instance/qr-code?image=disable&instanceId=' . $connection->credentials['instance_id']);
         $qrJson = $qr->json();
 
-        Log::info('Whatsapp WApi QR response', ['response' => $qrJson, 'status code' => $qr->status()]);
-
         if($qr->failed()){
             Log::error('Whatsapp WApi QR request failed', ['connection' => $connection, 'response' => $qrJson, 'status code' => $qr->status()]);
-            throw new ConnectionException($qrJson['response']['message'] ?? 'Failed to retrieve QR code from Whatsapp WApi', $qr->status());
+            throw new ConnectionException($qrJson['message'] ?? 'Failed to retrieve QR code from Whatsapp WApi', $qr->status());
         }
 
         $connection->update([
