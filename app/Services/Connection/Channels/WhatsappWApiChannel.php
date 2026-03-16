@@ -41,14 +41,6 @@ class WhatsappWApiChannel implements ChannelInterface
 
         Log::info('Whatsapp WApi status response', ['response' => $statusJson, 'status code' => $status->status()]);
 
-        if($status->status() !== 200){
-            if($status->status() === 403){
-                throw new \Exception($statusJson['response']['message'], 403);
-            }
-
-            throw new \Exception('Failed to check status of Whatsapp WApi instance.', 500);
-        }
-
         // setup webhhook
 
         if($statusJson['connected'] === true){
@@ -66,14 +58,6 @@ class WhatsappWApiChannel implements ChannelInterface
         $qrJson = $qr->json();
 
         Log::info('Whatsapp WApi QR response', ['response' => $qrJson, 'status code' => $qr->status()]);
-
-        if($qr->status() !== 200){
-            if($qr->status() === 403){
-                throw new \Exception($qrJson['response']['message'], 403);
-            }
-
-            throw new \Exception('Failed to generate QR code for Whatsapp WApi.', 500);
-        }
 
         $connection->update([
             'credentials' => array_merge($connection->credentials, [
