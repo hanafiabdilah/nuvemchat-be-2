@@ -79,6 +79,11 @@ class TelegramHandler implements ChatHandlerInterface
 
     public function handle(Connection $connection, array $payload)
     {
+        if (in_array($payload['message']['chat']['type'] ?? null, ['group', 'supergroup'])) {
+            Log::info('TelegramHandler: Skipping group message');
+            return;
+        }
+
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
