@@ -48,10 +48,10 @@ class WhatsappWApiChannel implements ChannelInterface
         $webhookPaths = [
             'update-webhook-connected',
             'update-webhook-disconnected',
-            // 'update-webhook-delivery',
-            // 'update-webhook-received',
-            // 'update-webhook-message-status',
-            // 'update-webhook-chat-presence',
+            'update-webhook-delivery',
+            'update-webhook-received',
+            'update-webhook-message-status',
+            'update-webhook-chat-presence',
         ];
         $webhookResponses = [];
 
