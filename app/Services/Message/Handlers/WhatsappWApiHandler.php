@@ -54,7 +54,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'meta' => $responseArray,
             ]);
 
-            broadcast(new MessageReceived($message))->toOthers();
+            // broadcast(new MessageReceived($message))->toOthers();
 
             return $message;
         } catch (\Throwable $th) {
