@@ -52,9 +52,21 @@ class WhatsappWApiChannel implements ChannelInterface
         }
 
         // generate qr
+        $qr = Http::withHeaders([
+            'Authorization' => 'Bearer ' . $data['token'],
+        ])->get('https://api.w-api.app/v1/instance/qr-code?instanceId=' . $connection->credentials['instance_id'])->json();
 
+        Log::info('Whatsapp WApi QR response', ['response' => $qr]);
 
-        // update connection
+        if(!isset($qr['qrcode'])){
+            return;
+        }
+
+        $connection->update([
+            'credentials' => array_merge($connection->credentials, [
+                'qr_code' => $qr['qrcode'],
+            ]),
+        ]);
     }
 
     public function disconnect()
