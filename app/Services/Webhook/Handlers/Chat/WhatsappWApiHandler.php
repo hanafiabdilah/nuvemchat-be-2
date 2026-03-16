@@ -80,7 +80,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             'credentials' => $credentials,
         ]);
 
-        broadcast(new ConnectionUpdated($connection));
+        broadcast(new ConnectionUpdated($connection->fresh()));
     }
 
     private function handleDisconnected(Connection $connection, array $payload)
@@ -93,7 +93,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             'credentials' => $credentials,
         ]);
 
-        broadcast(new ConnectionUpdated($connection));
+        broadcast(new ConnectionUpdated($connection->fresh()));
     }
 }
 
