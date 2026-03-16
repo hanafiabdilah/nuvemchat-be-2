@@ -15,7 +15,9 @@ use App\Models\Message;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class WhatsappWApiHandler implements ChatHandlerInterface
 {
@@ -175,13 +177,88 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         });
 
         if($message){
-            // if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
-            //     $this->handleMediaMessage($message, $payload, $messageType);
-            // }
+            if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
+                $this->handleMediaMessage($message, $payload, $messageType);
+            }
 
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation));
         }
+    }
+
+    private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
+    {
+        $mediaKey = match($messageType) {
+            MessageType::Audio => 'audioMessage',
+            MessageType::Image => 'imageMessage',
+            MessageType::Video => 'videoMessage',
+            MessageType::Document => 'documentMessage',
+            default => null,
+        };
+
+        if (!$mediaKey || !isset($payload['msgContent'][$mediaKey])) {
+            return;
+        }
+
+        $media = $payload['msgContent'][$mediaKey];
+        $fileUrl = $media['url'] ?? null;
+        $mimeType = $media['mimetype'] ?? null;
+
+        if (!$fileUrl || !$mimeType) {
+            return;
+        }
+
+        try {
+            $response = Http::timeout(30)->get($fileUrl);
+
+            if ($response->failed()) {
+                $message->update([
+                    'error' => 'Failed to download media file',
+                ]);
+                return;
+            }
+
+            $extension = $this->getExtensionFromMimeType($mimeType);
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+
+            Storage::disk('local')->put($mediaPath, $response->body());
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('WhatsappWApiHandler: Failed to handle media message', [
+                'message_id' => $message->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            $message->update([
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function getExtensionFromMimeType(string $mimeType): string
+    {
+        $mimeToExt = [
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/gif' => 'gif',
+            'image/webp' => 'webp',
+            'audio/ogg' => 'ogg',
+            'audio/mpeg' => 'mp3',
+            'audio/mp4' => 'm4a',
+            'video/mp4' => 'mp4',
+            'video/3gpp' => '3gp',
+            'application/pdf' => 'pdf',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+        ];
+
+        // Handle special cases like "audio/ogg; codecs=opus"
+        $cleanMimeType = explode(';', $mimeType)[0];
+
+        return $mimeToExt[$cleanMimeType] ?? 'bin';
     }
 }
 
