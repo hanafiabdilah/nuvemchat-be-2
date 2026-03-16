@@ -59,7 +59,9 @@ class ConnectionController extends Controller
         } catch(ValidationException $th) {
             throw $th;
         } catch(ConnectionException $th){
-            throw $th;
+            return response()->json([
+                'message' => $th->getMessage(),
+            ], $th->getHttpStatusCode());
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to run connection',
