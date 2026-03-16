@@ -72,26 +72,28 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
     private function handleConnected(Connection $connection, array $payload)
     {
+        $credentials = $connection->credentials;
+        unset($credentials['qr_code']);
+
         $connection->update([
             'status' => $payload['connected'] == true ? Status::Active : Status::Inactive,
-            'credentials' => array_merge($connection->credentials ?? [], [
-                'qr_code' => null,
-            ]),
+            'credentials' => $credentials,
         ]);
 
-        broadcast(new ConnectionUpdated($connection->fresh()));
+        broadcast(new ConnectionUpdated($connection));
     }
 
     private function handleDisconnected(Connection $connection, array $payload)
     {
+        $credentials = $connection->credentials;
+        unset($credentials['qr_code']);
+
         $connection->update([
             'status' => Status::Inactive,
-            'credentials' => array_merge($connection->credentials ?? [], [
-                'qr_code' => null,
-            ]),
+            'credentials' => $credentials,
         ]);
 
-        broadcast(new ConnectionUpdated($connection->fresh()));
+        broadcast(new ConnectionUpdated($connection));
     }
 }
 
