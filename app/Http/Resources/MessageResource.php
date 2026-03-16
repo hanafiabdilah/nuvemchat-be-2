@@ -22,7 +22,7 @@ class MessageResource extends JsonResource
             'sender_type' => $this->sender_type,
             'message_type' => $this->message_type,
             'body' => $this->body,
-            'attachment_url' => $this->attachment ? Storage::disk('local')->temporaryUrl($this->attachment, Carbon::now()->addMinutes(5)) : null,
+            'attachment_url' => $this->attachment ? Storage::disk('local')->temporaryUrl($this->attachment, Carbon::now()->addHours(6)) : null,
             'sent_at' => $this->sent_at,
         ];
     }
