@@ -45,7 +45,31 @@ class WhatsappWApiChannel implements ChannelInterface
             throw new ConnectionException($statusJson['message'] ?? 'Failed to connect to Whatsapp WApi', $status->status());
         }
 
-        // setup webhhook
+        $webhookPaths = [
+            'update-webhook-connected',
+            'update-webhook-disconnected',
+            // 'update-webhook-delivery',
+            // 'update-webhook-received',
+            // 'update-webhook-message-status',
+            // 'update-webhook-chat-presence',
+        ];
+        $webhookResponses = [];
+
+        foreach($webhookPaths as $webhookPath){
+            $webhook = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $data['token'],
+            ])->post('https://api.w-api.app/v1/instance/' . $webhookPath, [
+                'value' => route('webhook.chat', ['id' => $connection->id]),
+            ]);
+            $webhookJson = $webhook->json();
+            $webhookResponses[] = [
+                'path' => $webhookPath,
+                'response' => $webhookJson,
+                'status_code' => $webhook->status(),
+            ];
+        }
+
+        Log::info('Whatsapp WApi webhooks setup response', ['connection' => $connection, 'responses' => $webhookResponses]);
 
         if($statusJson['connected'] === true){
             $connection->update([
