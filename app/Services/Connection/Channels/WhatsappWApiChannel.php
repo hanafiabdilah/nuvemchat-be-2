@@ -2,12 +2,14 @@
 
 namespace App\Services\Connection\Channels;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class WhatsappWApiChannel implements ChannelInterface
 {
@@ -25,6 +27,10 @@ class WhatsappWApiChannel implements ChannelInterface
             'instance_id' => ['required', 'string'],
             'token' => ['required', 'string'],
         ])->validate();
+
+        if(Connection::where('channel', Channel::WhatsappWApi)->where('credentials->instance_id', $data['instance_id'])->exists()) {
+            throw ValidationException::withMessages(['instance_id' => 'The instance_id has already been taken.']);
+        }
 
         $connection->update([
             'status' => Status::Pending,

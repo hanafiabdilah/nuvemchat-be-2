@@ -2,10 +2,12 @@
 
 namespace App\Services\Connection\Channels;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use Exception;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Telegram\Bot\Api;
 use Telegram\Bot\Exceptions\TelegramResponseException;
@@ -26,6 +28,10 @@ class TelegramChannel implements ChannelInterface
         validator($data, [
             'token' => ['required', 'string'],
         ])->validate();
+
+        if(Connection::where('channel', Channel::Telegram)->where('credentials->token', $data['token'])->exists()) {
+            throw ValidationException::withMessages(['token' => 'The provided token is already in use for another connection.']);
+        }
 
         try {
             $telegram = new Api($data['token']);
