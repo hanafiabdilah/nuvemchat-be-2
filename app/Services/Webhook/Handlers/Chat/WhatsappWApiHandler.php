@@ -103,6 +103,10 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 $this->handleDelivery($connection, $payload);
                 break;
 
+            case 'webhookStatus':
+                $this->handleStatus($connection, $payload);
+                break;
+
             default:
                 throw new \Exception('Event not supported');
                 break;
@@ -256,6 +260,59 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation));
+        }
+    }
+
+    private function handleStatus(Connection $connection, array $payload)
+    {
+        $fromMe = $payload['fromMe'] ?? false; // Only from me messages have delivery receipts in W-API
+        $column = match($payload['status'] ?? null) {
+            'DELIVERY' => 'sent_at',
+            'READ' => 'read_at',
+            default => null,
+        };
+
+        if(!$fromMe) {
+            Log::info('WhatsappWApiHandler: Ignoring status update for non-outgoing message');
+            return;
+        }
+
+        if(!$column) {
+            Log::info('WhatsappWApiHandler: Ignoring unsupported status update', ['status' => $payload['status'] ?? null]);
+            return;
+        }
+
+        $conversationId = $this->getConversationId($payload);
+        $messageId = $this->getMessageId($payload);
+
+        if (!$conversationId || !$messageId){
+            Log::warning('WhatsappWApiHandler: Missing required data in status update payload', [
+                'conversation_id' => $conversationId,
+                'message_id' => $messageId,
+            ]);
+            return;
+        }
+
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId) {
+            $conversation = Conversation::where('connection_id', $connection->id)
+                ->where('external_id', $conversationId)
+                ->first();
+
+            if(!$conversation){
+                Log::warning('WhatsappWApiHandler: Conversation not found for status update', [
+                    'conversation_id' => $conversationId,
+                    'connection_id' => $connection->id,
+                ]);
+                return;
+            }
+
+            return $conversation->messages()->where('external_id', $messageId)->lockForUpdate()->first();
+        });
+
+        if($message){
+            $message->update([
+                $column => isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment']) : Carbon::now(),
+            ]);
         }
     }
 
