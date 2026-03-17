@@ -24,6 +24,8 @@ class MessageResource extends JsonResource
             'body' => $this->body,
             'attachment_url' => $this->attachment ? Storage::disk('local')->temporaryUrl($this->attachment, Carbon::now()->addHours(6)) : null,
             'sent_at' => $this->sent_at,
+            'delivery_at' => $this->delivery_at,
+            'read_at' => $this->read_at,
         ];
     }
 }
