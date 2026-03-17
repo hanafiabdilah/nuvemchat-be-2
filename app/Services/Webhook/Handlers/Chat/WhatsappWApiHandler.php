@@ -290,9 +290,8 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
-        $message = Message::whereHas('conversation', function($query) use ($connection, $payload) {
-            $query->where('connection_id', $connection->id)
-                ->where('external_id', $this->getConversationId($payload));
+        $message = Message::whereHas('conversation', function($query) use ($connection) {
+            $query->where('connection_id', $connection->id);
         })->where('external_id', $messageId)->first();
 
         if(!$message){
