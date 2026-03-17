@@ -119,6 +119,7 @@ class TelegramHandler implements ChatHandlerInterface
                 'message_type' => $messageType,
                 'body' => $this->getMessageBody($payload),
                 'sent_at' => $this->getMessageSentAt($payload),
+                'delivery_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
             ]);
         });
