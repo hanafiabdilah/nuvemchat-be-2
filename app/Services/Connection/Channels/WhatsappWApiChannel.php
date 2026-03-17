@@ -8,6 +8,7 @@ use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 
 class WhatsappWApiChannel implements ChannelInterface
 {
@@ -22,7 +23,7 @@ class WhatsappWApiChannel implements ChannelInterface
     public function connect(Connection $connection, array $data)
     {
         validator($data, [
-            'instance_id' => ['required', 'string'],
+            'instance_id' => ['required', 'string', Rule::unique('connections', 'credentials->instance_id')],
             'token' => ['required', 'string'],
         ])->validate();
 
