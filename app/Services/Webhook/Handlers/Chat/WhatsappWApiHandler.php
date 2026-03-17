@@ -268,7 +268,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $messageId = $this->getMessageId($payload);
         $fromMe = $payload['fromMe'] ?? false; // Only from me messages have delivery receipts in W-API
         $column = match($payload['status'] ?? null) {
-            'DELIVERY' => 'sent_at',
+            'DELIVERY' => 'delivery_at',
             'READ' => 'read_at',
             default => null,
         };
@@ -302,7 +302,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         }
 
         $message->update([
-            $column => isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment']) : Carbon::now(),
+            $column => isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment'] / 1000) : Carbon::now(),
         ]);
     }
 
