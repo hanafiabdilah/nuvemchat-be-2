@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConnectionUpdated;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
+use App\Events\MessageUpdated;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -304,6 +305,8 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $message->update([
             $column => isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment'] / 1000) : Carbon::now(),
         ]);
+
+        broadcast(new MessageUpdated($message));
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
