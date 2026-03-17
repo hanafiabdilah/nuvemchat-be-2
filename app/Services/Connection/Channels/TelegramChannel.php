@@ -2,6 +2,7 @@
 
 namespace App\Services\Connection\Channels;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
