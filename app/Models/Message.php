@@ -17,8 +17,8 @@ class Message extends Model
         'body',
         'attachment',
         'sent_at',
+        'delivery_at',
         'read_at',
-        'external_read_at',
         'meta',
         'error'
     ];
@@ -27,8 +27,8 @@ class Message extends Model
         'sender_type' => SenderType::class,
         'message_type' => MessageType::class,
         'sent_at' => 'timestamp',
+        'delivery_at' => 'timestamp',
         'read_at' => 'timestamp',
-        'external_read_at' => 'timestamp',
         'meta' => 'array',
     ];
 
