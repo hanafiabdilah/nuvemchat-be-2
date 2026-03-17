@@ -72,7 +72,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
     public function getContactUsername(array $payload): ?string
     {
-        return $payload['sender']['senderLid'] ?? null;
+        return $payload['sender']['id'] ?? null;
     }
 
     public function getContactExternalId(array $payload): ?string
