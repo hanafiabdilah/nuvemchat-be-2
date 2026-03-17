@@ -36,16 +36,13 @@ class ConversationController extends Controller
         ]);
     }
 
-    public function messages(Request $request, int $id)
+    public function messages(int $id)
     {
-        $page = $request->query('page', 1);
-        $per_page = min($request->query('per_page', 100), 1000);
-
         $conversation = Conversation::whereHas('connection', function($q){
             $q->where('user_id', Auth::id());
         })->findOrFail($id);
 
-        $messages = $conversation->messages()->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->paginate($per_page, ['*'], 'page', $page);
+        $messages = $conversation->messages()->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->cursorPaginate(10);
 
         return MessageResource::collection($messages)->response();
     }
