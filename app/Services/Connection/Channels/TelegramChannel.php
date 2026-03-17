@@ -6,7 +6,6 @@ use App\Enums\Connection\Status;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use Exception;
-use Illuminate\Validation\Rule;
 use InvalidArgumentException;
 use Telegram\Bot\Api;
 use Telegram\Bot\Exceptions\TelegramResponseException;
@@ -25,7 +24,7 @@ class TelegramChannel implements ChannelInterface
     public function connect(Connection $connection, array $data): void
     {
         validator($data, [
-            'token' => ['required', 'string', Rule::unique('connections', 'credentials->token')],
+            'token' => ['required', 'string'],
         ])->validate();
 
         try {
