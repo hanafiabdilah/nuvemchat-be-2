@@ -141,6 +141,11 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
     private function handleReceived(Connection $connection, array $payload)
     {
+        if($payload['isGroup'] ?? false) {
+            Log::info('WhatsappWApiHandler: Skipping group message');
+            return;
+        }
+
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
