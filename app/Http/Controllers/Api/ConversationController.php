@@ -25,7 +25,7 @@ class ConversationController extends Controller
 
         return response()->json([
             'data' => ConversationResource::collection($conversations),
-            'server_time' => now()->toDateTimeString(),
+            'server_time' => now()->toIso8601String(),
         ]);
     }
 
