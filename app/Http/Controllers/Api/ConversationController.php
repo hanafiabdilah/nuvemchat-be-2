@@ -15,13 +15,18 @@ use Illuminate\Validation\ValidationException;
 
 class ConversationController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
+        $since = $request->input('since');
+
         $conversations = Conversation::with('contact')->whereHas('connection', function($q){
             $q->where('user_id', Auth::id());
-        })->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
+        })->where('updated_at', '>', $since)->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
 
-        return ConversationResource::collection($conversations)->response();
+        return response()->json([
+            'data' => ConversationResource::collection($conversations),
+            'server_time' => now()->toDateTimeString(),
+        ]);
     }
 
     public function show(int $id)
