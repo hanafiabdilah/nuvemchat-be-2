@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConversationResource;
@@ -51,7 +52,7 @@ class ConversationController extends Controller
             $q->where('user_id', Auth::id());
         })->findOrFail($id);
 
-        $conversation->messages()->whereNull('read_at')->update(['read_at' => now()]);
+        $conversation->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->update(['read_at' => now()]);
         broadcast(new ConversationUpdated($conversation));
 
         return response()->json([
