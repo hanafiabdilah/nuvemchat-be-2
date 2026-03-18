@@ -18,7 +18,7 @@ class ConversationController extends Controller
     {
         $conversations = Conversation::with('contact')->whereHas('connection', function($q){
             $q->where('user_id', Auth::id());
-        })->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->cursorPaginate(50);
+        })->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->cursorPaginate(1);
 
         return response()->json([
             'data' => $conversations->toResourceCollection(ConversationResource::class),
@@ -42,7 +42,7 @@ class ConversationController extends Controller
             $q->where('user_id', Auth::id());
         })->findOrFail($id);
 
-        $messages = $conversation->messages()->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->cursorPaginate(50);
+        $messages = $conversation->messages()->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->cursorPaginate(1);
 
         return MessageResource::collection($messages)->response();
     }
