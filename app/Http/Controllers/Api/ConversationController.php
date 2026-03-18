@@ -20,9 +20,7 @@ class ConversationController extends Controller
             $q->where('user_id', Auth::id());
         })->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->cursorPaginate(1);
 
-        return response()->json([
-            'data' => $conversations->toResourceCollection(ConversationResource::class),
-        ]);
+        return ConversationResource::collection($conversations)->response();
     }
 
     public function show(int $id)
