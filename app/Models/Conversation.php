@@ -14,7 +14,7 @@ class Conversation extends Model
     ];
 
     protected $casts = [
-        'last_message_at' => 'timestamp',
+        'last_message_at' => 'datetime',
     ];
 
     public function getLastMessageAttribute()
