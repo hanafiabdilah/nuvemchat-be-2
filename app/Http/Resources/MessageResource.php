@@ -27,6 +27,7 @@ class MessageResource extends JsonResource
             'delivery_at' => $this->delivery_at,
             'read_at' => $this->read_at,
             'created_at' => $this->created_at->timestamp,
+            'updated_at' => $this->updated_at->timestamp,
         ];
     }
 }
