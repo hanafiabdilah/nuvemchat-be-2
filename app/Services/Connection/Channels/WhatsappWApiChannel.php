@@ -28,7 +28,7 @@ class WhatsappWApiChannel implements ChannelInterface
             'token' => ['required', 'string'],
         ])->validate();
 
-        if(Connection::where('channel', Channel::WhatsappWApi)->where('credentials->instance_id', $data['instance_id'])->exists()) {
+        if(Connection::where('id', '!=', $connection->id)->where('channel', Channel::WhatsappWApi)->where('credentials->instance_id', $data['instance_id'])->exists()) {
             throw ValidationException::withMessages(['instance_id' => 'The instance_id has already been taken.']);
         }
 

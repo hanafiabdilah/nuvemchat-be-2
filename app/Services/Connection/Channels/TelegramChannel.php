@@ -29,7 +29,7 @@ class TelegramChannel implements ChannelInterface
             'token' => ['required', 'string'],
         ])->validate();
 
-        if(Connection::where('channel', Channel::Telegram)->where('credentials->token', $data['token'])->exists()) {
+        if(Connection::where('id', '!=', $connection->id)->where('channel', Channel::Telegram)->where('credentials->token', $data['token'])->exists()) {
             throw ValidationException::withMessages(['token' => 'The provided token is already in use for another connection.']);
         }
 
