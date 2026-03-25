@@ -35,6 +35,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     public function getMessageBody(array $payload): ?string
     {
         return $payload['msgContent']['conversation']
+            ?? $payload['msgContent']['extendedTextMessage']['text']
             ?? $payload['msgContent']['audioMessage']['caption']
             ?? $payload['msgContent']['imageMessage']['caption']
             ?? $payload['msgContent']['videoMessage']['caption']
@@ -44,9 +45,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
     public function getMessageType(array $payload): MessageType
     {
-        if (isset($payload['msgContent']['conversation'])) {
+        if (isset($payload['msgContent']['conversation']) || isset($payload['msgContent']['extendedTextMessage'])) {
             return MessageType::Text;
-        } elseif (isset($payload['msgContent']['audioMessage'])) {
+        }  elseif (isset($payload['msgContent']['audioMessage'])) {
             return MessageType::Audio;
         } elseif (isset($payload['msgContent']['imageMessage'])) {
             return MessageType::Image;
