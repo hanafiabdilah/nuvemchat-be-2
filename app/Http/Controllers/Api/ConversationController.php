@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
+use App\Events\MessageReceived;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConversationResource;
 use App\Http\Resources\MessageResource;
@@ -77,6 +78,7 @@ class ConversationController extends Controller
             $message = $messageService->sendMessage($conversation, $request->all());
 
             broadcast(new ConversationUpdated($conversation));
+            broadcast(new MessageReceived($message));
 
             return response()->json([
                 'data' => new MessageResource($message),
