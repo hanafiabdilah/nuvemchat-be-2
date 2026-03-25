@@ -243,10 +243,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 return;
             }
 
-            if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
-
-            return $conversation->messages()->create([
+            return $conversation->messages()->updateOrCreate([
                 'external_id' => $messageId,
+            ], [
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => $messageType,
                 'body' => $this->getMessageBody($payload),
