@@ -267,7 +267,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     private function handleStatus(Connection $connection, array $payload)
     {
         $messageId = $this->getMessageId($payload);
-        $fromMe = $payload['fromMe'] ?? false; // Only from me messages have delivery receipts in W-API
+        // $fromMe = $payload['fromMe'] ?? false; // Only from me messages have delivery receipts in W-API
         $column = match($payload['status'] ?? null) {
             'DELIVERY' => 'delivery_at',
             'READ' => 'read_at',
@@ -281,10 +281,10 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
-        if(!$fromMe) {
-            Log::info('WhatsappWApiHandler: Ignoring status update for non-outgoing message');
-            return;
-        }
+        // if(!$fromMe) {
+        //     Log::info('WhatsappWApiHandler: Ignoring status update for non-outgoing message');
+        //     return;
+        // }
 
         if(!$column) {
             Log::info('WhatsappWApiHandler: Ignoring unsupported status update', ['status' => $payload['status'] ?? null]);
