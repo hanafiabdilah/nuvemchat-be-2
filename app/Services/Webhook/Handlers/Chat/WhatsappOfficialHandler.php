@@ -98,11 +98,20 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
             if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
-            $conversation = Conversation::whereIn('status', [Status::Active, Status::Pending])->firstOrCreate([
-                'contact_id' => $contact->id,
-                'connection_id' => $connection->id,
-                'external_id'   => $conversationId,
-            ]);
+            $conversation = Conversation::where('external_id', $conversationId)
+                ->where('contact_id', $contact->id)
+                ->where('connection_id', $connection->id)
+                ->whereIn('status', [Status::Active, Status::Pending])
+                ->first();
+
+            if (!$conversation) {
+                $conversation = Conversation::create([
+                    'contact_id'    => $contact->id,
+                    'connection_id' => $connection->id,
+                    'external_id'   => $conversationId,
+                    'status'        => Status::Pending,
+                ]);
+            }
 
             return $conversation->messages()->updateOrCreate([
                 'external_id' => $messageId,

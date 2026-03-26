@@ -175,11 +175,20 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
             if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
-            $conversation = Conversation::whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])->firstOrCreate([
-                'contact_id' => $contact->id,
-                'connection_id' => $connection->id,
-                'external_id'   => $conversationId,
-            ]);
+            $conversation = Conversation::where('external_id', $conversationId)
+                ->where('contact_id', $contact->id)
+                ->where('connection_id', $connection->id)
+                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
+                ->first();
+
+            if (!$conversation) {
+                $conversation = Conversation::create([
+                    'contact_id'    => $contact->id,
+                    'connection_id' => $connection->id,
+                    'external_id'   => $conversationId,
+                    'status'        => ConversationStatus::Pending,
+                ]);
+            }
 
             if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
 
