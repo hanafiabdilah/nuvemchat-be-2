@@ -3,6 +3,7 @@
 namespace App\Services\Webhook\Handlers\Chat;
 
 use App\Enums\Connection\Status;
+use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConnectionUpdated;
@@ -174,7 +175,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
             if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
-            $conversation = Conversation::firstOrCreate([
+            $conversation = Conversation::whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])->firstOrCreate([
                 'contact_id' => $contact->id,
                 'connection_id' => $connection->id,
                 'external_id'   => $conversationId,

@@ -2,6 +2,7 @@
 
 namespace App\Services\Webhook\Handlers\Chat;
 
+use App\Enums\Conversation\Status;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
@@ -106,7 +107,7 @@ class TelegramHandler implements ChatHandlerInterface
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
             if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
-            $conversation = Conversation::firstOrCreate([
+            $conversation = Conversation::whereIn('status', [Status::Active, Status::Pending])->firstOrCreate([
                 'contact_id' => $contact->id,
                 'connection_id' => $connection->id,
                 'external_id'   => $conversationId,
