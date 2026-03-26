@@ -120,4 +120,26 @@ class ConversationController extends Controller
             'message' => 'Conversation accepted',
         ]);
     }
+
+    public function resolve(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('user_id', Auth::id());
+        })->findOrFail($id);
+
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $conversation->status = Status::Resolved;
+        $conversation->save();
+
+        broadcast(new ConversationUpdated($conversation));
+
+        return response()->json([
+            'message' => 'Conversation resolved',
+        ]);
+    }
 }
