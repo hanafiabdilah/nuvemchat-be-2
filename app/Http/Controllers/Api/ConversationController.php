@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Conversation\Status;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
@@ -72,6 +73,12 @@ class ConversationController extends Controller
             $q->where('user_id', Auth::id());
         })->findOrFail($id);
 
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
         $messageService = new MessageService();
 
         try {
@@ -90,6 +97,7 @@ class ConversationController extends Controller
                 'message' => 'Failed to send message',
             ], 500);
         }
-
     }
+
+    // public function
 }
