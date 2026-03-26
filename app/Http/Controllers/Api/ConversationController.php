@@ -99,5 +99,25 @@ class ConversationController extends Controller
         }
     }
 
-    // public function
+    public function accept(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('user_id', Auth::id());
+        })->findOrFail($id);
+
+        if($conversation->status !== Status::Pending){
+            return response()->json([
+                'message' => 'Conversation is not pending',
+            ], 400);
+        }
+
+        $conversation->status = Status::Active;
+        $conversation->save();
+
+        broadcast(new ConversationUpdated($conversation));
+
+        return response()->json([
+            'message' => 'Conversation accepted',
+        ]);
+    }
 }

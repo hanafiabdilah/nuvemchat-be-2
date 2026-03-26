@@ -23,6 +23,7 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
     Route::post('/conversations/{id}/messages', [ConversationController::class, 'sendMessage']);
     Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
+    Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
 
     Route::get('/connections', [ConnectionController::class, 'index']);
     Route::post('/connections', [ConnectionController::class, 'store']);
