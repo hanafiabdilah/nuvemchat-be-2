@@ -199,7 +199,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             }
 
             broadcast(new MessageReceived($message));
-            broadcast(new ConversationUpdated($message->conversation));
+            broadcast(new ConversationUpdated($message->conversation->wasRecentlyCreated ? $message->conversation->load('contact') : $message->conversation));
         }
     }
 
