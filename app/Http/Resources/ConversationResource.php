@@ -22,6 +22,7 @@ class ConversationResource extends JsonResource
         return [
             'id' => $this->id,
             'connection_id' => $this->connection_id,
+            'status' => $this->status->value,
             'last_message' => $message,
             'last_message_at' => $this->last_message_at->timestamp,
             'unread' => $this->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->count(),
