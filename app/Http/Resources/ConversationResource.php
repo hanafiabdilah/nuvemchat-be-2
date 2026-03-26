@@ -16,10 +16,13 @@ class ConversationResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        $message = new MessageResource($this->last_message);
+        $message->withoutAttachmentUrl = true;
+
         return [
             'id' => $this->id,
             'connection_id' => $this->connection_id,
-            'last_message' => $this->last_message->toResource(MessageResource::class),
+            'last_message' => $message,
             'last_message_at' => $this->last_message_at->timestamp,
             'unread' => $this->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->count(),
             'contact' => ContactResource::make($this->whenLoaded('contact')),

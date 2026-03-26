@@ -9,6 +9,8 @@ use Illuminate\Support\Facades\Storage;
 
 class MessageResource extends JsonResource
 {
+    public bool $withoutAttachmentUrl = false;
+
     /**
      * Transform the resource into an array.
      *
@@ -22,7 +24,9 @@ class MessageResource extends JsonResource
             'sender_type' => $this->sender_type,
             'message_type' => $this->message_type,
             'body' => $this->body,
-            'attachment_url' => $this->attachment ? Storage::disk('local')->temporaryUrl($this->attachment, Carbon::now()->addMonths(6)) : null,
+            'attachment_url' => $this->when(!$this->withoutAttachmentUrl, fn() =>
+                $this->attachment ? Storage::disk('local')->temporaryUrl($this->attachment, Carbon::now()->addMonths(6)) : null
+            ),
             'sent_at' => $this->sent_at,
             'delivery_at' => $this->delivery_at,
             'read_at' => $this->read_at,
