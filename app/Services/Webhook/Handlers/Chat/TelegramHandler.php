@@ -104,6 +104,7 @@ class TelegramHandler implements ChatHandlerInterface
 
         $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
+            if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
             $conversation = Conversation::firstOrCreate([
                 'contact_id' => $contact->id,
@@ -176,6 +177,72 @@ class TelegramHandler implements ChatHandlerInterface
         $message->update([
             'attachment' => $mediaPath,
         ]);
+    }
+
+    private function savePhotoProfile(Contact $contact, Connection $connection, array $payload)
+    {
+        $response = Http::get("https://api.telegram.org/bot{$connection->credentials['token']}/getUserProfilePhotos", [
+            'user_id' => $contact->external_id,
+        ]);
+
+        if ($response->failed()){
+            Log::warning('TelegramHandler: Failed to fetch profile photos', [
+                'contact_id' => $contact->id,
+                'response_status' => $response->status(),
+                'response_body' => $response->body(),
+            ]);
+
+            return;
+        }
+
+        $photos = $response->json('result.photos');
+
+        if (empty($photos)) {
+            Log::info('TelegramHandler: No profile photos found for contact', [
+                'contact_id' => $contact->id,
+            ]);
+
+            return;
+        }
+
+        $photo = $photos[0][count($photos[0]) - 1]; // Get the highest resolution photo
+
+        $fileResponse = Http::get("https://api.telegram.org/bot{$connection->credentials['token']}/getFile", [
+            'file_id' => $photo['file_id'],
+        ]);
+
+        if ($fileResponse->failed()){
+            Log::warning('TelegramHandler: Failed to fetch profile photo file info', [
+                'contact_id' => $contact->id,
+                'response_status' => $fileResponse->status(),
+                'response_body' => $fileResponse->body(),
+            ]);
+
+            return;
+        }
+
+        $filePath = $fileResponse->json('result.file_path');
+        $fileUrl = "https://api.telegram.org/file/bot{$connection->credentials['token']}/{$filePath}";
+        $extension = $this->getExtensionFromFilePath($filePath);
+
+        if(!$fileUrl || !$extension) {
+            Log::warning('TelegramHandler: Invalid file URL or extension for profile photo', [
+                'contact_id' => $contact->id,
+                'file_url' => $fileUrl,
+                'extension' => $extension,
+            ]);
+
+            return;
+        }
+
+        $photoPath = 'profile_photos/' . $contact->id . '_' . uniqid() . '.' . $extension;
+        Storage::disk('local')->put($photoPath, Http::get($fileUrl)->body());
+
+        $contact->update([
+            'photo_profile' => $photoPath,
+        ]);
+
+        dd($contact);
     }
 
     private function getExtensionFromFilePath(string $filePath): ?string

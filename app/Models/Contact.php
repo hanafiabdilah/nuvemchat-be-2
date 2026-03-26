@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Events\ContactCreated;
 use Illuminate\Database\Eloquent\Model;
 
 class Contact extends Model
@@ -11,6 +12,7 @@ class Contact extends Model
         'external_id',
         'name',
         'username',
+        'photo_profile',
         'meta'
     ];
 

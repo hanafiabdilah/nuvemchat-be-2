@@ -95,6 +95,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
 
         $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
+            if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
             $conversation = Conversation::firstOrCreate([
                 'contact_id' => $contact->id,
@@ -157,6 +158,11 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
         $message->update([
             'attachment' => $mediaPath,
         ]);
+    }
+
+    private function savePhotoProfile(Contact $contact, Connection $connection, array $payload)
+    {
+        return;
     }
 
     private function getExtensionFromMimeType(string $mimeType): ?string

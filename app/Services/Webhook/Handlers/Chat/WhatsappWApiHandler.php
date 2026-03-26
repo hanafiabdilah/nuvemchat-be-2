@@ -172,6 +172,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
         $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
+            if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
             $conversation = Conversation::firstOrCreate([
                 'contact_id' => $contact->id,
@@ -398,6 +399,50 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             ]);
 
             $message->update([
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function savePhotoProfile(Contact $contact, Connection $connection, array $payload)
+    {
+        $profilePicture = $payload['sender']['profilePicture'] ?? null;
+
+        if (!$profilePicture) {
+            Log::info('WhatsappWApiHandler: No profile photo found for contact', [
+                'contact_id' => $contact->id,
+            ]);
+            return;
+        }
+
+        try {
+            $response = Http::timeout(30)->get($profilePicture);
+
+            if ($response->failed()) {
+                Log::error('WhatsappWApiHandler: Failed to download profile photo', [
+                    'contact_id' => $contact->id,
+                    'url' => $profilePicture,
+                ]);
+                return;
+            }
+
+            $extension = pathinfo(parse_url($profilePicture, PHP_URL_PATH), PATHINFO_EXTENSION) ?: 'jpg';
+            $photoPath = 'profile_photos/' . $contact->id . '_' . uniqid() . '.' . $extension;
+
+            Storage::disk('local')->put($photoPath, $response->body());
+
+            $contact->update([
+                'photo' => $photoPath,
+            ]);
+
+            Log::info('WhatsappWApiHandler: Profile photo saved successfully', [
+                'contact_id' => $contact->id,
+                'photo_path' => $photoPath,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('WhatsappWApiHandler: Failed to save profile photo', [
+                'contact_id' => $contact->id,
                 'error' => $e->getMessage(),
             ]);
         }
