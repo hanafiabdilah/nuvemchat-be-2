@@ -432,12 +432,12 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             Storage::disk('local')->put($photoPath, $response->body());
 
             $contact->update([
-                'photo' => $photoPath,
+                'photo_profile' => $photoPath,
             ]);
 
             Log::info('WhatsappWApiHandler: Profile photo saved successfully', [
                 'contact_id' => $contact->id,
-                'photo_path' => $photoPath,
+                'photo_profile' => $photoPath,
             ]);
 
         } catch (\Exception $e) {

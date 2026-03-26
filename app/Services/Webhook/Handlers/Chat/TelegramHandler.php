@@ -241,8 +241,6 @@ class TelegramHandler implements ChatHandlerInterface
         $contact->update([
             'photo_profile' => $photoPath,
         ]);
-
-        dd($contact);
     }
 
     private function getExtensionFromFilePath(string $filePath): ?string
