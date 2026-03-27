@@ -22,7 +22,7 @@ class Conversation extends Model
 
     public function getLastMessageAttribute()
     {
-        return $this->messages()->latest('created_at')->latest('id')->first();
+        return $this->messages()->whereNull('unsend_at')->latest('created_at')->latest('id')->first();
     }
 
     public function contact()
