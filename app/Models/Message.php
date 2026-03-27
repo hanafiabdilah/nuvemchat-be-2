@@ -19,8 +19,9 @@ class Message extends Model
         'sent_at',
         'delivery_at',
         'read_at',
+        'edited_at',
         'meta',
-        'error'
+        'error',
     ];
 
     protected $casts = [
@@ -29,6 +30,7 @@ class Message extends Model
         'sent_at' => 'timestamp',
         'delivery_at' => 'timestamp',
         'read_at' => 'timestamp',
+        'edited_at' => 'timestamp',
         'meta' => 'array',
     ];
 

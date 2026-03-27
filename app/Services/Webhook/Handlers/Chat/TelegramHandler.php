@@ -7,6 +7,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
+use App\Events\MessageUpdated;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -85,6 +86,30 @@ class TelegramHandler implements ChatHandlerInterface
             return;
         }
 
+        $event = null;
+
+        if(isset($payload['message'])){
+            $event = 'received';
+        }elseif(isset($payload['edited_message'])){
+            $event = 'edited';
+        }
+
+        switch ($event) {
+            case 'received':
+                $this->handleReceived($connection, $payload);
+                break;
+            case 'edited':
+                $this->handleEdited($connection, $payload);
+                break;
+            default:
+                throw new \Exception('Unsupported Telegram event type');
+                break;
+        }
+
+    }
+
+    private function handleReceived(Connection $connection, array $payload)
+    {
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
@@ -142,6 +167,45 @@ class TelegramHandler implements ChatHandlerInterface
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation->load('contact')));
         }
+    }
+
+    private function handleEdited(Connection $connection, array $payload)
+    {
+        $messageId = $payload['edited_message']['message_id'] ?? null;
+        $messageBody = $payload['edited_message']['text'] ?? $payload['edited_message']['caption'] ?? null;
+        $date = Carbon::createFromTimestamp($payload['edited_message']['edit_date'] ?? time());
+
+        if (!$messageId || !$messageBody){
+            Log::warning('TelegramHandler: Missing required data in payload', [
+                'message_id' => $messageId,
+                'message_body' => $messageBody,
+            ]);
+
+            return;
+        }
+
+        $message = Message::where('external_id', $messageId)
+            ->whereHas('conversation', function($query) use ($connection) {
+                $query->where('connection_id', $connection->id);
+            })
+            ->first();
+
+        if(!$message){
+            Log::warning('TelegramHandler: Edited message not found in database', [
+                'message_id' => $messageId,
+            ]);
+
+            return;
+        }
+
+        $message->update([
+            'body' => $messageBody,
+            'edited_at' => $date,
+            'meta' => $payload,
+        ]);
+
+        broadcast(new MessageUpdated($message));
+        broadcast(new ConversationUpdated($message->conversation));
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
