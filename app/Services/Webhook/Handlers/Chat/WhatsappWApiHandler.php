@@ -173,7 +173,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             ?? $payload['msgContent']['protocolMessage']['editedMessage']['videoMessage']['caption']
             ?? $payload['msgContent']['protocolMessage']['editedMessage']['documentMessage']['caption']
             ?? null;
-        $date = isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment'] / 1000) : Carbon::now();
+        $date = isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment']) : Carbon::now();
 
         if(!$messageId || !$messageBody) {
             Log::warning('WhatsappWApiHandler: Missing required data in payload', [
