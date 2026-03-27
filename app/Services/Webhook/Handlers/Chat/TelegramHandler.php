@@ -205,7 +205,10 @@ class TelegramHandler implements ChatHandlerInterface
         ]);
 
         broadcast(new MessageUpdated($message));
-        broadcast(new ConversationUpdated($message->conversation));
+
+        if($message->conversation->last_message_id == $message->id) {
+            broadcast(new ConversationUpdated($message->conversation));
+        }
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
