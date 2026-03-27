@@ -213,7 +213,41 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
     private function handleDeleted(Connection $connection, array $payload)
     {
+        $messageId = $payload['msgContent']['protocolMessage']['key']['id'] ?? null;
+        $date = isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment']) : Carbon::now();
 
+        if(!$messageId) {
+            Log::warning('WhatsappWApiHandler: Missing message ID in payload for deleted message', [
+                'message_id' => $messageId,
+            ]);
+
+            return;
+        }
+
+        $message = Message::where('external_id', $messageId)
+            ->whereHas('conversation', function($query) use ($connection) {
+                $query->where('connection_id', $connection->id);
+            })
+            ->first();
+
+        if(!$message){
+            Log::warning('WhatsappWApiHandler: Deleted message not found in database', [
+                'message_id' => $messageId,
+            ]);
+
+            return;
+        }
+
+        $message->update([
+            'unsend_at' => $date,
+            'meta' => $payload,
+        ]);
+
+        broadcast(new MessageUpdated($message));
+
+        if($message->conversation->last_message->id == $message->id) {
+            broadcast(new ConversationUpdated($message->conversation));
+        }
     }
 
     private function handleReceived(Connection $connection, array $payload)

@@ -20,6 +20,7 @@ class Message extends Model
         'delivery_at',
         'read_at',
         'edited_at',
+        'unsend_at',
         'meta',
         'error',
     ];
@@ -31,6 +32,7 @@ class Message extends Model
         'delivery_at' => 'timestamp',
         'read_at' => 'timestamp',
         'edited_at' => 'timestamp',
+        'unsend_at' => 'timestamp',
         'meta' => 'array',
     ];
 
