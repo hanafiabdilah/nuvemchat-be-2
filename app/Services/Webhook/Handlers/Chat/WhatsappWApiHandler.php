@@ -86,8 +86,13 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     public function handle(Connection $connection, array $payload)
     {
         $event = $payload['event'] ?? null;
+        $type = null;
 
         if(!$event) return;
+
+        if($event === 'webhookReceived' && isset($payload['msgContent']['protocolMessage']['type'])){
+            $type = $payload['msgContent']['protocolMessage']['type'];
+        }
 
         switch ($event) {
             case 'webhookConnected':
@@ -99,7 +104,19 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 break;
 
             case 'webhookReceived':
-                $this->handleReceived($connection, $payload);
+                switch ($type) {
+                    case 'REVOKE':
+                        $this->handleDeleted($connection, $payload);
+                        break;
+
+                    case 'MESSAGE_EDIT':
+                        $this->handleEdited($connection, $payload);
+                        break;
+
+                    default:
+                        $this->handleReceived($connection, $payload);
+                        break;
+                }
                 break;
 
             case 'webhookDelivery':
@@ -144,6 +161,59 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         Log::info('Whatsapp WAPI disconnected', ['connection' => $connection]);
 
         broadcast(new ConnectionUpdated($connection));
+    }
+
+    private function handleEdited(Connection $connection, array $payload)
+    {
+        $messageId = $payload['msgContent']['protocolMessage']['key']['id'] ?? null;
+        $messageBody = $payload['msgContent']['protocolMessage']['editedMessage']['conversation']
+            ?? $payload['msgContent']['protocolMessage']['editedMessage']['extendedTextMessage']['text']
+            ?? $payload['msgContent']['protocolMessage']['editedMessage']['audioMessage']['caption']
+            ?? $payload['msgContent']['protocolMessage']['editedMessage']['imageMessage']['caption']
+            ?? $payload['msgContent']['protocolMessage']['editedMessage']['videoMessage']['caption']
+            ?? $payload['msgContent']['protocolMessage']['editedMessage']['documentMessage']['caption']
+            ?? null;
+        $date = isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment'] / 1000) : Carbon::now();
+
+        if(!$messageId || !$messageBody) {
+            Log::warning('WhatsappWApiHandler: Missing required data in payload', [
+                'message_id' => $messageId,
+                'message_body' => $messageBody,
+            ]);
+
+            return;
+        }
+
+        $message = Message::where('external_id', $messageId)
+            ->whereHas('conversation', function($query) use ($connection) {
+                $query->where('connection_id', $connection->id);
+            })
+            ->first();
+
+        if(!$message){
+            Log::warning('WhatsappWApiHandler: Edited message not found in database', [
+                'message_id' => $messageId,
+            ]);
+
+            return;
+        }
+
+        $message->update([
+            'body' => $messageBody,
+            'edited_at' => $date,
+            'meta' => $payload,
+        ]);
+
+        broadcast(new MessageUpdated($message));
+
+        if($message->conversation->last_message->id == $message->id) {
+            broadcast(new ConversationUpdated($message->conversation));
+        }
+    }
+
+    private function handleDeleted(Connection $connection, array $payload)
+    {
+
     }
 
     private function handleReceived(Connection $connection, array $payload)
