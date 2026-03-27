@@ -206,7 +206,7 @@ class TelegramHandler implements ChatHandlerInterface
 
         broadcast(new MessageUpdated($message));
 
-        if($message->conversation->last_message_id == $message->id) {
+        if($message->conversation->last_message->id == $message->id) {
             broadcast(new ConversationUpdated($message->conversation));
         }
     }
