@@ -39,4 +39,9 @@ class Conversation extends Model
     {
         return $this->hasMany(Message::class);
     }
+
+    public function tags()
+    {
+        return $this->belongsToMany(Tag::class, 'conversation_tags');
+    }
 }

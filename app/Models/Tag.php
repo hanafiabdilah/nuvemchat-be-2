@@ -11,4 +11,9 @@ class Tag extends Model
         'name',
         'color',
     ];
+
+    public function conversations()
+    {
+        return $this->belongsToMany(Conversation::class, 'conversation_tags');
+    }
 }

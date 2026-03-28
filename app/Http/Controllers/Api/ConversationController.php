@@ -142,4 +142,21 @@ class ConversationController extends Controller
             'message' => 'Conversation resolved',
         ]);
     }
+
+    public function tag(int $id, Request $request)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('user_id', Auth::id());
+        })->findOrFail($id);
+
+        $tags = $request->input('tags', []);
+
+        $conversation->tags()->sync($tags);
+
+        broadcast(new ConversationUpdated($conversation));
+
+        return response()->json([
+            'message' => 'Conversation tags updated',
+        ]);
+    }
 }
