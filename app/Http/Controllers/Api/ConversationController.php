@@ -143,7 +143,7 @@ class ConversationController extends Controller
         ]);
     }
 
-    public function tag(int $id, Request $request)
+    public function syncTags(int $id, Request $request)
     {
         $conversation = Conversation::whereHas('connection', function($q){
             $q->where('user_id', Auth::id());

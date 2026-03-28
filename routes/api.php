@@ -26,6 +26,7 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
     Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
     Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
+    Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
 
     Route::get('/connections', [ConnectionController::class, 'index']);
     Route::post('/connections', [ConnectionController::class, 'store']);
