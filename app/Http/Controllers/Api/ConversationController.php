@@ -150,6 +150,12 @@ class ConversationController extends Controller
             $q->where('user_id', Auth::id());
         })->findOrFail($id);
 
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
         $tags = $request->input('tags', []);
 
         $validTagIds = Tag::where('user_id', Auth::id())
