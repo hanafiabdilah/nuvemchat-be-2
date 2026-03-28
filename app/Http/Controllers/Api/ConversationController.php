@@ -10,6 +10,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\ConversationResource;
 use App\Http\Resources\MessageResource;
 use App\Models\Conversation;
+use App\Models\Tag;
 use App\Services\Message\MessageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -151,7 +152,12 @@ class ConversationController extends Controller
 
         $tags = $request->input('tags', []);
 
-        $conversation->tags()->sync($tags);
+        $validTagIds = Tag::where('user_id', Auth::id())
+            ->whereIn('id', $tags)
+            ->pluck('id')
+            ->toArray();
+
+        $conversation->tags()->sync($validTagIds);
 
         broadcast(new ConversationUpdated($conversation));
 
