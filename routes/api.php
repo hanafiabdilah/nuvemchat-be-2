@@ -30,13 +30,14 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
     Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
 
+    Route::get('/connections', [ConnectionController::class, 'index']);
+    Route::get('/tags', [TagController::class, 'index']);
+
     Route::middleware(EnsureOwner::class)->group(function(){
-        Route::get('/connections', [ConnectionController::class, 'index']);
         Route::post('/connections', [ConnectionController::class, 'store']);
         Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect']);
         Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey']);
 
-        Route::get('/tags', [TagController::class, 'index']);
         Route::post('/tags', [TagController::class, 'store']);
         Route::put('/tags/{id}', [TagController::class, 'update']);
         Route::delete('/tags/{id}', [TagController::class, 'destroy']);
