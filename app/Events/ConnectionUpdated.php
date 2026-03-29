@@ -34,7 +34,7 @@ class ConnectionUpdated implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('workspace-channel.' . $this->conn->user_id),
+            new Channel('tenant-channel.' . $this->conn->tenant_id),
         ];
     }
 

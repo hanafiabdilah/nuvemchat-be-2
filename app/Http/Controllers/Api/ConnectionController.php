@@ -71,7 +71,7 @@ class ConnectionController extends Controller
 
     public function generateApiKey(int $id)
     {
-        $connection = Connection::where('user_id', request()->user()->id)->findOrFail($id);
+        $connection = Connection::where('tenant_id', request()->user()->tenant_id)->findOrFail($id);
         $this->connectionService->generateApiKey($connection);
 
         return response()->json([
