@@ -41,6 +41,12 @@ class AgentController extends Controller
     {
         $user = request()->user()->tenant->users()->findOrFail($request->id);
 
+        if($user->role === 'owner'){
+            return response()->json([
+                'message' => 'Owner cannot be updated',
+            ], 403);
+        }
+
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email,' . $user->id],
@@ -62,6 +68,13 @@ class AgentController extends Controller
     public function destroy(int $id)
     {
         $user = request()->user()->tenant->users()->findOrFail($id);
+
+        if($user->role === 'owner'){
+            return response()->json([
+                'message' => 'Owner cannot be deleted',
+            ], 403);
+        }
+
         $user->delete();
 
         return response()->json([
