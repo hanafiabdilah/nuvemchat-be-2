@@ -22,7 +22,7 @@ class ConnectionController extends Controller
 
     public function index()
     {
-        $connections = request()->user()->tenant()->connections()->get();
+        $connections = request()->user()->tenant->connections()->get();
 
         return response()->json([
             'data' => $connections->toResourceCollection(ConnectionResource::class),
@@ -37,7 +37,7 @@ class ConnectionController extends Controller
             'color' => ['nullable', 'hex_color', 'max:7'],
         ]);
 
-        $connection = $request->user()->tenant()->connections()->create($validated);
+        $connection = $request->user()->tenant->connections()->create($validated);
 
         return response()->json([
             'message' => 'Connection created successfully',
@@ -47,7 +47,7 @@ class ConnectionController extends Controller
 
     public function connect(int $id, Request $request)
     {
-        $connection = request()->user()->tenant()->connections()->findOrFail($id);
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
 
         try {
             $this->connectionService->connect($connection, $request->all());
@@ -71,7 +71,7 @@ class ConnectionController extends Controller
 
     public function generateApiKey(int $id)
     {
-        $connection = request()->user()->tenant()->connections()->findOrFail($id);
+        $connection = Connection::where('user_id', request()->user()->id)->findOrFail($id);
         $this->connectionService->generateApiKey($connection);
 
         return response()->json([
