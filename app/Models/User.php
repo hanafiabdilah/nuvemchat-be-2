@@ -51,6 +51,19 @@ class User extends Authenticatable
         ];
     }
 
+    protected static function boot()
+    {
+        parent::boot();
+
+        static::created(function ($user) {
+            if($user->role === 'owner'){
+                $tenant = $user->tenant()->create([]);
+                $user->tenant_id = $tenant->id;
+                $user->save();
+            }
+        });
+    }
+
     public function connections()
     {
         return $this->hasMany(Connection::class);
@@ -64,5 +77,10 @@ class User extends Authenticatable
     public function tags()
     {
         return $this->hasMany(Tag::class);
+    }
+
+    public function tenant()
+    {
+        return $this->hasOne(Tenant::class);
     }
 }
