@@ -11,7 +11,15 @@ class ContactController extends Controller
 {
     public function index(Request $request)
     {
-        $contacts = Contact::where('tenant_id', $request->user()->tenant_id)->paginate(50);
+        $per_page = $request->query('per_page', 50);
+        $search = $request->query('search');
+
+        $contacts = Contact::where('tenant_id', $request->user()->tenant_id)
+            ->when($search, function ($query, $search) {
+                $query->where('name', 'like', "%{$search}%")
+                      ->orWhere('username', 'like', "%{$search}%");
+            })
+            ->paginate($per_page);
 
         return ContactResource::collection($contacts);
     }
