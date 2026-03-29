@@ -23,7 +23,7 @@ class ConversationController extends Controller
         $since = $request->input('since');
 
         $conversations = Conversation::with('contact')->whereHas('connection', function($q){
-            $q->where('user_id', Auth::id());
+            $q->where('tenant_id', Auth::user()->tenant_id);
         })->where('updated_at', '>', $since)->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
 
         return response()->json([
@@ -35,7 +35,7 @@ class ConversationController extends Controller
     public function show(int $id)
     {
         $conversation = Conversation::with('contact')->whereHas('connection', function($q){
-            $q->where('user_id', Auth::id());
+            $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
         return response()->json([
@@ -46,7 +46,7 @@ class ConversationController extends Controller
     public function messages(int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('user_id', Auth::id());
+            $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
         $messages = $conversation->messages()->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->get();
@@ -57,7 +57,7 @@ class ConversationController extends Controller
     public function read(int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('user_id', Auth::id());
+            $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
         $conversation->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->update(['read_at' => now()]);
@@ -71,7 +71,7 @@ class ConversationController extends Controller
     public function sendMessage(Request $request, int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('user_id', Auth::id());
+            $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
         if($conversation->status !== Status::Active){
@@ -103,7 +103,7 @@ class ConversationController extends Controller
     public function accept(int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('user_id', Auth::id());
+            $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
         if($conversation->status !== Status::Pending){
@@ -125,7 +125,7 @@ class ConversationController extends Controller
     public function resolve(int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('user_id', Auth::id());
+            $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
         if($conversation->status !== Status::Active){
@@ -147,7 +147,7 @@ class ConversationController extends Controller
     public function syncTags(int $id, Request $request)
     {
         $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('user_id', Auth::id());
+            $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
         if($conversation->status !== Status::Active){

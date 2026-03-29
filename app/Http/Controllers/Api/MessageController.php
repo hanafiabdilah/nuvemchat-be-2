@@ -16,7 +16,7 @@ class MessageController extends Controller
 
         $messages = Message::whereHas('conversation', function($q){
             $q->whereHas('connection', function($q){
-                $q->where('user_id', Auth::id());
+                $q->where('tenant_id', Auth::user()->tenant_id);
             });
         })->where('updated_at', '>', $since)->orderBy('sent_at', 'DESC')->orderBy('id', 'DESC')->get();
 
