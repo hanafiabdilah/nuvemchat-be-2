@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\UserResource;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -29,7 +30,7 @@ class AuthController extends Controller
 
         return response()->json([
             'access_token' => $token,
-            'user' => $user,
+            'user' => $user->toResource(UserResource::class),
         ]);
     }
 }
