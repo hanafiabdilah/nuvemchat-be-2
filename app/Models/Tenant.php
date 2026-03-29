@@ -19,4 +19,9 @@ class Tenant extends Model
     {
         return $this->hasMany(Tag::class);
     }
+
+    public function connections()
+    {
+        return $this->hasMany(Connection::class);
+    }
 }

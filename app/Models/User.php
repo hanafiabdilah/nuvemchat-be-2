@@ -52,11 +52,6 @@ class User extends Authenticatable
         ];
     }
 
-    public function connections()
-    {
-        return $this->hasMany(Connection::class);
-    }
-
     public function contacts()
     {
         return $this->hasMany(Contact::class);

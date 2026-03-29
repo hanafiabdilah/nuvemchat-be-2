@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 class Connection extends Model
 {
     protected $fillable = [
-        'user_id',
+        'tenant_id',
         'channel',
         'name',
         'color',
