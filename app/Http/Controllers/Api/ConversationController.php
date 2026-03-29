@@ -60,6 +60,12 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
         $conversation->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->update(['read_at' => now()]);
         broadcast(new ConversationUpdated($conversation));
 
@@ -73,6 +79,12 @@ class ConversationController extends Controller
         $conversation = Conversation::whereHas('connection', function($q){
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
+
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
 
         if($conversation->status !== Status::Active){
             return response()->json([
@@ -129,6 +141,12 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
         if($conversation->status !== Status::Active){
             return response()->json([
                 'message' => 'Conversation is not active',
@@ -150,6 +168,12 @@ class ConversationController extends Controller
         $conversation = Conversation::whereHas('connection', function($q){
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
+
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
 
         if($conversation->status !== Status::Active){
             return response()->json([
