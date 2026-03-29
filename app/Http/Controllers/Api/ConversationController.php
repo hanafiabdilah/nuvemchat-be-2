@@ -158,7 +158,7 @@ class ConversationController extends Controller
 
         $tags = $request->input('tags', []);
 
-        $validTagIds = Tag::where('user_id', Auth::id())
+        $validTagIds = Tag::where('tenant_id', Auth::user()->tenant_id)
             ->whereIn('id', $tags)
             ->pluck('id')
             ->toArray();
