@@ -1,0 +1,71 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Resources\UserResource;
+use Illuminate\Http\Request;
+
+class AgentController extends Controller
+{
+    public function index()
+    {
+        $users = request()->user()->tenant->users()->get();
+
+        return response()->json([
+            'data' => $users->toResourceCollection(UserResource::class),
+        ]);
+    }
+
+    public function store(Request $request)
+    {
+        $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
+            'password' => ['required', 'string', 'min:8'],
+        ]);
+
+        $user = request()->user()->tenant->users()->create([
+            'name' => $request->name,
+            'email' => $request->email,
+            'password' => bcrypt($request->password),
+            'role' => 'agent',
+        ]);
+
+        return response()->json([
+            'message' => 'Agent created successfully',
+            'data' => $user->toResource(UserResource::class),
+        ], 201);
+    }
+
+    public function update(Request $request)
+    {
+        $user = request()->user()->tenant->users()->findOrFail($request->id);
+
+        $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email,' . $user->id],
+            'password' => ['nullable', 'string', 'min:8'],
+        ]);
+
+        $user->update([
+            'name' => $request->name,
+            'email' => $request->email,
+            'password' => $request->password ? bcrypt($request->password) : $user->password,
+        ]);
+
+        return response()->json([
+            'message' => 'Agent updated successfully',
+            'data' => $user->toResource(UserResource::class),
+        ], 200);
+    }
+
+    public function destroy(int $id)
+    {
+        $user = request()->user()->tenant->users()->findOrFail($id);
+        $user->delete();
+
+        return response()->json([
+            'message' => 'Agent deleted successfully',
+        ], 200);
+    }
+}

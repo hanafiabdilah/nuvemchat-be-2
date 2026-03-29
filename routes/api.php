@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AgentController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ConversationController;
@@ -37,6 +38,11 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::post('/tags', [TagController::class, 'store']);
     Route::put('/tags/{id}', [TagController::class, 'update']);
     Route::delete('/tags/{id}', [TagController::class, 'destroy']);
+
+    Route::get('/agents', [AgentController::class, 'index']);
+    Route::post('/agents', [AgentController::class, 'store']);
+    Route::put('/agents/{id}', [AgentController::class, 'update']);
+    Route::delete('/agents/{id}', [AgentController::class, 'destroy']);
 });
 
 Route::prefix('/v1')->middleware(Auth::class)->group(function(){
