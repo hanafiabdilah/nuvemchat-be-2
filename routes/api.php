@@ -3,6 +3,7 @@
 use App\Http\Controllers\AgentController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
+use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\TagController;
@@ -46,6 +47,8 @@ Route::middleware('auth:sanctum')->group(function(){
         Route::post('/agents', [AgentController::class, 'store']);
         Route::put('/agents/{id}', [AgentController::class, 'update']);
         Route::delete('/agents/{id}', [AgentController::class, 'destroy']);
+
+        Route::get('/contacts', [ContactController::class, 'index']);
     });
 });
 
