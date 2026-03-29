@@ -52,11 +52,6 @@ class User extends Authenticatable
         ];
     }
 
-    public function contacts()
-    {
-        return $this->hasMany(Contact::class);
-    }
-
     public function tenant()
     {
         return $this->belongsTo(Tenant::class);

@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 class Contact extends Model
 {
     protected $fillable = [
-        'user_id',
+        'tenant_id',
         'external_id',
         'name',
         'username',
@@ -20,7 +20,7 @@ class Contact extends Model
     {
         $contact = self::firstOrCreate([
             'external_id' => $externalId,
-            'user_id' => $connection->user_id,
+            'tenant_id' => $connection->tenant_id,
         ], [
             'name' => $name,
             'username' => $username,
@@ -29,9 +29,9 @@ class Contact extends Model
         return $contact;
     }
 
-    public function user()
+    public function tenant()
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(Tenant::class);
     }
 
     public function conversations()
