@@ -11,6 +11,7 @@ class Conversation extends Model
         'contact_id',
         'external_id',
         'connection_id',
+        'user_id', // agent
         'status',
         'last_message_at',
     ];
@@ -43,5 +44,10 @@ class Conversation extends Model
     public function tags()
     {
         return $this->belongsToMany(Tag::class, 'conversation_tags');
+    }
+
+    public function agent()
+    {
+        return $this->belongsTo(User::class, 'user_id');
     }
 }

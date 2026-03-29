@@ -112,6 +112,7 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        $conversation->user_id = Auth::id();
         $conversation->status = Status::Active;
         $conversation->save();
 
