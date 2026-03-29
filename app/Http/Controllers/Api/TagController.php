@@ -11,7 +11,7 @@ class TagController extends Controller
 {
     public function index()
     {
-        $tags = request()->user()->tags()->get();
+        $tags = Tag::where('tenant_id', request()->user()->tenant_id)->orderBy('created_at', 'DESC')->get();
 
         return response()->json([
             'data' => $tags->toResourceCollection(TagResource::class),
@@ -25,7 +25,7 @@ class TagController extends Controller
             'color' => ['nullable', 'hex_color', 'max:7'],
         ]);
 
-        $tag = request()->user()->tags()->create($validated);
+        $tag = Tag::create(array_merge($validated, ['tenant_id' => request()->user()->tenant_id]));
 
         return response()->json([
             'message' => 'Tag created successfully',
@@ -35,7 +35,7 @@ class TagController extends Controller
 
     public function update(int $id, Request $request)
     {
-        $tag = Tag::where('user_id', request()->user()->id)->findOrFail($id);
+        $tag = Tag::where('tenant_id', request()->user()->tenant_id)->findOrFail($id);
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:100'],
@@ -52,7 +52,7 @@ class TagController extends Controller
 
     public function destroy(int $id)
     {
-        $tag = Tag::where('user_id', request()->user()->id)->findOrFail($id);
+        $tag = Tag::where('tenant_id', request()->user()->tenant_id)->findOrFail($id);
 
         $tag->delete();
 

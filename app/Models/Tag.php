@@ -7,10 +7,15 @@ use Illuminate\Database\Eloquent\Model;
 class Tag extends Model
 {
     protected $fillable = [
-        'user_id',
+        'tenant_id',
         'name',
         'color',
     ];
+
+    public function tenant()
+    {
+        return $this->belongsTo(Tenant::class);
+    }
 
     public function conversations()
     {
