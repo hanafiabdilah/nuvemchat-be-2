@@ -85,6 +85,10 @@ class ConnectionController extends Controller
                 'message' => $th->getMessage(),
             ], $th->getHttpStatusCode());
         } catch (\Throwable $th) {
+            Log::error('Failed to check connection status', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
             return response()->json([
                 'message' => 'Failed to check connection',
             ], 500);
