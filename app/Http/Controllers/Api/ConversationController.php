@@ -60,7 +60,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if($conversation->user_id !== Auth::id()){
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
