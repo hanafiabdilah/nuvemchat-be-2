@@ -30,10 +30,10 @@ class ConnectionService
         $channel->connect($connection, $data);
     }
 
-    public function checkStatus(Connection $connection): string
+    public function checkStatus(Connection $connection): void
     {
         $channel = ChannelFactory::make($connection->channel);
-        return $channel->checkStatus($connection);
+        $channel->checkStatus($connection);
     }
 
     public function generateApiKey(Connection $connection): string
