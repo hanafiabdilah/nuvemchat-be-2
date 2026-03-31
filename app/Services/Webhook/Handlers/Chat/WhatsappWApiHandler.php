@@ -50,7 +50,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return MessageType::Text;
         }  elseif (isset($payload['msgContent']['audioMessage'])) {
             return MessageType::Audio;
-        } elseif (isset($payload['msgContent']['imageMessage'])) {
+        } elseif (isset($payload['msgContent']['imageMessage']) || isset($payload['msgContent']['stickerMessage'])) {
             return MessageType::Image;
         } elseif (isset($payload['msgContent']['videoMessage'])) {
             return MessageType::Video;
