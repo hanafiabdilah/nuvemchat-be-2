@@ -69,6 +69,28 @@ class ConnectionController extends Controller
         }
     }
 
+    public function checkStatus(int $id)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        try {
+            $this->connectionService->checkStatus($connection);
+
+            return response()->json([
+                'message' => 'Status checked successfully',
+                'data' => $connection->toResource(ConnectionResource::class),
+            ], 200);
+        } catch(ConnectionException $th){
+            return response()->json([
+                'message' => $th->getMessage(),
+            ], $th->getHttpStatusCode());
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => 'Failed to check connection',
+            ], 500);
+        }
+    }
+
     public function generateApiKey(int $id)
     {
         $connection = Connection::where('tenant_id', request()->user()->tenant_id)->findOrFail($id);

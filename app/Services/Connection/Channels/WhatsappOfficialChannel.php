@@ -44,4 +44,9 @@ class WhatsappOfficialChannel implements ChannelInterface
     {
 
     }
+
+    public function checkStatus(Connection $connection): void
+    {
+        //
+    }
 }

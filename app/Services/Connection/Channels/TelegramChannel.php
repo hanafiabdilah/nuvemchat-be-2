@@ -4,6 +4,7 @@ namespace App\Services\Connection\Channels;
 
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
+use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use Exception;
@@ -59,5 +60,29 @@ class TelegramChannel implements ChannelInterface
     public function disconnect(): void
     {
         //
+    }
+
+    public function checkStatus(Connection $connection): void
+    {
+        try {
+            $telegram = new Api($connection->credentials['token']);
+            $telegram->getMe();
+
+            $connection->update([
+                'status' => Status::Active,
+            ]);
+        } catch(TelegramResponseException $th){
+            $connection->update([
+                'status' => Status::Inactive,
+            ]);
+
+            throw new ConnectionException('Invalid Telegram Bot Token. Please check the credentials and try again.', 400);
+        } catch (\Throwable $th) {
+            $connection->update([
+                'status' => Status::Inactive,
+            ]);
+
+            throw new ConnectionException('An error occurred while checking the Telegram connection. Please try again later.', 500);
+        }
     }
 }

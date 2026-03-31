@@ -8,4 +8,5 @@ interface ChannelInterface
 {
     public function connect(Connection $connection, array $data);
     public function disconnect();
+    public function checkStatus(Connection $connection);
 }

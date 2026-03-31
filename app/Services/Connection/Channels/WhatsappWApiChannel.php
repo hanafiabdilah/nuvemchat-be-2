@@ -111,4 +111,31 @@ class WhatsappWApiChannel implements ChannelInterface
     {
         //
     }
+
+    public function checkStatus(Connection $connection): void
+    {
+        try {
+            $status = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->get('https://api.w-api.app/v1/instance/status-instance?instanceId=' . $connection->credentials['instance_id']);
+
+            $statusJson = $status->json();
+
+            if($status->failed()){
+                $connection->update([
+                    'status' => Status::Inactive,
+                ]);
+
+                Log::error('Whatsapp WApi status request failed', ['connection' => $connection, 'response' => $statusJson, 'status code' => $status->status()]);
+                throw new ConnectionException($statusJson['message'] ?? 'Failed to check Whatsapp WApi connection status', $status->status());
+            }
+        } catch (\Throwable $th) {
+            $connection->update([
+                'status' => Status::Inactive,
+            ]);
+
+            Log::error('An error occurred while checking Whatsapp WApi connection status', ['connection' => $connection, 'error' => $th]);
+            throw new ConnectionException('An error occurred while checking Whatsapp WApi connection status', 500);
+        }
+    }
 }
