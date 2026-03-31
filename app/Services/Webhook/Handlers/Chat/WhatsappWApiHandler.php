@@ -41,6 +41,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             ?? $payload['msgContent']['imageMessage']['caption']
             ?? $payload['msgContent']['videoMessage']['caption']
             ?? $payload['msgContent']['documentMessage']['caption']
+            ?? $payload['msgContent']['stickerMessage']['caption']
             ?? null;
     }
 
@@ -50,12 +51,14 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return MessageType::Text;
         }  elseif (isset($payload['msgContent']['audioMessage'])) {
             return MessageType::Audio;
-        } elseif (isset($payload['msgContent']['imageMessage']) || isset($payload['msgContent']['stickerMessage'])) {
+        } elseif (isset($payload['msgContent']['imageMessage'])) {
             return MessageType::Image;
         } elseif (isset($payload['msgContent']['videoMessage'])) {
             return MessageType::Video;
         } elseif (isset($payload['msgContent']['documentMessage'])) {
             return MessageType::Document;
+        } elseif (isset($payload['msgContent']['stickerMessage'])) {
+            return MessageType::Sticker;
         }
 
         return MessageType::Unsupported;
@@ -308,7 +311,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         });
 
         if($message){
-            if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
+            if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Sticker])) {
                 $this->handleMediaMessage($message, $payload, $messageType);
             }
 
@@ -370,7 +373,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         });
 
         if($message){
-            if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
+            if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Sticker])) {
                 $this->handleMediaMessage($message, $payload, $messageType);
             }
 
@@ -431,6 +434,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             MessageType::Image => 'imageMessage',
             MessageType::Video => 'videoMessage',
             MessageType::Document => 'documentMessage',
+            MessageType::Sticker => 'stickerMessage',
             default => null,
         };
 

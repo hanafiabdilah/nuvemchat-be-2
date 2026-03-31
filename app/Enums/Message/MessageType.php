@@ -9,5 +9,6 @@ enum MessageType: string
     case Video = 'video';
     case Audio = 'audio';
     case Document = 'document';
+    case Sticker = 'sticker';
     case Unsupported = 'unsupported';
 }
