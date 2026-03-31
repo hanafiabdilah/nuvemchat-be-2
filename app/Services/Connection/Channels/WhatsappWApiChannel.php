@@ -121,6 +121,8 @@ class WhatsappWApiChannel implements ChannelInterface
 
             $statusJson = $status->json();
 
+            Log::info('Whatsapp WApi status check response', ['connection' => $connection, 'response' => $statusJson, 'status code' => $status->status()]);
+
             if($status->failed()){
                 $connection->update([
                     'status' => Status::Inactive,
@@ -129,6 +131,10 @@ class WhatsappWApiChannel implements ChannelInterface
                 Log::error('Whatsapp WApi status request failed', ['connection' => $connection, 'response' => $statusJson, 'status code' => $status->status()]);
                 throw new ConnectionException($statusJson['message'] ?? 'Failed to check Whatsapp WApi connection status', $status->status());
             }
+
+            $connection->update([
+                'status' => $statusJson['connected'] === true ? Status::Active : Status::Inactive,
+            ]);
         } catch (\Throwable $th) {
             $connection->update([
                 'status' => Status::Inactive,
