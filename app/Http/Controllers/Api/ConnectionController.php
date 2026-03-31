@@ -9,6 +9,7 @@ use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
 use App\Services\Connection\ConnectionService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
