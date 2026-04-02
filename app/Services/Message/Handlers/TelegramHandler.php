@@ -10,6 +10,7 @@ use App\Services\Message\MessageHandlerInterface;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Telegram\Bot\Api;
 
 class TelegramHandler implements MessageHandlerInterface
@@ -92,7 +93,14 @@ class TelegramHandler implements MessageHandlerInterface
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
-             ]);
+            ]);
+
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, file_get_contents($data['image']->getRealPath()));
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
 
             return $message;
         } catch (\Throwable $th) {

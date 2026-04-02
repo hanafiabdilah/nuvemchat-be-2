@@ -100,6 +100,10 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
             Storage::disk('local')->put($mediaPath, $imageBase64);
 
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
             return $message;
         } catch (\Throwable $th) {
             Log::error('WhatsappWApiHandler: Failed to send image message', [
