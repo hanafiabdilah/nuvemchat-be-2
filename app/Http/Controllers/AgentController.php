@@ -117,7 +117,7 @@ class AgentController extends Controller
         }
 
         $validated = $request->validate([
-            'connection_ids' => ['required', 'array'],
+            'connection_ids' => ['nullable', 'array'],
             'connection_ids.*' => ['required', 'exists:connections,id'],
         ]);
 
