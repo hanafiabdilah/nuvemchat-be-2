@@ -89,6 +89,9 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             $responseArray = $response->json();
 
             Log::info('WhatsappWApiHandler: Image message sent', [
+                'image' => $data['image']->getClientOriginalName(),
+                'imageBase64Size' => strlen($imageBase64),
+                'imageBase64' => $imageBase64,
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
