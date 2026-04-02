@@ -132,7 +132,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webp|max:16384',
+            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
         ])->validate();
 
         $connection = $conversation->connection;
