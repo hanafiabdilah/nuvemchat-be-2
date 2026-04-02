@@ -138,17 +138,54 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         try {
-            // Store audio file temporarily
             $audioContent = file_get_contents($data['audio']->getRealPath());
-            $tempPath = 'temp/' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
-            Storage::disk('public')->put($tempPath, $audioContent);
+            $extension = strtolower($data['audio']->getClientOriginalExtension());
 
-            // Get public URL
-            $audioUrl = Storage::disk('public')->url($tempPath);
+            // Convert to OGG if not MP3 or OGG
+            if (!in_array($extension, ['mp3', 'ogg'])) {
+                Log::info('WhatsappWApiHandler: Converting audio to OGG', [
+                    'original_format' => $extension,
+                ]);
+
+                $inputPath = $data['audio']->getRealPath();
+                $outputPath = sys_get_temp_dir() . '/' . uniqid() . '.ogg';
+
+                // Convert using FFmpeg
+                $command = sprintf(
+                    'ffmpeg -i %s -c:a libopus -b:a 32k %s 2>&1',
+                    escapeshellarg($inputPath),
+                    escapeshellarg($outputPath)
+                );
+
+                exec($command, $output, $returnVar);
+
+                if ($returnVar !== 0 || !file_exists($outputPath)) {
+                    Log::error('WhatsappWApiHandler: Audio conversion failed', [
+                        'command' => $command,
+                        'output' => $output,
+                        'return_var' => $returnVar,
+                    ]);
+                    throw new Exception('Failed to convert audio format');
+                }
+
+                $audioContent = file_get_contents($outputPath);
+                $extension = 'ogg';
+                $mimeType = 'audio/ogg';
+
+                // Clean up temp file
+                @unlink($outputPath);
+            } else {
+                // Use original for MP3/OGG
+                $mimeType = $extension === 'mp3' ? 'audio/mpeg' : 'audio/ogg';
+            }
+
+            // Encode to base64 with data URI
+            $audioBase64 = base64_encode($audioContent);
+            $audioDataUri = 'data:' . $mimeType . ';base64,' . $audioBase64;
 
             Log::info('WhatsappWApiHandler: Sending audio', [
-                'url' => $audioUrl,
-                'extension' => $data['audio']->getClientOriginalExtension(),
+                'format' => $extension,
+                'mime_type' => $mimeType,
                 'size' => strlen($audioContent),
             ]);
 
@@ -156,7 +193,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
             ])->post('https://api.w-api.app/v1/message/send-audio?instanceId=' . $connection->credentials['instance_id'], [
                 'phone' => $conversation->external_id,
-                'audio' => $audioUrl,
+                'audio' => $audioDataUri,
             ]);
 
             $responseArray = $response->json();
@@ -176,16 +213,13 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'meta' => $responseArray,
             ]);
 
-            // Store the original audio content permanently
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
+            // Store the converted audio content
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
             Storage::disk('local')->put($mediaPath, $audioContent);
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
-
-            // Clean up temporary file
-            Storage::disk('public')->delete($tempPath);
 
             return $message;
         } catch (\Throwable $th) {
