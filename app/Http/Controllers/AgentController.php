@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Resources\ConnectionResource;
 use App\Http\Resources\UserResource;
 use Illuminate\Http\Request;
 
@@ -98,7 +99,7 @@ class AgentController extends Controller
         $connections = $agent->connections()->where('tenant_id', request()->user()->tenant_id)->get();
 
         return response()->json([
-            'data' => $connections,
+            'data' => $connections->toResourceCollection(ConnectionResource::class),
         ], 200);
     }
 
