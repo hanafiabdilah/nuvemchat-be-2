@@ -84,26 +84,6 @@ class AgentController extends Controller
     }
 
     /**
-     * Get connections assigned to an agent
-     */
-    public function getConnections(int $id)
-    {
-        $agent = request()->user()->tenant->users()->findOrFail($id);
-
-        if($agent->role === 'owner'){
-            return response()->json([
-                'message' => 'Owner has access to all connections',
-            ], 400);
-        }
-
-        $connections = $agent->connections()->where('tenant_id', request()->user()->tenant_id)->get();
-
-        return response()->json([
-            'data' => $connections->toResourceCollection(ConnectionResource::class),
-        ], 200);
-    }
-
-    /**
      * Sync connections for an agent
      */
     public function syncConnections(int $id, Request $request)
