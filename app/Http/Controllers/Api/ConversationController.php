@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Conversation\Status;
+use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
@@ -14,6 +15,7 @@ use App\Models\Tag;
 use App\Services\Message\MessageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class ConversationController extends Controller
@@ -108,6 +110,44 @@ class ConversationController extends Controller
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to send message',
+            ], 500);
+        }
+    }
+
+    public function sendImage(Request $request, int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $messageService = new MessageService();
+
+        try {
+            $message = $messageService->sendImage($conversation, $request->all());
+
+            broadcast(new ConversationUpdated($conversation));
+            broadcast(new MessageReceived($message));
+
+            return response()->json([
+                'data' => new MessageResource($message),
+            ]);
+        } catch(ValidationException $th){
+            throw $th;
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => 'Failed to send image',
             ], 500);
         }
     }

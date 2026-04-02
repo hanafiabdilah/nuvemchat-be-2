@@ -12,4 +12,10 @@ class MessageService
         $handler = MessageFactory::make($conversation->connection->channel, $data);
         return $handler->handleSendMessage($conversation, $data);
     }
+
+    public function sendImage(Conversation $conversation, array $data): ?Message
+    {
+        $handler = MessageFactory::make($conversation->connection->channel, $data);
+        return $handler->handleSendImage($conversation, $data);
+    }
 }

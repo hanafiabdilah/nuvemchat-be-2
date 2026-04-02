@@ -68,4 +68,9 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
             throw new Exception('Failed to send WhatsApp message');
         }
     }
+
+    public function handleSendImage(Conversation $conversation, array $data): ?Message
+    {
+        throw new Exception('Image sending not implemented for WhatsApp Official API');
+    }
 }

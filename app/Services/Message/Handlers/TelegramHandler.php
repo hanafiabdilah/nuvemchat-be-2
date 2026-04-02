@@ -64,4 +64,45 @@ class TelegramHandler implements MessageHandlerInterface
             throw new Exception('Failed to send Telegram message');
         }
     }
+
+    public function handleSendImage(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'image' => 'required|image|mimes:jpeg,png,jpg,gif|max:10240',
+            'message' => 'nullable|string',
+        ])->validate();
+
+        $connection = $conversation->connection;
+
+        try {
+            $telegram = new Api($connection->credentials['token']);
+            $response = $telegram->sendPhoto([
+                'chat_id' => $conversation->external_id,
+                'photo' => fopen($data['image']->getRealPath(), 'r'),
+                'caption' => $data['message'] ?? null,
+            ]);
+
+            $responseArray = $response->toArray();
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Image,
+                'body' => $data['message'] ?? null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'delivery_at' => $this->getMessageSentAt($responseArray),
+                'meta' => $responseArray,
+             ]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('TelegramHandler: Failed to send image message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send Telegram image message');
+        }
+    }
 }
