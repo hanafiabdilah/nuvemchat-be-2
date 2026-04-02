@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Connection\Channel;
+use App\Events\ConnectionUpdated;
 use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
@@ -54,6 +55,25 @@ class ConnectionController extends Controller
             'message' => 'Connection created successfully',
             'data' => $connection->toResource(ConnectionResource::class),
         ], 201);
+    }
+
+    public function update(int $id, Request $request)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:100'],
+            'color' => ['nullable', 'hex_color', 'max:7'],
+        ]);
+
+        $connection->update($validated);
+
+        broadcast(new ConnectionUpdated($connection));
+
+        return response()->json([
+            'message' => 'Connection updated successfully',
+            'data' => $connection->toResource(ConnectionResource::class),
+        ], 200);
     }
 
     public function connect(int $id, Request $request)

@@ -37,6 +37,7 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::middleware(EnsureOwner::class)->group(function(){
         Route::post('/connections', [ConnectionController::class, 'store']);
         Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect']);
+        Route::put('/connections/{id}', [ConnectionController::class, 'update']);
         Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus']);
         Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey']);
 
