@@ -138,19 +138,25 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         try {
-            // Get audio content and encode to base64
+            // Store audio file temporarily
             $audioContent = file_get_contents($data['audio']->getRealPath());
-            $audioBase64 = base64_encode($audioContent);
+            $tempPath = 'temp/' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
+            Storage::disk('public')->put($tempPath, $audioContent);
 
-            // Get mime type and create data URI format
-            $mimeType = $data['audio']->getMimeType();
-            $audioDataUri = 'data:' . $mimeType . ';base64,' . $audioBase64;
+            // Get public URL
+            $audioUrl = Storage::disk('public')->url($tempPath);
+
+            Log::info('WhatsappWApiHandler: Sending audio', [
+                'url' => $audioUrl,
+                'extension' => $data['audio']->getClientOriginalExtension(),
+                'size' => strlen($audioContent),
+            ]);
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
             ])->post('https://api.w-api.app/v1/message/send-audio?instanceId=' . $connection->credentials['instance_id'], [
                 'phone' => $conversation->external_id,
-                'audio' => $audioDataUri,
+                'audio' => $audioUrl,
             ]);
 
             $responseArray = $response->json();
@@ -170,13 +176,16 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'meta' => $responseArray,
             ]);
 
-            // Store the original audio content
+            // Store the original audio content permanently
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
             Storage::disk('local')->put($mediaPath, $audioContent);
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
+
+            // Clean up temporary file
+            Storage::disk('public')->delete($tempPath);
 
             return $message;
         } catch (\Throwable $th) {
