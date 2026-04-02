@@ -48,6 +48,8 @@ Route::middleware('auth:sanctum')->group(function(){
         Route::post('/agents', [AgentController::class, 'store']);
         Route::put('/agents/{id}', [AgentController::class, 'update']);
         Route::delete('/agents/{id}', [AgentController::class, 'destroy']);
+        Route::get('/agents/{id}/connections', [AgentController::class, 'getConnections']);
+        Route::post('/agents/{id}/connections', [AgentController::class, 'syncConnections']);
 
         Route::get('/contacts', [ContactController::class, 'index']);
     });

@@ -81,4 +81,55 @@ class AgentController extends Controller
             'message' => 'Agent deleted successfully',
         ], 200);
     }
+
+    /**
+     * Get connections assigned to an agent
+     */
+    public function getConnections(int $id)
+    {
+        $agent = request()->user()->tenant->users()->findOrFail($id);
+
+        if($agent->role === 'owner'){
+            return response()->json([
+                'message' => 'Owner has access to all connections',
+            ], 400);
+        }
+
+        $connections = $agent->connections()->where('tenant_id', request()->user()->tenant_id)->get();
+
+        return response()->json([
+            'data' => $connections,
+        ], 200);
+    }
+
+    /**
+     * Sync connections for an agent
+     */
+    public function syncConnections(int $id, Request $request)
+    {
+        $agent = request()->user()->tenant->users()->findOrFail($id);
+
+        if($agent->role === 'owner'){
+            return response()->json([
+                'message' => 'Cannot assign connections to owner. Owners have access to all connections.',
+            ], 400);
+        }
+
+        $validated = $request->validate([
+            'connection_ids' => ['required', 'array'],
+            'connection_ids.*' => ['required', 'exists:connections,id'],
+        ]);
+
+        // Verify all connections belong to the same tenant
+        $connections = request()->user()->tenant->connections()
+            ->whereIn('id', $validated['connection_ids'])
+            ->pluck('id');
+
+        // Sync connections (will add new ones and remove old ones)
+        $agent->connections()->sync($connections);
+
+        return response()->json([
+            'message' => 'Agent connections synchronized successfully',
+        ], 200);
+    }
 }

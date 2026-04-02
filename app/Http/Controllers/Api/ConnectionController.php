@@ -23,7 +23,17 @@ class ConnectionController extends Controller
 
     public function index()
     {
-        $connections = request()->user()->tenant->connections()->get();
+        $user = request()->user();
+
+        // Owner gets all connections, agents get only assigned connections
+        if ($user->role === 'owner') {
+            $connections = $user->tenant->connections()->get();
+        } else {
+            // Agent: only get connections they have access to
+            $connections = $user->connections()
+                ->where('tenant_id', $user->tenant_id)
+                ->get();
+        }
 
         return response()->json([
             'data' => $connections->toResourceCollection(ConnectionResource::class),

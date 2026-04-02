@@ -56,4 +56,12 @@ class User extends Authenticatable
     {
         return $this->belongsTo(Tenant::class);
     }
+
+    /**
+     * Get the connections that the user has access to (for agents).
+     */
+    public function connections()
+    {
+        return $this->belongsToMany(Connection::class)->withTimestamps();
+    }
 }

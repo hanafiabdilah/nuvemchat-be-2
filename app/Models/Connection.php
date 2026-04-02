@@ -23,4 +23,20 @@ class Connection extends Model
         'stauts' => Status::class,
         'credentials' => 'array',
     ];
+
+    /**
+     * Get the tenant that owns the connection.
+     */
+    public function tenant()
+    {
+        return $this->belongsTo(Tenant::class);
+    }
+
+    /**
+     * Get the users (agents) that have access to this connection.
+     */
+    public function users()
+    {
+        return $this->belongsToMany(User::class)->withTimestamps();
+    }
 }
