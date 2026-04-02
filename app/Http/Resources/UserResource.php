@@ -20,6 +20,7 @@ class UserResource extends JsonResource
             'email' => $this->email,
             'role' => $this->role,
             'tenant_id' => $this->tenant_id,
+            'connections' => ConnectionResource::collection($this->whenLoaded('connections')),
         ];
     }
 }

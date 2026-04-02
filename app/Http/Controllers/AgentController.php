@@ -10,9 +10,9 @@ class AgentController extends Controller
 {
     public function index()
     {
-        $users = request()->user()->tenant->users()->get();
+        $users = request()->user()->tenant->users()->with('connections')->get();
 
-        return response()->json([
+         return response()->json([
             'data' => $users->toResourceCollection(UserResource::class),
         ]);
     }
