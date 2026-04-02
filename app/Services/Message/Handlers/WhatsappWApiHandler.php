@@ -69,7 +69,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'image' => 'required|image|mimes:jpeg,png,jpg,gif|max:10240',
+            'image' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
             'message' => 'nullable|string',
         ])->validate();
 
