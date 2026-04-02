@@ -1,6 +1,6 @@
 <?php
 
-use App\Http\Controllers\AgentController;
+use App\Http\Controllers\Api\AgentController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
