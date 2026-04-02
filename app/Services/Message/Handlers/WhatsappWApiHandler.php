@@ -109,8 +109,9 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'meta' => $responseArray,
             ]);
 
+            // Store the original image content (not base64)
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, $imageBase64);
+            Storage::disk('local')->put($mediaPath, $imageContent);
 
             $message->update([
                 'attachment' => $mediaPath,
