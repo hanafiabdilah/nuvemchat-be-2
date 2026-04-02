@@ -76,22 +76,25 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         try {
-            $imageBase64 = base64_encode(file_get_contents($data['image']->getRealPath()));
+            // Get image content and encode to base64
+            $imageContent = file_get_contents($data['image']->getRealPath());
+            $imageBase64 = base64_encode($imageContent);
+
+            // Get mime type and create data URI format
+            $mimeType = $data['image']->getMimeType();
+            $imageDataUri = 'data:' . $mimeType . ';base64,' . $imageBase64;
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
             ])->post('https://api.w-api.app/v1/message/send-image?instanceId=' . $connection->credentials['instance_id'], [
                 'phone' => $conversation->external_id,
-                'image' => $imageBase64,
+                'image' => $imageDataUri,
                 'caption' => $data['message'] ?? null,
             ]);
 
             $responseArray = $response->json();
 
             Log::info('WhatsappWApiHandler: Image message sent', [
-                'image' => $data['image']->getClientOriginalName(),
-                'imageBase64Size' => strlen($imageBase64),
-                'imageBase64' => $imageBase64,
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
