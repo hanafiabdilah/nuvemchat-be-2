@@ -113,4 +113,50 @@ class TelegramHandler implements MessageHandlerInterface
             throw new Exception('Failed to send Telegram image message');
         }
     }
+
+    public function handleSendAudio(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus|max:16384',
+        ])->validate();
+
+        $connection = $conversation->connection;
+
+        try {
+            $telegram = new Api($connection->credentials['token']);
+            $response = $telegram->sendVoice([
+                'chat_id' => $conversation->external_id,
+                'voice' => fopen($data['audio']->getRealPath(), 'r'),
+            ]);
+
+            $responseArray = $response->toArray();
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Audio,
+                'body' => null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'delivery_at' => $this->getMessageSentAt($responseArray),
+                'meta' => $responseArray,
+            ]);
+
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, file_get_contents($data['audio']->getRealPath()));
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('TelegramHandler: Failed to send audio message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send Telegram audio message');
+        }
+    }
 }

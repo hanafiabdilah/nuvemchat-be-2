@@ -128,4 +128,65 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             throw new Exception('Failed to send WhatsApp image message');
         }
     }
+
+    public function handleSendAudio(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus|max:16384',
+        ])->validate();
+
+        $connection = $conversation->connection;
+
+        try {
+            // Get audio content and encode to base64
+            $audioContent = file_get_contents($data['audio']->getRealPath());
+            $audioBase64 = base64_encode($audioContent);
+
+            // Get mime type and create data URI format
+            $mimeType = $data['audio']->getMimeType();
+            $audioDataUri = 'data:' . $mimeType . ';base64,' . $audioBase64;
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/send-audio?instanceId=' . $connection->credentials['instance_id'], [
+                'phone' => $conversation->external_id,
+                'audio' => $audioDataUri,
+            ]);
+
+            $responseArray = $response->json();
+
+            Log::info('WhatsappWApiHandler: Audio message sent', [
+                'response' => $responseArray,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Audio,
+                'body' => null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'meta' => $responseArray,
+            ]);
+
+            // Store the original audio content
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, $audioContent);
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('WhatsappWApiHandler: Failed to send audio message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send WhatsApp audio message');
+        }
+    }
 }
