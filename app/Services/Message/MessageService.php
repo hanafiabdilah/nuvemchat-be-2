@@ -30,4 +30,10 @@ class MessageService
         $handler = MessageFactory::make($conversation->connection->channel, $data);
         return $handler->handleSendVideo($conversation, $data);
     }
+
+    public function sendDocument(Conversation $conversation, array $data): ?Message
+    {
+        $handler = MessageFactory::make($conversation->connection->channel, $data);
+        return $handler->handleSendDocument($conversation, $data);
+    }
 }

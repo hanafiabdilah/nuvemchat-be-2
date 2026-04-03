@@ -15,4 +15,5 @@ interface MessageHandlerInterface
     public function handleSendImage(Conversation $conversation, array $data): ?Message;
     public function handleSendAudio(Conversation $conversation, array $data): ?Message;
     public function handleSendVideo(Conversation $conversation, array $data): ?Message;
+    public function handleSendDocument(Conversation $conversation, array $data): ?Message;
 }

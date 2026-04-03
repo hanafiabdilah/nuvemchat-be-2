@@ -207,4 +207,56 @@ class TelegramHandler implements MessageHandlerInterface
             throw new Exception('Failed to send Telegram video message');
         }
     }
+
+    public function handleSendDocument(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'document' => 'required|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'message' => 'nullable|string',
+        ])->validate();
+
+        $connection = $conversation->connection;
+
+        try {
+            $telegram = new Api($connection->credentials['token']);
+
+            // Get original filename
+            $filename = $data['document']->getClientOriginalName();
+
+            $response = $telegram->sendDocument([
+                'chat_id' => $conversation->external_id,
+                'document' => fopen($data['document']->getRealPath(), 'r'),
+                'caption' => $data['message'] ?? null,
+            ]);
+
+            $responseArray = $response->toArray();
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Document,
+                'body' => $data['message'] ?? null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'delivery_at' => $this->getMessageSentAt($responseArray),
+                'meta' => array_merge($responseArray, ['filename' => $filename]),
+            ]);
+
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, file_get_contents($data['document']->getRealPath()));
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('TelegramHandler: Failed to send document message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send Telegram document message');
+        }
+    }
 }

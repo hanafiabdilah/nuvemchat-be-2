@@ -29,6 +29,7 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
     Route::post('/conversations/{id}/send-audio', [ConversationController::class, 'sendAudio']);
     Route::post('/conversations/{id}/send-video', [ConversationController::class, 'sendVideo']);
+    Route::post('/conversations/{id}/send-document', [ConversationController::class, 'sendDocument']);
     Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
     Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
     Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);

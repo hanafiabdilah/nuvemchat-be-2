@@ -312,4 +312,89 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             throw new Exception('Failed to send WhatsApp video message');
         }
     }
+
+    public function handleSendDocument(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'document' => 'required|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'message' => 'nullable|string',
+        ])->validate();
+
+        $connection = $conversation->connection;
+        $tempPublicPath = null;
+
+        try {
+            // Store document temporarily in public directory
+            $documentContent = file_get_contents($data['document']->getRealPath());
+            $tempFileName = 'temp_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
+            $tempPublicPath = 'documents/' . $tempFileName;
+
+            Storage::disk('public')->put($tempPublicPath, $documentContent);
+
+            // Generate public URL
+            $documentUrl = url('storage/' . $tempPublicPath);
+
+            // Get original filename
+            $filename = $data['document']->getClientOriginalName();
+
+            Log::info('WhatsappWApiHandler: Sending document via URL', [
+                'url' => $documentUrl,
+                'filename' => $filename,
+                'size' => strlen($documentContent),
+                'conversation_id' => $conversation->id,
+            ]);
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/send-document?instanceId=' . $connection->credentials['instance_id'], [
+                'phone' => $conversation->external_id,
+                'document' => $documentUrl,
+                'filename' => $filename,
+                'caption' => $data['message'] ?? null,
+            ]);
+
+            $responseArray = $response->json();
+
+            Log::info('WhatsappWApiHandler: Document message sent', [
+                'response' => $responseArray,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Document,
+                'body' => $data['message'] ?? null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'meta' => array_merge($responseArray, ['filename' => $filename]),
+            ]);
+
+            // Store the original document content permanently
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, $documentContent);
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            // Delete temporary public file
+            Storage::disk('public')->delete($tempPublicPath);
+
+            return $message;
+        } catch (\Throwable $th) {
+            // Clean up temporary file if exists
+            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
+                Storage::disk('public')->delete($tempPublicPath);
+            }
+
+            Log::error('WhatsappWApiHandler: Failed to send document message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send WhatsApp document message');
+        }
+    }
 }
