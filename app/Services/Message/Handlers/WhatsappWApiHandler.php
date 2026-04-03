@@ -294,7 +294,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             ]);
 
             // Delete temporary public file
-            // Storage::disk('public')->delete($tempPublicPath);
+            Storage::disk('public')->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
@@ -382,7 +382,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             ]);
 
             // Delete temporary public file
-            // Storage::disk('public')->delete($tempPublicPath);
+            Storage::disk('public')->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
