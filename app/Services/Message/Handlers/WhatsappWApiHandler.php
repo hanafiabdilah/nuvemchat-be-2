@@ -334,12 +334,14 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             // Generate public URL
             $documentUrl = url('storage/' . $tempPublicPath);
 
-            // Get original filename
+            // Get original filename and extension
             $filename = $data['document']->getClientOriginalName();
+            $extension = $data['document']->getClientOriginalExtension();
 
             Log::info('WhatsappWApiHandler: Sending document via URL', [
                 'url' => $documentUrl,
                 'filename' => $filename,
+                'extension' => $extension,
                 'size' => strlen($documentContent),
                 'conversation_id' => $conversation->id,
             ]);
@@ -349,7 +351,8 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             ])->post('https://api.w-api.app/v1/message/send-document?instanceId=' . $connection->credentials['instance_id'], [
                 'phone' => $conversation->external_id,
                 'document' => $documentUrl,
-                'filename' => $filename,
+                'fileName' => $filename,
+                'extension' => $extension,
                 'caption' => $data['message'] ?? null,
             ]);
 
