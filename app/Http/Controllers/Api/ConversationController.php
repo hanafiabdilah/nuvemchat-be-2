@@ -286,14 +286,19 @@ class ConversationController extends Controller
 
         broadcast(new ConversationUpdated($conversation));
 
-        // Send accept message
+        // Send accept message AFTER broadcasting conversation update
         $automatedMessageService = new AutomatedMessageService();
         $acceptMessage = $automatedMessageService->getAcceptMessage($conversation->connection, Auth::user());
 
         if ($acceptMessage) {
             try {
                 $messageService = new MessageService();
-                $messageService->sendMessage($conversation, ['message' => $acceptMessage]);
+                $acceptMsg = $messageService->sendMessage($conversation, ['message' => $acceptMessage]);
+
+                if ($acceptMsg) {
+                    broadcast(new MessageReceived($acceptMsg));
+                    broadcast(new ConversationUpdated($acceptMsg->conversation));
+                }
             } catch (\Throwable $th) {
                 Log::error('ConversationController: Failed to send accept message', [
                     'conversation_id' => $conversation->id,
@@ -329,10 +334,11 @@ class ConversationController extends Controller
         $automatedMessageService = new AutomatedMessageService();
         $closingMessage = $automatedMessageService->getClosingMessage($conversation->connection, Auth::user());
 
+        $closingMsg = null;
         if ($closingMessage) {
             try {
                 $messageService = new MessageService();
-                $messageService->sendMessage($conversation, ['message' => $closingMessage]);
+                $closingMsg = $messageService->sendMessage($conversation, ['message' => $closingMessage]);
             } catch (\Throwable $th) {
                 Log::error('ConversationController: Failed to send closing message', [
                     'conversation_id' => $conversation->id,
@@ -345,6 +351,12 @@ class ConversationController extends Controller
         $conversation->save();
 
         broadcast(new ConversationUpdated($conversation));
+
+        // Broadcast closing message AFTER conversation status update
+        if ($closingMsg) {
+            broadcast(new MessageReceived($closingMsg));
+            broadcast(new ConversationUpdated($closingMsg->conversation));
+        }
 
         return response()->json([
             'message' => 'Conversation resolved',

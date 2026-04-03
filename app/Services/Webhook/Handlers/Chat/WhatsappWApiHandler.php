@@ -280,7 +280,10 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
+        $isNewConversation = false;
+        $conversationForWelcome = null;
+
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
             if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
@@ -290,7 +293,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
                 ->first();
 
-            $isNewConversation = false;
             if (!$conversation) {
                 $conversation = Conversation::create([
                     'contact_id'    => $contact->id,
@@ -299,11 +301,12 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                     'status'        => ConversationStatus::Pending,
                 ]);
                 $isNewConversation = true;
+                $conversationForWelcome = $conversation;
             }
 
             if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
 
-            $message = $conversation->messages()->create([
+            return $conversation->messages()->create([
                 'external_id' => $messageId,
                 'sender_type' => SenderType::Incoming,
                 'message_type' => $messageType,
@@ -312,26 +315,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 'delivery_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
             ]);
-
-            // Send welcoming message if this is a new conversation
-            if ($isNewConversation) {
-                $automatedMessageService = new AutomatedMessageService();
-                $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
-
-                if ($welcomingMessage) {
-                    try {
-                        $messageService = new MessageService();
-                        $messageService->sendMessage($conversation, ['message' => $welcomingMessage]);
-                    } catch (\Throwable $th) {
-                        Log::error('WhatsappWApiHandler: Failed to send welcoming message', [
-                            'conversation_id' => $conversation->id,
-                            'error' => $th->getMessage(),
-                        ]);
-                    }
-                }
-            }
-
-            return $message;
         });
 
         if($message){
@@ -341,6 +324,29 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation->load('contact')));
+
+            // Send welcoming message AFTER broadcasting the main message
+            if ($isNewConversation && $conversationForWelcome) {
+                $automatedMessageService = new AutomatedMessageService();
+                $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
+
+                if ($welcomingMessage) {
+                    try {
+                        $messageService = new MessageService();
+                        $welcomeMsg = $messageService->sendMessage($conversationForWelcome, ['message' => $welcomingMessage]);
+
+                        if ($welcomeMsg) {
+                            broadcast(new MessageReceived($welcomeMsg));
+                            broadcast(new ConversationUpdated($welcomeMsg->conversation));
+                        }
+                    } catch (\Throwable $th) {
+                        Log::error('WhatsappWApiHandler: Failed to send welcoming message', [
+                            'conversation_id' => $conversationForWelcome->id,
+                            'error' => $th->getMessage(),
+                        ]);
+                    }
+                }
+            }
         }
     }
 

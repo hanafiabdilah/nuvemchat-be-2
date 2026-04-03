@@ -130,7 +130,10 @@ class TelegramHandler implements ChatHandlerInterface
             return;
         }
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
+        $isNewConversation = false;
+        $conversationForWelcome = null;
+
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
             if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
 
@@ -140,7 +143,6 @@ class TelegramHandler implements ChatHandlerInterface
                 ->whereIn('status', [Status::Active, Status::Pending])
                 ->first();
 
-            $isNewConversation = false;
             if (!$conversation) {
                 $conversation = Conversation::create([
                     'contact_id'    => $contact->id,
@@ -149,9 +151,10 @@ class TelegramHandler implements ChatHandlerInterface
                     'status'        => Status::Pending,
                 ]);
                 $isNewConversation = true;
+                $conversationForWelcome = $conversation;
             }
 
-            $message = $conversation->messages()->updateOrCreate([
+            return $conversation->messages()->updateOrCreate([
                 'external_id' => $messageId,
             ], [
                 'sender_type' => SenderType::Incoming,
@@ -161,26 +164,6 @@ class TelegramHandler implements ChatHandlerInterface
                 'delivery_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
             ]);
-
-            // Send welcoming message if this is a new conversation
-            if ($isNewConversation) {
-                $automatedMessageService = new AutomatedMessageService();
-                $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
-
-                if ($welcomingMessage) {
-                    try {
-                        $messageService = new MessageService();
-                        $messageService->sendMessage($conversation, ['message' => $welcomingMessage]);
-                    } catch (\Throwable $th) {
-                        Log::error('TelegramHandler: Failed to send welcoming message', [
-                            'conversation_id' => $conversation->id,
-                            'error' => $th->getMessage(),
-                        ]);
-                    }
-                }
-            }
-
-            return $message;
         });
 
         if($message){
@@ -190,6 +173,29 @@ class TelegramHandler implements ChatHandlerInterface
 
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation->load('contact')));
+
+            // Send welcoming message AFTER broadcasting the main message
+            if ($isNewConversation && $conversationForWelcome) {
+                $automatedMessageService = new AutomatedMessageService();
+                $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
+
+                if ($welcomingMessage) {
+                    try {
+                        $messageService = new MessageService();
+                        $welcomeMsg = $messageService->sendMessage($conversationForWelcome, ['message' => $welcomingMessage]);
+
+                        if ($welcomeMsg) {
+                            broadcast(new MessageReceived($welcomeMsg));
+                            broadcast(new ConversationUpdated($welcomeMsg->conversation));
+                        }
+                    } catch (\Throwable $th) {
+                        Log::error('TelegramHandler: Failed to send welcoming message', [
+                            'conversation_id' => $conversationForWelcome->id,
+                            'error' => $th->getMessage(),
+                        ]);
+                    }
+                }
+            }
         }
     }
 
