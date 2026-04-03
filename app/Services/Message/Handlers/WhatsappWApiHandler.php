@@ -262,6 +262,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             $responseArray = $response->json();
 
             Log::info('WhatsappWApiHandler: Video message sent', [
+                'response body' => $response->body(),
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
