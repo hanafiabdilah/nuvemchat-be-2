@@ -107,9 +107,39 @@ class WhatsappWApiChannel implements ChannelInterface
         ]);
     }
 
-    public function disconnect()
+    public function disconnect(Connection $connection): void
     {
-        //
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->get('https://api.w-api.app/v1/instance/disconnect?instanceId=' . $connection->credentials['instance_id']);
+
+            $responseJson = $response->json();
+
+            Log::info('Whatsapp WApi disconnect response', ['connection' => $connection, 'response' => $responseJson, 'status code' => $response->status()]);
+
+            if($response->failed()){
+                Log::warning('Whatsapp WApi disconnect request failed, but will update status to inactive anyway', [
+                    'connection' => $connection,
+                    'response' => $responseJson,
+                    'status code' => $response->status()
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::warning('An error occurred while disconnecting from Whatsapp WApi, but will update status to inactive anyway', [
+                'connection' => $connection,
+                'error' => $th->getMessage()
+            ]);
+        }
+
+        // Always update status to inactive, even if disconnect API call failed
+        // because the user's intent is to disconnect
+        $connection->update([
+            'status' => Status::Inactive,
+            'credentials' => array_merge($connection->credentials, [
+                'qr_code' => null,
+            ]),
+        ]);
     }
 
     public function checkStatus(Connection $connection): void

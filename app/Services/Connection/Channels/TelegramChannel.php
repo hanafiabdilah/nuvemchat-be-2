@@ -8,6 +8,7 @@ use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use Exception;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 use Telegram\Bot\Api;
@@ -57,9 +58,27 @@ class TelegramChannel implements ChannelInterface
         }
     }
 
-    public function disconnect(): void
+    public function disconnect(Connection $connection): void
     {
-        //
+        try {
+            $telegram = new Api($connection->credentials['token']);
+            $telegram->deleteWebhook();
+        } catch (TelegramResponseException $th) {
+            Log::warning('Failed to delete Telegram webhook, but will update status to inactive anyway', [
+                'connection' => $connection,
+                'error' => $th->getMessage()
+            ]);
+        } catch (\Throwable $th) {
+            Log::warning('An error occurred while disconnecting from Telegram, but will update status to inactive anyway', [
+                'connection' => $connection,
+                'error' => $th->getMessage()
+            ]);
+        }
+
+        // Always update status to inactive, even if webhook deletion failed
+        $connection->update([
+            'status' => Status::Inactive,
+        ]);
     }
 
     public function checkStatus(Connection $connection): void

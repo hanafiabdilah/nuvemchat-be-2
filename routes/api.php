@@ -44,6 +44,8 @@ Route::middleware('auth:sanctum')->group(function(){
         Route::put('/connections/{id}', [ConnectionController::class, 'update']);
         Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus']);
         Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey']);
+        Route::post('/connections/{id}/disconnect', [ConnectionController::class, 'disconnect']);
+        Route::delete('/connections/{id}', [ConnectionController::class, 'destroy']);
 
         Route::post('/tags', [TagController::class, 'store']);
         Route::put('/tags/{id}', [TagController::class, 'update']);

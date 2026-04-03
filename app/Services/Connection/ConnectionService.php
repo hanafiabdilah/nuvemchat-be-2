@@ -46,4 +46,27 @@ class ConnectionService
 
         return $key;
     }
+
+    public function disconnect(Connection $connection): void
+    {
+        $channel = ChannelFactory::make($connection->channel);
+        $channel->disconnect($connection);
+    }
+
+    public function delete(Connection $connection): void
+    {
+        // Disconnect first before deleting
+        try {
+            $this->disconnect($connection);
+        } catch (\Throwable $th) {
+            // Log the error but continue with deletion
+            \Illuminate\Support\Facades\Log::warning('Failed to disconnect before deleting connection', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
+        // Delete the connection
+        $connection->delete();
+    }
 }

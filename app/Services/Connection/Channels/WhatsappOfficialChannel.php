@@ -40,9 +40,13 @@ class WhatsappOfficialChannel implements ChannelInterface
         ]);
     }
 
-    public function disconnect()
+    public function disconnect(Connection $connection): void
     {
-
+        // WhatsApp Official API doesn't require explicit disconnect
+        // Just update the status
+        $connection->update([
+            'status' => Status::Inactive,
+        ]);
     }
 
     public function checkStatus(Connection $connection): void

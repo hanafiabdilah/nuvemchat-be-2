@@ -132,4 +132,49 @@ class ConnectionController extends Controller
             'data' => $connection->toResource(ConnectionResource::class),
         ], 200);
     }
+
+    public function disconnect(int $id)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        try {
+            $this->connectionService->disconnect($connection);
+
+            broadcast(new ConnectionUpdated($connection));
+
+            return response()->json([
+                'message' => 'Connection disconnected successfully',
+                'data' => $connection->toResource(ConnectionResource::class),
+            ], 200);
+        } catch(ConnectionException $th){
+            return response()->json([
+                'message' => $th->getMessage(),
+            ], $th->getHttpStatusCode());
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => 'Failed to disconnect connection',
+            ], 500);
+        }
+    }
+
+    public function destroy(int $id)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        try {
+            $this->connectionService->delete($connection);
+
+            return response()->json([
+                'message' => 'Connection deleted successfully',
+            ], 200);
+        } catch(ConnectionException $th){
+            return response()->json([
+                'message' => $th->getMessage(),
+            ], $th->getHttpStatusCode());
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => 'Failed to delete connection',
+            ], 500);
+        }
+    }
 }

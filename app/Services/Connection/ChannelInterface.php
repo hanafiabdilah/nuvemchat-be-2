@@ -7,6 +7,6 @@ use App\Models\Connection;
 interface ChannelInterface
 {
     public function connect(Connection $connection, array $data);
-    public function disconnect();
+    public function disconnect(Connection $connection): void;
     public function checkStatus(Connection $connection);
 }
