@@ -12,6 +12,8 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\AutomatedMessageService;
+use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -138,6 +140,7 @@ class TelegramHandler implements ChatHandlerInterface
                 ->whereIn('status', [Status::Active, Status::Pending])
                 ->first();
 
+            $isNewConversation = false;
             if (!$conversation) {
                 $conversation = Conversation::create([
                     'contact_id'    => $contact->id,
@@ -145,9 +148,10 @@ class TelegramHandler implements ChatHandlerInterface
                     'external_id'   => $conversationId,
                     'status'        => Status::Pending,
                 ]);
+                $isNewConversation = true;
             }
 
-            return $conversation->messages()->updateOrCreate([
+            $message = $conversation->messages()->updateOrCreate([
                 'external_id' => $messageId,
             ], [
                 'sender_type' => SenderType::Incoming,
@@ -157,6 +161,26 @@ class TelegramHandler implements ChatHandlerInterface
                 'delivery_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
             ]);
+
+            // Send welcoming message if this is a new conversation
+            if ($isNewConversation) {
+                $automatedMessageService = new AutomatedMessageService();
+                $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
+
+                if ($welcomingMessage) {
+                    try {
+                        $messageService = new MessageService();
+                        $messageService->sendMessage($conversation, ['message' => $welcomingMessage]);
+                    } catch (\Throwable $th) {
+                        Log::error('TelegramHandler: Failed to send welcoming message', [
+                            'conversation_id' => $conversation->id,
+                            'error' => $th->getMessage(),
+                        ]);
+                    }
+                }
+            }
+
+            return $message;
         });
 
         if($message){

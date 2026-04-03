@@ -177,4 +177,24 @@ class ConnectionController extends Controller
             ], 500);
         }
     }
+
+    public function updateAutomatedMessages(int $id, Request $request)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        $validated = $request->validate([
+            'welcoming_message' => ['nullable', 'string', 'max:1000'],
+            'accept_message' => ['nullable', 'string', 'max:1000'],
+            'closing_message' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $connection->update($validated);
+
+        broadcast(new ConnectionUpdated($connection));
+
+        return response()->json([
+            'message' => 'Automated messages updated successfully',
+            'data' => $connection->toResource(ConnectionResource::class),
+        ], 200);
+    }
 }

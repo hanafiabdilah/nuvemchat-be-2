@@ -12,9 +12,11 @@ use App\Http\Resources\ConversationResource;
 use App\Http\Resources\MessageResource;
 use App\Models\Conversation;
 use App\Models\Tag;
+use App\Services\AutomatedMessageService;
 use App\Services\Message\MessageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -284,6 +286,22 @@ class ConversationController extends Controller
 
         broadcast(new ConversationUpdated($conversation));
 
+        // Send accept message
+        $automatedMessageService = new AutomatedMessageService();
+        $acceptMessage = $automatedMessageService->getAcceptMessage($conversation->connection, Auth::user());
+
+        if ($acceptMessage) {
+            try {
+                $messageService = new MessageService();
+                $messageService->sendMessage($conversation, ['message' => $acceptMessage]);
+            } catch (\Throwable $th) {
+                Log::error('ConversationController: Failed to send accept message', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
+        }
+
         return response()->json([
             'message' => 'Conversation accepted',
         ]);
@@ -305,6 +323,22 @@ class ConversationController extends Controller
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
+        }
+
+        // Send closing message before resolving
+        $automatedMessageService = new AutomatedMessageService();
+        $closingMessage = $automatedMessageService->getClosingMessage($conversation->connection, Auth::user());
+
+        if ($closingMessage) {
+            try {
+                $messageService = new MessageService();
+                $messageService->sendMessage($conversation, ['message' => $closingMessage]);
+            } catch (\Throwable $th) {
+                Log::error('ConversationController: Failed to send closing message', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
         }
 
         $conversation->status = Status::Resolved;

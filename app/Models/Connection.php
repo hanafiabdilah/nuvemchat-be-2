@@ -16,6 +16,9 @@ class Connection extends Model
         'status',
         'credentials',
         'api_key',
+        'welcoming_message',
+        'accept_message',
+        'closing_message',
     ];
 
     protected $casts = [
