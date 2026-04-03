@@ -159,4 +159,52 @@ class TelegramHandler implements MessageHandlerInterface
             throw new Exception('Failed to send Telegram audio message');
         }
     }
+
+    public function handleSendVideo(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'message' => 'nullable|string',
+        ])->validate();
+
+        $connection = $conversation->connection;
+
+        try {
+            $telegram = new Api($connection->credentials['token']);
+            $response = $telegram->sendVideo([
+                'chat_id' => $conversation->external_id,
+                'video' => fopen($data['video']->getRealPath(), 'r'),
+                'caption' => $data['message'] ?? null,
+            ]);
+
+            $responseArray = $response->toArray();
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Video,
+                'body' => $data['message'] ?? null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'delivery_at' => $this->getMessageSentAt($responseArray),
+                'meta' => $responseArray,
+            ]);
+
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, file_get_contents($data['video']->getRealPath()));
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('TelegramHandler: Failed to send video message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send Telegram video message');
+        }
+    }
 }

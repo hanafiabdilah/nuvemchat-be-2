@@ -232,4 +232,67 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             throw new Exception('Failed to send WhatsApp audio message');
         }
     }
+
+    public function handleSendVideo(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'message' => 'nullable|string',
+        ])->validate();
+
+        $connection = $conversation->connection;
+
+        try {
+            // Get video content and encode to base64
+            $videoContent = file_get_contents($data['video']->getRealPath());
+            $videoBase64 = base64_encode($videoContent);
+
+            // Get mime type and create data URI format
+            $mimeType = $data['video']->getMimeType();
+            $videoDataUri = 'data:' . $mimeType . ';base64,' . $videoBase64;
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/send-video?instanceId=' . $connection->credentials['instance_id'], [
+                'phone' => $conversation->external_id,
+                'video' => $videoDataUri,
+                'caption' => $data['message'] ?? null,
+            ]);
+
+            $responseArray = $response->json();
+
+            Log::info('WhatsappWApiHandler: Video message sent', [
+                'response' => $responseArray,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Video,
+                'body' => $data['message'] ?? null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'meta' => $responseArray,
+            ]);
+
+            // Store the original video content (not base64)
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, $videoContent);
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('WhatsappWApiHandler: Failed to send video message', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send WhatsApp video message');
+        }
+    }
 }

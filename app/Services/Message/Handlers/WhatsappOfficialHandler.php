@@ -78,4 +78,9 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     {
         throw new Exception('Audio sending not implemented for WhatsApp Official API');
     }
+
+    public function handleSendVideo(Conversation $conversation, array $data): ?Message
+    {
+        throw new Exception('Video sending not implemented for WhatsApp Official API');
+    }
 }

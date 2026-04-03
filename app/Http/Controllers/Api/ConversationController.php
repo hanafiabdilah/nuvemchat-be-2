@@ -190,6 +190,44 @@ class ConversationController extends Controller
         }
     }
 
+    public function sendVideo(Request $request, int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $messageService = new MessageService();
+
+        try {
+            $message = $messageService->sendVideo($conversation, $request->all());
+
+            broadcast(new ConversationUpdated($conversation));
+            broadcast(new MessageReceived($message));
+
+            return response()->json([
+                'data' => new MessageResource($message),
+            ]);
+        } catch(ValidationException $th){
+            throw $th;
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => 'Failed to send video',
+            ], 500);
+        }
+    }
+
     public function accept(int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){

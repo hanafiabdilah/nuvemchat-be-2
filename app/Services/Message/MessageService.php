@@ -24,4 +24,10 @@ class MessageService
         $handler = MessageFactory::make($conversation->connection->channel, $data);
         return $handler->handleSendAudio($conversation, $data);
     }
+
+    public function sendVideo(Conversation $conversation, array $data): ?Message
+    {
+        $handler = MessageFactory::make($conversation->connection->channel, $data);
+        return $handler->handleSendVideo($conversation, $data);
+    }
 }
