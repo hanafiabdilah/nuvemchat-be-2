@@ -241,28 +241,36 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         ])->validate();
 
         $connection = $conversation->connection;
+        $tempPublicPath = null;
 
         try {
-            // Get video content and encode to base64
+            // Store video temporarily in public directory
             $videoContent = file_get_contents($data['video']->getRealPath());
-            $videoBase64 = base64_encode($videoContent);
+            $tempFileName = 'temp_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
+            $tempPublicPath = 'videos/' . $tempFileName;
 
-            // Get mime type and create data URI format
-            $mimeType = $data['video']->getMimeType();
-            $videoDataUri = 'data:' . $mimeType . ';base64,' . $videoBase64;
+            Storage::disk('public')->put($tempPublicPath, $videoContent);
+
+            // Generate public URL
+            $videoUrl = url('storage/' . $tempPublicPath);
+
+            Log::info('WhatsappWApiHandler: Sending video via URL', [
+                'url' => $videoUrl,
+                'size' => strlen($videoContent),
+                'conversation_id' => $conversation->id,
+            ]);
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
             ])->post('https://api.w-api.app/v1/message/send-video?instanceId=' . $connection->credentials['instance_id'], [
                 'phone' => $conversation->external_id,
-                'video' => $videoDataUri,
+                'video' => $videoUrl,
                 'caption' => $data['message'] ?? null,
             ]);
 
             $responseArray = $response->json();
 
             Log::info('WhatsappWApiHandler: Video message sent', [
-                'response body' => $response->body(),
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -277,7 +285,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'meta' => $responseArray,
             ]);
 
-            // Store the original video content (not base64)
+            // Store the original video content permanently
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
             Storage::disk('local')->put($mediaPath, $videoContent);
 
@@ -285,8 +293,16 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'attachment' => $mediaPath,
             ]);
 
+            // Delete temporary public file
+            Storage::disk('public')->delete($tempPublicPath);
+
             return $message;
         } catch (\Throwable $th) {
+            // Clean up temporary file if exists
+            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
+                Storage::disk('public')->delete($tempPublicPath);
+            }
+
             Log::error('WhatsappWApiHandler: Failed to send video message', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
