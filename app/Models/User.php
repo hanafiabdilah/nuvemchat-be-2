@@ -64,4 +64,12 @@ class User extends Authenticatable
     {
         return $this->belongsToMany(Connection::class)->withTimestamps();
     }
+
+    /**
+     * Get the user's quick messages.
+     */
+    public function quickMessages()
+    {
+        return $this->hasMany(QuickMessage::class);
+    }
 }

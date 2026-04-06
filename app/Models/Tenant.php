@@ -34,4 +34,9 @@ class Tenant extends Model
     {
         return $this->hasMany(Contact::class);
     }
+
+    public function quickMessages()
+    {
+        return $this->hasMany(QuickMessage::class);
+    }
 }

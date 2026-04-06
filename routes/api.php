@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\QuickMessageController;
 use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\V1\SendMessageController;
 use App\Http\Middleware\EnsureOwner;
@@ -37,6 +38,11 @@ Route::middleware('auth:sanctum')->group(function(){
 
     Route::get('/connections', [ConnectionController::class, 'index']);
     Route::get('/tags', [TagController::class, 'index']);
+
+    Route::get('/quick-messages', [QuickMessageController::class, 'index']);
+    Route::post('/quick-messages', [QuickMessageController::class, 'store']);
+    Route::put('/quick-messages/{id}', [QuickMessageController::class, 'update']);
+    Route::delete('/quick-messages/{id}', [QuickMessageController::class, 'destroy']);
 
     Route::middleware(EnsureOwner::class)->group(function(){
         Route::post('/connections', [ConnectionController::class, 'store']);
