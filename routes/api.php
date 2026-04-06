@@ -41,8 +41,8 @@ Route::middleware('auth:sanctum')->group(function(){
 
     Route::get('/quick-messages', [QuickMessageController::class, 'index']);
     Route::post('/quick-messages', [QuickMessageController::class, 'store']);
-    Route::put('/quick-messages/{id}', [QuickMessageController::class, 'update']);
-    Route::delete('/quick-messages/{id}', [QuickMessageController::class, 'destroy']);
+    Route::put('/quick-messages/{quick_message}', [QuickMessageController::class, 'update']);
+    Route::delete('/quick-messages/{quick_message}', [QuickMessageController::class, 'destroy']);
 
     Route::middleware(EnsureOwner::class)->group(function(){
         Route::post('/connections', [ConnectionController::class, 'store']);

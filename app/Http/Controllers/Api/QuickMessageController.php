@@ -46,10 +46,12 @@ class QuickMessageController extends Controller
     /**
      * Update the specified quick message.
      */
-    public function update(UpdateQuickMessageRequest $request, int $id): JsonResponse
+    public function update(UpdateQuickMessageRequest $request, QuickMessage $quickMessage): JsonResponse
     {
-        $quickMessage = QuickMessage::where('tenant_id', $request->user()->tenant_id)
-            ->findOrFail($id);
+        // Ensure quick message belongs to user's tenant
+        if ($quickMessage->tenant_id !== $request->user()->tenant_id) {
+            abort(403, 'Unauthorized');
+        }
 
         $validated = $request->validated();
 
@@ -64,10 +66,12 @@ class QuickMessageController extends Controller
     /**
      * Remove the specified quick message.
      */
-    public function destroy(int $id, Request $request): JsonResponse
+    public function destroy(QuickMessage $quickMessage, Request $request): JsonResponse
     {
-        $quickMessage = QuickMessage::where('tenant_id', $request->user()->tenant_id)
-            ->findOrFail($id);
+        // Ensure quick message belongs to user's tenant
+        if ($quickMessage->tenant_id !== $request->user()->tenant_id) {
+            abort(403, 'Unauthorized');
+        }
 
         // Check authorization
         if ($quickMessage->isTenantLevel() && $request->user()->role !== 'owner') {
