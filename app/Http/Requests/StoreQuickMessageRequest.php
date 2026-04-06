@@ -29,6 +29,7 @@ class StoreQuickMessageRequest extends FormRequest
     public function rules(): array
     {
         return [
+            'tenant_id' => ['required', 'exists:tenants,id'],
             'user_id' => ['nullable', 'exists:users,id'],
             'shortcut' => [
                 'required',
