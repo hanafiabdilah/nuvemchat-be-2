@@ -30,6 +30,16 @@ class QuickMessage extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function isTenantLevel(): bool
+    {
+        return $this->user_id === null;
+    }
+
+    public function isUserSpecific(): bool
+    {
+        return $this->user_id !== null;
+    }
+
     /**
      * Scope a query to only include tenant-level quick messages.
      */
