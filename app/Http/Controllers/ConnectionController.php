@@ -17,4 +17,26 @@ class ConnectionController extends Controller
             'message' => 'Instagram OAuth callback received',
         ]);
     }
+
+    public function instagramDeauthorize(Request $request)
+    {
+        Log::info('Instagram deauthorization received', [
+            'query' => $request->query(),
+        ]);
+
+        return response()->json([
+            'message' => 'Instagram deauthorization received',
+        ]);
+    }
+
+    public function instagramDataDeletion(Request $request)
+    {
+        Log::info('Instagram data deletion request received', [
+            'query' => $request->query(),
+        ]);
+
+        return response()->json([
+            'message' => 'Instagram data deletion request received',
+        ]);
+    }
 }
