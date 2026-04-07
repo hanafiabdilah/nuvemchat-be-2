@@ -239,7 +239,7 @@ class ConnectionController extends Controller
         // Build Instagram OAuth URL for Instagram Business API
         $params = http_build_query([
             'client_id' => config('services.instagram.client_id'),
-            'redirect_uri' => route('oauth.instagram.callback'),
+            'redirect_uri' => config('services.instagram.redirect_uri'),
             'response_type' => 'code',
             'scope' => 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights',
             'state' => $state,
