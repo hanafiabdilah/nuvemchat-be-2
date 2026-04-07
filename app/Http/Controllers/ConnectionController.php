@@ -11,6 +11,7 @@ class ConnectionController extends Controller
     {
         Log::info('Instagram OAuth callback received', [
             'query' => $request->query(),
+            'body' => $request->all(),
         ]);
 
         return response()->json([
