@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\ConnectionController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 use Laravel\Fortify\Features;
@@ -15,6 +16,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
         return Inertia::render('dashboard');
     })->name('dashboard');
 });
+
+Route::get('/oauth/instagram/callback', [ConnectionController::class, 'instagramCallback']);
 
 require __DIR__.'/settings.php';
 require __DIR__.'/webhook.php';
