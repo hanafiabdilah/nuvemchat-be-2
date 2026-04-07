@@ -62,7 +62,7 @@ class ConnectionController extends Controller
                 'client_id' => config('services.instagram.client_id'),
                 'client_secret' => config('services.instagram.client_secret'),
                 'grant_type' => 'authorization_code',
-                'redirect_uri' => config('services.instagram.redirect_uri'),
+                'redirect_uri' => '',
                 'code' => $code,
             ]);
 
