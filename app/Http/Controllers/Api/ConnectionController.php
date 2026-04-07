@@ -237,7 +237,7 @@ class ConnectionController extends Controller
         ]));
 
         $clientId = config('services.instagram.client_id');
-        $redirectUri = rawurlencode(config('services.instagram.redirect_uri'));
+        $redirectUri = config('services.instagram.redirect_uri'); // Tidak di-encode
         $scope = urlencode('instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights'); // Di-encode
 
         Log::info('Generating Instagram OAuth URL', [
