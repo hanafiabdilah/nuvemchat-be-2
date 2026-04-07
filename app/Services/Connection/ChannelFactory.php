@@ -3,6 +3,7 @@
 namespace App\Services\Connection;
 
 use App\Enums\Connection\Channel;
+use App\Services\Connection\Channels\InstagramChannel;
 use App\Services\Connection\Channels\TelegramChannel;
 use App\Services\Connection\Channels\WhatsappOfficialChannel;
 use App\Services\Connection\Channels\WhatsappWApiChannel;
@@ -13,6 +14,7 @@ class ChannelFactory
     public static function make(Channel $channel): ChannelInterface
     {
         return match($channel) {
+            Channel::Instagram => new InstagramChannel(),
             Channel::Telegram => new TelegramChannel(),
             Channel::WhatsappOfficial => new WhatsappOfficialChannel(),
             Channel::WhatsappWApi => new WhatsappWApiChannel(),

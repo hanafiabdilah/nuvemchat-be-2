@@ -178,6 +178,30 @@ class ConnectionController extends Controller
         }
     }
 
+    public function oauth(int $id, Request $request)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        // Validate that this is an oauth connection
+        if (!in_array($connection->channel, [Channel::Instagram])) {
+            return response()->json([
+                'message' => 'This connection does not support OAuth',
+            ], 400);
+        }
+
+        $oauthUrl = match($connection->channel) {
+            Channel::Instagram => $this->instagramOauth($connection),
+            default => null,
+        };
+
+        return response()->json([
+            'message' => 'Instagram OAuth URL generated successfully',
+            'data' => [
+                'oauth_url' => $oauthUrl,
+            ],
+        ], 200);
+    }
+
     public function updateAutomatedMessages(int $id, Request $request)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
@@ -196,5 +220,27 @@ class ConnectionController extends Controller
             'message' => 'Automated messages updated successfully',
             'data' => $connection->toResource(ConnectionResource::class),
         ], 200);
+    }
+
+    private function instagramOauth(Connection $connection): string
+    {
+        // Create state parameter with connection_id
+        $state = base64_encode(json_encode([
+            'connection_id' => $connection->id,
+            'timestamp' => time(),
+        ]));
+
+        // Build Instagram OAuth URL
+        $params = http_build_query([
+            'client_id' => config('services.instagram.client_id'),
+            'redirect_uri' => route('oauth.instagram.callback'),
+            'scope' => 'instagram_basic,instagram_manage_messages,instagram_manage_comments,pages_show_list,pages_messaging',
+            'response_type' => 'code',
+            'state' => $state,
+        ]);
+
+        $oauthUrl = "https://api.instagram.com/oauth/authorize?{$params}";
+
+        return $oauthUrl;
     }
 }
