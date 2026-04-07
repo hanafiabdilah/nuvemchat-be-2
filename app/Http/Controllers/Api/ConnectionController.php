@@ -236,16 +236,18 @@ class ConnectionController extends Controller
             'timestamp' => time(),
         ]));
 
-        // Build Instagram OAuth URL for Instagram Business API
-        $params = [
-            'client_id' => config('services.instagram.client_id'),
-            'redirect_uri' => config('services.instagram.redirect_uri'),
-            'response_type' => 'code',
-            'scope' => 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights',
-            'state' => $state,
-        ];
+        $clientId = config('services.instagram.client_id');
+        $redirectUri = config('services.instagram.redirect_uri'); // Tidak di-encode
+        $scope = urlencode('instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights'); // Di-encode
 
-        $oauthUrl = "https://www.instagram.com/oauth/authorize?{$params}";
+        // Build URL manual sesuai contoh Meta
+        $oauthUrl = "https://www.instagram.com/oauth/authorize"
+            . "?force_reauth=true"
+            . "&client_id={$clientId}"
+            . "&redirect_uri={$redirectUri}"
+            . "&response_type=code"
+            . "&scope={$scope}"
+            . "&state={$state}";
 
         return $oauthUrl;
     }
