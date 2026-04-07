@@ -4,8 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\Connection;
 use App\Services\Connection\ConnectionService;
+use GuzzleHttp\Client;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class ConnectionController extends Controller
@@ -60,29 +60,48 @@ class ConnectionController extends Controller
             // Exchange code for access token (Instagram Business API)
             $redirectUri = config('services.instagram.redirect_uri');
 
-            Log::info('Attempting to exchange Instagram code for token', [
-                'redirect_uri_used' => $redirectUri,
-                'code_length' => strlen($code),
-            ]);
-
-            $response = Http::asForm()->post('https://api.instagram.com/oauth/access_token', [
+            $payload = [
                 'client_id' => config('services.instagram.client_id'),
                 'client_secret' => config('services.instagram.client_secret'),
                 'grant_type' => 'authorization_code',
                 'redirect_uri' => $redirectUri,
                 'code' => $code,
+            ];
+
+            Log::info('Attempting to exchange Instagram code for token', [
+                'redirect_uri_used' => $redirectUri,
+                'code_length' => strlen($code),
+                'payload' => $payload,
             ]);
 
-            if (!$response->successful()) {
-                Log::error('Failed to exchange Instagram code for token', [
-                    'response' => $response->json(),
-                    'status' => $response->status(),
-                    'redirect_uri_sent' => $redirectUri,
+            // Use Guzzle directly for better control over form encoding
+            $client = new Client();
+            try {
+                $response = $client->post('https://api.instagram.com/oauth/access_token', [
+                    'form_params' => $payload,
+                    'http_errors' => false,
                 ]);
-                throw new \Exception('Failed to obtain access token from Instagram: ' . ($response->json()['error_message'] ?? 'Unknown error'));
-            }
 
-            $data = $response->json();
+                $statusCode = $response->getStatusCode();
+                $body = $response->getBody()->getContents();
+                $data = json_decode($body, true);
+
+                if ($statusCode !== 200) {
+                    Log::error('Failed to exchange Instagram code for token', [
+                        'response' => $data,
+                        'status' => $statusCode,
+                        'redirect_uri_sent' => $redirectUri,
+                        'body' => $body,
+                    ]);
+                    throw new \Exception('Failed to obtain access token from Instagram: ' . ($data['error_message'] ?? 'Unknown error'));
+                }
+            } catch (\GuzzleHttp\Exception\GuzzleException $e) {
+                Log::error('Guzzle exception during Instagram token exchange', [
+                    'error' => $e->getMessage(),
+                    'redirect_uri' => $redirectUri,
+                ]);
+                throw new \Exception('Failed to connect to Instagram: ' . $e->getMessage());
+            }
             $shortLivedToken = $data['access_token'] ?? null;
             $userId = $data['user_id'] ?? null;
 
@@ -91,29 +110,54 @@ class ConnectionController extends Controller
             }
 
             // Exchange short-lived token for long-lived token (60 days)
-            $longLivedTokenResponse = Http::get('https://graph.instagram.com/access_token', [
-                'grant_type' => 'ig_exchange_token',
-                'client_secret' => config('services.instagram.client_secret'),
-                'access_token' => $shortLivedToken,
-            ]);
+            try {
+                $longLivedResponse = $client->get('https://graph.instagram.com/access_token', [
+                    'query' => [
+                        'grant_type' => 'ig_exchange_token',
+                        'client_secret' => config('services.instagram.client_secret'),
+                        'access_token' => $shortLivedToken,
+                    ],
+                    'http_errors' => false,
+                ]);
 
-            if ($longLivedTokenResponse->successful()) {
-                $accessToken = $longLivedTokenResponse->json()['access_token'] ?? $shortLivedToken;
-                Log::info('Successfully exchanged for long-lived token');
-            } else {
-                Log::warning('Failed to get long-lived token, using short-lived token', [
-                    'response' => $longLivedTokenResponse->json(),
+                if ($longLivedResponse->getStatusCode() === 200) {
+                    $longLivedData = json_decode($longLivedResponse->getBody()->getContents(), true);
+                    $accessToken = $longLivedData['access_token'] ?? $shortLivedToken;
+                    Log::info('Successfully exchanged for long-lived token');
+                } else {
+                    Log::warning('Failed to get long-lived token, using short-lived token', [
+                        'response' => $longLivedResponse->getBody()->getContents(),
+                    ]);
+                    $accessToken = $shortLivedToken;
+                }
+            } catch (\Exception $e) {
+                Log::warning('Exception getting long-lived token, using short-lived token', [
+                    'error' => $e->getMessage(),
                 ]);
                 $accessToken = $shortLivedToken;
             }
 
             // Get Instagram Business Account info
-            $accountResponse = Http::get("https://graph.instagram.com/v21.0/me", [
-                'fields' => 'id,username,name,profile_picture_url',
-                'access_token' => $accessToken,
-            ]);
+            try {
+                $accountResponse = $client->get("https://graph.instagram.com/v21.0/me", [
+                    'query' => [
+                        'fields' => 'id,username,name,profile_picture_url',
+                        'access_token' => $accessToken,
+                    ],
+                    'http_errors' => false,
+                ]);
 
-            $accountInfo = $accountResponse->successful() ? $accountResponse->json() : [];
+                if ($accountResponse->getStatusCode() === 200) {
+                    $accountInfo = json_decode($accountResponse->getBody()->getContents(), true);
+                } else {
+                    $accountInfo = [];
+                }
+            } catch (\Exception $e) {
+                Log::warning('Failed to get Instagram account info', [
+                    'error' => $e->getMessage(),
+                ]);
+                $accountInfo = [];
+            }
 
             Log::info('Instagram account info retrieved', [
                 'account_info' => $accountInfo,
