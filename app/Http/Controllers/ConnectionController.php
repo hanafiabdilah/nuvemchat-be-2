@@ -58,7 +58,7 @@ class ConnectionController extends Controller
             $connection = Connection::findOrFail($connectionId);
 
             // Exchange code for access token (Instagram Business API)
-            $response = Http::asForm()->post('https://api.instagram.com/oauth/access_token', [
+            $response = Http::post('https://api.instagram.com/oauth/access_token', [
                 'client_id' => config('services.instagram.client_id'),
                 'client_secret' => config('services.instagram.client_secret'),
                 'grant_type' => 'authorization_code',
