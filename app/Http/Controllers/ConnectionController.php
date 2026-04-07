@@ -58,11 +58,18 @@ class ConnectionController extends Controller
             $connection = Connection::findOrFail($connectionId);
 
             // Exchange code for access token (Instagram Business API)
+            $redirectUri = config('services.instagram.redirect_uri');
+
+            Log::info('Attempting to exchange Instagram code for token', [
+                'redirect_uri_used' => $redirectUri,
+                'code_length' => strlen($code),
+            ]);
+
             $response = Http::asForm()->post('https://api.instagram.com/oauth/access_token', [
                 'client_id' => config('services.instagram.client_id'),
                 'client_secret' => config('services.instagram.client_secret'),
                 'grant_type' => 'authorization_code',
-                'redirect_uri' => config('services.instagram.redirect_uri'),
+                'redirect_uri' => $redirectUri,
                 'code' => $code,
             ]);
 
@@ -70,6 +77,7 @@ class ConnectionController extends Controller
                 Log::error('Failed to exchange Instagram code for token', [
                     'response' => $response->json(),
                     'status' => $response->status(),
+                    'redirect_uri_sent' => $redirectUri,
                 ]);
                 throw new \Exception('Failed to obtain access token from Instagram: ' . ($response->json()['error_message'] ?? 'Unknown error'));
             }

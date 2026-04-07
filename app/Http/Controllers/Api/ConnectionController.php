@@ -240,6 +240,11 @@ class ConnectionController extends Controller
         $redirectUri = config('services.instagram.redirect_uri'); // Tidak di-encode
         $scope = urlencode('instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments,instagram_business_content_publish,instagram_business_manage_insights'); // Di-encode
 
+        Log::info('Generating Instagram OAuth URL', [
+            'connection_id' => $connection->id,
+            'redirect_uri_in_oauth' => $redirectUri,
+        ]);
+
         // Build URL manual sesuai contoh Meta
         $oauthUrl = "https://www.instagram.com/oauth/authorize"
             . "?force_reauth=true"
