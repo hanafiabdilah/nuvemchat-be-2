@@ -57,7 +57,7 @@ class ConnectionController extends Controller
             // Find the connection
             $connection = Connection::findOrFail($connectionId);
 
-            // Exchange code for access token
+            // Exchange code for access token (Instagram Business API)
             $response = Http::asForm()->post('https://api.instagram.com/oauth/access_token', [
                 'client_id' => config('services.instagram.client_id'),
                 'client_secret' => config('services.instagram.client_secret'),
@@ -69,8 +69,9 @@ class ConnectionController extends Controller
             if (!$response->successful()) {
                 Log::error('Failed to exchange Instagram code for token', [
                     'response' => $response->json(),
+                    'status' => $response->status(),
                 ]);
-                throw new \Exception('Failed to obtain access token from Instagram.');
+                throw new \Exception('Failed to obtain access token from Instagram: ' . ($response->json()['error_message'] ?? 'Unknown error'));
             }
 
             $data = $response->json();
@@ -81,29 +82,34 @@ class ConnectionController extends Controller
                 throw new \Exception('Invalid response from Instagram OAuth.');
             }
 
-            // Exchange short-lived token for long-lived token
+            // Exchange short-lived token for long-lived token (60 days)
             $longLivedTokenResponse = Http::get('https://graph.instagram.com/access_token', [
                 'grant_type' => 'ig_exchange_token',
                 'client_secret' => config('services.instagram.client_secret'),
                 'access_token' => $shortLivedToken,
             ]);
 
-            if (!$longLivedTokenResponse->successful()) {
+            if ($longLivedTokenResponse->successful()) {
+                $accessToken = $longLivedTokenResponse->json()['access_token'] ?? $shortLivedToken;
+                Log::info('Successfully exchanged for long-lived token');
+            } else {
                 Log::warning('Failed to get long-lived token, using short-lived token', [
                     'response' => $longLivedTokenResponse->json(),
                 ]);
                 $accessToken = $shortLivedToken;
-            } else {
-                $accessToken = $longLivedTokenResponse->json()['access_token'] ?? $shortLivedToken;
             }
 
-            // Get Instagram account info
-            $accountResponse = Http::get("https://graph.instagram.com/me", [
-                'fields' => 'id,username,account_type',
+            // Get Instagram Business Account info
+            $accountResponse = Http::get("https://graph.instagram.com/v21.0/me", [
+                'fields' => 'id,username,name,profile_picture_url',
                 'access_token' => $accessToken,
             ]);
 
             $accountInfo = $accountResponse->successful() ? $accountResponse->json() : [];
+
+            Log::info('Instagram account info retrieved', [
+                'account_info' => $accountInfo,
+            ]);
 
             // Connect the Instagram account using ConnectionService
             $this->connectionService->connect($connection, [

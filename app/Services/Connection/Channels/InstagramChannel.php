@@ -38,13 +38,16 @@ class InstagramChannel implements ChannelInterface
         }
 
         try {
-            // Verify the access token and get account info
-            $response = Http::get('https://graph.facebook.com/v21.0/me', [
-                'fields' => 'id,name,username',
+            // Verify the access token and get account info using Instagram Graph API
+            $response = Http::get('https://graph.instagram.com/v21.0/me', [
+                'fields' => 'id,name,username,profile_picture_url',
                 'access_token' => $data['access_token'],
             ]);
 
             if (!$response->successful()) {
+                Log::error('Invalid Instagram access token', [
+                    'response' => $response->json(),
+                ]);
                 throw new Exception('Invalid Instagram access token provided.');
             }
 
@@ -96,7 +99,8 @@ class InstagramChannel implements ChannelInterface
     public function checkStatus(Connection $connection): void
     {
         try {
-            $response = Http::get('https://graph.facebook.com/v21.0/me', [
+            $response = Http::get('https://graph.instagram.com/v21.0/me', [
+                'fields' => 'id,username',
                 'access_token' => $connection->credentials['access_token'] ?? null,
             ]);
 
@@ -123,27 +127,36 @@ class InstagramChannel implements ChannelInterface
     private function subscribeWebhook(Connection $connection): void
     {
         try {
-            // Subscribe to Instagram webhooks through Facebook Graph API
-            $pageId = $connection->credentials['page_id'] ?? null;
+            // For Instagram Business API, webhooks are managed through Facebook App
+            // Note: Webhook subscription needs to be configured in Meta Developer Console
+            // This method can be used for additional verification or logging
+
+            $instagramAccountId = $connection->credentials['instagram_account_id'] ?? null;
             $accessToken = $connection->credentials['access_token'] ?? null;
 
-            if (!$pageId || !$accessToken) {
-                throw new Exception('Missing page_id or access_token for webhook subscription.');
+            if (!$instagramAccountId || !$accessToken) {
+                throw new Exception('Missing instagram_account_id or access_token for webhook subscription.');
             }
 
-            $response = Http::post("https://graph.facebook.com/v21.0/{$pageId}/subscribed_apps", [
-                'subscribed_fields' => 'messages,messaging_postbacks,message_echoes,message_reads',
+            // Verify the Instagram account is accessible
+            $response = Http::get("https://graph.instagram.com/v21.0/{$instagramAccountId}", [
+                'fields' => 'id,username',
                 'access_token' => $accessToken,
             ]);
 
-            if (!$response->successful()) {
-                Log::warning('Failed to subscribe to Instagram webhooks', [
+            if ($response->successful()) {
+                Log::info('Instagram account verified for webhooks', [
+                    'connection_id' => $connection->id,
+                    'instagram_account_id' => $instagramAccountId,
+                ]);
+            } else {
+                Log::warning('Failed to verify Instagram account for webhooks', [
                     'connection_id' => $connection->id,
                     'response' => $response->json(),
                 ]);
             }
         } catch (\Throwable $th) {
-            Log::error('Error subscribing to Instagram webhooks', [
+            Log::error('Error in webhook subscription process', [
                 'connection_id' => $connection->id,
                 'error' => $th->getMessage(),
             ]);
@@ -153,18 +166,14 @@ class InstagramChannel implements ChannelInterface
     private function unsubscribeWebhook(Connection $connection): void
     {
         try {
-            $pageId = $connection->credentials['page_id'] ?? null;
-            $accessToken = $connection->credentials['access_token'] ?? null;
-
-            if (!$pageId || !$accessToken) {
-                return;
-            }
-
-            Http::delete("https://graph.facebook.com/v21.0/{$pageId}/subscribed_apps", [
-                'access_token' => $accessToken,
+            // For Instagram Business API, webhooks are managed at app level in Meta Developer Console
+            // Log the disconnection for audit purposes
+            Log::info('Instagram connection disconnected', [
+                'connection_id' => $connection->id,
+                'instagram_account_id' => $connection->credentials['instagram_account_id'] ?? null,
             ]);
         } catch (\Throwable $th) {
-            Log::error('Error unsubscribing from Instagram webhooks', [
+            Log::error('Error in webhook unsubscription process', [
                 'connection_id' => $connection->id,
                 'error' => $th->getMessage(),
             ]);
