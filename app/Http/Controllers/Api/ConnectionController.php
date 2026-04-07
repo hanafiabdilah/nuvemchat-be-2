@@ -194,6 +194,12 @@ class ConnectionController extends Controller
             default => null,
         };
 
+        Log::info('Generated OAuth URL for connection', [
+            'connection_id' => $connection->id,
+            'channel' => $connection->channel->value,
+            'oauth_url' => $oauthUrl,
+        ]);
+
         return response()->json([
             'message' => 'Instagram OAuth URL generated successfully',
             'data' => [
