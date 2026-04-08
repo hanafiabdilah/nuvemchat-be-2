@@ -56,6 +56,12 @@ class ConversationController extends Controller
             ->where('tenant_id', Auth::user()->tenant_id)
             ->firstOrFail();
 
+        if(Auth::user()->role === 'agent' && !$connection->agents->contains(Auth::id())){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
         // Check if active/pending conversation already exists
         $existingConversation = Conversation::where('contact_id', $contact->id)
             ->where('connection_id', $connection->id)

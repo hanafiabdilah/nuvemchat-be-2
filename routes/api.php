@@ -45,6 +45,8 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::put('/quick-messages/{quick_message}', [QuickMessageController::class, 'update']);
     Route::delete('/quick-messages/{quick_message}', [QuickMessageController::class, 'destroy']);
 
+    Route::get('/contacts', [ContactController::class, 'index']);
+
     Route::middleware(EnsureOwner::class)->group(function(){
         Route::post('/connections', [ConnectionController::class, 'store']);
         Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect']);
@@ -65,8 +67,6 @@ Route::middleware('auth:sanctum')->group(function(){
         Route::put('/agents/{id}', [AgentController::class, 'update']);
         Route::delete('/agents/{id}', [AgentController::class, 'destroy']);
         Route::post('/agents/{id}/connections', [AgentController::class, 'syncConnections']);
-
-        Route::get('/contacts', [ContactController::class, 'index']);
     });
 });
 
