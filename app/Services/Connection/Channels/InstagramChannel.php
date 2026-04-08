@@ -127,10 +127,6 @@ class InstagramChannel implements ChannelInterface
     private function subscribeWebhook(Connection $connection): void
     {
         try {
-            // For Instagram Business API, webhooks are managed through Facebook App
-            // Note: Webhook subscription needs to be configured in Meta Developer Console
-            // This method can be used for additional verification or logging
-
             $instagramAccountId = $connection->credentials['instagram_account_id'] ?? null;
             $accessToken = $connection->credentials['access_token'] ?? null;
 
@@ -138,45 +134,79 @@ class InstagramChannel implements ChannelInterface
                 throw new Exception('Missing instagram_account_id or access_token for webhook subscription.');
             }
 
-            // Verify the Instagram account is accessible
-            $response = Http::get("https://graph.instagram.com/v25.0/{$instagramAccountId}", [
-                'fields' => 'id,username,messages',
+            // Subscribe to Instagram webhooks
+            // POST /{instagram-account-id}/subscribed_apps
+            $response = Http::post("https://graph.instagram.com/v25.0/{$instagramAccountId}/subscribed_apps", [
+                'subscribed_fields' => 'messages,messaging_postbacks,message_reactions',
                 'access_token' => $accessToken,
             ]);
 
             if ($response->successful()) {
-                Log::info('Instagram account verified for webhooks', [
+                Log::info('Successfully subscribed to Instagram webhooks', [
                     'connection_id' => $connection->id,
                     'instagram_account_id' => $instagramAccountId,
-                ]);
-            } else {
-                Log::warning('Failed to verify Instagram account for webhooks', [
-                    'connection_id' => $connection->id,
                     'response' => $response->json(),
                 ]);
+            } else {
+                Log::warning('Failed to subscribe to Instagram webhooks', [
+                    'connection_id' => $connection->id,
+                    'instagram_account_id' => $instagramAccountId,
+                    'status' => $response->status(),
+                    'response' => $response->json(),
+                ]);
+
+                throw new Exception('Failed to subscribe to Instagram webhooks: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
             }
         } catch (\Throwable $th) {
             Log::error('Error in webhook subscription process', [
                 'connection_id' => $connection->id,
                 'error' => $th->getMessage(),
             ]);
+
+            throw $th;
         }
     }
 
     private function unsubscribeWebhook(Connection $connection): void
     {
         try {
-            // For Instagram Business API, webhooks are managed at app level in Meta Developer Console
-            // Log the disconnection for audit purposes
-            Log::info('Instagram connection disconnected', [
-                'connection_id' => $connection->id,
-                'instagram_account_id' => $connection->credentials['instagram_account_id'] ?? null,
+            $instagramAccountId = $connection->credentials['instagram_account_id'] ?? null;
+            $accessToken = $connection->credentials['access_token'] ?? null;
+
+            if (!$instagramAccountId || !$accessToken) {
+                Log::warning('Missing instagram_account_id or access_token for webhook unsubscription', [
+                    'connection_id' => $connection->id,
+                ]);
+                return;
+            }
+
+            // Unsubscribe from Instagram webhooks
+            // DELETE /{instagram-account-id}/subscribed_apps
+            $response = Http::delete("https://graph.instagram.com/v25.0/{$instagramAccountId}/subscribed_apps", [
+                'access_token' => $accessToken,
             ]);
+
+            if ($response->successful()) {
+                Log::info('Successfully unsubscribed from Instagram webhooks', [
+                    'connection_id' => $connection->id,
+                    'instagram_account_id' => $instagramAccountId,
+                    'response' => $response->json(),
+                ]);
+            } else {
+                Log::warning('Failed to unsubscribe from Instagram webhooks', [
+                    'connection_id' => $connection->id,
+                    'instagram_account_id' => $instagramAccountId,
+                    'status' => $response->status(),
+                    'response' => $response->json(),
+                ]);
+            }
         } catch (\Throwable $th) {
             Log::error('Error in webhook unsubscription process', [
                 'connection_id' => $connection->id,
                 'error' => $th->getMessage(),
             ]);
+
+            throw $th;
         }
     }
 }
