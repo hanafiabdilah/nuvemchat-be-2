@@ -40,6 +40,13 @@ class TelegramHandler implements MessageHandlerInterface
 
         $connection = $conversation->connection;
 
+        // For new conversation
+        if(is_null($conversation->external_id)) {
+            $conversation->update([
+                'external_id' => $conversation->id,
+            ]);
+        }
+
         try {
             $telegram = new Api($connection->credentials['token']);
             $response = $telegram->sendMessage([
@@ -58,12 +65,6 @@ class TelegramHandler implements MessageHandlerInterface
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
-
-            if(is_null($conversation->external_id)) {
-                $conversation->update([
-                    'external_id' => $conversation->id,
-                ]);
-            }
 
             return $message;
         } catch (\Throwable $th) {

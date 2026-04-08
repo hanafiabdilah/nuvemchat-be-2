@@ -40,18 +40,19 @@ class WhatsappWApiHandler implements MessageHandlerInterface
 
         $connection = $conversation->connection;
 
+        // For new conversation
+        if(is_null($conversation->external_id)) {
+            $conversation->update([
+                'external_id' => $conversation->id,
+            ]);
+        }
+
         try {
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
             ])->post('https://api.w-api.app/v1/message/send-text?instanceId=' . $connection->credentials['instance_id'], [
                 'phone' => $conversation->external_id,
                 'message' => $data['message'],
-            ]);
-
-            Log::info('WhatsappWApiHandler: Text message sent', [
-                'response' => $response->json(),
-                'conversation_id' => $conversation->id,
-                'connection_id' => $connection->id,
             ]);
 
             $responseArray = $response->json();
@@ -64,12 +65,6 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
-
-            if(is_null($conversation->external_id)) {
-                $conversation->update([
-                    'external_id' => $conversation->id,
-                ]);
-            }
 
             return $message;
         } catch (\Throwable $th) {

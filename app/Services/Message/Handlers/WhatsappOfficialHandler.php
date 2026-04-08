@@ -38,6 +38,13 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
 
         $connection = $conversation->connection;
 
+        // For new conversation
+        if(is_null($conversation->external_id)) {
+            $conversation->update([
+                'external_id' => $conversation->id,
+            ]);
+        }
+
         try {
             $response = Http::withToken($connection->credentials['access_token'])
                 ->post('https://graph.facebook.com/v22.0/' . $connection->credentials['phone_number_id'] . '/messages', [
@@ -61,12 +68,6 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
-
-            if(is_null($conversation->external_id)) {
-                $conversation->update([
-                    'external_id' => $conversation->id,
-                ]);
-            }
 
             return $message;
         } catch (\Throwable $th) {
