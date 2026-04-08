@@ -37,13 +37,13 @@ class ConnectionController extends Controller
                 'error_description' => $errorDescription,
             ]);
 
-            return redirect(config('app.frontend_url') . '/connections' . '?status=error&message=' . urlencode('Instagram OAuth error: ' . $errorDescription));
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Instagram OAuth error: ' . $errorDescription));
         }
 
         // Validate required parameters
         if (!$code || !$state) {
             Log::error('Missing code or state parameter in Instagram callback');
-            return redirect(config('app.frontend_url') . '/connections' . '?status=error&message=' . urlencode('Invalid Instagram callback: missing code or state parameter'));
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Invalid Instagram callback: missing code or state parameter'));
         }
 
         // Decode state to get connection_id
@@ -126,7 +126,7 @@ class ConnectionController extends Controller
                 'instagram_account_id' => $accountInfo['id'] ?? $userId,
             ]);
 
-            return redirect(config('app.frontend_url') . '/connections' . '?status=success&message=' . urlencode('Instagram account connected successfully!'));
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=success&message=' . urlencode('Instagram account connected successfully!'));
 
         } catch (\Throwable $th) {
             Log::error('Error processing Instagram callback', [
@@ -134,7 +134,7 @@ class ConnectionController extends Controller
                 'trace' => $th->getTraceAsString(),
             ]);
 
-            return redirect(config('app.frontend_url') . '/connections' . '?status=error&message=' . urlencode('Failed to connect Instagram account: ' . $th->getMessage()));
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Failed to connect Instagram account: ' . $th->getMessage()));
         }
     }
 
