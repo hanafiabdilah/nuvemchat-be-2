@@ -56,6 +56,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Frontend URL
+    |--------------------------------------------------------------------------
+    | This URL is used to specify the URL of the frontend application, which
+    | can be used for generating links in emails or for CORS configuration. Set this to
+    | the root of the frontend application so that it's available throughout the application.
+    |
+    */
+
+    'frontend_url' => env('APP_FRONTEND_URL', 'http://localhost:5173'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Timezone
     |--------------------------------------------------------------------------
     |
