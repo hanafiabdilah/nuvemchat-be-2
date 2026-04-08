@@ -16,6 +16,11 @@ use Illuminate\Support\Facades\Storage;
 
 class WhatsappWApiHandler implements MessageHandlerInterface
 {
+    public function getConversationId(array $payload): string
+    {
+        return $payload['chat']['id'] ?? null;
+    }
+
     public function getMessageId(array $payload): string
     {
         return $payload['messageId'];
@@ -53,6 +58,12 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
+
+            if(is_null($conversation->external_id)) {
+                $conversation->update([
+                    'external_id' => $conversation->id,
+                ]);
+            }
 
             return $message;
         } catch (\Throwable $th) {

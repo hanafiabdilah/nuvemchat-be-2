@@ -15,6 +15,11 @@ use Telegram\Bot\Api;
 
 class TelegramHandler implements MessageHandlerInterface
 {
+    public function getConversationId(array $payload): string
+    {
+        return $payload['chat']['id'] ?? null;
+    }
+
     public function getMessageId(array $payload): string
     {
         return $payload['message_id'];
@@ -22,7 +27,7 @@ class TelegramHandler implements MessageHandlerInterface
 
     public function getMessageSentAt(array $payload): Carbon
     {
-        if (isset($payload['data'])) return Carbon::createFromTimestamp($payload['data']);
+        if (isset($payload['date'])) return Carbon::createFromTimestamp($payload['date']);
 
         return Carbon::now();
     }
@@ -53,6 +58,12 @@ class TelegramHandler implements MessageHandlerInterface
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
+
+            if(is_null($conversation->external_id)) {
+                $conversation->update([
+                    'external_id' => $conversation->id,
+                ]);
+            }
 
             return $message;
         } catch (\Throwable $th) {

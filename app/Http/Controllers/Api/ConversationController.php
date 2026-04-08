@@ -74,7 +74,8 @@ class ConversationController extends Controller
             $conversation = Conversation::create([
                 'contact_id' => $contact->id,
                 'connection_id' => $connection->id,
-                'status' => Status::Pending,
+                'user_id' => Auth::id(),
+                'status' => Status::Active,
             ]);
 
             // Send the message
