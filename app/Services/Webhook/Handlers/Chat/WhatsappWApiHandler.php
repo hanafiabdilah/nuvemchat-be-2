@@ -266,6 +266,13 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
+        if(isset($payload['msgContent']['messageStubType']) && in_array($payload['msgContent']['messageStubType'], ['CIPHERTEXT'])) {
+            Log::info('WhatsappWApiHandler: Ignoring delivery receipt for message with unsupported stub type', [
+                'messageStubType' => $payload['msgContent']['messageStubType'],
+            ]);
+            return;
+        }
+
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
