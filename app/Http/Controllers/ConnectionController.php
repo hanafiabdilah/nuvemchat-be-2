@@ -102,7 +102,7 @@ class ConnectionController extends Controller
 
             // Get Instagram Business Account info
             $accountResponse = Http::get("https://graph.instagram.com/v25.0/me", [
-                'fields' => 'id,username,name,profile_picture_url',
+                'fields' => 'id,username,user_id,name,profile_picture_url',
                 'access_token' => $accessToken,
             ]);
 
@@ -110,7 +110,7 @@ class ConnectionController extends Controller
 
             Log::info('Instagram account info retrieved', [
                 'account_info' => $accountInfo,
-                'user_id' => $userId,
+                'user_id' => $accountInfo['user_id'] ?? null,
             ]);
 
             // Connect the Instagram account using ConnectionService
@@ -118,7 +118,7 @@ class ConnectionController extends Controller
                 'access_token' => $accessToken,
                 'page_id' => (string) $userId,
                 'instagram_account_id' => $accountInfo['id'] ?? $userId,
-                'user_id' => (string) $userId, // Save user_id from OAuth response (might be used in webhook)
+                'user_id' => $accountInfo['user_id'] ?? null,
                 'username' => $accountInfo['username'] ?? null,
             ]);
 
