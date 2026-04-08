@@ -8,18 +8,17 @@ use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\QuickMessageController;
 use App\Http\Controllers\Api\TagController;
+use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\V1\SendMessageController;
 use App\Http\Middleware\EnsureOwner;
 use App\Http\Middleware\V1\Auth;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
 
 Route::middleware('auth:sanctum')->group(function(){
-    Route::get('/user', function (Request $request) {
-        return $request->user();
-    });
+    Route::get('/user', [UserController::class, 'index']);
+    Route::put('/user', [UserController::class, 'update']);
 
     Route::get('/messages', [MessageController::class, 'index']);
 
