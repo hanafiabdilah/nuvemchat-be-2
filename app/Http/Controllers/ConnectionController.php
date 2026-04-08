@@ -114,7 +114,7 @@ class ConnectionController extends Controller
             // Connect the Instagram account using ConnectionService
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
-                'page_id' => $userId,
+                'page_id' => (string) $userId,
                 'instagram_account_id' => $accountInfo['id'] ?? $userId,
             ]);
 
