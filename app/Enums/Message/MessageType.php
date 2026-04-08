@@ -10,5 +10,6 @@ enum MessageType: string
     case Audio = 'audio';
     case Document = 'document';
     case Sticker = 'sticker';
+    case Reaction = 'reaction';
     case Unsupported = 'unsupported';
 }

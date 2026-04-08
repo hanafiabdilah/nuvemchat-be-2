@@ -44,6 +44,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             ?? $payload['msgContent']['videoMessage']['caption']
             ?? $payload['msgContent']['documentMessage']['caption']
             ?? $payload['msgContent']['stickerMessage']['caption']
+            ?? $payload['msgContent']['reactionMessage']['text']
             ?? null;
     }
 
@@ -51,7 +52,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     {
         if (isset($payload['msgContent']['conversation']) || isset($payload['msgContent']['extendedTextMessage'])) {
             return MessageType::Text;
-        }  elseif (isset($payload['msgContent']['audioMessage'])) {
+        } elseif (isset($payload['msgContent']['reactionMessage'])) {
+            return MessageType::Reaction;
+        } elseif (isset($payload['msgContent']['audioMessage'])) {
             return MessageType::Audio;
         } elseif (isset($payload['msgContent']['imageMessage'])) {
             return MessageType::Image;
