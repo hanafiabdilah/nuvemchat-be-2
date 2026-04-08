@@ -274,7 +274,7 @@ class InstagramHandler implements ChatHandlerInterface
 
             // Fetch user info from Instagram API
             $response = Http::get("https://graph.instagram.com/v25.0/{$instagramUserId}", [
-                'fields' => 'name,username,profile_pic',
+                'fields' => 'name,username,profile_picture_url',
                 'access_token' => $accessToken,
             ]);
 
@@ -284,7 +284,7 @@ class InstagramHandler implements ChatHandlerInterface
                 $contact->update([
                     'name' => $userInfo['name'] ?? $userInfo['username'] ?? $instagramUserId,
                     'username' => $userInfo['username'] ?? null,
-                    'photo_profile' => $userInfo['profile_pic'] ?? null,
+                    'photo_profile' => $userInfo['profile_picture_url'] ?? null,
                 ]);
 
                 Log::info('InstagramHandler: Contact info updated', [
