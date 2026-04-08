@@ -28,6 +28,8 @@ class InstagramChannel implements ChannelInterface
             'access_token' => ['required', 'string'],
             'page_id' => ['required', 'string'],
             'instagram_account_id' => ['required', 'string'],
+            'user_id' => ['nullable', 'string'],
+            'username' => ['nullable', 'string'],
         ])->validate();
 
         if(Connection::where('id', '!=', $connection->id)
@@ -59,7 +61,8 @@ class InstagramChannel implements ChannelInterface
                     'access_token' => $data['access_token'],
                     'page_id' => $data['page_id'],
                     'instagram_account_id' => $data['instagram_account_id'],
-                    'username' => $accountInfo['username'] ?? null,
+                    'user_id' => $data['user_id'] ?? null,
+                    'username' => $accountInfo['username'] ?? $data['username'] ?? null,
                     'name' => $accountInfo['name'] ?? null,
                 ],
             ]);

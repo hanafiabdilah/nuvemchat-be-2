@@ -110,6 +110,7 @@ class ConnectionController extends Controller
 
             Log::info('Instagram account info retrieved', [
                 'account_info' => $accountInfo,
+                'user_id' => $userId,
             ]);
 
             // Connect the Instagram account using ConnectionService
@@ -117,6 +118,8 @@ class ConnectionController extends Controller
                 'access_token' => $accessToken,
                 'page_id' => (string) $userId,
                 'instagram_account_id' => $accountInfo['id'] ?? $userId,
+                'user_id' => (string) $userId, // Save user_id from OAuth response (might be used in webhook)
+                'username' => $accountInfo['username'] ?? null,
             ]);
 
             broadcast(new ConnectionUpdated($connection->fresh()));
