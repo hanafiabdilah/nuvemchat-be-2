@@ -57,6 +57,12 @@ class WhatsappWApiHandler implements MessageHandlerInterface
 
             $responseArray = $response->json();
 
+            Log::info('WhatsappWApiHandler: Text message sent', [
+                'response' => $responseArray,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
             $message = $conversation->messages()->create([
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
