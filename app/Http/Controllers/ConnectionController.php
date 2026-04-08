@@ -101,7 +101,7 @@ class ConnectionController extends Controller
             }
 
             // Get Instagram Business Account info
-            $accountResponse = Http::get("https://graph.instagram.com/v21.0/me", [
+            $accountResponse = Http::get("https://graph.instagram.com/v25.0/me", [
                 'fields' => 'id,username,name,profile_picture_url',
                 'access_token' => $accessToken,
             ]);

@@ -39,7 +39,7 @@ class InstagramChannel implements ChannelInterface
 
         try {
             // Verify the access token and get account info using Instagram Graph API
-            $response = Http::get('https://graph.instagram.com/v21.0/me', [
+            $response = Http::get('https://graph.instagram.com/v25.0/me', [
                 'fields' => 'id,name,username,profile_picture_url',
                 'access_token' => $data['access_token'],
             ]);
@@ -99,7 +99,7 @@ class InstagramChannel implements ChannelInterface
     public function checkStatus(Connection $connection): void
     {
         try {
-            $response = Http::get('https://graph.instagram.com/v21.0/me', [
+            $response = Http::get('https://graph.instagram.com/v25.0/me', [
                 'fields' => 'id,username',
                 'access_token' => $connection->credentials['access_token'] ?? null,
             ]);
@@ -139,7 +139,7 @@ class InstagramChannel implements ChannelInterface
             }
 
             // Verify the Instagram account is accessible
-            $response = Http::get("https://graph.instagram.com/v21.0/{$instagramAccountId}", [
+            $response = Http::get("https://graph.instagram.com/v25.0/{$instagramAccountId}", [
                 'fields' => 'id,username',
                 'access_token' => $accessToken,
             ]);
