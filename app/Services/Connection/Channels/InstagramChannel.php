@@ -140,7 +140,7 @@ class InstagramChannel implements ChannelInterface
 
             // Verify the Instagram account is accessible
             $response = Http::get("https://graph.instagram.com/v25.0/{$instagramAccountId}", [
-                'fields' => 'id,username',
+                'fields' => 'id,username,messages',
                 'access_token' => $accessToken,
             ]);
 
