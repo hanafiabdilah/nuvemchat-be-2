@@ -110,6 +110,7 @@ class ConversationController extends Controller
             return response()->json([
                 'message' => 'Conversation created and message sent successfully',
                 'data' => new ConversationResource($conversation->load('contact')),
+                'message' => new MessageResource($message),
             ], 201);
         } catch(ValidationException $th){
             throw $th;
