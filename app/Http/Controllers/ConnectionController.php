@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\ConnectionUpdated;
 use App\Models\Connection;
 use App\Services\Connection\ConnectionService;
 use Illuminate\Http\Request;
@@ -117,6 +118,8 @@ class ConnectionController extends Controller
                 'page_id' => (string) $userId,
                 'instagram_account_id' => $accountInfo['id'] ?? $userId,
             ]);
+
+            broadcast(new ConnectionUpdated($connection->fresh()));
 
             Log::info('Instagram account connected successfully', [
                 'connection_id' => $connectionId,
