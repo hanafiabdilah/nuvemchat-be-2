@@ -4,6 +4,7 @@ namespace App\Services\Webhook\Factories;
 
 use App\Enums\Connection\Channel;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
+use App\Services\Webhook\Handlers\Chat\InstagramHandler;
 use App\Services\Webhook\Handlers\Chat\TelegramHandler;
 use App\Services\Webhook\Handlers\Chat\WhatsappOfficialHandler;
 use App\Services\Webhook\Handlers\Chat\WhatsappWApiHandler;
@@ -16,6 +17,7 @@ class ChatFactory
             Channel::Telegram => new TelegramHandler(),
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
             Channel::WhatsappWApi => new WhatsappWApiHandler(),
+            Channel::Instagram => new InstagramHandler(),
             default => throw new \InvalidArgumentException('Unsupported channel type for chat handler.'),
         };
     }

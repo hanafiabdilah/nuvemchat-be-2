@@ -63,7 +63,7 @@ class InstagramController extends Controller
                 continue;
             };
 
-            $this->chatService->handle($connection, $request->all());
+            $this->chatService->handle($connection, $entry);
         }
 
         return response()->json([
