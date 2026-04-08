@@ -27,8 +27,21 @@ class UserController extends Controller
                 'max:255',
                 Rule::unique('users', 'email')->ignore($user->id),
             ],
+            'current_password' => 'required_with:password|string',
             'password' => 'nullable|string|min:8|confirmed',
         ]);
+
+        // Verify current password if password is being changed
+        if (!empty($validated['password'])) {
+            if (!Hash::check($validated['current_password'] ?? '', $user->password)) {
+                return response()->json([
+                    'message' => 'Current password is incorrect',
+                    'errors' => [
+                        'current_password' => ['The current password is incorrect.']
+                    ]
+                ], 422);
+            }
+        }
 
         // Update name and email
         $user->name = $validated['name'];
