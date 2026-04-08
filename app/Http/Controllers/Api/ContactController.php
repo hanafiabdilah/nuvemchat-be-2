@@ -13,11 +13,15 @@ class ContactController extends Controller
     {
         $per_page = $request->query('per_page', 50);
         $search = $request->query('search');
+        $channel = $request->query('channel');
 
         $contacts = Contact::where('tenant_id', $request->user()->tenant_id)
             ->when($search, function ($query, $search) {
                 $query->where('name', 'like', "%{$search}%")
                       ->orWhere('username', 'like', "%{$search}%");
+            })
+            ->when($channel, function ($query, $channel) {
+                $query->where('channel', $channel);
             })
             ->paginate($per_page);
 
