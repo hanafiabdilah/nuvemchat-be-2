@@ -10,6 +10,8 @@ use App\Events\MessageReceived;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConversationResource;
 use App\Http\Resources\MessageResource;
+use App\Models\Connection;
+use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Tag;
 use App\Services\AutomatedMessageService;
@@ -34,6 +36,74 @@ class ConversationController extends Controller
             'data' => ConversationResource::collection($conversations),
             'server_time' => now()->toIso8601String(),
         ]);
+    }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'contact_id' => 'required|integer|exists:contacts,id',
+            'connection_id' => 'required|integer|exists:connections,id',
+            'message' => 'required|string|max:5000',
+        ]);
+
+        // Verify contact belongs to the same tenant
+        $contact = Contact::where('id', $validated['contact_id'])
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->firstOrFail();
+
+        // Verify connection belongs to the same tenant
+        $connection = Connection::where('id', $validated['connection_id'])
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->firstOrFail();
+
+        // Check if active/pending conversation already exists
+        $existingConversation = Conversation::where('contact_id', $contact->id)
+            ->where('connection_id', $connection->id)
+            ->whereIn('status', [Status::Active, Status::Pending])
+            ->first();
+
+        if ($existingConversation) {
+            return response()->json([
+                'message' => 'Active conversation already exists for this contact and connection',
+                'data' => new ConversationResource($existingConversation->load('contact')),
+            ], 409);
+        }
+
+        try {
+            // Create new conversation
+            $conversation = Conversation::create([
+                'contact_id' => $contact->id,
+                'connection_id' => $connection->id,
+                'status' => Status::Pending,
+            ]);
+
+            // Send the message
+            $messageService = new MessageService();
+            $message = $messageService->sendMessage($conversation, [
+                'message' => $validated['message']
+            ]);
+
+            // Broadcast events
+            broadcast(new MessageReceived($message));
+            broadcast(new ConversationUpdated($conversation->load('contact')));
+
+            return response()->json([
+                'message' => 'Conversation created and message sent successfully',
+                'data' => new ConversationResource($conversation->load('contact')),
+            ], 201);
+        } catch(ValidationException $th){
+            throw $th;
+        } catch (\Throwable $th) {
+            Log::error('ConversationController: Failed to create conversation or send message', [
+                'contact_id' => $contact->id,
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Failed to create conversation or send message',
+            ], 500);
+        }
     }
 
     public function show(int $id)
