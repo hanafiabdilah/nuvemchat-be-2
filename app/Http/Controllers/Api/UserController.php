@@ -15,7 +15,7 @@ class UserController extends Controller
         return $request->user();
     }
 
-    public function updateProfile(Request $request)
+    public function update(Request $request)
     {
         $user = Auth::user();
 
