@@ -14,11 +14,6 @@ use Illuminate\Support\Facades\Log;
 
 class WhatsappOfficialHandler implements MessageHandlerInterface
 {
-    public function getConversationId(array $payload): string
-    {
-        return $payload['contacts'][0]['wa_id'] ?? null;
-    }
-
     public function getMessageId(array $payload): string
     {
         return $payload['messages'][0]['id'];
@@ -37,13 +32,6 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         ])->validate();
 
         $connection = $conversation->connection;
-
-        // For new conversation
-        if(is_null($conversation->external_id)) {
-            $conversation->update([
-                'external_id' => $conversation->id,
-            ]);
-        }
 
         try {
             $response = Http::withToken($connection->credentials['access_token'])

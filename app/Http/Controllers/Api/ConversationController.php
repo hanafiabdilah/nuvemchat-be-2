@@ -75,11 +75,23 @@ class ConversationController extends Controller
             ], 409);
         }
 
+        $lastConversation = Conversation::where('contact_id', $contact->id)
+            ->where('connection_id', $connection->id)
+            ->orderBy('created_at', 'DESC')
+            ->first();
+
+        if(!$lastConversation){
+            return response()->json([
+                'message' => 'No previous conversation found for this contact and connection. Cannot create new conversation without external_id reference.',
+            ], 400);
+        }
+
         try {
             // Create new conversation
             $conversation = Conversation::create([
                 'contact_id' => $contact->id,
                 'connection_id' => $connection->id,
+                'external_id' => $lastConversation->external_id,
                 'user_id' => Auth::id(),
                 'status' => Status::Active,
                 'last_message_at' => now(),

@@ -15,11 +15,6 @@ use Telegram\Bot\Api;
 
 class TelegramHandler implements MessageHandlerInterface
 {
-    public function getConversationId(array $payload): string
-    {
-        return $payload['chat']['id'] ?? null;
-    }
-
     public function getMessageId(array $payload): string
     {
         return $payload['message_id'];
@@ -39,13 +34,6 @@ class TelegramHandler implements MessageHandlerInterface
         ])->validate();
 
         $connection = $conversation->connection;
-
-        // For new conversation
-        if(is_null($conversation->external_id)) {
-            $conversation->update([
-                'external_id' => $conversation->id,
-            ]);
-        }
 
         try {
             $telegram = new Api($connection->credentials['token']);
