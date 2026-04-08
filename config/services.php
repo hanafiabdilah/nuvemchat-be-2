@@ -39,6 +39,7 @@ return [
         'client_id' => env('INSTAGRAM_CLIENT_ID'),
         'client_secret' => env('INSTAGRAM_CLIENT_SECRET'),
         'redirect_uri' => env('INSTAGRAM_REDIRECT_URI'),
+        'webhook_verify_token' => env('INSTAGRAM_WEBHOOK_VERIFY_TOKEN'),
     ],
 
 ];
