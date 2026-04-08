@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\Connection\Channel;
 use App\Events\ContactCreated;
 use Illuminate\Database\Eloquent\Model;
 
@@ -10,6 +11,7 @@ class Contact extends Model
     protected $fillable = [
         'tenant_id',
         'external_id',
+        'channel',
         'name',
         'username',
         'photo_profile',
@@ -28,6 +30,10 @@ class Contact extends Model
 
         return $contact;
     }
+
+    protected $casts = [
+        'channel' => Channel::class,
+    ];
 
     public function tenant()
     {
