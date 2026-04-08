@@ -43,6 +43,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             ?? $payload['msgContent']['imageMessage']['caption']
             ?? $payload['msgContent']['videoMessage']['caption']
             ?? $payload['msgContent']['documentMessage']['caption']
+            ?? $payload['msgContent']['documentWithCaptionMessage']['message']['documentMessage']['caption']
             ?? $payload['msgContent']['stickerMessage']['caption']
             ?? $payload['msgContent']['reactionMessage']['text']
             ?? null;
@@ -60,7 +61,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return MessageType::Image;
         } elseif (isset($payload['msgContent']['videoMessage'])) {
             return MessageType::Video;
-        } elseif (isset($payload['msgContent']['documentMessage'])) {
+        } elseif (isset($payload['msgContent']['documentMessage']) || isset($payload['msgContent']['documentWithCaptionMessage'])) {
             return MessageType::Document;
         } elseif (isset($payload['msgContent']['stickerMessage'])) {
             return MessageType::Sticker;
@@ -471,11 +472,15 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             default => null,
         };
 
-        if (!$mediaKey || !isset($payload['msgContent'][$mediaKey])) {
-            return;
-        }
+        if(!$mediaKey) return;
 
-        $media = $payload['msgContent'][$mediaKey];
+        $media = $payload['msgContent'][$mediaKey] ?? null;
+
+        if (!$media){
+            if($messageType !== MessageType::Document) return;
+            $media = $payload['msgContent']['documentWithCaptionMessage']['message']['documentMessage'];
+            if(!$media) return;
+        }
 
         $mediaKeyValue = $media['mediaKey'] ?? null;
         $directPath = $media['directPath'] ?? null;
