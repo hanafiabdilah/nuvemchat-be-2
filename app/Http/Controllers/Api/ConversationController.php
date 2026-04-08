@@ -82,6 +82,7 @@ class ConversationController extends Controller
                 'connection_id' => $connection->id,
                 'user_id' => Auth::id(),
                 'status' => Status::Active,
+                'last_message_at' => now(),
             ]);
 
             // Send the message
