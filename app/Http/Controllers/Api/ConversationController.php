@@ -64,11 +64,11 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
-            return response()->json([
-                'message' => 'Unauthorized',
-            ], 403);
-        }
+        // if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        //     return response()->json([
+        //         'message' => 'Unauthorized',
+        //     ], 403);
+        // }
 
         $conversation->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->update(['read_at' => now()]);
         broadcast(new ConversationUpdated($conversation));
