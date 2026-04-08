@@ -26,6 +26,7 @@ class Contact extends Model
         ], [
             'name' => $name,
             'username' => $username,
+            'channel' => $connection->channel,
         ]);
 
         return $contact;
