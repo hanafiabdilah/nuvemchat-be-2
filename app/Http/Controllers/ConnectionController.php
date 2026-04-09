@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\Connection\Status;
 use App\Events\ConnectionUpdated;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\ConnectionService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -179,7 +181,7 @@ class ConnectionController extends Controller
             foreach ($connections as $connection) {
                 // Disconnect by removing credentials
                 $connection->update([
-                    'status' => 'disconnected',
+                    'status' => Status::Inactive,
                     'credentials' => null,
                 ]);
 
@@ -228,9 +230,19 @@ class ConnectionController extends Controller
 
             $instagramUserId = $data['user_id'];
 
+            // Generate confirmation code
+            $confirmationCode = hash('sha256', $instagramUserId . time() . uniqid());
+            $statusUrl = route('oauth.instagram.data-deletion') . '?code=' . $confirmationCode;
+
             Log::info('Instagram data deletion processing', [
                 'instagram_user_id' => $instagramUserId,
+                'confirmation_code' => $confirmationCode,
             ]);
+
+            // Initialize counters
+            $connectionsDeleted = 0;
+            $conversationsDeleted = 0;
+            $messagesDeleted = 0;
 
             // Find all connections with this Instagram user_id
             $connections = Connection::where('channel', 'instagram')
@@ -246,19 +258,23 @@ class ConnectionController extends Controller
                 $conversations = $connection->conversations ?? Conversation::where('connection_id', $connection->id)->get();
 
                 foreach ($conversations as $conversation) {
-                    // Delete all messages in this conversation
+                    // Count and delete all messages in this conversation
+                    $messageCount = Message::where('conversation_id', $conversation->id)->count();
                     Message::where('conversation_id', $conversation->id)->delete();
+                    $messagesDeleted += $messageCount;
 
                     // Delete conversation tags
                     $conversation->tags()->detach();
 
                     // Delete the conversation
                     $conversation->delete();
+                    $conversationsDeleted++;
                 }
 
                 // Delete the connection itself
                 $connection->users()->detach(); // Detach users
                 $connection->delete();
+                $connectionsDeleted++;
 
                 Log::info('Instagram connection and data deleted', [
                     'connection_id' => $connection->id,
@@ -266,13 +282,32 @@ class ConnectionController extends Controller
                 ]);
             }
 
-            // Generate confirmation code and status URL as per Meta requirements
-            $confirmationCode = hash('sha256', $instagramUserId . time());
-            $statusUrl = config('app.url') . '/api/instagram/deletion-status?code=' . $confirmationCode;
+            // Save deletion log to database for audit
+            DB::table('instagram_deletion_logs')->insert([
+                'confirmation_code' => $confirmationCode,
+                'instagram_user_id' => $instagramUserId,
+                'status' => 'completed',
+                'connections_deleted' => $connectionsDeleted,
+                'conversations_deleted' => $conversationsDeleted,
+                'messages_deleted' => $messagesDeleted,
+                'requested_at' => now(),
+                'completed_at' => now(),
+                'meta' => json_encode([
+                    'algorithm' => $data['algorithm'] ?? null,
+                    'issued_at' => $data['issued_at'] ?? null,
+                ]),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
             Log::info('Instagram data deletion completed', [
                 'instagram_user_id' => $instagramUserId,
                 'confirmation_code' => $confirmationCode,
+                'stats' => [
+                    'connections' => $connectionsDeleted,
+                    'conversations' => $conversationsDeleted,
+                    'messages' => $messagesDeleted,
+                ],
             ]);
 
             // Meta expects this specific response format
@@ -289,6 +324,45 @@ class ConnectionController extends Controller
 
             return response()->json([
                 'error' => 'Failed to process data deletion',
+            ], 500);
+        }
+    }
+
+    public function instagramDeletionStatus(Request $request)
+    {
+        $code = $request->query('code');
+
+        if (!$code) {
+            return response()->view('instagram.deletion-status-error', [
+                'error' => 'Missing confirmation code',
+            ], 400);
+        }
+
+        try {
+            // Find deletion log by confirmation code
+            $log = DB::table('instagram_deletion_logs')
+                ->where('confirmation_code', $code)
+                ->first();
+
+            if (!$log) {
+                return response()->view('instagram.deletion-status-error', [
+                    'error' => 'Invalid confirmation code',
+                ], 404);
+            }
+
+            // Return status page
+            return view('instagram.deletion-status', [
+                'log' => $log,
+            ]);
+
+        } catch (\Throwable $th) {
+            Log::error('Error retrieving deletion status', [
+                'error' => $th->getMessage(),
+                'code' => $code,
+            ]);
+
+            return response()->view('instagram.deletion-status-error', [
+                'error' => 'Failed to retrieve deletion status',
             ], 500);
         }
     }

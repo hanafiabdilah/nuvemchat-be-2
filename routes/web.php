@@ -23,6 +23,8 @@ Route::post('/oauth/instagram/deauthorize', [ConnectionController::class, 'insta
     ->name('oauth.instagram.deauthorize');
 Route::post('/oauth/instagram/data-deletion', [ConnectionController::class, 'instagramDataDeletion'])
     ->name('oauth.instagram.data-deletion');
+Route::get('/instagram/deletion-status', [ConnectionController::class, 'instagramDeletionStatus'])
+    ->name('instagram.deletion-status');
 
 require __DIR__.'/settings.php';
 require __DIR__.'/webhook.php';
