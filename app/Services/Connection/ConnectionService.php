@@ -7,6 +7,7 @@ use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelFactory;
+use Illuminate\Support\Facades\Log;
 
 class ConnectionService
 {
@@ -58,6 +59,14 @@ class ConnectionService
 
     public function delete(Connection $connection): void
     {
+        Log::info('Attempting to delete connection', [
+            'connection_id' => $connection->id,
+            'channel' => $connection->channel,
+            'status' => $connection->status,
+            'instagram_channel' => $connection->channel === Channel::Instagram,
+            'active' => $connection->status === Status::Active,
+         ]);
+         return;
         // Validation: Instagram connections must be disconnected first
         if ($connection->channel === Channel::Instagram && $connection->status === Status::Active) {
             throw new ConnectionException(
