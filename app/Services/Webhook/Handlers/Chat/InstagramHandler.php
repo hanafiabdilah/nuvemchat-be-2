@@ -59,26 +59,9 @@ class InstagramHandler implements ChatHandlerInterface
             // Instagram share, post, or reel
             if (in_array($type, ['share', 'ig_post', 'ig_reel'])) {
                 $payload = $attachment['payload'] ?? [];
-                $url = $payload['url'] ?? null;
                 $title = $payload['title'] ?? null;
 
-                // Construct Instagram link from media ID if available
-                $instagramLink = null;
-                if ($type === 'ig_reel' && isset($payload['reel_video_id'])) {
-                    // Use the URL provided by Instagram for reels
-                    $instagramLink = $url;
-                } elseif ($type === 'ig_post' && isset($payload['ig_post_media_id'])) {
-                    // Use the URL provided by Instagram for posts
-                    $instagramLink = $url;
-                } else {
-                    // For 'share' type, use the URL directly
-                    $instagramLink = $url;
-                }
-
-                if ($instagramLink) {
-                    return $title ? "$title\n$instagramLink" : $instagramLink;
-                }
-
+                // Return title or placeholder (permalink will be fetched later)
                 return $title ?? 'Instagram post shared';
             }
 
@@ -252,6 +235,18 @@ class InstagramHandler implements ChatHandlerInterface
         if($message){
             if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
                 $this->handleMediaMessage($message, $payload, $messageType);
+            }
+
+            // Handle Instagram share/post/reel to fetch permalink
+            $messaging = $payload['messaging'][0] ?? [];
+            $messageData = $messaging['message'] ?? [];
+            if (isset($messageData['attachments'][0])) {
+                $attachment = $messageData['attachments'][0];
+                $attachmentType = $attachment['type'] ?? null;
+
+                if (in_array($attachmentType, ['ig_post', 'ig_reel'])) {
+                    $this->handleInstagramShare($message, $attachment, $connection);
+                }
             }
 
             broadcast(new MessageReceived($message));
@@ -470,5 +465,72 @@ class InstagramHandler implements ChatHandlerInterface
             'application/x-zip-compressed' => 'zip',
             default => 'bin',
         };
+    }
+
+    private function handleInstagramShare(Message $message, array $attachment, Connection $connection)
+    {
+        $type = $attachment['type'] ?? null;
+        $payload = $attachment['payload'] ?? [];
+        $title = $payload['title'] ?? null;
+
+        // Get media ID
+        $mediaId = null;
+        if ($type === 'ig_reel' && isset($payload['reel_video_id'])) {
+            $mediaId = $payload['reel_video_id'];
+        } elseif ($type === 'ig_post' && isset($payload['ig_post_media_id'])) {
+            $mediaId = $payload['ig_post_media_id'];
+        }
+
+        if (!$mediaId) {
+            return;
+        }
+
+        try {
+            $accessToken = $connection->credentials['access_token'] ?? null;
+
+            if (!$accessToken) {
+                Log::error('InstagramHandler: Missing access token for fetching permalink', [
+                    'connection_id' => $connection->id,
+                ]);
+                return;
+            }
+
+            // Fetch permalink from Instagram Graph API
+            $response = Http::get("https://graph.instagram.com/v21.0/{$mediaId}", [
+                'fields' => 'permalink',
+                'access_token' => $accessToken,
+            ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                $permalink = $data['permalink'] ?? null;
+
+                if ($permalink) {
+                    // Update message body with Instagram permalink
+                    $newBody = $title ? "$title\n$permalink" : $permalink;
+
+                    $message->update([
+                        'body' => $newBody,
+                    ]);
+
+                    Log::info('InstagramHandler: Instagram permalink fetched successfully', [
+                        'message_id' => $message->id,
+                        'permalink' => $permalink,
+                    ]);
+                }
+            } else {
+                Log::warning('InstagramHandler: Failed to fetch Instagram permalink', [
+                    'message_id' => $message->id,
+                    'media_id' => $mediaId,
+                    'response' => $response->json(),
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::error('InstagramHandler: Error fetching Instagram permalink', [
+                'message_id' => $message->id,
+                'media_id' => $mediaId,
+                'error' => $th->getMessage(),
+            ]);
+        }
     }
 }
