@@ -418,14 +418,18 @@ class InstagramHandler implements ChatHandlerInterface
                 $contact->update([
                     'name' => $userInfo['name'] ?? $userInfo['username'] ?? $instagramUserId,
                     'username' => $userInfo['username'] ?? null,
-                    'profile_pic' => $userInfo['profile_pic'] ?? null,
                 ]);
+
+                // Download and save profile picture if available
+                if (!empty($userInfo['profile_pic'])) {
+                    $this->downloadProfilePicture($contact, $userInfo['profile_pic']);
+                }
 
                 Log::info('InstagramHandler: Contact info updated', [
                     'contact_id' => $contact->id,
                     'name' => $userInfo['name'] ?? null,
                     'username' => $userInfo['username'] ?? null,
-                    'response' => $userInfo,
+                    'has_profile_pic' => !empty($userInfo['profile_pic']),
                 ]);
             } else {
                 Log::warning('InstagramHandler: Failed to fetch user info from Instagram', [
@@ -437,6 +441,47 @@ class InstagramHandler implements ChatHandlerInterface
         } catch (\Throwable $th) {
             Log::error('InstagramHandler: Error updating contact info', [
                 'contact_id' => $contact->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
+    private function downloadProfilePicture(Contact $contact, string $profilePicUrl)
+    {
+        try {
+            // Download profile picture from Instagram CDN
+            $response = Http::get($profilePicUrl);
+
+            if (!$response->successful()) {
+                Log::warning('InstagramHandler: Failed to download profile picture', [
+                    'contact_id' => $contact->id,
+                    'url' => $profilePicUrl,
+                    'status' => $response->status(),
+                ]);
+                return;
+            }
+
+            // Determine extension from mime type or default to jpg
+            $mimeType = $response->header('Content-Type');
+            $extension = $this->getExtensionFromMimeType($mimeType) ?? 'jpg';
+
+            // Save profile photo
+            $photoPath = 'profile_photos/' . $contact->id . '_' . uniqid() . '.' . $extension;
+            Storage::disk('local')->put($photoPath, $response->body());
+
+            $contact->update([
+                'photo_profile' => $photoPath,
+            ]);
+
+            Log::info('InstagramHandler: Profile picture downloaded successfully', [
+                'contact_id' => $contact->id,
+                'photo_path' => $photoPath,
+            ]);
+
+        } catch (\Throwable $th) {
+            Log::error('InstagramHandler: Error downloading profile picture', [
+                'contact_id' => $contact->id,
+                'url' => $profilePicUrl,
                 'error' => $th->getMessage(),
             ]);
         }
