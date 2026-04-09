@@ -425,6 +425,7 @@ class InstagramHandler implements ChatHandlerInterface
                     'contact_id' => $contact->id,
                     'name' => $userInfo['name'] ?? null,
                     'username' => $userInfo['username'] ?? null,
+                    'response' => $userInfo,
                 ]);
             } else {
                 Log::warning('InstagramHandler: Failed to fetch user info from Instagram', [
