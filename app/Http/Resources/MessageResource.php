@@ -2,6 +2,8 @@
 
 namespace App\Http\Resources;
 
+use App\Enums\Connection\Channel;
+use App\Enums\Message\MessageType;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -27,6 +29,7 @@ class MessageResource extends JsonResource
             'attachment_url' => $this->when(!$this->withoutAttachmentUrl, fn() =>
                 $this->attachment ? Storage::disk('local')->temporaryUrl($this->attachment, Carbon::now()->addMonths(6)) : null
             ),
+            'meta' => $this->getProcessedMeta(),
             'sent_at' => $this->sent_at,
             'delivery_at' => $this->delivery_at,
             'read_at' => $this->read_at,
@@ -34,6 +37,64 @@ class MessageResource extends JsonResource
             'unsend_at' => $this->unsend_at,
             'created_at' => $this->created_at->timestamp,
             'updated_at' => $this->updated_at->timestamp,
+        ];
+    }
+
+    /**
+     * Get processed meta based on channel and message type
+     */
+    private function getProcessedMeta(): ?array
+    {
+        $channel = $this->conversation->connection->channel ?? null;
+
+        if (!$channel) {
+            return null;
+        }
+
+        return match($channel) {
+            Channel::WhatsappWApi => $this->getWhatsappWApiMeta(),
+            Channel::WhatsappOfficial => null, // TODO: implement when needed
+            Channel::Instagram => null,        // TODO: implement when needed
+            Channel::Telegram => null,         // TODO: implement when needed
+            default => null,
+        };
+    }
+
+    /**
+     * Get processed meta for WhatsApp W-API messages
+     */
+    private function getWhatsappWApiMeta(): ?array
+    {
+        return match($this->message_type) {
+            MessageType::Location => $this->getWhatsappWApiLocationData(),
+            default => null,
+        };
+    }
+
+    /**
+     * Extract location data from WhatsApp W-API meta
+     */
+    private function getWhatsappWApiLocationData(): ?array
+    {
+        $location = $this->meta['msgContent']['locationMessage'] ?? null;
+
+        if (!$location) {
+            return null;
+        }
+
+        $latitude = $location['degreesLatitude'] ?? null;
+        $longitude = $location['degreesLongitude'] ?? null;
+
+        if ($latitude === null || $longitude === null) {
+            return null;
+        }
+
+        return [
+            'location' => [
+                'latitude' => $latitude,
+                'longitude' => $longitude,
+                'google_maps_url' => "https://www.google.com/maps?q={$latitude},{$longitude}",
+            ],
         ];
     }
 }

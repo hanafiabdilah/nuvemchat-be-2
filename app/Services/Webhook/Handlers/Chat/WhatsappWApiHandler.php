@@ -65,6 +65,8 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return MessageType::Document;
         } elseif (isset($payload['msgContent']['stickerMessage'])) {
             return MessageType::Sticker;
+        } elseif (isset($payload['msgContent']['locationMessage'])) {
+            return MessageType::Location;
         }
 
         return MessageType::Unsupported;
