@@ -244,7 +244,7 @@ class InstagramHandler implements ChatHandlerInterface
                 $attachment = $messageData['attachments'][0];
                 $attachmentType = $attachment['type'] ?? null;
 
-                if (in_array($attachmentType, ['ig_post', 'ig_reel'])) {
+                if (in_array($attachmentType, ['share', 'ig_post', 'ig_reel'])) {
                     $this->handleInstagramShare($message, $attachment, $connection);
                 }
             }
