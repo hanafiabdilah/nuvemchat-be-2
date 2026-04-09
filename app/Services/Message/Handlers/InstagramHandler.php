@@ -178,16 +178,61 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required|file|mimes:aac,m4a,wav,mp4|max:25600',
+            'audio' => 'required|file|mimes:aac,m4a,wav,mp4,mp3,ogg,opus,webm|max:25600',
         ])->validate();
 
         $connection = $conversation->connection;
         $tempPublicPath = null;
+        $convertedFilePath = null;
 
         try {
-            // Store audio temporarily in public directory
             $audioContent = file_get_contents($data['audio']->getRealPath());
-            $tempFileName = 'temp_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
+            $extension = strtolower($data['audio']->getClientOriginalExtension());
+            $originalExtension = $extension;
+
+            // Instagram supported formats: aac, m4a, wav, mp4
+            $supportedFormats = ['aac', 'm4a', 'wav', 'mp4'];
+
+            // Convert if not in supported formats
+            if (!in_array($extension, $supportedFormats)) {
+                Log::info('InstagramHandler: Converting audio to M4A', [
+                    'original_format' => $extension,
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                $inputPath = $data['audio']->getRealPath();
+                $convertedFilePath = sys_get_temp_dir() . '/' . uniqid() . '.m4a';
+
+                // Convert using FFmpeg to M4A with AAC codec
+                $command = sprintf(
+                    'ffmpeg -i %s -c:a aac -b:a 128k %s 2>&1',
+                    escapeshellarg($inputPath),
+                    escapeshellarg($convertedFilePath)
+                );
+
+                exec($command, $output, $returnVar);
+
+                if ($returnVar !== 0 || !file_exists($convertedFilePath)) {
+                    Log::error('InstagramHandler: Audio conversion failed', [
+                        'command' => $command,
+                        'output' => $output,
+                        'return_var' => $returnVar,
+                    ]);
+                    throw new Exception('Failed to convert audio format. Please ensure FFmpeg is installed.');
+                }
+
+                $audioContent = file_get_contents($convertedFilePath);
+                $extension = 'm4a';
+
+                Log::info('InstagramHandler: Audio converted successfully', [
+                    'from' => $originalExtension,
+                    'to' => $extension,
+                    'size' => strlen($audioContent),
+                ]);
+            }
+
+            // Store audio temporarily in public directory
+            $tempFileName = 'temp_' . uniqid() . '.' . $extension;
             $tempPublicPath = 'audios/' . $tempFileName;
 
             Storage::disk('public')->put($tempPublicPath, $audioContent);
@@ -197,6 +242,7 @@ class InstagramHandler implements MessageHandlerInterface
 
             Log::info('InstagramHandler: Sending audio via URL', [
                 'url' => $audioUrl,
+                'format' => $extension,
                 'size' => strlen($audioContent),
                 'conversation_id' => $conversation->id,
             ]);
@@ -242,21 +288,31 @@ class InstagramHandler implements MessageHandlerInterface
                 'meta' => $responseArray,
             ]);
 
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
+            // Store the converted audio content permanently
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
             Storage::disk('local')->put($mediaPath, $audioContent);
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
 
+            // Clean up converted file if exists
+            if ($convertedFilePath && file_exists($convertedFilePath)) {
+                @unlink($convertedFilePath);
+            }
+
             // Delete temporary public file
             // Storage::disk('public')->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
-            // Clean up temporary file if exists
+            // Clean up temporary files if exist
             if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
                 Storage::disk('public')->delete($tempPublicPath);
+            }
+
+            if ($convertedFilePath && file_exists($convertedFilePath)) {
+                @unlink($convertedFilePath);
             }
 
             Log::error('InstagramHandler: Failed to send audio', [
