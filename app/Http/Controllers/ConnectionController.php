@@ -145,6 +145,7 @@ class ConnectionController extends Controller
     {
         Log::info('Instagram deauthorization received', [
             'query' => $request->query(),
+            'body' => $request->all(),
         ]);
 
         return response()->json([
@@ -156,6 +157,7 @@ class ConnectionController extends Controller
     {
         Log::info('Instagram data deletion request received', [
             'query' => $request->query(),
+            'body' => $request->all(),
         ]);
 
         return response()->json([
