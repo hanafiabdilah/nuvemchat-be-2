@@ -232,15 +232,16 @@ class ConnectionController extends Controller
 
             // Generate confirmation code
             $confirmationCode = hash('sha256', $instagramUserId . time() . uniqid());
-            $statusUrl = route('oauth.instagram.data-deletion') . '?code=' . $confirmationCode;
+            $statusUrl = route('instagram.deletion-status', ['code' => $confirmationCode]);
 
             Log::info('Instagram data deletion processing', [
                 'instagram_user_id' => $instagramUserId,
                 'confirmation_code' => $confirmationCode,
+                'status_url' => $statusUrl,
             ]);
 
             // Initialize counters
-            $connectionsDeleted = 0;
+            $connectionsAffected = 0;
             $conversationsDeleted = 0;
             $messagesDeleted = 0;
 
@@ -271,14 +272,21 @@ class ConnectionController extends Controller
                     $conversationsDeleted++;
                 }
 
-                // Delete the connection itself
-                $connection->users()->detach(); // Detach users
-                $connection->delete();
-                $connectionsDeleted++;
+                // Disconnect by removing credentials and setting status
+                // DO NOT delete the connection - keep it as historical record
+                $connection->update([
+                    'status' => Status::Inactive,
+                    'credentials' => null,
+                ]);
 
-                Log::info('Instagram connection and data deleted', [
+                $connectionsAffected++;
+
+                broadcast(new ConnectionUpdated($connection->fresh()));
+
+                Log::info('Instagram connection data deleted', [
                     'connection_id' => $connection->id,
                     'instagram_user_id' => $instagramUserId,
+                    'conversations_deleted' => count($conversations),
                 ]);
             }
 
@@ -287,7 +295,7 @@ class ConnectionController extends Controller
                 'confirmation_code' => $confirmationCode,
                 'instagram_user_id' => $instagramUserId,
                 'status' => 'completed',
-                'connections_deleted' => $connectionsDeleted,
+                'connections_deleted' => $connectionsAffected,
                 'conversations_deleted' => $conversationsDeleted,
                 'messages_deleted' => $messagesDeleted,
                 'requested_at' => now(),
@@ -295,6 +303,7 @@ class ConnectionController extends Controller
                 'meta' => json_encode([
                     'algorithm' => $data['algorithm'] ?? null,
                     'issued_at' => $data['issued_at'] ?? null,
+                    'status_url' => $statusUrl,
                 ]),
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -303,10 +312,11 @@ class ConnectionController extends Controller
             Log::info('Instagram data deletion completed', [
                 'instagram_user_id' => $instagramUserId,
                 'confirmation_code' => $confirmationCode,
+                'status_url' => $statusUrl,
                 'stats' => [
-                    'connections' => $connectionsDeleted,
-                    'conversations' => $conversationsDeleted,
-                    'messages' => $messagesDeleted,
+                    'connections_affected' => $connectionsAffected,
+                    'conversations_deleted' => $conversationsDeleted,
+                    'messages_deleted' => $messagesDeleted,
                 ],
             ]);
 

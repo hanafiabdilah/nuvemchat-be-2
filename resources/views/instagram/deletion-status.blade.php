@@ -162,7 +162,7 @@
                 <path d="M20 32L28 40L44 24" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <h1>Data Deletion Completed</h1>
-            <p>Your Instagram data has been successfully deleted from our system</p>
+            <p>Your Instagram data has been successfully removed from our system</p>
             <span class="status-badge status-{{ strtolower($log->status) }}">
                 {{ ucfirst($log->status) }}
             </span>
@@ -182,7 +182,7 @@
                 <span class="info-value">{{ \Carbon\Carbon::parse($log->completed_at)->format('M d, Y H:i:s') }}</span>
             </div>
             <div class="info-row">
-                <span class="info-label">Connections Deleted</span>
+                <span class="info-label">Connections Disconnected</span>
                 <span class="info-value">{{ $log->connections_deleted }}</span>
             </div>
             <div class="info-row">
@@ -201,7 +201,7 @@
         </div>
 
         <div class="footer">
-            <p>This page is provided for your records. Your data has been permanently deleted as per your request.</p>
+            <p>This page is provided for your records. Your Instagram credentials, conversations, and messages have been permanently deleted as per your request.</p>
         </div>
     </div>
 </body>
