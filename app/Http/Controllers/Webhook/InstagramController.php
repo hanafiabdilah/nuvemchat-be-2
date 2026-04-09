@@ -32,7 +32,7 @@ class InstagramController extends Controller
 
     public function handle(Request $request)
     {
-        Log::info('Instagram webhook received', json_encode($request->all()));
+        Log::info('Instagram webhook received', ['payload' => json_encode($request->all())]);
 
         $object = $request->input('object');
 
