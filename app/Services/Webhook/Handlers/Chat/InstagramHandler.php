@@ -473,17 +473,16 @@ class InstagramHandler implements ChatHandlerInterface
         $payload = $attachment['payload'] ?? [];
         $title = $payload['title'] ?? null;
 
-        // Get media ID
-        $mediaId = null;
-        if ($type === 'ig_reel' && isset($payload['reel_video_id'])) {
-            $mediaId = $payload['reel_video_id'];
-        } elseif ($type === 'ig_post' && isset($payload['ig_post_media_id'])) {
-            $mediaId = $payload['ig_post_media_id'];
-        }
+        // Get media ID from different possible fields
+        $mediaId = $payload['reel_video_id']
+                ?? $payload['ig_post_media_id']
+                ?? null;
 
         if (!$mediaId) {
             Log::warning('InstagramHandler: No media ID found for Instagram share', [
                 'message_id' => $message->id,
+                'type' => $type,
+                'payload_keys' => array_keys($payload),
             ]);
             return;
         }
