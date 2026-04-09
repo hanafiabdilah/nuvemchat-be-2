@@ -83,7 +83,7 @@ class WhatsappWApiChannel implements ContactChannelInterface
                 ->withHeaders([
                     'Authorization' => 'Bearer ' . $token,
                 ])
-                ->post('https://api.w-api.app/v1/contacts/phone-exists?instanceId=' . $instanceId, [
+                ->get('https://api.w-api.app/v1/contacts/phone-exists?instanceId=' . $instanceId, [
                     'phone' => $phoneNumber,
                 ]);
 
