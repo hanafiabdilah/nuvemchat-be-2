@@ -83,19 +83,41 @@ class InstagramChannel implements ChannelInterface
 
     public function disconnect(Connection $connection): void
     {
+        // IMPORTANT: Order matters!
+        // 1. Unsubscribe webhook FIRST (while token is still valid)
+        // 2. Then revoke access token (invalidates the token)
+        // 3. Finally clear credentials
+
         try {
-            // Unsubscribe from webhooks if needed
+            // 1. Unsubscribe from webhooks (requires valid access token)
             $this->unsubscribeWebhook($connection);
         } catch (\Throwable $th) {
-            Log::warning('Failed to unsubscribe Instagram webhook, but will update status to inactive anyway', [
-                'connection' => $connection,
+            Log::warning('Failed to unsubscribe Instagram webhook, but will continue disconnecting', [
+                'connection_id' => $connection->id,
                 'error' => $th->getMessage()
             ]);
         }
 
-        // Always update status to inactive
+        try {
+            // 2. Revoke access token (removes app from Instagram permissions)
+            //    This must be done AFTER unsubscribe because it invalidates the token
+            $this->revokeAccessToken($connection);
+        } catch (\Throwable $th) {
+            Log::warning('Failed to revoke Instagram access token, but will continue disconnecting', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage()
+            ]);
+        }
+
+        // 3. Clear credentials and set status to disconnected
+        // This ensures user's Instagram data is removed from our system
         $connection->update([
             'status' => Status::Inactive,
+            'credentials' => null,
+        ]);
+
+        Log::info('Instagram connection disconnected successfully', [
+            'connection_id' => $connection->id,
         ]);
     }
 
@@ -205,6 +227,52 @@ class InstagramChannel implements ChannelInterface
             }
         } catch (\Throwable $th) {
             Log::error('Error in webhook unsubscription process', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            throw $th;
+        }
+    }
+
+    private function revokeAccessToken(Connection $connection): void
+    {
+        try {
+            $userId = $connection->credentials['user_id'] ?? null;
+            $accessToken = $connection->credentials['access_token'] ?? null;
+
+            if (!$userId || !$accessToken) {
+                Log::warning('Missing user_id or access_token for token revocation', [
+                    'connection_id' => $connection->id,
+                ]);
+                return;
+            }
+
+            // Revoke all permissions - this removes the app from Instagram Settings
+            // DELETE /{user-id}/permissions
+            $response = Http::delete("https://graph.facebook.com/v25.0/{$userId}/permissions", [
+                'access_token' => $accessToken,
+            ]);
+
+            if ($response->successful()) {
+                Log::info('Successfully revoked Instagram access token and permissions', [
+                    'connection_id' => $connection->id,
+                    'user_id' => $userId,
+                    'response' => $response->json(),
+                ]);
+            } else {
+                Log::warning('Failed to revoke Instagram access token', [
+                    'connection_id' => $connection->id,
+                    'user_id' => $userId,
+                    'status' => $response->status(),
+                    'response' => $response->json(),
+                ]);
+
+                // Even if revoke fails, we'll continue with disconnect
+                // User can manually revoke from Instagram Settings
+            }
+        } catch (\Throwable $th) {
+            Log::error('Error in token revocation process', [
                 'connection_id' => $connection->id,
                 'error' => $th->getMessage(),
             ]);
