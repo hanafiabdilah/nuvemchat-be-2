@@ -65,7 +65,7 @@ class InstagramHandler implements ChatHandlerInterface
                 return $title ?? 'Instagram post shared';
             }
 
-            // Media with caption (including ephemeral)
+            // Media with caption
             if (isset($attachment['payload']['caption'])) {
                 return $attachment['payload']['caption'];
             }
@@ -85,20 +85,7 @@ class InstagramHandler implements ChatHandlerInterface
 
         // Check attachments
         if (isset($message['attachments'][0]['type'])) {
-            $attachmentType = $message['attachments'][0]['type'];
-
-            // For ephemeral, try to detect media type from URL or default to Image
-            if ($attachmentType === 'ephemeral') {
-                $url = $message['attachments'][0]['payload']['url'] ?? '';
-                // Try to detect from URL extension or default to Image
-                if (preg_match('/\.(mp4|mov|avi|mkv)($|\?)/i', $url)) {
-                    return MessageType::Video;
-                }
-                // Default ephemeral to Image (most common case)
-                return MessageType::Image;
-            }
-
-            return match($attachmentType) {
+            return match($message['attachments'][0]['type']) {
                 'image' => MessageType::Image,
                 'video' => MessageType::Video,
                 'audio' => MessageType::Audio,
@@ -352,7 +339,6 @@ class InstagramHandler implements ChatHandlerInterface
         }
 
         $attachment = $attachments[0];
-        $attachmentType = $attachment['type'] ?? null;
         $mediaUrl = $attachment['payload']['url'] ?? null;
 
         if (!$mediaUrl) {
@@ -390,36 +376,17 @@ class InstagramHandler implements ChatHandlerInterface
             $mimeType = $response->header('Content-Type');
             $extension = $this->getExtensionFromMimeType($mimeType) ?? 'bin';
 
-            // For ephemeral messages, update message type based on actual mime type
-            $finalMessageType = $messageType;
-            if ($attachmentType === 'ephemeral') {
-                $finalMessageType = $this->getMessageTypeFromMimeType($mimeType);
-
-                Log::info('InstagramHandler: Ephemeral message detected', [
-                    'message_id' => $message->id,
-                    'detected_type' => $finalMessageType->value,
-                    'mime_type' => $mimeType,
-                ]);
-            }
-
             // Save media file
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
             Storage::disk('local')->put($mediaPath, $response->body());
 
-            $updateData = ['attachment' => $mediaPath];
-
-            // Update message type if it changed (for ephemeral)
-            if ($finalMessageType !== $messageType) {
-                $updateData['message_type'] = $finalMessageType;
-            }
-
-            $message->update($updateData);
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
 
             Log::info('InstagramHandler: Media downloaded successfully', [
                 'message_id' => $message->id,
                 'media_path' => $mediaPath,
-                'message_type' => $finalMessageType->value,
-                'is_ephemeral' => $attachmentType === 'ephemeral',
             ]);
 
         } catch (\Throwable $th) {
@@ -499,40 +466,6 @@ class InstagramHandler implements ChatHandlerInterface
             'application/x-zip-compressed' => 'zip',
             default => 'bin',
         };
-    }
-
-    private function getMessageTypeFromMimeType(string $mimeType): MessageType
-    {
-        // Clean mime type (remove charset or other parameters)
-        $cleanMimeType = explode(';', $mimeType)[0];
-
-        // Determine message type based on mime type
-        if (str_starts_with($cleanMimeType, 'image/')) {
-            return MessageType::Image;
-        }
-
-        if (str_starts_with($cleanMimeType, 'video/')) {
-            return MessageType::Video;
-        }
-
-        if (str_starts_with($cleanMimeType, 'audio/')) {
-            return MessageType::Audio;
-        }
-
-        // For documents/files
-        if (in_array($cleanMimeType, [
-            'application/pdf',
-            'application/msword',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'application/vnd.ms-excel',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            'application/zip',
-            'application/x-zip-compressed',
-        ])) {
-            return MessageType::Document;
-        }
-
-        return MessageType::Unsupported;
     }
 
     private function handleInstagramShare(Message $message, array $attachment, Connection $connection)
