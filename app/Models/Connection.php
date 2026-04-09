@@ -42,4 +42,12 @@ class Connection extends Model
     {
         return $this->belongsToMany(User::class)->withTimestamps();
     }
+
+    /**
+     * Get the conversations for this connection.
+     */
+    public function conversations()
+    {
+        return $this->hasMany(Conversation::class);
+    }
 }

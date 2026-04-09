@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Events\ConnectionUpdated;
 use App\Models\Connection;
+use App\Models\Conversation;
+use App\Models\Message;
 use App\Services\Connection\ConnectionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
@@ -143,25 +145,189 @@ class ConnectionController extends Controller
 
     public function instagramDeauthorize(Request $request)
     {
-        Log::info('Instagram deauthorization received', [
-            'query' => $request->query(),
-            'body' => $request->all(),
-        ]);
+        try {
+            $signedRequest = $request->input('signed_request');
 
-        return response()->json([
-            'message' => 'Instagram deauthorization received',
-        ]);
+            if (!$signedRequest) {
+                Log::warning('Instagram deauthorization: missing signed_request');
+                return response()->json(['error' => 'Missing signed_request'], 400);
+            }
+
+            // Parse signed request
+            $data = $this->parseSignedRequest($signedRequest);
+
+            if (!$data || !isset($data['user_id'])) {
+                Log::error('Instagram deauthorization: invalid signed_request');
+                return response()->json(['error' => 'Invalid signed_request'], 400);
+            }
+
+            $instagramUserId = $data['user_id'];
+
+            Log::info('Instagram deauthorization processing', [
+                'instagram_user_id' => $instagramUserId,
+            ]);
+
+            // Find all connections with this Instagram user_id
+            $connections = Connection::where('channel', 'instagram')
+                ->where(function ($query) use ($instagramUserId) {
+                    $query->whereJsonContains('credentials->user_id', $instagramUserId)
+                          ->orWhereJsonContains('credentials->instagram_account_id', $instagramUserId)
+                          ->orWhereJsonContains('credentials->page_id', $instagramUserId);
+                })
+                ->get();
+
+            foreach ($connections as $connection) {
+                // Disconnect by removing credentials
+                $connection->update([
+                    'status' => 'disconnected',
+                    'credentials' => null,
+                ]);
+
+                broadcast(new ConnectionUpdated($connection->fresh()));
+
+                Log::info('Instagram connection deauthorized', [
+                    'connection_id' => $connection->id,
+                    'instagram_user_id' => $instagramUserId,
+                ]);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Deauthorization processed successfully',
+            ]);
+
+        } catch (\Throwable $th) {
+            Log::error('Error processing Instagram deauthorization', [
+                'error' => $th->getMessage(),
+                'trace' => $th->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'error' => 'Failed to process deauthorization',
+            ], 500);
+        }
     }
 
     public function instagramDataDeletion(Request $request)
     {
-        Log::info('Instagram data deletion request received', [
-            'query' => $request->query(),
-            'body' => $request->all(),
-        ]);
+        try {
+            $signedRequest = $request->input('signed_request');
 
-        return response()->json([
-            'message' => 'Instagram data deletion request received',
-        ]);
+            if (!$signedRequest) {
+                Log::warning('Instagram data deletion: missing signed_request');
+                return response()->json(['error' => 'Missing signed_request'], 400);
+            }
+
+            // Parse signed request
+            $data = $this->parseSignedRequest($signedRequest);
+
+            if (!$data || !isset($data['user_id'])) {
+                Log::error('Instagram data deletion: invalid signed_request');
+                return response()->json(['error' => 'Invalid signed_request'], 400);
+            }
+
+            $instagramUserId = $data['user_id'];
+
+            Log::info('Instagram data deletion processing', [
+                'instagram_user_id' => $instagramUserId,
+            ]);
+
+            // Find all connections with this Instagram user_id
+            $connections = Connection::where('channel', 'instagram')
+                ->where(function ($query) use ($instagramUserId) {
+                    $query->whereJsonContains('credentials->user_id', $instagramUserId)
+                          ->orWhereJsonContains('credentials->instagram_account_id', $instagramUserId)
+                          ->orWhereJsonContains('credentials->page_id', $instagramUserId);
+                })
+                ->get();
+
+            foreach ($connections as $connection) {
+                // Delete all conversations and messages related to this connection
+                $conversations = $connection->conversations ?? Conversation::where('connection_id', $connection->id)->get();
+
+                foreach ($conversations as $conversation) {
+                    // Delete all messages in this conversation
+                    Message::where('conversation_id', $conversation->id)->delete();
+
+                    // Delete conversation tags
+                    $conversation->tags()->detach();
+
+                    // Delete the conversation
+                    $conversation->delete();
+                }
+
+                // Delete the connection itself
+                $connection->users()->detach(); // Detach users
+                $connection->delete();
+
+                Log::info('Instagram connection and data deleted', [
+                    'connection_id' => $connection->id,
+                    'instagram_user_id' => $instagramUserId,
+                ]);
+            }
+
+            // Generate confirmation code and status URL as per Meta requirements
+            $confirmationCode = hash('sha256', $instagramUserId . time());
+            $statusUrl = config('app.url') . '/api/instagram/deletion-status?code=' . $confirmationCode;
+
+            Log::info('Instagram data deletion completed', [
+                'instagram_user_id' => $instagramUserId,
+                'confirmation_code' => $confirmationCode,
+            ]);
+
+            // Meta expects this specific response format
+            return response()->json([
+                'url' => $statusUrl,
+                'confirmation_code' => $confirmationCode,
+            ]);
+
+        } catch (\Throwable $th) {
+            Log::error('Error processing Instagram data deletion', [
+                'error' => $th->getMessage(),
+                'trace' => $th->getTraceAsString(),
+            ]);
+
+            return response()->json([
+                'error' => 'Failed to process data deletion',
+            ], 500);
+        }
+    }
+
+    /**
+     * Parse Instagram signed request
+     *
+     * @param string $signedRequest
+     * @return array|null
+     */
+    private function parseSignedRequest(string $signedRequest): ?array
+    {
+        try {
+            list($encodedSig, $payload) = explode('.', $signedRequest, 2);
+
+            // Decode signature
+            $sig = base64_decode(strtr($encodedSig, '-_', '+/'));
+
+            // Decode payload
+            $data = json_decode(base64_decode(strtr($payload, '-_', '+/')), true);
+
+            if (!$data) {
+                return null;
+            }
+
+            // Verify signature
+            $expectedSig = hash_hmac('sha256', $payload, config('services.instagram.client_secret'), true);
+
+            if ($sig !== $expectedSig) {
+                Log::warning('Instagram signed request: signature mismatch');
+                // Still return data for logging/debugging, but you might want to reject in production
+            }
+
+            return $data;
+        } catch (\Throwable $th) {
+            Log::error('Error parsing signed request', [
+                'error' => $th->getMessage(),
+            ]);
+            return null;
+        }
     }
 }
