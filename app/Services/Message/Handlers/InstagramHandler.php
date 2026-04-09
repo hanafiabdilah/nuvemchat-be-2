@@ -203,9 +203,9 @@ class InstagramHandler implements MessageHandlerInterface
                 $inputPath = $data['audio']->getRealPath();
                 $convertedFilePath = sys_get_temp_dir() . '/' . uniqid() . '.m4a';
 
-                // Convert using FFmpeg to M4A with AAC codec
+                // Convert using FFmpeg with simple parameters (similar to WhatsApp approach)
                 $command = sprintf(
-                    'ffmpeg -i %s -c:a aac -b:a 128k %s 2>&1',
+                    'ffmpeg -y -i %s -c:a aac -b:a 128k %s 2>&1',
                     escapeshellarg($inputPath),
                     escapeshellarg($convertedFilePath)
                 );
@@ -218,7 +218,13 @@ class InstagramHandler implements MessageHandlerInterface
                         'output' => $output,
                         'return_var' => $returnVar,
                     ]);
-                    throw new Exception('Failed to convert audio format. Please ensure FFmpeg is installed.');
+                    throw new Exception('Failed to convert audio format. FFmpeg error: ' . implode("\n", $output));
+                }
+
+                // Verify converted file is valid
+                if (filesize($convertedFilePath) === 0) {
+                    @unlink($convertedFilePath);
+                    throw new Exception('Audio conversion produced empty file');
                 }
 
                 $audioContent = file_get_contents($convertedFilePath);
@@ -228,6 +234,7 @@ class InstagramHandler implements MessageHandlerInterface
                     'from' => $originalExtension,
                     'to' => $extension,
                     'size' => strlen($audioContent),
+                    'file_size' => filesize($convertedFilePath),
                 ]);
             }
 
@@ -269,6 +276,8 @@ class InstagramHandler implements MessageHandlerInterface
                 Log::error('InstagramHandler: Failed to send audio', [
                     'response' => $responseArray,
                     'conversation_id' => $conversation->id,
+                    'audio_url' => $audioUrl,
+                    'audio_format' => $extension,
                 ]);
                 throw new Exception($responseArray['error']['message'] ?? 'Failed to send Instagram audio');
             }
