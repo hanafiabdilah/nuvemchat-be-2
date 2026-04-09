@@ -24,8 +24,16 @@ class InstagramHandler implements ChatHandlerInterface
 {
     public function getConversationId(array $payload): ?string
     {
-        // Use sender's ID as conversation identifier
-        return $payload['messaging'][0]['sender']['id'] ?? null;
+        // For echo messages (outgoing), use recipient's ID as conversation identifier
+        // For incoming messages, use sender's ID
+        $messaging = $payload['messaging'][0] ?? [];
+        $isEcho = $messaging['message']['is_echo'] ?? false;
+
+        if ($isEcho) {
+            return $messaging['recipient']['id'] ?? null;
+        }
+
+        return $messaging['sender']['id'] ?? null;
     }
 
     public function getMessageId(array $payload): ?string
@@ -100,7 +108,22 @@ class InstagramHandler implements ChatHandlerInterface
 
     public function getContactExternalId(array $payload): ?string
     {
-        return $payload['messaging'][0]['sender']['id'] ?? null;
+        // For echo messages (outgoing), contact is the recipient
+        // For incoming messages, contact is the sender
+        $messaging = $payload['messaging'][0] ?? [];
+        $isEcho = $messaging['message']['is_echo'] ?? false;
+
+        if ($isEcho) {
+            return $messaging['recipient']['id'] ?? null;
+        }
+
+        return $messaging['sender']['id'] ?? null;
+    }
+
+    public function isOutgoingMessage(array $payload): bool
+    {
+        $messaging = $payload['messaging'][0] ?? [];
+        return $messaging['message']['is_echo'] ?? false;
     }
 
     public function handle(Connection $connection, array $payload)
@@ -111,6 +134,7 @@ class InstagramHandler implements ChatHandlerInterface
         $contactExternalId = $this->getContactExternalId($payload);
         $contactName = $this->getContactName($payload);
         $contactUsername = $this->getContactUsername($payload);
+        $isOutgoing = $this->isOutgoingMessage($payload);
 
         if (!$conversationId || !$messageId || !$contactExternalId){
             Log::warning('InstagramHandler: Missing required data in payload', [
@@ -124,7 +148,7 @@ class InstagramHandler implements ChatHandlerInterface
         $isNewConversation = false;
         $conversationForWelcome = null;
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, &$isNewConversation, &$conversationForWelcome) {
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
 
             // Fetch Instagram user info to get name and username
@@ -153,7 +177,7 @@ class InstagramHandler implements ChatHandlerInterface
 
             return $conversation->messages()->create([
                 'external_id' => $messageId,
-                'sender_type' => SenderType::Incoming,
+                'sender_type' => $isOutgoing ? SenderType::Outgoing : SenderType::Incoming,
                 'message_type' => $messageType,
                 'body' => $this->getMessageBody($payload),
                 'sent_at' => $this->getMessageSentAt($payload),
@@ -171,7 +195,8 @@ class InstagramHandler implements ChatHandlerInterface
             broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
             // Send welcoming message AFTER broadcasting the main message
-            if ($isNewConversation && $conversationForWelcome) {
+            // Only send welcome message for incoming messages, not outgoing
+            if ($isNewConversation && $conversationForWelcome && !$isOutgoing) {
                 $automatedMessageService = new AutomatedMessageService();
                 $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
 
