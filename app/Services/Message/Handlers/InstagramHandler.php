@@ -84,8 +84,7 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'image' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
-            'message' => 'nullable|string',
+            'image' => 'required|image|mimes:jpeg,png,jpg|max:8192',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -108,28 +107,21 @@ class InstagramHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
-            $messagePayload = [
-                'recipient' => [
-                    'id' => $conversation->external_id,
-                ],
-                'message' => [
-                    'attachment' => [
-                        'type' => 'image',
-                        'payload' => [
-                            'url' => $imageUrl,
-                            'is_reusable' => true,
+            $response = Http::withToken($connection->credentials['access_token'])
+                ->post('https://graph.instagram.com/v25.0/me/messages', [
+                    'recipient' => [
+                        'id' => $conversation->external_id,
+                    ],
+                    'message' => [
+                        'attachment' => [
+                            'type' => 'image',
+                            'payload' => [
+                                'url' => $imageUrl,
+                                'is_reusable' => true,
+                            ],
                         ],
                     ],
-                ],
-            ];
-
-            // Add text/caption if provided
-            if (!empty($data['message'])) {
-                $messagePayload['message']['text'] = $data['message'];
-            }
-
-            $response = Http::withToken($connection->credentials['access_token'])
-                ->post('https://graph.instagram.com/v25.0/me/messages', $messagePayload);
+                ]);
 
             $responseArray = $response->json();
 
@@ -150,7 +142,7 @@ class InstagramHandler implements MessageHandlerInterface
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Image,
-                'body' => $data['message'] ?? null,
+                'body' => null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
@@ -186,7 +178,7 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            'audio' => 'required|file|mimes:aac,m4a,wav,mp4|max:25600',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -280,8 +272,7 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
-            'message' => 'nullable|string',
+            'video' => 'required|file|mimes:mp4,ogg,avi,mov,webm|max:25600',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -304,28 +295,21 @@ class InstagramHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
-            $messagePayload = [
-                'recipient' => [
-                    'id' => $conversation->external_id,
-                ],
-                'message' => [
-                    'attachment' => [
-                        'type' => 'video',
-                        'payload' => [
-                            'url' => $videoUrl,
-                            'is_reusable' => true,
+            $response = Http::withToken($connection->credentials['access_token'])
+                ->post('https://graph.instagram.com/v25.0/me/messages', [
+                    'recipient' => [
+                        'id' => $conversation->external_id,
+                    ],
+                    'message' => [
+                        'attachment' => [
+                            'type' => 'video',
+                            'payload' => [
+                                'url' => $videoUrl,
+                                'is_reusable' => true,
+                            ],
                         ],
                     ],
-                ],
-            ];
-
-            // Add text/caption if provided
-            if (!empty($data['message'])) {
-                $messagePayload['message']['text'] = $data['message'];
-            }
-
-            $response = Http::withToken($connection->credentials['access_token'])
-                ->post('https://graph.instagram.com/v25.0/me/messages', $messagePayload);
+                ]);
 
             $responseArray = $response->json();
 
@@ -346,7 +330,7 @@ class InstagramHandler implements MessageHandlerInterface
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Video,
-                'body' => $data['message'] ?? null,
+                'body' => null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
@@ -382,8 +366,7 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendDocument(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'document' => 'required|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
-            'message' => 'nullable|string',
+            'document' => 'required|file|mimes:pdf|max:25600',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -410,28 +393,21 @@ class InstagramHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
-            $messagePayload = [
-                'recipient' => [
-                    'id' => $conversation->external_id,
-                ],
-                'message' => [
-                    'attachment' => [
-                        'type' => 'file',
-                        'payload' => [
-                            'url' => $documentUrl,
-                            'is_reusable' => true,
+            $response = Http::withToken($connection->credentials['access_token'])
+                ->post('https://graph.instagram.com/v25.0/me/messages', [
+                    'recipient' => [
+                        'id' => $conversation->external_id,
+                    ],
+                    'message' => [
+                        'attachment' => [
+                            'type' => 'file',
+                            'payload' => [
+                                'url' => $documentUrl,
+                                'is_reusable' => true,
+                            ],
                         ],
                     ],
-                ],
-            ];
-
-            // Add text/caption if provided
-            if (!empty($data['message'])) {
-                $messagePayload['message']['text'] = $data['message'];
-            }
-
-            $response = Http::withToken($connection->credentials['access_token'])
-                ->post('https://graph.instagram.com/v25.0/me/messages', $messagePayload);
+                ]);
 
             $responseArray = $response->json();
 
@@ -452,7 +428,7 @@ class InstagramHandler implements MessageHandlerInterface
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Document,
-                'body' => $data['message'] ?? null,
+                'body' => null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => array_merge($responseArray, ['filename' => $filename]),
