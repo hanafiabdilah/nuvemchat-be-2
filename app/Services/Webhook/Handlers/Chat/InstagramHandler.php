@@ -7,6 +7,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
+use App\Events\MessageUpdated;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -285,7 +286,7 @@ class InstagramHandler implements ChatHandlerInterface
                 ]);
 
                 // Broadcast the message update
-                broadcast(new MessageReceived($message));
+                broadcast(new MessageUpdated($message));
             } else {
                 Log::warning('InstagramHandler: Message not found for read status', [
                     'external_id' => $messageId,
