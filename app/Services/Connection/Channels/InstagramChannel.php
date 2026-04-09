@@ -88,15 +88,15 @@ class InstagramChannel implements ChannelInterface
         // 2. Then revoke access token (invalidates the token)
         // 3. Finally clear credentials
 
-        try {
-            // 1. Unsubscribe from webhooks (requires valid access token)
-            $this->unsubscribeWebhook($connection);
-        } catch (\Throwable $th) {
-            Log::warning('Failed to unsubscribe Instagram webhook, but will continue disconnecting', [
-                'connection_id' => $connection->id,
-                'error' => $th->getMessage()
-            ]);
-        }
+        // try {
+        //     // 1. Unsubscribe from webhooks (requires valid access token)
+        //     $this->unsubscribeWebhook($connection);
+        // } catch (\Throwable $th) {
+        //     Log::warning('Failed to unsubscribe Instagram webhook, but will continue disconnecting', [
+        //         'connection_id' => $connection->id,
+        //         'error' => $th->getMessage()
+        //     ]);
+        // }
 
         try {
             // 2. Revoke access token (removes app from Instagram permissions)
