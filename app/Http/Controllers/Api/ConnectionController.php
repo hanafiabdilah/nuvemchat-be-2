@@ -97,6 +97,8 @@ class ConnectionController extends Controller
             return response()->json([
                 'message' => 'Failed to run connection',
             ], 500);
+        } finally {
+            broadcast(new ConnectionUpdated($connection));
         }
     }
 
@@ -119,6 +121,8 @@ class ConnectionController extends Controller
             return response()->json([
                 'message' => 'Failed to check connection',
             ], 500);
+        } finally {
+            broadcast(new ConnectionUpdated($connection));
         }
     }
 
@@ -140,8 +144,6 @@ class ConnectionController extends Controller
         try {
             $this->connectionService->disconnect($connection);
 
-            broadcast(new ConnectionUpdated($connection));
-
             return response()->json([
                 'message' => 'Connection disconnected successfully',
                 'data' => $connection->toResource(ConnectionResource::class),
@@ -154,6 +156,8 @@ class ConnectionController extends Controller
             return response()->json([
                 'message' => 'Failed to disconnect connection',
             ], 500);
+        } finally {
+            broadcast(new ConnectionUpdated($connection));
         }
     }
 
