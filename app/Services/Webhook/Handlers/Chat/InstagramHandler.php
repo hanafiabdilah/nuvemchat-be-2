@@ -472,10 +472,17 @@ class InstagramHandler implements ChatHandlerInterface
         $type = $attachment['type'] ?? null;
         $payload = $attachment['payload'] ?? [];
         $title = $payload['title'] ?? null;
-        $cdnUrl = $payload['url'] ?? null;
 
-        if (!$cdnUrl) {
-            Log::warning('InstagramHandler: No CDN URL found for Instagram share', [
+        // Get media ID
+        $mediaId = null;
+        if ($type === 'ig_reel' && isset($payload['reel_video_id'])) {
+            $mediaId = $payload['reel_video_id'];
+        } elseif ($type === 'ig_post' && isset($payload['ig_post_media_id'])) {
+            $mediaId = $payload['ig_post_media_id'];
+        }
+
+        if (!$mediaId) {
+            Log::warning('InstagramHandler: No media ID found for Instagram share', [
                 'message_id' => $message->id,
             ]);
             return;
@@ -485,53 +492,46 @@ class InstagramHandler implements ChatHandlerInterface
             $accessToken = $connection->credentials['access_token'] ?? null;
 
             if (!$accessToken) {
-                Log::error('InstagramHandler: Missing access token for downloading Instagram share', [
+                Log::error('InstagramHandler: Missing access token for fetching permalink', [
                     'connection_id' => $connection->id,
                 ]);
                 return;
             }
 
-            // Download asset from CDN URL
-            $response = Http::withToken($accessToken)->get($cdnUrl);
+            // Fetch permalink from Instagram Graph API
+            $response = Http::get("https://graph.instagram.com/v21.0/{$mediaId}", [
+                'fields' => 'permalink',
+                'access_token' => $accessToken,
+            ]);
 
-            if (!$response->successful()) {
-                Log::error('InstagramHandler: Failed to download Instagram share asset', [
+            if ($response->successful()) {
+                $data = $response->json();
+                $permalink = $data['permalink'] ?? null;
+
+                if ($permalink) {
+                    // Update message body with Instagram permalink
+                    $newBody = $title ? "$title\n$permalink" : $permalink;
+
+                    $message->update([
+                        'body' => $newBody,
+                    ]);
+
+                    Log::info('InstagramHandler: Instagram permalink fetched successfully', [
+                        'message_id' => $message->id,
+                        'permalink' => $permalink,
+                    ]);
+                }
+            } else {
+                Log::warning('InstagramHandler: Failed to fetch Instagram permalink', [
                     'message_id' => $message->id,
-                    'url' => $cdnUrl,
-                    'status' => $response->status(),
+                    'media_id' => $mediaId,
+                    'response' => $response->json(),
                 ]);
-                return;
             }
-
-            // Determine extension from mime type
-            $mimeType = $response->header('Content-Type');
-            $extension = $this->getExtensionFromMimeType($mimeType) ?? 'bin';
-
-            // Save to public storage
-            $fileName = $message->id . '_' . uniqid() . '.' . $extension;
-            $storagePath = 'instagram_shares/' . $fileName;
-            Storage::disk('public')->put($storagePath, $response->body());
-
-            // Generate public URL
-            $publicUrl = url('storage/' . $storagePath);
-
-            // Update message body with our public URL
-            $newBody = $title ? "$title\n$publicUrl" : $publicUrl;
-
-            $message->update([
-                'body' => $newBody,
-                'attachment' => $storagePath,
-            ]);
-
-            Log::info('InstagramHandler: Instagram share downloaded successfully', [
-                'message_id' => $message->id,
-                'storage_path' => $storagePath,
-                'public_url' => $publicUrl,
-            ]);
-
         } catch (\Throwable $th) {
-            Log::error('InstagramHandler: Error downloading Instagram share', [
+            Log::error('InstagramHandler: Error fetching Instagram permalink', [
                 'message_id' => $message->id,
+                'media_id' => $mediaId,
                 'error' => $th->getMessage(),
             ]);
         }
