@@ -128,6 +128,35 @@ class InstagramHandler implements ChatHandlerInterface
 
     public function handle(Connection $connection, array $payload)
     {
+        $messaging = $payload['messaging'][0] ?? [];
+
+        // Determine event type
+        $eventType = match (true) {
+            isset($messaging['message']) => 'message',
+            isset($messaging['read']) => 'read',
+            default => 'unsupported',
+        };
+
+        // Handle based on event type
+        switch ($eventType) {
+            case 'message':
+                $this->handleReceived($connection, $payload);
+                break;
+
+            case 'read':
+                $this->handleStatus($connection, $payload);
+                break;
+
+            default:
+                Log::warning('InstagramHandler: Unsupported event type', [
+                    'payload' => $payload,
+                ]);
+                break;
+        }
+    }
+
+    private function handleReceived(Connection $connection, array $payload)
+    {
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
@@ -217,6 +246,56 @@ class InstagramHandler implements ChatHandlerInterface
                     }
                 }
             }
+        }
+    }
+
+    private function handleStatus(Connection $connection, array $payload)
+    {
+        $messaging = $payload['messaging'][0] ?? [];
+        $read = $messaging['read'] ?? [];
+        $messageId = $read['mid'] ?? null;
+        $timestamp = $messaging['timestamp'] ?? null;
+
+        if (!$messageId) {
+            Log::warning('InstagramHandler: Missing message ID in read status payload', [
+                'payload' => $payload,
+            ]);
+            return;
+        }
+
+        try {
+            // Find the message and update read status
+            $message = Message::whereHas('conversation', function($query) use ($connection) {
+                $query->where('connection_id', $connection->id);
+            })
+            ->where('external_id', $messageId)
+            ->first();
+
+            if ($message) {
+                $readAt = $timestamp ? Carbon::createFromTimestampMs($timestamp) : Carbon::now();
+
+                $message->update([
+                    'read_at' => $readAt,
+                ]);
+
+                Log::info('InstagramHandler: Message marked as read', [
+                    'message_id' => $message->id,
+                    'external_id' => $messageId,
+                    'read_at' => $message->read_at,
+                ]);
+
+                // Broadcast the message update
+                broadcast(new MessageReceived($message));
+            } else {
+                Log::warning('InstagramHandler: Message not found for read status', [
+                    'external_id' => $messageId,
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::error('InstagramHandler: Failed to handle read status', [
+                'message_id' => $messageId,
+                'error' => $th->getMessage(),
+            ]);
         }
     }
 
