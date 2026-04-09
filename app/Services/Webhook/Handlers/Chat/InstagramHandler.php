@@ -546,7 +546,7 @@ class InstagramHandler implements ChatHandlerInterface
             }
 
             // Fetch permalink from Instagram Graph API
-            $response = Http::get("https://graph.instagram.com/v21.0/{$mediaId}", [
+            $response = Http::get("https://graph.instagram.com/v25.0/{$mediaId}", [
                 'fields' => 'permalink',
                 'access_token' => $accessToken,
             ]);
