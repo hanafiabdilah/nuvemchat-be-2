@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
@@ -75,15 +76,29 @@ class ConversationController extends Controller
             ], 409);
         }
 
+        // Get last conversation to retrieve external_id
         $lastConversation = Conversation::where('contact_id', $contact->id)
             ->where('connection_id', $connection->id)
             ->orderBy('created_at', 'DESC')
             ->first();
 
-        if(!$lastConversation){
-            return response()->json([
-                'message' => 'No previous conversation found for this contact and connection. Cannot create new conversation without external_id reference.',
-            ], 400);
+        // Determine external_id based on channel
+        $externalId = null;
+
+        if ($lastConversation) {
+            // Use external_id from last conversation
+            $externalId = $lastConversation->external_id;
+        } else {
+            // No previous conversation - handle based on channel
+            if ($connection->channel === Channel::WhatsappWApi) {
+                // For W-API, use contact's external_id (phone number)
+                $externalId = $contact->external_id;
+            } else {
+                // For other channels, we need a previous conversation
+                return response()->json([
+                    'message' => 'No previous conversation found for this contact and connection. Cannot create new conversation without external_id reference.',
+                ], 400);
+            }
         }
 
         try {
@@ -91,7 +106,7 @@ class ConversationController extends Controller
             $conversation = Conversation::create([
                 'contact_id' => $contact->id,
                 'connection_id' => $connection->id,
-                'external_id' => $lastConversation->external_id,
+                'external_id' => $externalId,
                 'user_id' => Auth::id(),
                 'status' => Status::Active,
                 'last_message_at' => now(),
