@@ -56,13 +56,27 @@ class InstagramHandler implements ChatHandlerInterface
             $attachment = $message['attachments'][0];
             $type = $attachment['type'] ?? null;
 
-            // Instagram share or post
-            if (in_array($type, ['share'])) {
-                $url = $attachment['payload']['url'] ?? null;
-                $title = $attachment['payload']['title'] ?? null;
+            // Instagram share, post, or reel
+            if (in_array($type, ['share', 'ig_post', 'ig_reel'])) {
+                $payload = $attachment['payload'] ?? [];
+                $url = $payload['url'] ?? null;
+                $title = $payload['title'] ?? null;
 
-                if ($url) {
-                    return $title ? "$title\n$url" : $url;
+                // Construct Instagram link from media ID if available
+                $instagramLink = null;
+                if ($type === 'ig_reel' && isset($payload['reel_video_id'])) {
+                    // Use the URL provided by Instagram for reels
+                    $instagramLink = $url;
+                } elseif ($type === 'ig_post' && isset($payload['ig_post_media_id'])) {
+                    // Use the URL provided by Instagram for posts
+                    $instagramLink = $url;
+                } else {
+                    // For 'share' type, use the URL directly
+                    $instagramLink = $url;
+                }
+
+                if ($instagramLink) {
+                    return $title ? "$title\n$instagramLink" : $instagramLink;
                 }
 
                 return $title ?? 'Instagram post shared';
@@ -93,7 +107,7 @@ class InstagramHandler implements ChatHandlerInterface
                 'video' => MessageType::Video,
                 'audio' => MessageType::Audio,
                 'file' => MessageType::Document,
-                'share' => MessageType::Text,
+                'share', 'ig_post', 'ig_reel' => MessageType::Text,
                 default => MessageType::Unsupported,
             };
         }
