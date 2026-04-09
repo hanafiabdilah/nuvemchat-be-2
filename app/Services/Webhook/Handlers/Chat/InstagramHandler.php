@@ -51,9 +51,27 @@ class InstagramHandler implements ChatHandlerInterface
             return $message['text'];
         }
 
-        // Media with caption
-        if (isset($message['attachments'][0]['payload']['caption'])) {
-            return $message['attachments'][0]['payload']['caption'];
+        // Check for share/post attachments
+        if (isset($message['attachments'][0])) {
+            $attachment = $message['attachments'][0];
+            $type = $attachment['type'] ?? null;
+
+            // Instagram share or post
+            if (in_array($type, ['share'])) {
+                $url = $attachment['payload']['url'] ?? null;
+                $title = $attachment['payload']['title'] ?? null;
+
+                if ($url) {
+                    return $title ? "$title\n$url" : $url;
+                }
+
+                return $title ?? 'Instagram post shared';
+            }
+
+            // Media with caption
+            if (isset($attachment['payload']['caption'])) {
+                return $attachment['payload']['caption'];
+            }
         }
 
         return null;
@@ -75,6 +93,7 @@ class InstagramHandler implements ChatHandlerInterface
                 'video' => MessageType::Video,
                 'audio' => MessageType::Audio,
                 'file' => MessageType::Document,
+                'share' => MessageType::Text,
                 default => MessageType::Unsupported,
             };
         }
