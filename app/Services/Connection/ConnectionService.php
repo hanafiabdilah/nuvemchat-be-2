@@ -2,6 +2,9 @@
 
 namespace App\Services\Connection;
 
+use App\Enums\Connection\Channel;
+use App\Enums\Connection\Status;
+use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelFactory;
 
@@ -55,15 +58,37 @@ class ConnectionService
 
     public function delete(Connection $connection): void
     {
-        // Disconnect first before deleting
-        try {
-            $this->disconnect($connection);
-        } catch (\Throwable $th) {
-            // Log the error but continue with deletion
-            \Illuminate\Support\Facades\Log::warning('Failed to disconnect before deleting connection', [
-                'connection_id' => $connection->id,
-                'error' => $th->getMessage(),
-            ]);
+        // Validation: Instagram connections must be disconnected first
+        if ($connection->channel === Channel::Instagram && $connection->status === Status::Active) {
+            throw new ConnectionException(
+                'Cannot delete an active Instagram connection. Please disconnect from Instagram first by visiting your Instagram Settings → Security → Apps and Websites, then try again.',
+                400
+            );
+        }
+
+        // For Instagram with Inactive status, disconnect might have failed
+        // but we allow deletion since credentials should already be cleared
+        if ($connection->channel === Channel::Instagram && $connection->status === Status::Inactive) {
+            // Check if credentials still exist
+            if (!empty($connection->credentials)) {
+                throw new ConnectionException(
+                    'Instagram connection still has active credentials. Please ensure the connection is fully disconnected from Instagram Settings first.',
+                    400
+                );
+            }
+        }
+
+        // For other channels, try to disconnect first
+        if ($connection->channel !== Channel::Instagram) {
+            try {
+                $this->disconnect($connection);
+            } catch (\Throwable $th) {
+                // Log the error but continue with deletion for non-Instagram channels
+                \Illuminate\Support\Facades\Log::warning('Failed to disconnect before deleting connection', [
+                    'connection_id' => $connection->id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
         }
 
         // Delete the connection
