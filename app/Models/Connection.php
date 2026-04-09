@@ -23,7 +23,7 @@ class Connection extends Model
 
     protected $casts = [
         'channel' => Channel::class,
-        'stauts' => Status::class,
+        'status' => Status::class,
         'credentials' => 'array',
     ];
 

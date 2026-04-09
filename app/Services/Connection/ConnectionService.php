@@ -59,14 +59,6 @@ class ConnectionService
 
     public function delete(Connection $connection): void
     {
-        Log::info('Attempting to delete connection', [
-            'connection_id' => $connection->id,
-            'channel' => $connection->channel,
-            'status' => $connection->status,
-            'instagram_channel' => $connection->channel === Channel::Instagram,
-            'active' => $connection->status === Status::Active,
-         ]);
-         return;
         // Validation: Instagram connections must be disconnected first
         if ($connection->channel === Channel::Instagram && $connection->status === Status::Active) {
             throw new ConnectionException(
