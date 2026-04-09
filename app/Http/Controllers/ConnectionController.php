@@ -207,6 +207,8 @@ class ConnectionController extends Controller
             return response()->json([
                 'error' => 'Failed to process deauthorization',
             ], 500);
+        }finally {
+            broadcast(new ConnectionUpdated($connection->fresh()));
         }
     }
 
@@ -335,6 +337,8 @@ class ConnectionController extends Controller
             return response()->json([
                 'error' => 'Failed to process data deletion',
             ], 500);
+        } finally {
+            broadcast(new ConnectionUpdated($connection->fresh()));
         }
     }
 
