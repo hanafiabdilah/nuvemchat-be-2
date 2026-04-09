@@ -11,6 +11,7 @@ use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class InstagramHandler implements MessageHandlerInterface
 {
@@ -83,27 +84,52 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'url' => 'required|string|url',
+            'image' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
+            'message' => 'nullable|string',
         ])->validate();
 
         $connection = $conversation->connection;
+        $tempPublicPath = null;
 
         try {
-            $response = Http::withToken($connection->credentials['access_token'])
-                ->post('https://graph.instagram.com/v25.0/me/messages', [
-                    'recipient' => [
-                        'id' => $conversation->external_id,
-                    ],
-                    'message' => [
-                        'attachment' => [
-                            'type' => 'image',
-                            'payload' => [
-                                'url' => $data['url'],
-                                'is_reusable' => $data['is_reusable'] ?? false,
-                            ],
+            // Store image temporarily in public directory
+            $imageContent = file_get_contents($data['image']->getRealPath());
+            $tempFileName = 'temp_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
+            $tempPublicPath = 'images/' . $tempFileName;
+
+            Storage::disk('public')->put($tempPublicPath, $imageContent);
+
+            // Generate public URL
+            $imageUrl = url('storage/' . $tempPublicPath);
+
+            Log::info('InstagramHandler: Sending image via URL', [
+                'url' => $imageUrl,
+                'size' => strlen($imageContent),
+                'conversation_id' => $conversation->id,
+            ]);
+
+            $messagePayload = [
+                'recipient' => [
+                    'id' => $conversation->external_id,
+                ],
+                'message' => [
+                    'attachment' => [
+                        'type' => 'image',
+                        'payload' => [
+                            'url' => $imageUrl,
+                            'is_reusable' => true,
                         ],
                     ],
-                ]);
+                ],
+            ];
+
+            // Add text/caption if provided
+            if (!empty($data['message'])) {
+                $messagePayload['message']['text'] = $data['message'];
+            }
+
+            $response = Http::withToken($connection->credentials['access_token'])
+                ->post('https://graph.instagram.com/v25.0/me/messages', $messagePayload);
 
             $responseArray = $response->json();
 
@@ -124,14 +150,29 @@ class InstagramHandler implements MessageHandlerInterface
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Image,
-                'body' => $data['url'],
+                'body' => $data['message'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
 
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, $imageContent);
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            // Delete temporary public file
+            // Storage::disk('public')->delete($tempPublicPath);
+
             return $message;
         } catch (\Throwable $th) {
+            // Clean up temporary file if exists
+            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
+                Storage::disk('public')->delete($tempPublicPath);
+            }
+
             Log::error('InstagramHandler: Failed to send image', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
@@ -145,12 +186,29 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'url' => 'required|string|url',
+            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
         ])->validate();
 
         $connection = $conversation->connection;
+        $tempPublicPath = null;
 
         try {
+            // Store audio temporarily in public directory
+            $audioContent = file_get_contents($data['audio']->getRealPath());
+            $tempFileName = 'temp_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
+            $tempPublicPath = 'audios/' . $tempFileName;
+
+            Storage::disk('public')->put($tempPublicPath, $audioContent);
+
+            // Generate public URL
+            $audioUrl = url('storage/' . $tempPublicPath);
+
+            Log::info('InstagramHandler: Sending audio via URL', [
+                'url' => $audioUrl,
+                'size' => strlen($audioContent),
+                'conversation_id' => $conversation->id,
+            ]);
+
             $response = Http::withToken($connection->credentials['access_token'])
                 ->post('https://graph.instagram.com/v25.0/me/messages', [
                     'recipient' => [
@@ -160,8 +218,8 @@ class InstagramHandler implements MessageHandlerInterface
                         'attachment' => [
                             'type' => 'audio',
                             'payload' => [
-                                'url' => $data['url'],
-                                'is_reusable' => $data['is_reusable'] ?? false,
+                                'url' => $audioUrl,
+                                'is_reusable' => true,
                             ],
                         ],
                     ],
@@ -186,14 +244,29 @@ class InstagramHandler implements MessageHandlerInterface
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Audio,
-                'body' => $data['url'],
+                'body' => null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
 
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, $audioContent);
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            // Delete temporary public file
+            // Storage::disk('public')->delete($tempPublicPath);
+
             return $message;
         } catch (\Throwable $th) {
+            // Clean up temporary file if exists
+            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
+                Storage::disk('public')->delete($tempPublicPath);
+            }
+
             Log::error('InstagramHandler: Failed to send audio', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
@@ -207,27 +280,52 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'url' => 'required|string|url',
+            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'message' => 'nullable|string',
         ])->validate();
 
         $connection = $conversation->connection;
+        $tempPublicPath = null;
 
         try {
-            $response = Http::withToken($connection->credentials['access_token'])
-                ->post('https://graph.instagram.com/v25.0/me/messages', [
-                    'recipient' => [
-                        'id' => $conversation->external_id,
-                    ],
-                    'message' => [
-                        'attachment' => [
-                            'type' => 'video',
-                            'payload' => [
-                                'url' => $data['url'],
-                                'is_reusable' => $data['is_reusable'] ?? false,
-                            ],
+            // Store video temporarily in public directory
+            $videoContent = file_get_contents($data['video']->getRealPath());
+            $tempFileName = 'temp_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
+            $tempPublicPath = 'videos/' . $tempFileName;
+
+            Storage::disk('public')->put($tempPublicPath, $videoContent);
+
+            // Generate public URL
+            $videoUrl = url('storage/' . $tempPublicPath);
+
+            Log::info('InstagramHandler: Sending video via URL', [
+                'url' => $videoUrl,
+                'size' => strlen($videoContent),
+                'conversation_id' => $conversation->id,
+            ]);
+
+            $messagePayload = [
+                'recipient' => [
+                    'id' => $conversation->external_id,
+                ],
+                'message' => [
+                    'attachment' => [
+                        'type' => 'video',
+                        'payload' => [
+                            'url' => $videoUrl,
+                            'is_reusable' => true,
                         ],
                     ],
-                ]);
+                ],
+            ];
+
+            // Add text/caption if provided
+            if (!empty($data['message'])) {
+                $messagePayload['message']['text'] = $data['message'];
+            }
+
+            $response = Http::withToken($connection->credentials['access_token'])
+                ->post('https://graph.instagram.com/v25.0/me/messages', $messagePayload);
 
             $responseArray = $response->json();
 
@@ -248,14 +346,29 @@ class InstagramHandler implements MessageHandlerInterface
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Video,
-                'body' => $data['url'],
+                'body' => $data['message'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
 
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, $videoContent);
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            // Delete temporary public file
+            // Storage::disk('public')->delete($tempPublicPath);
+
             return $message;
         } catch (\Throwable $th) {
+            // Clean up temporary file if exists
+            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
+                Storage::disk('public')->delete($tempPublicPath);
+            }
+
             Log::error('InstagramHandler: Failed to send video', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
@@ -269,27 +382,56 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendDocument(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'url' => 'required|string|url',
+            'document' => 'required|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'message' => 'nullable|string',
         ])->validate();
 
         $connection = $conversation->connection;
+        $tempPublicPath = null;
 
         try {
-            $response = Http::withToken($connection->credentials['access_token'])
-                ->post('https://graph.instagram.com/v25.0/me/messages', [
-                    'recipient' => [
-                        'id' => $conversation->external_id,
-                    ],
-                    'message' => [
-                        'attachment' => [
-                            'type' => 'file',
-                            'payload' => [
-                                'url' => $data['url'],
-                                'is_reusable' => $data['is_reusable'] ?? false,
-                            ],
+            // Store document temporarily in public directory
+            $documentContent = file_get_contents($data['document']->getRealPath());
+            $tempFileName = 'temp_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
+            $tempPublicPath = 'documents/' . $tempFileName;
+
+            Storage::disk('public')->put($tempPublicPath, $documentContent);
+
+            // Generate public URL
+            $documentUrl = url('storage/' . $tempPublicPath);
+
+            // Get original filename
+            $filename = $data['document']->getClientOriginalName();
+
+            Log::info('InstagramHandler: Sending document via URL', [
+                'url' => $documentUrl,
+                'filename' => $filename,
+                'size' => strlen($documentContent),
+                'conversation_id' => $conversation->id,
+            ]);
+
+            $messagePayload = [
+                'recipient' => [
+                    'id' => $conversation->external_id,
+                ],
+                'message' => [
+                    'attachment' => [
+                        'type' => 'file',
+                        'payload' => [
+                            'url' => $documentUrl,
+                            'is_reusable' => true,
                         ],
                     ],
-                ]);
+                ],
+            ];
+
+            // Add text/caption if provided
+            if (!empty($data['message'])) {
+                $messagePayload['message']['text'] = $data['message'];
+            }
+
+            $response = Http::withToken($connection->credentials['access_token'])
+                ->post('https://graph.instagram.com/v25.0/me/messages', $messagePayload);
 
             $responseArray = $response->json();
 
@@ -310,14 +452,29 @@ class InstagramHandler implements MessageHandlerInterface
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Document,
-                'body' => $data['url'],
+                'body' => $data['message'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
-                'meta' => $responseArray,
+                'meta' => array_merge($responseArray, ['filename' => $filename]),
             ]);
+
+            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
+            Storage::disk('local')->put($mediaPath, $documentContent);
+
+            $message->update([
+                'attachment' => $mediaPath,
+            ]);
+
+            // Delete temporary public file
+            // Storage::disk('public')->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
+            // Clean up temporary file if exists
+            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
+                Storage::disk('public')->delete($tempPublicPath);
+            }
+
             Log::error('InstagramHandler: Failed to send document', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
