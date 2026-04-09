@@ -30,6 +30,7 @@ class InstagramChannel implements ChannelInterface
             'instagram_account_id' => ['required', 'string'],
             'user_id' => ['nullable', 'string'],
             'username' => ['nullable', 'string'],
+            'token_expires_at' => ['nullable', 'string'],
         ])->validate();
 
         if(Connection::where('id', '!=', $connection->id)
@@ -64,6 +65,7 @@ class InstagramChannel implements ChannelInterface
                     'user_id' => $data['user_id'] ?? null,
                     'username' => $accountInfo['username'] ?? $data['username'] ?? null,
                     'name' => $accountInfo['name'] ?? null,
+                    'token_expires_at' => $data['token_expires_at'] ?? null,
                 ],
             ]);
 
@@ -149,6 +151,69 @@ class InstagramChannel implements ChannelInterface
             }
         } catch (\Throwable $th) {
             Log::error('Error in webhook subscription process', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            throw $th;
+        }
+    }
+
+    /**
+     * Refresh Instagram long-lived access token
+     *
+     * @param Connection $connection
+     * @return void
+     * @throws Exception
+     */
+    public function refreshToken(Connection $connection): void
+    {
+        try {
+            $accessToken = $connection->credentials['access_token'] ?? null;
+
+            if (!$accessToken) {
+                throw new Exception('Missing access_token for token refresh.');
+            }
+
+            // Refresh long-lived token (extends expiry by 60 days)
+            $response = Http::get('https://graph.instagram.com/refresh_access_token', [
+                'grant_type' => 'ig_refresh_token',
+                'access_token' => $accessToken,
+            ]);
+
+            if (!$response->successful()) {
+                Log::error('Failed to refresh Instagram token', [
+                    'connection_id' => $connection->id,
+                    'response' => $response->json(),
+                ]);
+                throw new Exception('Failed to refresh Instagram access token: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+            }
+
+            $tokenData = $response->json();
+            $newAccessToken = $tokenData['access_token'] ?? null;
+            $expiresIn = $tokenData['expires_in'] ?? 5184000; // Default 60 days in seconds
+
+            if (!$newAccessToken) {
+                throw new Exception('Invalid response from Instagram token refresh.');
+            }
+
+            // Update credentials with new token and expiry
+            $credentials = $connection->credentials;
+            $credentials['access_token'] = $newAccessToken;
+            $credentials['token_expires_at'] = now()->addSeconds($expiresIn)->toDateTimeString();
+
+            $connection->update([
+                'credentials' => $credentials,
+            ]);
+
+            Log::info('Successfully refreshed Instagram token', [
+                'connection_id' => $connection->id,
+                'expires_in' => $expiresIn,
+                'expires_at' => $credentials['token_expires_at'],
+            ]);
+
+        } catch (\Throwable $th) {
+            Log::error('Error refreshing Instagram token', [
                 'connection_id' => $connection->id,
                 'error' => $th->getMessage(),
             ]);

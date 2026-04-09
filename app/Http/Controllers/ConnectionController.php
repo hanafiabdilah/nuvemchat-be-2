@@ -95,13 +95,20 @@ class ConnectionController extends Controller
             ]);
 
             if ($longLivedTokenResponse->successful()) {
-                $accessToken = $longLivedTokenResponse->json()['access_token'] ?? $shortLivedToken;
-                Log::info('Successfully exchanged for long-lived token');
+                $tokenData = $longLivedTokenResponse->json();
+                $accessToken = $tokenData['access_token'] ?? $shortLivedToken;
+                $expiresIn = $tokenData['expires_in'] ?? 5184000; // Default 60 days in seconds
+                $tokenExpiresAt = now()->addSeconds($expiresIn)->toDateTimeString();
+                Log::info('Successfully exchanged for long-lived token', [
+                    'expires_in' => $expiresIn,
+                    'expires_at' => $tokenExpiresAt,
+                ]);
             } else {
                 Log::warning('Failed to get long-lived token, using short-lived token', [
                     'response' => $longLivedTokenResponse->json(),
                 ]);
                 $accessToken = $shortLivedToken;
+                $tokenExpiresAt = null;
             }
 
             // Get Instagram Business Account info
@@ -124,6 +131,7 @@ class ConnectionController extends Controller
                 'instagram_account_id' => $accountInfo['id'] ?? $userId,
                 'user_id' => $accountInfo['user_id'] ?? null,
                 'username' => $accountInfo['username'] ?? null,
+                'token_expires_at' => $tokenExpiresAt,
             ]);
 
             broadcast(new ConnectionUpdated($connection->fresh()));
