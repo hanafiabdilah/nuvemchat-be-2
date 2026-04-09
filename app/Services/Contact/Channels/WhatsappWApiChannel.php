@@ -49,9 +49,6 @@ class WhatsappWApiChannel implements ContactChannelInterface
             'username' => $normalizedPhone,
             'name' => $name,
             'channel' => $connection->channel,
-            'meta' => [
-                'lid' => $lid,
-            ],
         ]);
 
         Log::info('WhatsApp W-API: Contact created successfully', [
