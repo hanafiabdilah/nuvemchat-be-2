@@ -31,7 +31,7 @@ class RefreshInstagramTokens extends Command
      */
     public function handle()
     {
-        $daysBefore = $this->option('days-before');
+        $daysBefore = (int) $this->option('days-before');
         $expiryThreshold = now()->addDays($daysBefore);
 
         $this->info("Checking Instagram connections expiring before {$expiryThreshold->toDateTimeString()}...");
