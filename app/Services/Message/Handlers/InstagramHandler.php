@@ -242,7 +242,18 @@ class InstagramHandler implements MessageHandlerInterface
             $tempFileName = 'temp_' . uniqid() . '.' . $extension;
             $tempPublicPath = 'audios/' . $tempFileName;
 
-            Storage::disk('public')->put($tempPublicPath, $audioContent);
+            $saved = Storage::disk('public')->put($tempPublicPath, $audioContent);
+
+            if (!$saved || !Storage::disk('public')->exists($tempPublicPath)) {
+                throw new Exception('Failed to save audio file to public storage');
+            }
+
+            // Verify file was saved correctly
+            $savedSize = Storage::disk('public')->size($tempPublicPath);
+            if ($savedSize === 0) {
+                Storage::disk('public')->delete($tempPublicPath);
+                throw new Exception('Saved audio file is empty');
+            }
 
             // Generate public URL
             $audioUrl = url('storage/' . $tempPublicPath);
@@ -251,6 +262,8 @@ class InstagramHandler implements MessageHandlerInterface
                 'url' => $audioUrl,
                 'format' => $extension,
                 'size' => strlen($audioContent),
+                'saved_size' => $savedSize,
+                'full_path' => Storage::disk('public')->path($tempPublicPath),
                 'conversation_id' => $conversation->id,
             ]);
 
