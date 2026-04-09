@@ -187,23 +187,38 @@ class InstagramHandler implements MessageHandlerInterface
 
         try {
             $audioContent = file_get_contents($data['audio']->getRealPath());
+
+            if ($audioContent === false) {
+                throw new Exception('Failed to read uploaded audio file');
+            }
+
+            if (strlen($audioContent) === 0) {
+                throw new Exception('Uploaded audio file is empty');
+            }
+
             $extension = strtolower($data['audio']->getClientOriginalExtension());
             $originalExtension = $extension;
+
+            Log::info('InstagramHandler: Audio file received', [
+                'original_format' => $extension,
+                'original_size' => strlen($audioContent),
+                'file_path' => $data['audio']->getRealPath(),
+            ]);
 
             // Instagram supported formats: aac, m4a, wav, mp4
             $supportedFormats = ['aac', 'm4a', 'wav', 'mp4'];
 
             // Convert if not in supported formats
             if (!in_array($extension, $supportedFormats)) {
-                Log::info('InstagramHandler: Converting audio to M4A', [
+                Log::info('InstagramHandler: Converting audio to MP4', [
                     'original_format' => $extension,
                     'conversation_id' => $conversation->id,
                 ]);
 
                 $inputPath = $data['audio']->getRealPath();
-                $convertedFilePath = sys_get_temp_dir() . '/' . uniqid() . '.m4a';
+                $convertedFilePath = sys_get_temp_dir() . '/' . uniqid() . '.mp4';
 
-                // Convert using FFmpeg with simple parameters (similar to WhatsApp approach)
+                // Convert using FFmpeg to MP4 container with AAC codec
                 $command = sprintf(
                     'ffmpeg -y -i %s -c:a aac -b:a 128k %s 2>&1',
                     escapeshellarg($inputPath),
@@ -228,13 +243,30 @@ class InstagramHandler implements MessageHandlerInterface
                 }
 
                 $audioContent = file_get_contents($convertedFilePath);
-                $extension = 'm4a';
+
+                if ($audioContent === false) {
+                    @unlink($convertedFilePath);
+                    throw new Exception('Failed to read converted audio file');
+                }
+
+                if (strlen($audioContent) === 0) {
+                    @unlink($convertedFilePath);
+                    throw new Exception('Converted audio file is empty');
+                }
+
+                $extension = 'mp4';
 
                 Log::info('InstagramHandler: Audio converted successfully', [
                     'from' => $originalExtension,
                     'to' => $extension,
-                    'size' => strlen($audioContent),
+                    'converted_size' => strlen($audioContent),
                     'file_size' => filesize($convertedFilePath),
+                    'original_size' => strlen(file_get_contents($data['audio']->getRealPath())),
+                ]);
+            } else {
+                Log::info('InstagramHandler: Audio format supported, no conversion needed', [
+                    'format' => $extension,
+                    'size' => strlen($audioContent),
                 ]);
             }
 
