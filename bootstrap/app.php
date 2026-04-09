@@ -25,7 +25,9 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
 
         $middleware->validateCsrfTokens([
-            '/webhook/*'
+            '/webhook/*',
+            '/oauth/instagram/deauthorize',
+            '/oauth/instagram/data-deletion',
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
