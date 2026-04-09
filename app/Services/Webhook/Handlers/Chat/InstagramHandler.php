@@ -59,14 +59,9 @@ class InstagramHandler implements ChatHandlerInterface
             // Instagram share, post, or reel
             if (in_array($type, ['share', 'ig_post', 'ig_reel'])) {
                 $payload = $attachment['payload'] ?? [];
-                $url = $payload['url'] ?? null;
                 $title = $payload['title'] ?? null;
 
-                // Use CDN URL as initial value (will be replaced with permalink later)
-                if ($url) {
-                    return $title ? "$title\n$url" : $url;
-                }
-
+                // Return title only (URL will be added after download)
                 return $title ?? 'Instagram post shared';
             }
 
