@@ -187,7 +187,7 @@ class ConnectionController extends Controller
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
         // Validate that this is an oauth connection
-        if (!in_array($connection->channel, [Channel::Instagram])) {
+        if (!in_array($connection->channel, [Channel::Instagram, Channel::WhatsappOfficial])) {
             return response()->json([
                 'message' => 'This connection does not support OAuth',
             ], 400);
@@ -195,7 +195,14 @@ class ConnectionController extends Controller
 
         $oauthUrl = match($connection->channel) {
             Channel::Instagram => $this->instagramOauth($connection),
+            Channel::WhatsappOfficial => $this->whatsappOauth($connection),
             default => null,
+        };
+
+        $channelName = match($connection->channel) {
+            Channel::Instagram => 'Instagram',
+            Channel::WhatsappOfficial => 'WhatsApp',
+            default => 'Unknown',
         };
 
         Log::info('Generated OAuth URL for connection', [
@@ -205,7 +212,7 @@ class ConnectionController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Instagram OAuth URL generated successfully',
+            'message' => "{$channelName} OAuth URL generated successfully",
             'data' => [
                 'oauth_url' => $oauthUrl,
             ],
@@ -257,6 +264,40 @@ class ConnectionController extends Controller
             . "&response_type=code"
             . "&scope={$scope}"
             . "&state={$state}";
+
+        return $oauthUrl;
+    }
+
+    private function whatsappOauth(Connection $connection): string
+    {
+        // Create state parameter with connection_id and platform
+        $state = base64_encode(json_encode([
+            'connection_id' => $connection->id,
+            'platform' => 'whatsapp',
+            'timestamp' => time(),
+        ]));
+
+        $appId = config('services.facebook.app_id');
+        $configId = config('services.facebook.config_id');
+        
+        // WhatsApp embedded signup extras
+        $extras = json_encode([
+            'sessionInfoVersion' => '3',
+            'version' => 'v4',
+            'state' => $state,
+        ]);
+
+        Log::info('Generating WhatsApp OAuth URL', [
+            'connection_id' => $connection->id,
+            'app_id' => $appId,
+            'config_id' => $configId,
+        ]);
+
+        // Build WhatsApp embedded signup URL
+        $oauthUrl = "https://business.facebook.com/messaging/whatsapp/onboard/"
+            . "?app_id={$appId}"
+            . "&config_id={$configId}"
+            . "&extras=" . urlencode($extras);
 
         return $oauthUrl;
     }
