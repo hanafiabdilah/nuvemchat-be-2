@@ -399,18 +399,15 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
-        Log::info('WhatsappWApiHandler: Handling delivery receipt', [
-            'conversation_id' => $conversationId,
-            'message_id' => $messageId,
-        ]);
-
         $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType) {
+            // Cari conversation yang masih aktif saja (bukan yang sudah resolved)
             $conversation = Conversation::where('connection_id', $connection->id)
                 ->where('external_id', $conversationId)
+                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
                 ->first();
 
             if(!$conversation){
-                Log::warning('WhatsappWApiHandler: Conversation not found for delivery receipt', [
+                Log::warning('WhatsappWApiHandler: Conversation aktif tidak ditemukan untuk delivery receipt', [
                     'conversation_id' => $conversationId,
                     'connection_id' => $connection->id,
                 ]);
@@ -427,11 +424,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 'meta' => $payload,
             ]);
         });
-
-        Log::info('WhatsappWApiHandler: Delivery receipt processed', [
-            'message_id' => $messageId,
-            'conversation_id' => $conversationId,
-        ]);
 
         if($message){
             if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Sticker])) {
