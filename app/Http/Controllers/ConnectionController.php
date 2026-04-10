@@ -428,7 +428,7 @@ class ConnectionController extends Controller
             $connection = Connection::findOrFail($connectionId);
 
             // Exchange code for access token
-            $response = Http::asForm()->post('https://graph.facebook.com/v21.0/oauth/access_token', [
+            $response = Http::asForm()->post('https://graph.facebook.com/v25.0/oauth/access_token', [
                 'client_id' => config('services.facebook.app_id'),
                 'client_secret' => config('services.facebook.app_secret'),
                 'redirect_uri' => config('services.facebook.redirect_uri'),
@@ -473,7 +473,7 @@ class ConnectionController extends Controller
     {
         try {
             // Get WhatsApp Business Account info
-            $response = Http::get('https://graph.facebook.com/v21.0/debug_token', [
+            $response = Http::get('https://graph.facebook.com/v25.0/debug_token', [
                 'input_token' => $accessToken,
                 'access_token' => config('services.facebook.app_id') . '|' . config('services.facebook.app_secret'),
             ]);
@@ -486,7 +486,7 @@ class ConnectionController extends Controller
 
             if (!$wabaId) {
                 // Alternative: Get from me endpoint with whatsapp_business_management permission
-                $meResponse = Http::get('https://graph.facebook.com/v21.0/me', [
+                $meResponse = Http::get('https://graph.facebook.com/v25.0/me', [
                     'fields' => 'id,name',
                     'access_token' => $accessToken,
                 ]);
