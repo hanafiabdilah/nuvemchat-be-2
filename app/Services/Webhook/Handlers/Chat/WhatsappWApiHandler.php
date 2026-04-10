@@ -104,11 +104,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
-        Log::info('WhatsappWApiHandler: Handling event', [
-            'event' => $event,
-            'connection_id' => $connection->id,
-        ]);
-
         switch ($event) {
             case 'webhookConnected':
                 $this->handleConnected($connection, $payload);
@@ -139,7 +134,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 break;
 
             case 'webhookDelivery':
-                Log::info('WhatsappWApiHandler: Handling delivery event');
                 $this->handleDelivery($connection, $payload);
                 break;
 
@@ -405,6 +399,11 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
+        Log::info('WhatsappWApiHandler: Handling delivery receipt', [
+            'conversation_id' => $conversationId,
+            'message_id' => $messageId,
+        ]);
+
         $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType) {
             $conversation = Conversation::where('connection_id', $connection->id)
                 ->where('external_id', $conversationId)
@@ -428,6 +427,11 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 'meta' => $payload,
             ]);
         });
+
+        Log::info('WhatsappWApiHandler: Delivery receipt processed', [
+            'message_id' => $messageId,
+            'conversation_id' => $conversationId,
+        ]);
 
         if($message){
             if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Sticker])) {
