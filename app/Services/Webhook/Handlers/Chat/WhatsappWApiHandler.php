@@ -104,6 +104,10 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
+        if(in_array($event, ['webhookReceived', 'webhookDelivery']) && isset($payload['msgContent']['protocolMessage']['type'])){
+            $type = $payload['msgContent']['protocolMessage']['type'];
+        }
+
         switch ($event) {
             case 'webhookConnected':
                 $this->handleConnected($connection, $payload);
@@ -114,10 +118,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 break;
 
             case 'webhookReceived':
-                if(isset($payload['msgContent']['protocolMessage']['type'])){
-                    $type = $payload['msgContent']['protocolMessage']['type'];
-                }
-
                 switch ($type) {
                     case 'REVOKE':
                         $this->handleDeleted($connection, $payload);
@@ -134,7 +134,19 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 break;
 
             case 'webhookDelivery':
-                $this->handleDelivery($connection, $payload);
+                switch ($type) {
+                    case 'REVOKE':
+                        $this->handleDeleted($connection, $payload);
+                        break;
+
+                    case 'MESSAGE_EDIT':
+                        $this->handleEdited($connection, $payload);
+                        break;
+
+                    default:
+                        $this->handleDelivery($connection, $payload);
+                        break;
+                }
                 break;
 
             case 'webhookStatus':
