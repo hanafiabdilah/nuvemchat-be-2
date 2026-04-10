@@ -99,7 +99,10 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $event = $payload['event'] ?? null;
         $type = null;
 
-        if(!$event) return;
+        if(!$event) {
+            Log::warning('WhatsappWApiHandler: Event type is missing in payload');
+            return;
+        }
 
         if($event === 'webhookReceived' && isset($payload['msgContent']['protocolMessage']['type'])){
             $type = $payload['msgContent']['protocolMessage']['type'];
@@ -317,7 +320,12 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 $conversationForWelcome = $conversation;
             }
 
-            if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
+            if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
+                Log::info('WhatsappWApiHandler: The message already exists, ignoring duplicate', [
+                    'message_id' => $messageId,
+                ]);
+                return;
+            }
 
             return $conversation->messages()->create([
                 'external_id' => $messageId,
