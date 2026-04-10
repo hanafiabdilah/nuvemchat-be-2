@@ -478,6 +478,10 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         ]);
 
         broadcast(new MessageUpdated($message));
+
+        if($message->conversation->last_message->id == $message->id) {
+            broadcast(new ConversationUpdated($message->conversation));
+        }
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)

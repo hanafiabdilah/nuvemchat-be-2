@@ -317,6 +317,10 @@ class InstagramHandler implements ChatHandlerInterface
 
                 // Broadcast the message update
                 broadcast(new MessageUpdated($message));
+
+                if($message->conversation->last_message->id == $message->id) {
+                    broadcast(new ConversationUpdated($message->conversation));
+                }
             } else {
                 Log::warning('InstagramHandler: Message not found for read status', [
                     'external_id' => $messageId,
