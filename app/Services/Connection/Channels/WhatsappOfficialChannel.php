@@ -23,6 +23,7 @@ class WhatsappOfficialChannel implements ChannelInterface
         validator($data, [
             'phone_number_id' => ['required', 'string'],
             'access_token' => ['required', 'string'],
+            'business_account_id' => ['required', 'string'],
         ])->validate();
 
         $response = Http::get('https://graph.facebook.com/me?access_token=' . $data['access_token']);
@@ -36,6 +37,7 @@ class WhatsappOfficialChannel implements ChannelInterface
             'credentials' => [
                 'phone_number_id' => $data['phone_number_id'],
                 'access_token' => $data['access_token'],
+                'business_account_id' => $data['business_account_id'],
             ],
         ]);
     }
