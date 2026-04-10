@@ -26,5 +26,15 @@ Route::post('/oauth/instagram/data-deletion', [ConnectionController::class, 'ins
 Route::get('/instagram/deletion-status', [ConnectionController::class, 'instagramDeletionStatus'])
     ->name('instagram.deletion-status');
 
+// Facebook OAuth (for WhatsApp & Messenger)
+Route::get('/oauth/facebook/callback', [ConnectionController::class, 'facebookCallback'])
+    ->name('oauth.facebook.callback');
+Route::post('/oauth/facebook/deauthorize', [ConnectionController::class, 'facebookDeauthorize'])
+    ->name('oauth.facebook.deauthorize');
+Route::post('/oauth/facebook/data-deletion', [ConnectionController::class, 'facebookDataDeletion'])
+    ->name('oauth.facebook.data-deletion');
+Route::get('/oauth/facebook/deletion-status', [ConnectionController::class, 'facebookDeletionStatus'])
+    ->name('oauth.facebook.deletion-status');
+
 require __DIR__.'/settings.php';
 require __DIR__.'/webhook.php';
