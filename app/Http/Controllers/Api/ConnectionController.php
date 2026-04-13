@@ -279,7 +279,8 @@ class ConnectionController extends Controller
 
         $appId = config('services.facebook.app_id');
         $configId = config('services.facebook.config_id');
-        
+        $redirectUri = config('services.facebook.redirect_uri');
+
         // WhatsApp embedded signup extras
         $extras = json_encode([
             'sessionInfoVersion' => '3',
@@ -291,12 +292,15 @@ class ConnectionController extends Controller
             'connection_id' => $connection->id,
             'app_id' => $appId,
             'config_id' => $configId,
+            'redirect_uri' => $redirectUri,
         ]);
 
         // Build WhatsApp embedded signup URL
         $oauthUrl = "https://business.facebook.com/messaging/whatsapp/onboard/"
             . "?app_id={$appId}"
             . "&config_id={$configId}"
+            . "&setup=" . urlencode($redirectUri)
+            . "&state=" . urlencode($state)
             . "&extras=" . urlencode($extras);
 
         return $oauthUrl;
