@@ -92,30 +92,7 @@ class WhatsappOfficialChannel implements ChannelInterface
 
     public function disconnect(Connection $connection): void
     {
-        try {
-            // Unsubscribe from webhooks
-            $this->unsubscribeWebhook($connection);
-
-            $connection->update([
-                'status' => Status::Inactive,
-            ]);
-
-            Log::info('WhatsApp connection disconnected successfully', [
-                'connection_id' => $connection->id,
-            ]);
-        } catch (\Throwable $th) {
-            Log::error('Failed to disconnect WhatsApp account', [
-                'connection_id' => $connection->id,
-                'error' => $th->getMessage(),
-            ]);
-
-            // Still update status even if webhook unsubscription fails
-            $connection->update([
-                'status' => Status::Inactive,
-            ]);
-
-            throw new Exception('An error occurred while disconnecting WhatsApp: ' . $th->getMessage());
-        }
+        throw new Exception('WhatsApp does not support programmatic disconnection. Please instruct the user to disconnect the account from their WhatsApp settings or revoke access from the Facebook Business Integrations page.');
     }
 
     public function checkStatus(Connection $connection): void
@@ -207,46 +184,6 @@ class WhatsappOfficialChannel implements ChannelInterface
             ]);
 
             throw $th;
-        }
-    }
-
-    private function unsubscribeWebhook(Connection $connection): void
-    {
-        try {
-            $businessAccountId = $connection->credentials['business_account_id'] ?? null;
-            $accessToken = $connection->credentials['access_token'] ?? null;
-
-            if (!$businessAccountId || !$accessToken) {
-                Log::warning('Missing credentials for webhook unsubscription', [
-                    'connection_id' => $connection->id,
-                ]);
-                return;
-            }
-
-            // Unsubscribe from WhatsApp webhooks
-            // DELETE /{whatsapp-business-account-id}/subscribed_apps
-            $response = Http::withToken($accessToken)
-                ->delete("https://graph.facebook.com/v25.0/{$businessAccountId}/subscribed_apps");
-
-            if ($response->successful()) {
-                Log::info('Successfully unsubscribed from WhatsApp webhooks', [
-                    'connection_id' => $connection->id,
-                    'business_account_id' => $businessAccountId,
-                    'response' => $response->json(),
-                ]);
-            } else {
-                Log::warning('Failed to unsubscribe from WhatsApp webhooks', [
-                    'connection_id' => $connection->id,
-                    'business_account_id' => $businessAccountId,
-                    'status' => $response->status(),
-                    'response' => $response->json(),
-                ]);
-            }
-        } catch (\Throwable $th) {
-            Log::error('Error in webhook unsubscription process', [
-                'connection_id' => $connection->id,
-                'error' => $th->getMessage(),
-            ]);
         }
     }
 }

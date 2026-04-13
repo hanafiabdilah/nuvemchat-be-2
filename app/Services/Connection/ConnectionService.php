@@ -59,32 +59,38 @@ class ConnectionService
 
     public function delete(Connection $connection): void
     {
-        // Validation: Instagram connections must be disconnected first
-        if ($connection->channel === Channel::Instagram && $connection->status === Status::Active) {
+        // Validation: Instagram and WhatsApp Official connections must be disconnected first
+        if (in_array($connection->channel, [Channel::Instagram, Channel::WhatsappOfficial]) && $connection->status === Status::Active) {
+            $channelName = $connection->channel === Channel::Instagram ? 'Instagram' : 'WhatsApp';
+            $settingsPath = $connection->channel === Channel::Instagram 
+                ? 'Instagram Settings → Security → Apps and Websites'
+                : 'Facebook Business Integrations page';
+            
             throw new ConnectionException(
-                'Cannot delete an active Instagram connection. Please disconnect from Instagram first by visiting your Instagram Settings → Security → Apps and Websites, then try again.',
+                "Cannot delete an active {$channelName} connection. Please disconnect from {$channelName} first by visiting your {$settingsPath}, then try again.",
                 400
             );
         }
 
-        // For Instagram with Inactive status, disconnect might have failed
+        // For Instagram/WhatsApp with Inactive status, disconnect might have failed
         // but we allow deletion since credentials should already be cleared
-        if ($connection->channel === Channel::Instagram && $connection->status === Status::Inactive) {
+        if (in_array($connection->channel, [Channel::Instagram, Channel::WhatsappOfficial]) && $connection->status === Status::Inactive) {
             // Check if credentials still exist
             if (!empty($connection->credentials)) {
+                $channelName = $connection->channel === Channel::Instagram ? 'Instagram' : 'WhatsApp';
                 throw new ConnectionException(
-                    'Instagram connection still has active credentials. Please ensure the connection is fully disconnected from Instagram Settings first.',
+                    "{$channelName} connection still has active credentials. Please ensure the connection is fully disconnected first.",
                     400
                 );
             }
         }
 
         // For other channels, try to disconnect first
-        if ($connection->channel !== Channel::Instagram) {
+        if (!in_array($connection->channel, [Channel::Instagram, Channel::WhatsappOfficial])) {
             try {
                 $this->disconnect($connection);
             } catch (\Throwable $th) {
-                // Log the error but continue with deletion for non-Instagram channels
+                // Log the error but continue with deletion for other channels
                 \Illuminate\Support\Facades\Log::warning('Failed to disconnect before deleting connection', [
                     'connection_id' => $connection->id,
                     'error' => $th->getMessage(),
