@@ -28,6 +28,8 @@ return Application::configure(basePath: dirname(__DIR__))
             '/webhook/*',
             '/oauth/instagram/deauthorize',
             '/oauth/instagram/data-deletion',
+            '/oauth/facebook/deauthorize',
+            '/oauth/facebook/data-deletion',
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
