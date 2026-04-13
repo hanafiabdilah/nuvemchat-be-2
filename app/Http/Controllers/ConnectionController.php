@@ -387,7 +387,7 @@ class ConnectionController extends Controller
 
     public function facebookCallback(Request $request)
     {
-        Log::info('Facebook OAuth callback received', [
+        Log::info('Facebook OAuth callback received from frontend', [
             'query' => $request->query(),
         ]);
 
@@ -405,20 +405,25 @@ class ConnectionController extends Controller
                 'error_description' => $errorDescription,
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Facebook OAuth error: ' . $errorDescription));
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Facebook OAuth error: ' . $errorDescription,
+            ], 400);
         }
 
         // Validate required parameters
         if (!$code || !$state) {
             Log::error('Missing code or state parameter in Facebook callback');
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Invalid Facebook callback: missing code or state parameter'));
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Invalid Facebook callback: missing code or state parameter',
+            ], 400);
         }
 
-        // Decode state to get connection_id and platform
+        // Decode state to get connection_id
         try {
             $stateData = json_decode(base64_decode($state), true);
             $connectionId = $stateData['connection_id'] ?? null;
-            $platform = $stateData['platform'] ?? 'whatsapp'; // default to whatsapp
 
             if (!$connectionId) {
                 throw new \Exception('Invalid state parameter');
@@ -450,14 +455,8 @@ class ConnectionController extends Controller
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
-            // Route to appropriate handler based on platform
-            if ($platform === 'whatsapp') {
-                return $this->handleWhatsAppCallback($connection, $accessToken);
-            } elseif ($platform === 'messenger') {
-                return $this->handleMessengerCallback($connection, $accessToken);
-            } else {
-                throw new \Exception('Unknown platform: ' . $platform);
-            }
+            // Handle WhatsApp callback
+            return $this->handleWhatsAppCallback($connection, $accessToken);
 
         } catch (\Throwable $th) {
             Log::error('Error processing Facebook callback', [
@@ -465,7 +464,10 @@ class ConnectionController extends Controller
                 'trace' => $th->getTraceAsString(),
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Failed to connect account: ' . $th->getMessage()));
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to connect account: ' . $th->getMessage(),
+            ], 500);
         }
     }
 
@@ -514,7 +516,12 @@ class ConnectionController extends Controller
                 'business_account_id' => $wabaId,
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=success&message=' . urlencode('WhatsApp account connected successfully!'));
+            // Return JSON response instead of redirect for embedded signup
+            return response()->json([
+                'status' => 'success',
+                'message' => 'WhatsApp account connected successfully!',
+                'data' => $connection->fresh()->toResource(\App\Http\Resources\ConnectionResource::class),
+            ], 200);
 
         } catch (\Throwable $th) {
             Log::error('Error handling WhatsApp callback', [
