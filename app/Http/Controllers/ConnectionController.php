@@ -490,39 +490,68 @@ class ConnectionController extends Controller
     private function handleWhatsAppCallback(Connection $connection, string $accessToken)
     {
         try {
-            // Get WhatsApp Business Account info
-            $response = Http::get('https://graph.facebook.com/v25.0/debug_token', [
+            // Get WhatsApp Business Account info from debug_token
+            $debugResponse = Http::get('https://graph.facebook.com/v25.0/debug_token', [
                 'input_token' => $accessToken,
                 'access_token' => config('services.facebook.app_id') . '|' . config('services.facebook.app_secret'),
             ]);
 
-            $debugInfo = $response->successful() ? $response->json()['data'] : [];
+            $debugInfo = $debugResponse->successful() ? $debugResponse->json()['data'] : [];
 
-            // Get WABA ID from the access token scopes or make additional API call
-            // For embedded signup, WABA info is typically returned in the signup flow
-            $wabaId = $debugInfo['granular_scopes'][0]['target_ids'][0] ?? null;
-
-            if (!$wabaId) {
-                // Alternative: Get from me endpoint with whatsapp_business_management permission
-                $meResponse = Http::get('https://graph.facebook.com/v25.0/me', [
-                    'fields' => 'id,name',
-                    'access_token' => $accessToken,
-                ]);
-
-                $meData = $meResponse->successful() ? $meResponse->json() : [];
-                Log::info('WhatsApp me data', $meData);
+            // Get WABA ID from granular_scopes
+            $wabaId = null;
+            foreach ($debugInfo['granular_scopes'] ?? [] as $scope) {
+                if (in_array($scope['scope'], ['whatsapp_business_management', 'whatsapp_business_messaging'])) {
+                    $wabaId = $scope['target_ids'][0] ?? null;
+                    if ($wabaId) break;
+                }
             }
 
-            Log::info('WhatsApp account info retrieved', [
-                'debug_info' => $debugInfo,
+            if (!$wabaId) {
+                throw new \Exception('Could not retrieve WhatsApp Business Account ID from token');
+            }
+
+            Log::info('WhatsApp Business Account ID retrieved', [
                 'waba_id' => $wabaId,
+                'debug_info' => $debugInfo,
+            ]);
+
+            // Fetch phone numbers registered to this WABA
+            $phoneNumbersResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/phone_numbers", [
+                'access_token' => $accessToken,
+            ]);
+
+            $phoneNumbersData = $phoneNumbersResponse->successful() ? $phoneNumbersResponse->json() : [];
+            $phoneNumbers = $phoneNumbersData['data'] ?? [];
+
+            if (empty($phoneNumbers)) {
+                throw new \Exception('No phone numbers found for this WhatsApp Business Account');
+            }
+
+            // Get the first phone number (or you can let user choose later)
+            $primaryPhone = $phoneNumbers[0];
+            $phoneNumberId = $primaryPhone['id'] ?? null;
+            $displayPhoneNumber = $primaryPhone['display_phone_number'] ?? null;
+            $verifiedName = $primaryPhone['verified_name'] ?? null;
+            $qualityRating = $primaryPhone['quality_rating'] ?? null;
+
+            Log::info('WhatsApp phone numbers retrieved', [
+                'phone_count' => count($phoneNumbers),
+                'primary_phone' => $primaryPhone,
             ]);
 
             // Connect the WhatsApp account using ConnectionService
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
                 'business_account_id' => (string) $wabaId,
-                'phone_number_id' => null, // Will be updated when we get phone number
+                'phone_number_id' => (string) $phoneNumberId,
+                'display_phone_number' => $displayPhoneNumber,
+                'verified_name' => $verifiedName,
+                'quality_rating' => $qualityRating,
+                'token_type' => $debugInfo['type'] ?? 'USER',
+                'token_expires_at' => isset($debugInfo['expires_at']) && $debugInfo['expires_at'] > 0
+                    ? date('Y-m-d H:i:s', $debugInfo['expires_at'])
+                    : null,
             ]);
 
             broadcast(new ConnectionUpdated($connection->fresh()));
@@ -530,6 +559,8 @@ class ConnectionController extends Controller
             Log::info('WhatsApp account connected successfully', [
                 'connection_id' => $connection->id,
                 'business_account_id' => $wabaId,
+                'phone_number_id' => $phoneNumberId,
+                'display_phone_number' => $displayPhoneNumber,
             ]);
 
             // Return JSON response instead of redirect for embedded signup
