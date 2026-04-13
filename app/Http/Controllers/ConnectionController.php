@@ -432,18 +432,34 @@ class ConnectionController extends Controller
             // Find the connection
             $connection = Connection::findOrFail($connectionId);
 
+            $redirectUri = config('services.facebook.redirect_uri');
+
+            Log::info('Exchanging code for access token', [
+                'connection_id' => $connectionId,
+                'redirect_uri' => $redirectUri,
+                'has_code' => !empty($code),
+            ]);
+
             // Exchange code for access token
-            $response = Http::asForm()->post('https://graph.facebook.com/v25.0/oauth/access_token', [
+            // For embedded signup, redirect_uri is optional but if provided must match exactly
+            $tokenRequestData = [
                 'client_id' => config('services.facebook.app_id'),
                 'client_secret' => config('services.facebook.app_secret'),
-                'redirect_uri' => config('services.facebook.redirect_uri'),
                 'code' => $code,
-            ]);
+            ];
+
+            // Only add redirect_uri if it's configured (for embedded signup, it might not be needed)
+            if (!empty($redirectUri)) {
+                $tokenRequestData['redirect_uri'] = $redirectUri;
+            }
+
+            $response = Http::asForm()->post('https://graph.facebook.com/v25.0/oauth/access_token', $tokenRequestData);
 
             if (!$response->successful()) {
                 Log::error('Failed to exchange Facebook code for token', [
                     'response' => $response->json(),
                     'status' => $response->status(),
+                    'redirect_uri_used' => $redirectUri ?? 'none',
                 ]);
                 throw new \Exception('Failed to obtain access token from Facebook: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
             }
