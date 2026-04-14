@@ -480,7 +480,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
             ])->delete('https://api.w-api.app/v1/message/delete-message?instanceId=' . $connection->credentials['instance_id'], [
-                'phone' => '551931851475',
+                'phone' => $conversation->external_id,
                 'messageId' => $message->external_id,
             ]);
 
@@ -502,6 +502,10 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'message_id' => $message->id,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
+            ]);
+
+            $message->update([
+                'unsend_at' => Carbon::now(),
             ]);
 
             return true;

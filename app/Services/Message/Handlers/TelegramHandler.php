@@ -327,6 +327,10 @@ class TelegramHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
+            $message->update([
+                'unsend_at' => Carbon::now(),
+            ]);
+
             return true;
         } catch (\Throwable $th) {
             Log::error('TelegramHandler: Failed to delete message', [
