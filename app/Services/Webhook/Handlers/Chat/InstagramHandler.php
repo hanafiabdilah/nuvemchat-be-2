@@ -150,6 +150,8 @@ class InstagramHandler implements ChatHandlerInterface
 
         // Determine event type
         $eventType = match (true) {
+            isset($messaging['message_edit']) => 'message_edit',
+            isset($messaging['message']['is_deleted']) => 'message_delete',
             isset($messaging['message']) => 'message',
             isset($messaging['read']) => 'read',
             default => 'unsupported',
@@ -157,6 +159,14 @@ class InstagramHandler implements ChatHandlerInterface
 
         // Handle based on event type
         switch ($eventType) {
+            case 'message_edit':
+                $this->handleMessageEdit($connection, $payload);
+                break;
+
+            case 'message_delete':
+                $this->handleMessageDelete($connection, $payload);
+                break;
+
             case 'message':
                 $this->handleReceived($connection, $payload);
                 break;
@@ -277,6 +287,129 @@ class InstagramHandler implements ChatHandlerInterface
                     }
                 }
             }
+        }
+    }
+
+    private function handleMessageEdit(Connection $connection, array $payload)
+    {
+        $messaging = $payload['messaging'][0] ?? [];
+        $messageEdit = $messaging['message_edit'] ?? [];
+        $messageId = $messageEdit['mid'] ?? null;
+        $newText = $messageEdit['text'] ?? null;
+        $numEdit = $messageEdit['num_edit'] ?? 0;
+        $timestamp = $messaging['timestamp'] ?? null;
+
+        if (!$messageId) {
+            Log::warning('InstagramHandler: Missing message ID in edit payload', [
+                'payload' => $payload,
+            ]);
+            return;
+        }
+
+        try {
+            // Find the message
+            $message = Message::whereHas('conversation', function($query) use ($connection) {
+                $query->where('connection_id', $connection->id);
+            })
+            ->where('external_id', $messageId)
+            ->first();
+
+            if ($message) {
+                $editedAt = $timestamp ? Carbon::createFromTimestampMs($timestamp) : Carbon::now();
+
+                // Update message with new text and edited_at timestamp
+                $message->update([
+                    'body' => $newText,
+                    'edited_at' => $editedAt,
+                    'meta' => array_merge($message->meta ?? [], [
+                        'num_edit' => $numEdit,
+                        'last_edit_payload' => $payload,
+                    ]),
+                ]);
+
+                Log::info('InstagramHandler: Message edited successfully', [
+                    'message_id' => $message->id,
+                    'external_id' => $messageId,
+                    'num_edit' => $numEdit,
+                    'edited_at' => $message->edited_at,
+                ]);
+
+                // Broadcast the message update
+                broadcast(new MessageUpdated($message));
+
+                // Update conversation if this is the last message
+                if($message->conversation->last_message->id == $message->id) {
+                    broadcast(new ConversationUpdated($message->conversation));
+                }
+            } else {
+                Log::warning('InstagramHandler: Message not found for edit event', [
+                    'external_id' => $messageId,
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::error('InstagramHandler: Failed to handle message edit', [
+                'message_id' => $messageId,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
+    private function handleMessageDelete(Connection $connection, array $payload)
+    {
+        $messaging = $payload['messaging'][0] ?? [];
+        $message = $messaging['message'] ?? [];
+        $messageId = $message['mid'] ?? null;
+        $timestamp = $messaging['timestamp'] ?? null;
+
+        if (!$messageId || !($message['is_deleted'] ?? false)) {
+            Log::warning('InstagramHandler: Invalid delete message payload', [
+                'payload' => $payload,
+            ]);
+            return;
+        }
+
+        try {
+            // Find the message
+            $messageModel = Message::whereHas('conversation', function($query) use ($connection) {
+                $query->where('connection_id', $connection->id);
+            })
+            ->where('external_id', $messageId)
+            ->first();
+
+            if ($messageModel) {
+                $unsendAt = $timestamp ? Carbon::createFromTimestampMs($timestamp) : Carbon::now();
+
+                // Update message with unsend_at timestamp
+                $messageModel->update([
+                    'unsend_at' => $unsendAt,
+                    'meta' => array_merge($messageModel->meta ?? [], [
+                        'delete_payload' => $payload,
+                    ]),
+                ]);
+
+                Log::info('InstagramHandler: Message deleted successfully', [
+                    'message_id' => $messageModel->id,
+                    'external_id' => $messageId,
+                    'unsend_at' => $messageModel->unsend_at,
+                ]);
+
+                // Broadcast the message update
+                broadcast(new MessageUpdated($messageModel));
+
+                // Update conversation if this is the last message
+                if($messageModel->conversation->last_message->id == $messageModel->id) {
+                    broadcast(new ConversationUpdated($messageModel->conversation));
+                }
+            } else {
+                Log::warning('InstagramHandler: Message not found for delete event', [
+                    'external_id' => $messageId,
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::error('InstagramHandler: Failed to handle message delete', [
+                'message_id' => $messageId,
+                'error' => $th->getMessage(),
+            ]);
         }
     }
 
