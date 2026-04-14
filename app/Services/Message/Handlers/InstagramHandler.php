@@ -573,66 +573,6 @@ class InstagramHandler implements MessageHandlerInterface
 
     public function handleEditMessage(Message $message, array $data): ?Message
     {
-        // Instagram hanya support edit text message (jika API mendukung)
-        if ($message->message_type !== MessageType::Text) {
-            throw new Exception('Only text messages can be edited on Instagram');
-        }
-
-        validator($data, [
-            'message' => 'required|string',
-        ])->validate();
-
-        $conversation = $message->conversation;
-        $connection = $conversation->connection;
-
-        try {
-            // Mencoba menggunakan endpoint edit message Instagram
-            // Note: Instagram Graph API mungkin tidak mendukung edit message
-            $response = Http::withToken($connection->credentials['access_token'])
-                ->post('https://graph.instagram.com/v25.0/' . $message->external_id, [
-                    'message' => [
-                        'text' => $data['message'],
-                    ],
-                ]);
-
-            $responseArray = $response->json();
-
-            // Jika response menunjukkan error atau tidak support
-            if (!$response->successful()) {
-                Log::warning('InstagramHandler: Edit message may not be supported', [
-                    'response' => $responseArray,
-                    'status' => $response->status(),
-                    'message_id' => $message->id,
-                ]);
-
-                // Instagram Graph API tidak mendukung edit message
-                throw new Exception('Instagram Graph API does not support message editing: ' .
-                    ($responseArray['error']['message'] ?? 'Feature not available'));
-            }
-
-            Log::info('InstagramHandler: Message edited successfully', [
-                'response' => $responseArray,
-                'message_id' => $message->id,
-                'conversation_id' => $conversation->id,
-            ]);
-
-            // Update message di database
-            $message->update([
-                'body' => $data['message'],
-                'edited_at' => Carbon::now(),
-            ]);
-
-            return $message->fresh();
-        } catch (\Throwable $th) {
-            Log::error('InstagramHandler: Failed to edit message', [
-                'error' => $th->getMessage(),
-                'message_id' => $message->id,
-                'conversation_id' => $conversation->id,
-                'connection_id' => $connection->id,
-            ]);
-
-            // Instagram saat ini tidak mendukung edit message lewat API
-            throw new Exception('Failed to edit Instagram message: ' . $th->getMessage());
-        }
+        throw new Exception('Message editing not implemented for Instagram API');
     }
 }
