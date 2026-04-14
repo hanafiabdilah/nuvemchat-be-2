@@ -27,18 +27,10 @@ class WhatsappWApiChannel implements ChannelInterface
             throw ValidationException::withMessages(['instance_id' => 'The instance_id has already been taken.']);
         }
 
-        $connection->update([
-            'status' => Status::Pending,
-            'credentials' => [
-                'instance_id' => $data['instance_id'],
-                'token' => $data['token'],
-            ],
-        ]);
-
         // check status
         $status = Http::withHeaders([
             'Authorization' => 'Bearer ' . $data['token'],
-        ])->get('https://api.w-api.app/v1/instance/status-instance?instanceId=' . $connection->credentials['instance_id']);
+        ])->get('https://api.w-api.app/v1/instance/status-instance?instanceId=' . $data['instance_id']);
         $statusJson = $status->json();
 
         if($status->failed()){
@@ -57,7 +49,7 @@ class WhatsappWApiChannel implements ChannelInterface
         $webhookResponses = [];
 
         foreach($webhookPaths as $webhookPath){
-            $endpoint = 'https://api.w-api.app/v1/webhook/' . $webhookPath . '?instanceId=' . $connection->credentials['instance_id'];
+            $endpoint = 'https://api.w-api.app/v1/webhook/' . $webhookPath . '?instanceId=' . $data['instance_id'];
             $requestData = [
                 'value' => route('webhook.chat', ['id' => $connection->id]),
             ];
@@ -77,11 +69,13 @@ class WhatsappWApiChannel implements ChannelInterface
 
         Log::info('Whatsapp WApi webhooks setup response', ['connection' => $connection, 'responses' => $webhookResponses]);
 
-        if($statusJson['connected'] === true){
-            $connection->update([
-                'status' => Status::Active,
-            ]);
-        }
+        $connection->update([
+            'status' => $statusJson['connected'] === true ? Status::Active : Status::Pending,
+            'credentials' => [
+                'instance_id' => $data['instance_id'],
+                'token' => $data['token'],
+            ],
+        ]);
 
         return $connection;
     }
