@@ -406,4 +406,72 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             throw new Exception('Failed to send WhatsApp document message');
         }
     }
+
+    public function handleEditMessage(Message $message, array $data): ?Message
+    {
+        // WhatsApp hanya support edit text message
+        if ($message->message_type !== MessageType::Text) {
+            throw new Exception('Only text messages can be edited on WhatsApp');
+        }
+
+        validator($data, [
+            'message' => 'required|string',
+        ])->validate();
+
+        $conversation = $message->conversation;
+        $connection = $conversation->connection;
+
+        try {
+            // W-API endpoint untuk edit message
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/edit-text?instanceId=' . $connection->credentials['instance_id'], [
+                'phone' => $conversation->external_id,
+                'messageId' => $message->external_id,
+                'message' => $data['message'],
+            ]);
+
+            $responseArray = $response->json();
+
+            // Cek jika API tidak support edit message
+            if (!$response->successful()) {
+                Log::warning('WhatsappWApiHandler: Edit message may not be supported', [
+                    'response' => $responseArray,
+                    'status' => $response->status(),
+                    'message_id' => $message->id,
+                ]);
+
+                throw new Exception('WhatsApp W-API does not support message editing or request failed: ' .
+                    ($responseArray['message'] ?? 'Unknown error'));
+            }
+
+            Log::info('WhatsappWApiHandler: Message edited successfully', [
+                'response' => $responseArray,
+                'message_id' => $message->id,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            // Update message di database
+            $message->update([
+                'body' => $data['message'],
+                'meta' => array_merge($message->meta ?? [], [
+                    'edited' => true,
+                    'edited_at' => Carbon::now()->toDateTimeString(),
+                    'edit_response' => $responseArray,
+                ]),
+            ]);
+
+            return $message->fresh();
+        } catch (\Throwable $th) {
+            Log::error('WhatsappWApiHandler: Failed to edit message', [
+                'error' => $th->getMessage(),
+                'message_id' => $message->id,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to edit WhatsApp message: ' . $th->getMessage());
+        }
+    }
 }

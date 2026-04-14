@@ -259,4 +259,57 @@ class TelegramHandler implements MessageHandlerInterface
             throw new Exception('Failed to send Telegram document message');
         }
     }
+
+    public function handleEditMessage(Message $message, array $data): ?Message
+    {
+        // Telegram hanya support edit text message
+        if ($message->message_type !== MessageType::Text) {
+            throw new Exception('Only text messages can be edited on Telegram');
+        }
+
+        validator($data, [
+            'message' => 'required|string',
+        ])->validate();
+
+        $conversation = $message->conversation;
+        $connection = $conversation->connection;
+
+        try {
+            $telegram = new Api($connection->credentials['token']);
+            $response = $telegram->editMessageText([
+                'chat_id' => $conversation->external_id,
+                'message_id' => $message->external_id,
+                'text' => $data['message'],
+            ]);
+
+            $responseArray = $response->toArray();
+
+            // Update message di database
+            $message->update([
+                'body' => $data['message'],
+                'meta' => array_merge($message->meta ?? [], [
+                    'edited' => true,
+                    'edited_at' => Carbon::now()->toDateTimeString(),
+                    'edit_response' => $responseArray,
+                ]),
+            ]);
+
+            Log::info('TelegramHandler: Message edited successfully', [
+                'message_id' => $message->id,
+                'external_id' => $message->external_id,
+                'conversation_id' => $conversation->id,
+            ]);
+
+            return $message->fresh();
+        } catch (\Throwable $th) {
+            Log::error('TelegramHandler: Failed to edit message', [
+                'error' => $th->getMessage(),
+                'message_id' => $message->id,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to edit Telegram message: ' . $th->getMessage());
+        }
+    }
 }

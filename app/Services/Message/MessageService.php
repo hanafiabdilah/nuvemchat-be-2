@@ -36,4 +36,10 @@ class MessageService
         $handler = MessageFactory::make($conversation->connection->channel, $data);
         return $handler->handleSendDocument($conversation, $data);
     }
+
+    public function editMessage(Message $message, array $data): ?Message
+    {
+        $handler = MessageFactory::make($message->conversation->connection->channel, $data);
+        return $handler->handleEditMessage($message, $data);
+    }
 }

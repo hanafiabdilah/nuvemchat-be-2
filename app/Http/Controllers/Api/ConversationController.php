@@ -502,4 +502,49 @@ class ConversationController extends Controller
             'message' => 'Conversation tags updated',
         ]);
     }
+
+    public function editMessage(int $id, int $message_id, Request $request)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $message = $conversation->messages()->where('id', $message_id)->firstOrFail();
+
+        if($message->sender_type !== SenderType::Outgoing){
+            return response()->json([
+                'message' => 'Only outgoing messages can be edited',
+            ], 400);
+        }
+
+        try {
+            $messageService = new MessageService();
+            $editedMessage = $messageService->editMessage($message, $request->all());
+
+            broadcast(new ConversationUpdated($conversation));
+            broadcast(new MessageReceived($editedMessage));
+
+            return response()->json([
+                'data' => new MessageResource($editedMessage),
+            ]);
+        } catch(ValidationException $th){
+            throw $th;
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => 'Failed to edit message',
+            ], 500);
+        }
+    }
 }

@@ -88,4 +88,9 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     {
         throw new Exception('Document sending not implemented for WhatsApp Official API');
     }
+
+    public function handleEditMessage(Message $message, array $data): ?Message
+    {
+        throw new Exception('Message editing not implemented for WhatsApp Official API');
+    }
 }
