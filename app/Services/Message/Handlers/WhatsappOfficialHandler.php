@@ -93,4 +93,9 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     {
         throw new Exception('Message editing not implemented for WhatsApp Official API');
     }
+
+    public function handleDeleteMessage(Message $message): bool
+    {
+        throw new Exception('Message deletion not supported for WhatsApp Official API');
+    }
 }

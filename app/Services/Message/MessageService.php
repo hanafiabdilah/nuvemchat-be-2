@@ -42,4 +42,10 @@ class MessageService
         $handler = MessageFactory::make($message->conversation->connection->channel, $data);
         return $handler->handleEditMessage($message, $data);
     }
+
+    public function deleteMessage(Message $message): bool
+    {
+        $handler = MessageFactory::make($message->conversation->connection->channel, []);
+        return $handler->handleDeleteMessage($message);
+    }
 }

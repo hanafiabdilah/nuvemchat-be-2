@@ -308,4 +308,35 @@ class TelegramHandler implements MessageHandlerInterface
             throw new Exception('Failed to edit Telegram message: ' . $th->getMessage());
         }
     }
+
+    public function handleDeleteMessage(Message $message): bool
+    {
+        $conversation = $message->conversation;
+        $connection = $conversation->connection;
+
+        try {
+            $telegram = new Api($connection->credentials['token']);
+            $telegram->deleteMessage([
+                'chat_id' => $conversation->external_id,
+                'message_id' => $message->external_id,
+            ]);
+
+            Log::info('TelegramHandler: Message deleted successfully', [
+                'message_id' => $message->id,
+                'external_id' => $message->external_id,
+                'conversation_id' => $conversation->id,
+            ]);
+
+            return true;
+        } catch (\Throwable $th) {
+            Log::error('TelegramHandler: Failed to delete message', [
+                'error' => $th->getMessage(),
+                'message_id' => $message->id,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to delete Telegram message: ' . $th->getMessage());
+        }
+    }
 }

@@ -575,4 +575,9 @@ class InstagramHandler implements MessageHandlerInterface
     {
         throw new Exception('Message editing not implemented for Instagram API');
     }
+
+    public function handleDeleteMessage(Message $message): bool
+    {
+        throw new Exception('Message deletion not supported for Instagram API');
+    }
 }

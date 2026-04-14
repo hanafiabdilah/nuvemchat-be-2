@@ -470,4 +470,50 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             throw new Exception('Failed to edit WhatsApp message: ' . $th->getMessage());
         }
     }
+
+    public function handleDeleteMessage(Message $message): bool
+    {
+        $conversation = $message->conversation;
+        $connection = $conversation->connection;
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->delete('https://api.w-api.app/v1/message/delete-message?instanceId=' . $connection->credentials['instance_id'], [
+                'phone' => $conversation->external_id,
+                'messageId' => $message->external_id,
+            ]);
+
+            $responseArray = $response->json();
+
+            if (!$response->successful()) {
+                Log::warning('WhatsappWApiHandler: Delete message request failed', [
+                    'response' => $responseArray,
+                    'status' => $response->status(),
+                    'message_id' => $message->id,
+                ]);
+
+                throw new Exception('WhatsApp W-API delete message failed: ' .
+                    ($responseArray['message'] ?? 'Unknown error'));
+            }
+
+            Log::info('WhatsappWApiHandler: Message deleted successfully', [
+                'response' => $responseArray,
+                'message_id' => $message->id,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            return true;
+        } catch (\Throwable $th) {
+            Log::error('WhatsappWApiHandler: Failed to delete message', [
+                'error' => $th->getMessage(),
+                'message_id' => $message->id,
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to delete WhatsApp message: ' . $th->getMessage());
+        }
+    }
 }

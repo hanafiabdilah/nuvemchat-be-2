@@ -547,4 +547,46 @@ class ConversationController extends Controller
             ], 500);
         }
     }
+
+    public function deleteMessage(int $id, int $message_id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $message = $conversation->messages()->where('id', $message_id)->firstOrFail();
+
+        if($message->sender_type !== SenderType::Outgoing){
+            return response()->json([
+                'message' => 'Only outgoing messages can be deleted',
+            ], 400);
+        }
+
+        try {
+            $messageService = new MessageService();
+            $messageService->deleteMessage($message);
+
+            broadcast(new ConversationUpdated($conversation));
+
+            return response()->json([
+                'message' => 'Message deleted successfully',
+            ]);
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => $th->getMessage(),
+            ], 500);
+        }
+    }
 }

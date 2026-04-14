@@ -36,6 +36,7 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
     Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
     Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
+    Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);
 
     Route::get('/connections', [ConnectionController::class, 'index']);
     Route::get('/tags', [TagController::class, 'index']);

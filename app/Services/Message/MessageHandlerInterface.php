@@ -17,4 +17,5 @@ interface MessageHandlerInterface
     public function handleSendVideo(Conversation $conversation, array $data): ?Message;
     public function handleSendDocument(Conversation $conversation, array $data): ?Message;
     public function handleEditMessage(Message $message, array $data): ?Message;
+    public function handleDeleteMessage(Message $message): bool;
 }
