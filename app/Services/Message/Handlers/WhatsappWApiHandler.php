@@ -477,27 +477,38 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         try {
-            // W-API DELETE request dengan body payload
+            $url = 'https://api.w-api.app/v1/message/delete-message?instanceId=' . $connection->credentials['instance_id'];
+            $payload = [
+                'phone' => $conversation->external_id,
+                'messageId' => $message->external_id,
+            ];
+
+            Log::info('WhatsappWApiHandler: Sending DELETE request', [
+                'url' => $url,
+                'payload' => $payload,
+                'message_id' => $message->id,
+                'conversation_id' => $conversation->id,
+            ]);
+
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
-                'Content-Type' => 'application/json',
-            ])->send('DELETE', 'https://api.w-api.app/v1/message/delete-message?instanceId=' . $connection->credentials['instance_id'], [
-                'json' => [
-                    'phone' => $conversation->external_id,
-                    'messageId' => $message->external_id,
-                ]
-            ]);
-
-            Log::info('WhatsappWApiHandler: Delete message request sent', [
-                'response_status' => $response->status(),
-                'conversation_id' => $conversation->id,
-                'connection_id' => $connection->id,
-                'message_id' => $message->id,
-                'phone' => $conversation->external_id,
-                'external_message_id' => $message->external_id,
-            ]);
+            ])->delete($url, $payload);
 
             $responseArray = $response->json();
+
+            // Log request yang benar-benar terkirim
+            Log::info('WhatsappWApiHandler: Actual request details', [
+                'request_method' => $response->handlerStats()['http_method'] ?? 'N/A',
+                'request_url' => $response->handlerStats()['url'] ?? 'N/A',
+                'request_headers' => $response->handlerStats()['request_header'] ?? [],
+                'handler_stats' => $response->handlerStats(),
+            ]);
+
+            Log::info('WhatsappWApiHandler: Delete message response', [
+                'status' => $response->status(),
+                'response' => $responseArray,
+                'message_id' => $message->id,
+            ]);
 
             if (!$response->successful()) {
                 Log::warning('WhatsappWApiHandler: Delete message request failed', [
