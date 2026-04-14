@@ -619,11 +619,7 @@ class InstagramHandler implements MessageHandlerInterface
             // Update message di database
             $message->update([
                 'body' => $data['message'],
-                'meta' => array_merge($message->meta ?? [], [
-                    'edited' => true,
-                    'edited_at' => Carbon::now()->toDateTimeString(),
-                    'edit_response' => $responseArray,
-                ]),
+                'edited_at' => Carbon::now(),
             ]);
 
             return $message->fresh();
