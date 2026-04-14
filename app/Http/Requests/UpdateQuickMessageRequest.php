@@ -21,7 +21,7 @@ class UpdateQuickMessageRequest extends FormRequest
 
         // If it's tenant-level, only owner can update
         if ($quickMessage->isTenantLevel()) {
-            return $this->user()->role === 'owner';
+            return $this->user()->hasRole('owner');
         }
 
         // If it's user-specific, only the owner of the message can update

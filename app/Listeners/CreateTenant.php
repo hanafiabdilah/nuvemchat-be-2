@@ -24,7 +24,7 @@ class CreateTenant
     {
         $user = User::find($event->user->id);
 
-        if($user?->role === 'owner'){
+        if($user?->hasRole('owner')){
             $tenant = $user->tenant()->create([]);
             $user->tenant_id = $tenant->id;
             $user->save();
