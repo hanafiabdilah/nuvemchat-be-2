@@ -386,15 +386,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     private function handleDelivery(Connection $connection, array $payload)
     {
         $fromMe = $payload['fromMe'] ?? false; // Only from me messages have delivery receipts in W-API
-        $fromApi = $payload['fromApi'] ?? false; // True = send via panel, False = send via another device (like whatsapp web, whatsapp desktop or another phone)
 
         if(!$fromMe) {
             Log::info('WhatsappWApiHandler: Ignoring delivery receipt for non-outgoing or non-API message');
-            return;
-        }
-
-        if($fromApi) {
-            Log::info('WhatsappWApiHandler: Ignoring delivery receipt for message sent via API (panel)');
             return;
         }
 
