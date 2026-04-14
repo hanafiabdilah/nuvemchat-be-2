@@ -425,10 +425,10 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             // W-API endpoint untuk edit message
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->post('https://api.w-api.app/v1/message/edit-text?instanceId=' . $connection->credentials['instance_id'], [
+            ])->post('https://api.w-api.app/v1/message/edit-message?instanceId=' . $connection->credentials['instance_id'], [
                 'phone' => $conversation->external_id,
                 'messageId' => $message->external_id,
-                'message' => $data['message'],
+                'text' => $data['message'],
             ]);
 
             $responseArray = $response->json();
