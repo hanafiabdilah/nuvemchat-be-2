@@ -477,11 +477,15 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         try {
+            // W-API DELETE request dengan body payload
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->delete('https://api.w-api.app/v1/message/delete-message?instanceId=' . $connection->credentials['instance_id'], [
-                'phone' => $conversation->external_id,
-                'messageId' => $message->external_id,
+                'Content-Type' => 'application/json',
+            ])->send('DELETE', 'https://api.w-api.app/v1/message/delete-message?instanceId=' . $connection->credentials['instance_id'], [
+                'json' => [
+                    'phone' => $conversation->external_id,
+                    'messageId' => $message->external_id,
+                ]
             ]);
 
             Log::info('WhatsappWApiHandler: Delete message request sent', [
@@ -490,6 +494,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'connection_id' => $connection->id,
                 'message_id' => $message->id,
                 'phone' => $conversation->external_id,
+                'external_message_id' => $message->external_id,
             ]);
 
             $responseArray = $response->json();
