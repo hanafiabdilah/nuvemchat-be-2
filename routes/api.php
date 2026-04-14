@@ -72,9 +72,6 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::put('/agents/{id}', [AgentController::class, 'update'])->middleware('permission:agents.update');
     Route::delete('/agents/{id}', [AgentController::class, 'destroy'])->middleware('permission:agents.delete');
     Route::post('/agents/{id}/connections', [AgentController::class, 'syncConnections'])->middleware('permission:agents.sync-connections');
-
-    // Agent role and permission assignment - protected by permissions
-    Route::get('/agents/{id}/roles-permissions', [AgentController::class, 'getRolesAndPermissions'])->middleware('permission:agents.view');
     Route::post('/agents/{id}/assign-roles', [AgentController::class, 'assignRoles'])->middleware('permission:agents.assign-roles');
     Route::post('/agents/{id}/assign-permissions', [AgentController::class, 'assignPermissions'])->middleware('permission:agents.assign-permissions');
 

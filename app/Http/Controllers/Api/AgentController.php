@@ -126,25 +126,6 @@ class AgentController extends Controller
     }
 
     /**
-     * Get agent roles and permissions.
-     */
-    public function getRolesAndPermissions(int $id)
-    {
-        $user = request()->user()->tenant->users()->with(['roles', 'permissions'])->findOrFail($id);
-
-        return response()->json([
-            'data' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'roles' => $user->roles,
-                'permissions' => $user->permissions,
-                'all_permissions' => $user->getAllPermissions(),
-            ],
-        ]);
-    }
-
-    /**
      * Assign roles to agent.
      */
     public function assignRoles(Request $request, int $id)
