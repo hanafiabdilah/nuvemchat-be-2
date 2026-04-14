@@ -11,7 +11,7 @@ class AgentController extends Controller
 {
     public function index()
     {
-        $users = request()->user()->tenant->users()->with('connections')->get();
+        $users = request()->user()->tenant->users()->with(['connections', 'roles', 'permissions'])->get();
 
          return response()->json([
             'data' => $users->toResourceCollection(UserResource::class),
