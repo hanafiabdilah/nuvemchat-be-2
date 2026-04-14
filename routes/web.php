@@ -29,7 +29,6 @@ Route::get('/instagram/deletion-status', [ConnectionController::class, 'instagra
 
 // Facebook OAuth (for WhatsApp & Messenger)
 Route::get('/oauth/facebook/callback', [ConnectionController::class, 'facebookCallback'])
-    ->middleware(HandleCors::class)
     ->name('oauth.facebook.callback');
 Route::post('/oauth/facebook/deauthorize', [ConnectionController::class, 'facebookDeauthorize'])
     ->name('oauth.facebook.deauthorize');
