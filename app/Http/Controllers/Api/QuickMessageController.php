@@ -74,7 +74,7 @@ class QuickMessageController extends Controller
         }
 
         // Check authorization
-        if ($quickMessage->isTenantLevel() && $request->user()->role !== 'owner') {
+        if ($quickMessage->isTenantLevel() && !$request->user()->hasRole('owner')) {
             abort(403, 'Unauthorized to delete tenant-level quick message');
         }
 

@@ -6,11 +6,12 @@ use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\QuickMessageController;
+use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\V1\SendMessageController;
-use App\Http\Middleware\EnsureOwner;
 use App\Http\Middleware\V1\Auth;
 use Illuminate\Support\Facades\Route;
 
@@ -49,27 +50,42 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::get('/contacts', [ContactController::class, 'index']);
     Route::post('/contacts', [ContactController::class, 'store']);
 
-    Route::middleware(EnsureOwner::class)->group(function(){
-        Route::post('/connections', [ConnectionController::class, 'store']);
-        Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect']);
-        Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth']);
-        Route::put('/connections/{id}', [ConnectionController::class, 'update']);
-        Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus']);
-        Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey']);
-        Route::post('/connections/{id}/disconnect', [ConnectionController::class, 'disconnect']);
-        Route::delete('/connections/{id}', [ConnectionController::class, 'destroy']);
-        Route::put('/connections/{id}/automated-messages', [ConnectionController::class, 'updateAutomatedMessages']);
+    // Connection routes - protected by permissions
+    Route::post('/connections', [ConnectionController::class, 'store'])->middleware('permission:connections.create');
+    Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect'])->middleware('permission:connections.connect');
+    Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
+    Route::put('/connections/{id}', [ConnectionController::class, 'update'])->middleware('permission:connections.update');
+    Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus'])->middleware('permission:connections.check-status');
+    Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey'])->middleware('permission:connections.generate-api-key');
+    Route::post('/connections/{id}/disconnect', [ConnectionController::class, 'disconnect'])->middleware('permission:connections.disconnect');
+    Route::delete('/connections/{id}', [ConnectionController::class, 'destroy'])->middleware('permission:connections.delete');
+    Route::put('/connections/{id}/automated-messages', [ConnectionController::class, 'updateAutomatedMessages'])->middleware('permission:connections.update-automated-messages');
 
-        Route::post('/tags', [TagController::class, 'store']);
-        Route::put('/tags/{id}', [TagController::class, 'update']);
-        Route::delete('/tags/{id}', [TagController::class, 'destroy']);
+    // Tag routes - protected by permissions
+    Route::post('/tags', [TagController::class, 'store'])->middleware('permission:tags.create');
+    Route::put('/tags/{id}', [TagController::class, 'update'])->middleware('permission:tags.update');
+    Route::delete('/tags/{id}', [TagController::class, 'destroy'])->middleware('permission:tags.delete');
 
-        Route::get('/agents', [AgentController::class, 'index']);
-        Route::post('/agents', [AgentController::class, 'store']);
-        Route::put('/agents/{id}', [AgentController::class, 'update']);
-        Route::delete('/agents/{id}', [AgentController::class, 'destroy']);
-        Route::post('/agents/{id}/connections', [AgentController::class, 'syncConnections']);
-    });
+    // Agent routes - protected by permissions
+    Route::get('/agents', [AgentController::class, 'index'])->middleware('permission:agents.view');
+    Route::post('/agents', [AgentController::class, 'store'])->middleware('permission:agents.create');
+    Route::put('/agents/{id}', [AgentController::class, 'update'])->middleware('permission:agents.update');
+    Route::delete('/agents/{id}', [AgentController::class, 'destroy'])->middleware('permission:agents.delete');
+    Route::post('/agents/{id}/connections', [AgentController::class, 'syncConnections'])->middleware('permission:agents.sync-connections');
+
+    // Agent role and permission assignment - protected by permissions
+    Route::get('/agents/{id}/roles-permissions', [AgentController::class, 'getRolesAndPermissions'])->middleware('permission:agents.view');
+    Route::post('/agents/{id}/assign-roles', [AgentController::class, 'assignRoles'])->middleware('permission:agents.assign-roles');
+    Route::post('/agents/{id}/assign-permissions', [AgentController::class, 'assignPermissions'])->middleware('permission:agents.assign-permissions');
+
+    // Role management - protected by permissions
+    Route::get('/roles', [RoleController::class, 'index'])->middleware('permission:roles.view');
+    Route::post('/roles', [RoleController::class, 'store'])->middleware('permission:roles.create');
+    Route::put('/roles/{id}', [RoleController::class, 'update'])->middleware('permission:roles.update');
+    Route::delete('/roles/{id}', [RoleController::class, 'destroy'])->middleware('permission:roles.delete');
+
+    // Permission list (read-only) - permissions are managed via seeders/migrations only
+    Route::get('/permissions', [PermissionController::class, 'index']);
 });
 
 Route::prefix('/v1')->middleware(Auth::class)->group(function(){

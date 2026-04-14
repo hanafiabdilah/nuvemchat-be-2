@@ -14,11 +14,11 @@ class StoreQuickMessageRequest extends FormRequest
     {
         // If user_id is null (tenant-level), check if user is owner
         if ($this->input('user_id') === null) {
-            return $this->user()->role === 'owner';
+            return $this->user()->hasRole('owner');
         }
 
         // Allow owner and agent to create user-specific messages
-        return in_array($this->user()->role, ['owner', 'agent']);
+        return $this->user()->hasAnyRole(['owner', 'agent']);
     }
 
     /**
@@ -50,7 +50,7 @@ class StoreQuickMessageRequest extends FormRequest
     {
         // If user_id is not provided, set it to the authenticated user's ID
         // unless the user is an owner creating a tenant-level message
-        if (!$this->has('user_id') && $this->user()->role !== 'owner') {
+        if (!$this->has('user_id') && !$this->user()->hasRole('owner')) {
             $this->merge([
                 'user_id' => $this->user()->id,
             ]);

@@ -12,7 +12,10 @@ use Illuminate\Validation\Rule;
 class UserController extends Controller
 {
     public function index (Request $request) {
-        return $request->user();
+        $user = $request->user();
+        $user->load(['roles', 'permissions']);
+
+        return $user;
     }
 
     public function update(Request $request)

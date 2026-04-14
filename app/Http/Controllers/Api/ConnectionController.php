@@ -27,7 +27,7 @@ class ConnectionController extends Controller
         $user = request()->user();
 
         // Owner gets all connections, agents get only assigned connections
-        if ($user->role === 'owner') {
+        if ($user->hasRole('owner')) {
             $connections = $user->tenant->connections()->get();
         } else {
             // Agent: only get connections they have access to

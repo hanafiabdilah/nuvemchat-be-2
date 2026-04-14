@@ -57,7 +57,7 @@ class ConversationController extends Controller
             ->where('tenant_id', Auth::user()->tenant_id)
             ->firstOrFail();
 
-        if(Auth::user()->role === 'agent' && !$connection->users->contains(Auth::id())){
+        if(Auth::user()->hasRole('agent') && !$connection->users->contains(Auth::id())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -190,7 +190,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        if(Auth::user()->hasRole('agent') && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -228,7 +228,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        if(Auth::user()->hasRole('agent') && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -266,7 +266,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        if(Auth::user()->hasRole('agent') && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -304,7 +304,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        if(Auth::user()->hasRole('agent') && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -342,7 +342,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        if(Auth::user()->hasRole('agent') && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -475,7 +475,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        if(Auth::user()->hasRole('agent') && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -509,7 +509,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        if(Auth::user()->hasRole('agent') && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -554,7 +554,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(Auth::user()->role === 'agent' && $conversation->user_id !== Auth::id()){
+        if(Auth::user()->hasRole('agent') && $conversation->user_id !== Auth::id()){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
