@@ -15,7 +15,9 @@ class UserController extends Controller
         $user = $request->user();
         $user->load(['roles', 'permissions']);
 
-        return $user;
+        return response()->json([
+            'data' => $user->toResource(UserResource::class),
+        ]);
     }
 
     public function update(Request $request)
