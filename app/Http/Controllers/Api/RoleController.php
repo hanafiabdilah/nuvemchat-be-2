@@ -51,6 +51,12 @@ class RoleController extends Controller
     {
         $role = Role::findOrFail($id);
 
+        if($role->name === 'owner') {
+            return response()->json([
+                'message' => 'Cannot update owner role',
+            ], 403);
+        }
+
         $validated = $request->validate([
             'name' => 'required|string|unique:roles,name,' . $id,
             'permissions' => 'array',
