@@ -50,4 +50,8 @@ return [
         'config_id' => env('FACEBOOK_CONFIG_ID'), // WhatsApp Business Config ID for embedded signup
     ],
 
+    'wapi' => [
+        'managed_token' => env('WAPI_MANAGED_TOKEN'),
+    ]
+
 ];

@@ -21,13 +21,8 @@ class WhatsappWApiChannel implements ChannelInterface
         //
     }
 
-    public function connect(Connection $connection, array $data)
+    private function handleOwnInstance(Connection $connection, array $data): Connection
     {
-        validator($data, [
-            'instance_id' => ['required', 'string'],
-            'token' => ['required', 'string'],
-        ])->validate();
-
         if(Connection::where('id', '!=', $connection->id)->where('channel', Channel::WhatsappWApi)->where('credentials->instance_id', $data['instance_id'])->exists()) {
             throw ValidationException::withMessages(['instance_id' => 'The instance_id has already been taken.']);
         }
@@ -86,8 +81,60 @@ class WhatsappWApiChannel implements ChannelInterface
             $connection->update([
                 'status' => Status::Active,
             ]);
+        }
 
-            return;
+        return $connection;
+    }
+
+    private function handleManagedInstance(Connection $connection, array $data): Connection
+    {
+        $response = Http::withHeaders([
+            'Authorization' => 'Bearer ' . config('services.wapi.managed_token'),
+        ])->post('https://api.w-api.app/v1/create-instance', [
+            'instanceName' => $connection->id,
+            'rejectCalls' => true,
+            'callMessage' => 'This number does not accept calls.',
+            'webhookConnectedUrl' => route('webhook.chat', ['id' => $connection->id]),
+            'webhookDisconnectedUrl' => route('webhook.chat', ['id' => $connection->id]),
+            'webhookDeliveryUrl' => route('webhook.chat', ['id' => $connection->id]),
+            'webhookReceivedUrl' => route('webhook.chat', ['id' => $connection->id]),
+            'webhookStatusUrl' => route('webhook.chat', ['id' => $connection->id]),
+            'webhookPresenceUrl' => route('webhook.chat', ['id' => $connection->id]),
+        ]);
+
+        $responseJson = $response->json();
+
+        if($response->failed()){
+            Log::error('Whatsapp WApi managed instance creation failed', ['connection' => $connection, 'response' => $responseJson, 'status code' => $response->status()]);
+            throw new ConnectionException('Failed to create managed instance on Whatsapp WApi', 500);
+        }
+
+        $connection->update([
+            'status' => Status::Pending,
+            'credentials' => [
+                'instance_id' => $responseJson['instanceId'],
+                'token' => $responseJson['token'],
+                'is_managed_instance' => true,
+            ],
+        ]);
+
+        return $connection;
+    }
+
+    public function connect(Connection $connection, array $data)
+    {
+        validator($data, [
+            'managed_instance' => ['required', 'boolean'],
+            'instance_id' => ['required_if:managed_instance,false', 'string'],
+            'token' => ['required_if:managed_instance,false', 'string'],
+        ])->validate();
+
+        if($data['managed_instance']){
+            $connection = $this->handleManagedInstance($connection, $data);
+        }else{
+            $connection = $this->handleOwnInstance($connection, $data);
+
+            if($connection->status === Status::Active) return;
         }
 
         $qr = Http::withHeaders([
