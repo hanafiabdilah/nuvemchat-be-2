@@ -581,7 +581,7 @@ class ConversationController extends Controller
             broadcast(new ConversationUpdated($conversation));
 
             return response()->json([
-                'message' => 'Message deleted successfully',
+                'data' => new MessageResource($message),
             ]);
         } catch (\Throwable $th) {
             return response()->json([
