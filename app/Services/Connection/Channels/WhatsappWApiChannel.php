@@ -80,7 +80,7 @@ class WhatsappWApiChannel implements ChannelInterface
         return $connection;
     }
 
-    private function handleManagedInstance(Connection $connection, array $data): Connection
+    private function handleManagedInstance(Connection $connection): Connection
     {
         $response = Http::withHeaders([
             'Authorization' => 'Bearer ' . config('services.wapi.managed_token'),
@@ -124,7 +124,7 @@ class WhatsappWApiChannel implements ChannelInterface
         ])->validate();
 
         if($data['managed_instance']){
-            $connection = $this->handleManagedInstance($connection, $data);
+            $connection = $this->handleManagedInstance($connection);
         }else{
             $connection = $this->handleOwnInstance($connection, $data);
 
