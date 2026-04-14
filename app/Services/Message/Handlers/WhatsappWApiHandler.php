@@ -484,6 +484,14 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'messageId' => $message->external_id,
             ]);
 
+            Log::info('WhatsappWApiHandler: Delete message request sent', [
+                'response_status' => $response->status(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+                'message_id' => $message->id,
+                'phone' => $conversation->external_id,
+            ]);
+
             $responseArray = $response->json();
 
             if (!$response->successful()) {
