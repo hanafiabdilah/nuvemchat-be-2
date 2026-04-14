@@ -477,14 +477,23 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         try {
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->delete('https://api.w-api.app/v1/message/delete-message?instanceId=' . $connection->credentials['instance_id'], [
+            // W-API menggunakan query parameters, bukan body
+            $url = 'https://api.w-api.app/v1/message/delete-message?' . http_build_query([
+                'instanceId' => $connection->credentials['instance_id'],
                 'phone' => $conversation->external_id,
                 'messageId' => $message->external_id,
             ]);
 
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->delete($url);
+
             $responseArray = $response->json();
+
+            Log::info('WhatsappWApiHandler: Delete response received', [
+                'status' => $response->status(),
+                'response' => $responseArray,
+            ]);
 
             if (!$response->successful()) {
                 Log::warning('WhatsappWApiHandler: Delete message request failed', [
