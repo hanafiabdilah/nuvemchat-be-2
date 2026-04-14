@@ -395,6 +395,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
+        $contactExternalId = $this->getContactExternalId($payload);
+        $contactName = $this->getContactName($payload);
+        $contactUsername = $this->getContactUsername($payload);
 
         if (!$conversationId || !$messageId){
             Log::warning('WhatsappWApiHandler: Missing required data in payload', [
@@ -405,19 +408,36 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType) {
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername) {
             // Cari conversation yang masih aktif saja (bukan yang sudah resolved)
             $conversation = Conversation::where('connection_id', $connection->id)
                 ->where('external_id', $conversationId)
                 ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
                 ->first();
 
+            // Jika conversation belum ada, buat conversation baru beserta contact
             if(!$conversation){
-                Log::warning('WhatsappWApiHandler: Conversation aktif tidak ditemukan untuk delivery receipt', [
+                Log::info('WhatsappWApiHandler: Creating new conversation for delivery receipt', [
                     'conversation_id' => $conversationId,
                     'connection_id' => $connection->id,
                 ]);
-                return;
+
+                // Buat contact jika contactExternalId tersedia
+                $contact = null;
+                if ($contactExternalId && $contactName) {
+                    $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
+                    if($contact->wasRecentlyCreated) {
+                        $this->savePhotoProfile($contact, $connection, $payload);
+                    }
+                }
+
+                // Buat conversation baru
+                $conversation = Conversation::create([
+                    'contact_id'    => $contact?->id,
+                    'connection_id' => $connection->id,
+                    'external_id'   => $conversationId,
+                    'status'        => ConversationStatus::Pending,
+                ]);
             }
 
             return $conversation->messages()->updateOrCreate([
