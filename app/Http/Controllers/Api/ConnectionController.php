@@ -28,11 +28,12 @@ class ConnectionController extends Controller
 
         // Owner gets all connections, agents get only assigned connections
         if ($user->hasRole('owner')) {
-            $connections = $user->tenant->connections()->get();
+            $connections = $user->tenant->connections()->orderBy('created_at', 'DESC')->get();
         } else {
             // Agent: only get connections they have access to
             $connections = $user->connections()
                 ->where('tenant_id', $user->tenant_id)
+                ->orderBy('created_at', 'DESC')
                 ->get();
         }
 
