@@ -23,10 +23,10 @@ class UserResource extends JsonResource
                 return $this->roles->pluck('name');
             }),
             'permissions' => $this->whenLoaded('permissions', function() {
-                return $this->permissions->pluck('name');
+                return $this->permissions()->orderBy('name')->pluck('name');
             }),
             'all_permissions' => $this->when($this->relationLoaded('roles') || $this->relationLoaded('permissions'), function() {
-                return $this->getAllPermissions()->pluck('name');
+                return $this->getAllPermissions()->orderBy('name')->pluck('name');
             }),
             'connections' => ConnectionResource::collection($this->whenLoaded('connections')),
         ];
