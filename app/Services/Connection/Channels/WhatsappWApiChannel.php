@@ -82,10 +82,8 @@ class WhatsappWApiChannel implements ChannelInterface
 
     private function handleManagedInstance(Connection $connection): Connection
     {
-        $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . config('services.wapi.managed_token'),
-        ])->post('https://api.w-api.app/v1/integrator/create-instance', [
-            'instanceName' => config('app.name') . ' - ' . $connection->id,
+        $payload = [
+            'instanceName' => config('app.name') . ' - #' . $connection->id,
             'rejectCalls' => true,
             'callMessage' => 'This number does not accept calls.',
             'webhookConnectedUrl' => route('webhook.chat', ['id' => $connection->id]),
@@ -94,7 +92,13 @@ class WhatsappWApiChannel implements ChannelInterface
             'webhookReceivedUrl' => route('webhook.chat', ['id' => $connection->id]),
             'webhookStatusUrl' => route('webhook.chat', ['id' => $connection->id]),
             'webhookPresenceUrl' => route('webhook.chat', ['id' => $connection->id]),
-        ]);
+        ];
+
+        Log::info('Creating Whatsapp WApi managed instance', ['connection' => $connection, 'payload' => $payload]);
+
+        $response = Http::withHeaders([
+            'Authorization' => 'Bearer ' . config('services.wapi.managed_token'),
+        ])->post('https://api.w-api.app/v1/integrator/create-instance', $payload);
 
         $responseJson = $response->json();
 
