@@ -49,6 +49,7 @@ Route::middleware('auth:sanctum')->group(function(){
 
     Route::get('/contacts', [ContactController::class, 'index']);
     Route::post('/contacts', [ContactController::class, 'store']);
+    Route::put('/contacts/{id}', [ContactController::class, 'update'])->middleware('permission:contacts.update');
 
     // Connection routes - protected by permissions
     Route::post('/connections', [ConnectionController::class, 'store'])->middleware('permission:connections.create');

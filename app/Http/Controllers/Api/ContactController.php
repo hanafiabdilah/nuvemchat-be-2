@@ -55,8 +55,26 @@ class ContactController extends Controller
             throw $e;
         } catch (\Exception $e) {
             return response()->json([
-                'message' => $e->getMessage(),
-            ], 400);
+                'message' => 'Failed to create contact',
+            ], 500);
         }
+    }
+
+    public function update(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'name' => ['sometimes', 'string', 'max:255'],
+        ]);
+
+        $contact = Contact::where('id', $id)
+            ->where('tenant_id', $request->user()->tenant_id)
+            ->firstOrFail();
+
+        $contact->update($validated);
+
+        return response()->json([
+            'message' => 'Contact updated successfully',
+            'contact' => new ContactResource($contact),
+        ]);
     }
 }

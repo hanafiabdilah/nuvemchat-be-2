@@ -18,6 +18,9 @@ class RoleAndPermissionSeeder extends Seeder
 
         // Create permissions
         $permissions = [
+            // Contacts
+            'contacts.update',
+
             // Connections
             'connections.create',
             'connections.update',
