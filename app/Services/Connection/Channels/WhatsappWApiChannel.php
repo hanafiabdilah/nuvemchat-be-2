@@ -84,7 +84,7 @@ class WhatsappWApiChannel implements ChannelInterface
     {
         $response = Http::withHeaders([
             'Authorization' => 'Bearer ' . config('services.wapi.managed_token'),
-        ])->post('https://api.w-api.app/v1/create-instance', [
+        ])->post('https://api.w-api.app/v1/integrator/create-instance', [
             'instanceName' => $connection->id,
             'rejectCalls' => true,
             'callMessage' => 'This number does not accept calls.',
