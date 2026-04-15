@@ -26,6 +26,7 @@ class ContactController extends Controller
             ->when($channel, function ($query, $channel) {
                 $query->where('channel', $channel);
             })
+            ->orderBy('created_at', 'desc')
             ->paginate($per_page);
 
         return ContactResource::collection($contacts);
