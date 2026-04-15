@@ -26,7 +26,7 @@ class UserResource extends JsonResource
                 return $this->permissions()->orderBy('name')->pluck('name');
             }),
             'all_permissions' => $this->when($this->relationLoaded('roles') || $this->relationLoaded('permissions'), function() {
-                return $this->getAllPermissions()->orderBy('name')->pluck('name');
+                return $this->getAllPermissions()->sortBy('name')->pluck('name')->values();
             }),
             'connections' => ConnectionResource::collection($this->whenLoaded('connections')),
         ];
