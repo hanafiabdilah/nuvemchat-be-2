@@ -137,26 +137,21 @@ class WhatsappWApiChannel implements ChannelInterface
 
         Log::info('Retrieving Whatsapp WApi QR code', ['connection' => $connection]);
 
-        try {
-            $qr = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $data['token'],
-            ])->get('https://api.w-api.app/v1/instance/qr-code?image=disable&instanceId=' . $connection->credentials['instance_id']);
-            $qrJson = $qr->json();
+        $qr = Http::withHeaders([
+            'Authorization' => 'Bearer ' . $connection->credentials['token'],
+        ])->get('https://api.w-api.app/v1/instance/qr-code?image=disable&instanceId=' . $connection->credentials['instance_id']);
+        $qrJson = $qr->json();
 
-            if($qr->failed()){
-                Log::error('Whatsapp WApi QR request failed', ['connection' => $connection, 'response' => $qrJson, 'status code' => $qr->status()]);
-                throw new ConnectionException($qrJson['message'] ?? 'Failed to retrieve QR code from Whatsapp WApi', $qr->status());
-            }
-
-            $connection->update([
-                'credentials' => array_merge($connection->credentials, [
-                    'qr_code' => $qrJson['qrcode'],
-                ]),
-            ]);
-        } catch (\Throwable $th) {
-            Log::error('An error occurred while retrieving Whatsapp WApi QR code', ['connection' => $connection, 'error' => $th]);
-            throw new ConnectionException('An error occurred while retrieving QR code from Whatsapp WApi', 500);
+        if($qr->failed()){
+            Log::error('Whatsapp WApi QR request failed', ['connection' => $connection, 'response' => $qrJson, 'status code' => $qr->status()]);
+            throw new ConnectionException($qrJson['message'] ?? 'Failed to retrieve QR code from Whatsapp WApi', $qr->status());
         }
+
+        $connection->update([
+            'credentials' => array_merge($connection->credentials, [
+                'qr_code' => $qrJson['qrcode'],
+            ]),
+        ]);
     }
 
     public function disconnect(Connection $connection): void
