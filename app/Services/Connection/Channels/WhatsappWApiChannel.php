@@ -135,6 +135,8 @@ class WhatsappWApiChannel implements ChannelInterface
             if($connection->status === Status::Active) return;
         }
 
+        Log::info('Retrieving Whatsapp WApi QR code', ['connection' => $connection]);
+
         $qr = Http::withHeaders([
             'Authorization' => 'Bearer ' . $data['token'],
         ])->get('https://api.w-api.app/v1/instance/qr-code?image=disable&instanceId=' . $connection->credentials['instance_id']);
