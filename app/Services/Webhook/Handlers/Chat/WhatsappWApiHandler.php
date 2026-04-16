@@ -411,7 +411,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         }
 
         // Ignore from api & already exists in database, which means this message sent via api send message endpoint, so we already have the message in database, no need to create again from delivery receipt
-        if($fromApi && Message::where('external_id', $messageId)->exists()) {
+        if($fromMe && $fromApi && Message::where('external_id', $messageId)->exists()) {
             Log::info('WhatsappWApiHandler: Ignoring delivery receipt for message sent via API that already exists in database', [
                 'message_id' => $messageId,
             ]);
