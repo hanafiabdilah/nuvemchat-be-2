@@ -127,6 +127,7 @@ class WhatsappWApiChannel implements ChannelInterface
                 'instance_id' => $responseJson['instanceId'],
                 'token' => $responseJson['token'],
                 'is_managed' => true,
+                'newly_created' => true, // Flag to indicate this instance was just created
             ],
         ]);
 
@@ -150,6 +151,20 @@ class WhatsappWApiChannel implements ChannelInterface
         }
 
         if($connection->status === Status::Active) return;
+
+        // If managed instance was just created, wait for server to initialize
+        if(($connection->credentials['newly_created'] ?? false)){
+            Log::info('Managed instance just created, waiting for server initialization', ['connection' => $connection]);
+            sleep(3); // Wait 3 seconds for WApi server to fully initialize the instance
+            
+            // Remove the newly_created flag
+            $connection->update([
+                'credentials' => array_merge($connection->credentials, [
+                    'newly_created' => null,
+                ]),
+            ]);
+            $connection->refresh();
+        }
 
         Log::info('Retrieving Whatsapp WApi QR code', ['connection' => $connection]);
 
