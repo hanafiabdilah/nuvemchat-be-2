@@ -21,22 +21,39 @@ class WhatsappWApiChannel implements ChannelInterface
         //
     }
 
-    private function handleOwnInstance(Connection $connection, array $data): Connection
+    private function checkInstanceStatus(Connection $connection): Connection
     {
-        if(Connection::where('id', '!=', $connection->id)->where('channel', Channel::WhatsappWApi)->where('credentials->instance_id', $data['instance_id'])->exists()) {
-            throw ValidationException::withMessages(['instance_id' => 'The instance_id has already been taken.']);
-        }
-
-        // check status
         $status = Http::withHeaders([
-            'Authorization' => 'Bearer ' . $data['token'],
-        ])->get('https://api.w-api.app/v1/instance/status-instance?instanceId=' . $data['instance_id']);
+            'Authorization' => 'Bearer ' . $connection->credentials['token'],
+        ])->get('https://api.w-api.app/v1/instance/status-instance?instanceId=' . $connection->credentials['instance_id']);
         $statusJson = $status->json();
 
         if($status->failed()){
             Log::error('Whatsapp WApi status request failed', ['connection' => $connection, 'response' => $statusJson, 'status code' => $status->status()]);
             throw new ConnectionException($statusJson['message'] ?? 'Failed to connect to Whatsapp WApi', $status->status());
         }
+
+        $connection->update([
+            'status' => $statusJson['connected'] === true ? Status::Active : Status::Inactive,
+        ]);
+
+        return $connection;
+    }
+
+    private function handleOwnInstance(Connection $connection, array $data): Connection
+    {
+        if(Connection::where('id', '!=', $connection->id)->where('channel', Channel::WhatsappWApi)->where('credentials->instance_id', $data['instance_id'])->exists()) {
+            throw ValidationException::withMessages(['instance_id' => 'The instance_id has already been taken.']);
+        }
+
+        $connection->update([
+            'credentials' => [
+                'instance_id' => $data['instance_id'],
+                'token' => $data['token'],
+            ],
+        ]);
+
+        $connection = $this->checkInstanceStatus($connection);
 
         $webhookPaths = [
             'update-webhook-connected',
@@ -69,19 +86,16 @@ class WhatsappWApiChannel implements ChannelInterface
 
         Log::info('Whatsapp WApi webhooks setup response', ['connection' => $connection, 'responses' => $webhookResponses]);
 
-        $connection->update([
-            'status' => $statusJson['connected'] === true ? Status::Active : Status::Pending,
-            'credentials' => [
-                'instance_id' => $data['instance_id'],
-                'token' => $data['token'],
-            ],
-        ]);
-
         return $connection;
     }
 
     private function handleManagedInstance(Connection $connection): Connection
     {
+        // Instance created before, just check status and return
+        if(isset($connection->credentials['instance_id']) && isset($connection->credentials['token'])){
+            return $this->checkInstanceStatus($connection);
+        }
+
         $payload = [
             'instanceName' => config('app.name') . ' - #' . $connection->id,
             'rejectCalls' => true,
@@ -121,19 +135,21 @@ class WhatsappWApiChannel implements ChannelInterface
 
     public function connect(Connection $connection, array $data)
     {
+        $data['managed_instance'] = $connection->credentials['is_managed_instance'] ?? false;
+
         validator($data, [
             'managed_instance' => ['required', 'boolean'],
             'instance_id' => ['required_if:managed_instance,false', 'string'],
             'token' => ['required_if:managed_instance,false', 'string'],
         ])->validate();
 
-        if($data['managed_instance']){
+        if($data['managed_instance'] || ($connection->credentials['is_managed_instance'] ?? false)){
             $connection = $this->handleManagedInstance($connection);
         }else{
             $connection = $this->handleOwnInstance($connection, $data);
-
-            if($connection->status === Status::Active) return;
         }
+
+        if($connection->status === Status::Active) return;
 
         Log::info('Retrieving Whatsapp WApi QR code', ['connection' => $connection]);
 
