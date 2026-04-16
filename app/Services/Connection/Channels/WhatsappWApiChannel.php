@@ -135,7 +135,7 @@ class WhatsappWApiChannel implements ChannelInterface
 
     public function connect(Connection $connection, array $data)
     {
-        $data['is_managed'] = $connection->credentials['is_managed'] ?? false;
+        $data['is_managed'] = $connection->credentials['is_managed'] ?? $data['is_managed'] ?? false;
 
         validator($data, [
             'is_managed' => ['required', 'boolean'],
