@@ -47,6 +47,12 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
 
             $responseArray = $response->json();
 
+            Log::info('WhatsappOfficialHandler: Message sent', [
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+                'response' => $responseArray,
+            ]);
+
             $message = $conversation->messages()->create([
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
