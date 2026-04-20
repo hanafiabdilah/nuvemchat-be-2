@@ -45,13 +45,18 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
                     ],
                 ]);
 
-            $responseArray = $response->json();
+            if(!$response->successful()) {
+                Log::error('WhatsappOfficialHandler: Failed to send message', [
+                    'response_status' => $response->status(),
+                    'response_body' => $response->body(),
+                    'conversation_id' => $conversation->id,
+                    'connection_id' => $connection->id,
+                ]);
 
-            Log::info('WhatsappOfficialHandler: Message sent', [
-                'conversation_id' => $conversation->id,
-                'connection_id' => $connection->id,
-                'response' => $responseArray,
-            ]);
+                throw new Exception('Failed to send WhatsApp message');
+            }
+
+            $responseArray = $response->json();
 
             $message = $conversation->messages()->create([
                 'external_id' => $this->getMessageId($responseArray),
