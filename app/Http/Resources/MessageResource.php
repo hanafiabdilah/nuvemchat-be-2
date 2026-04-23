@@ -29,12 +29,21 @@ class MessageResource extends JsonResource
             'attachment_url' => $this->when(!$this->withoutAttachmentUrl, fn() =>
                 $this->attachment ? Storage::disk('local')->temporaryUrl($this->attachment, Carbon::now()->addMonths(6)) : null
             ),
-            'meta' => $this->getProcessedMeta(),
+            'replied_message' => $this->when($this->repliedMessage, fn() => [
+                'id' => $this->repliedMessage->id,
+                'sender_type' => $this->repliedMessage->sender_type,
+                'message_type' => $this->repliedMessage->message_type,
+                'body' => $this->repliedMessage->body,
+                'attachment_url' => $this->repliedMessage->attachment && !$this->withoutAttachmentUrl
+                    ? Storage::disk('local')->temporaryUrl($this->repliedMessage->attachment, Carbon::now()->addMonths(6))
+                    : null,
+            ]),
             'sent_at' => $this->sent_at,
             'delivery_at' => $this->delivery_at,
             'read_at' => $this->read_at,
             'edited_at' => $this->edited_at,
             'unsend_at' => $this->unsend_at,
+            'meta' => $this->getProcessedMeta(),
             'created_at' => $this->created_at->timestamp,
             'updated_at' => $this->updated_at->timestamp,
         ];

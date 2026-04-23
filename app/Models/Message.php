@@ -16,6 +16,7 @@ class Message extends Model
         'message_type',
         'body',
         'attachment',
+        'replied_message_id',
         'sent_at',
         'delivery_at',
         'read_at',
@@ -50,5 +51,10 @@ class Message extends Model
     public function conversation()
     {
         return $this->belongsTo(Conversation::class);
+    }
+
+    public function repliedMessage()
+    {
+        return $this->belongsTo(Message::class, 'replied_message_id');
     }
 }
