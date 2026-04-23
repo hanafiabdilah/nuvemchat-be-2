@@ -26,22 +26,51 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         return Carbon::now(); // Assuming message is sent now
     }
 
+    private function getRepliedMessageExternalId(Conversation $conversation, ?int $repliedMessageId): ?string
+    {
+        if (!$repliedMessageId) {
+            return null;
+        }
+
+        $repliedMessage = Message::where('id', $repliedMessageId)
+            ->where('conversation_id', $conversation->id)
+            ->first();
+
+        if (!$repliedMessage) {
+            Log::warning('WhatsappWApiHandler: Replied message not found', [
+                'replied_message_id' => $repliedMessageId,
+                'conversation_id' => $conversation->id,
+            ]);
+            return null;
+        }
+
+        return $repliedMessage->external_id;
+    }
 
     public function handleSendMessage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
             'message' => 'required|string',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
 
         try {
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->post('https://api.w-api.app/v1/message/send-text?instanceId=' . $connection->credentials['instance_id'], [
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $payload = [
                 'phone' => $conversation->external_id,
                 'message' => $data['message'],
-            ]);
+            ];
+
+            if ($repliedMessageExternalId) {
+                $payload['messageId'] = $repliedMessageExternalId;
+            }
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/send-text?instanceId=' . $connection->credentials['instance_id'], $payload);
 
             $responseArray = $response->json();
 
@@ -56,6 +85,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Text,
                 'body' => $data['message'],
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
@@ -77,6 +107,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         validator($data, [
             'image' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
             'message' => 'nullable|string',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -90,13 +121,21 @@ class WhatsappWApiHandler implements MessageHandlerInterface
             $mimeType = $data['image']->getMimeType();
             $imageDataUri = 'data:' . $mimeType . ';base64,' . $imageBase64;
 
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->post('https://api.w-api.app/v1/message/send-image?instanceId=' . $connection->credentials['instance_id'], [
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $payload = [
                 'phone' => $conversation->external_id,
                 'image' => $imageDataUri,
                 'caption' => $data['message'] ?? null,
-            ]);
+            ];
+
+            if ($repliedMessageExternalId) {
+                $payload['messageId'] = $repliedMessageExternalId;
+            }
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/send-image?instanceId=' . $connection->credentials['instance_id'], $payload);
 
             $responseArray = $response->json();
 
@@ -111,6 +150,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Image,
                 'body' => $data['message'] ?? null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
@@ -139,6 +179,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
     {
         validator($data, [
             'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -195,12 +236,20 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'size' => strlen($audioContent),
             ]);
 
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->post('https://api.w-api.app/v1/message/send-audio?instanceId=' . $connection->credentials['instance_id'], [
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $payload = [
                 'phone' => $conversation->external_id,
                 'audio' => $audioDataUri,
-            ]);
+            ];
+
+            if ($repliedMessageExternalId) {
+                $payload['messageId'] = $repliedMessageExternalId;
+            }
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/send-audio?instanceId=' . $connection->credentials['instance_id'], $payload);
 
             $responseArray = $response->json();
 
@@ -215,6 +264,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Audio,
                 'body' => null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
@@ -244,6 +294,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         validator($data, [
             'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
             'message' => 'nullable|string',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -266,13 +317,21 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->post('https://api.w-api.app/v1/message/send-video?instanceId=' . $connection->credentials['instance_id'], [
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $payload = [
                 'phone' => $conversation->external_id,
                 'video' => $videoUrl,
                 'caption' => $data['message'] ?? null,
-            ]);
+            ];
+
+            if ($repliedMessageExternalId) {
+                $payload['messageId'] = $repliedMessageExternalId;
+            }
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/send-video?instanceId=' . $connection->credentials['instance_id'], $payload);
 
             $responseArray = $response->json();
 
@@ -287,6 +346,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Video,
                 'body' => $data['message'] ?? null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
@@ -324,6 +384,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
         validator($data, [
             'document' => 'required|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
             'message' => 'nullable|string',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -352,15 +413,23 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
-            $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->post('https://api.w-api.app/v1/message/send-document?instanceId=' . $connection->credentials['instance_id'], [
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $payload = [
                 'phone' => $conversation->external_id,
                 'document' => $documentUrl,
                 'fileName' => $filename,
                 'extension' => $extension,
                 'caption' => $data['message'] ?? null,
-            ]);
+            ];
+
+            if ($repliedMessageExternalId) {
+                $payload['messageId'] = $repliedMessageExternalId;
+            }
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post('https://api.w-api.app/v1/message/send-document?instanceId=' . $connection->credentials['instance_id'], $payload);
 
             $responseArray = $response->json();
 
@@ -375,6 +444,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Document,
                 'body' => $data['message'] ?? null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => array_merge($responseArray, ['filename' => $filename]),
             ]);

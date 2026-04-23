@@ -25,23 +25,55 @@ class InstagramHandler implements MessageHandlerInterface
         return Carbon::now();
     }
 
+    private function getRepliedMessageExternalId(Conversation $conversation, ?int $repliedMessageId): ?string
+    {
+        if (!$repliedMessageId) {
+            return null;
+        }
+
+        $repliedMessage = Message::where('id', $repliedMessageId)
+            ->where('conversation_id', $conversation->id)
+            ->first();
+
+        if (!$repliedMessage) {
+            Log::warning('InstagramHandler: Replied message not found', [
+                'replied_message_id' => $repliedMessageId,
+                'conversation_id' => $conversation->id,
+            ]);
+            return null;
+        }
+
+        return $repliedMessage->external_id;
+    }
+
     public function handleSendMessage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
             'message' => 'required|string',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
 
         try {
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $messagePayload = [
+                'text' => $data['message'],
+            ];
+
+            if ($repliedMessageExternalId) {
+                $messagePayload['reply_to'] = [
+                    'mid' => $repliedMessageExternalId,
+                ];
+            }
+
             $response = Http::withToken($connection->credentials['access_token'])
                 ->post('https://graph.instagram.com/v25.0/me/messages', [
                     'recipient' => [
                         'id' => $conversation->external_id,
                     ],
-                    'message' => [
-                        'text' => $data['message'],
-                    ],
+                    'message' => $messagePayload,
                 ]);
 
             $responseArray = $response->json();
@@ -64,6 +96,7 @@ class InstagramHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Text,
                 'body' => $data['message'],
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
@@ -85,6 +118,7 @@ class InstagramHandler implements MessageHandlerInterface
     {
         validator($data, [
             'image' => 'required|image|mimes:jpeg,png,jpg|max:8192',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -107,20 +141,30 @@ class InstagramHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $messagePayload = [
+                'attachment' => [
+                    'type' => 'image',
+                    'payload' => [
+                        'url' => $imageUrl,
+                        'is_reusable' => true,
+                    ],
+                ],
+            ];
+
+            if ($repliedMessageExternalId) {
+                $messagePayload['reply_to'] = [
+                    'mid' => $repliedMessageExternalId,
+                ];
+            }
+
             $response = Http::withToken($connection->credentials['access_token'])
                 ->post('https://graph.instagram.com/v25.0/me/messages', [
                     'recipient' => [
                         'id' => $conversation->external_id,
                     ],
-                    'message' => [
-                        'attachment' => [
-                            'type' => 'image',
-                            'payload' => [
-                                'url' => $imageUrl,
-                                'is_reusable' => true,
-                            ],
-                        ],
-                    ],
+                    'message' => $messagePayload,
                 ]);
 
             $responseArray = $response->json();
@@ -143,6 +187,7 @@ class InstagramHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Image,
                 'body' => null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
@@ -179,6 +224,7 @@ class InstagramHandler implements MessageHandlerInterface
     {
         validator($data, [
             'audio' => 'required|file|mimes:aac,m4a,wav,mp4,mp3,ogg,opus,webm|max:25600',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -299,20 +345,30 @@ class InstagramHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $messagePayload = [
+                'attachment' => [
+                    'type' => 'audio',
+                    'payload' => [
+                        'url' => $audioUrl,
+                        'is_reusable' => true,
+                    ],
+                ],
+            ];
+
+            if ($repliedMessageExternalId) {
+                $messagePayload['reply_to'] = [
+                    'mid' => $repliedMessageExternalId,
+                ];
+            }
+
             $response = Http::withToken($connection->credentials['access_token'])
                 ->post('https://graph.instagram.com/v25.0/me/messages', [
                     'recipient' => [
                         'id' => $conversation->external_id,
                     ],
-                    'message' => [
-                        'attachment' => [
-                            'type' => 'audio',
-                            'payload' => [
-                                'url' => $audioUrl,
-                                'is_reusable' => true,
-                            ],
-                        ],
-                    ],
+                    'message' => $messagePayload,
                 ]);
 
             $responseArray = $response->json();
@@ -337,6 +393,7 @@ class InstagramHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Audio,
                 'body' => null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
@@ -383,6 +440,7 @@ class InstagramHandler implements MessageHandlerInterface
     {
         validator($data, [
             'video' => 'required|file|mimes:mp4,ogg,avi,mov,webm|max:25600',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -405,20 +463,30 @@ class InstagramHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $messagePayload = [
+                'attachment' => [
+                    'type' => 'video',
+                    'payload' => [
+                        'url' => $videoUrl,
+                        'is_reusable' => true,
+                    ],
+                ],
+            ];
+
+            if ($repliedMessageExternalId) {
+                $messagePayload['reply_to'] = [
+                    'mid' => $repliedMessageExternalId,
+                ];
+            }
+
             $response = Http::withToken($connection->credentials['access_token'])
                 ->post('https://graph.instagram.com/v25.0/me/messages', [
                     'recipient' => [
                         'id' => $conversation->external_id,
                     ],
-                    'message' => [
-                        'attachment' => [
-                            'type' => 'video',
-                            'payload' => [
-                                'url' => $videoUrl,
-                                'is_reusable' => true,
-                            ],
-                        ],
-                    ],
+                    'message' => $messagePayload,
                 ]);
 
             $responseArray = $response->json();
@@ -441,6 +509,7 @@ class InstagramHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Video,
                 'body' => null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
@@ -477,6 +546,7 @@ class InstagramHandler implements MessageHandlerInterface
     {
         validator($data, [
             'document' => 'required|file|mimes:pdf|max:25600',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
@@ -503,20 +573,30 @@ class InstagramHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+            $messagePayload = [
+                'attachment' => [
+                    'type' => 'file',
+                    'payload' => [
+                        'url' => $documentUrl,
+                        'is_reusable' => true,
+                    ],
+                ],
+            ];
+
+            if ($repliedMessageExternalId) {
+                $messagePayload['reply_to'] = [
+                    'mid' => $repliedMessageExternalId,
+                ];
+            }
+
             $response = Http::withToken($connection->credentials['access_token'])
                 ->post('https://graph.instagram.com/v25.0/me/messages', [
                     'recipient' => [
                         'id' => $conversation->external_id,
                     ],
-                    'message' => [
-                        'attachment' => [
-                            'type' => 'file',
-                            'payload' => [
-                                'url' => $documentUrl,
-                                'is_reusable' => true,
-                            ],
-                        ],
-                    ],
+                    'message' => $messagePayload,
                 ]);
 
             $responseArray = $response->json();
@@ -539,6 +619,7 @@ class InstagramHandler implements MessageHandlerInterface
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Document,
                 'body' => null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => array_merge($responseArray, ['filename' => $filename]),
