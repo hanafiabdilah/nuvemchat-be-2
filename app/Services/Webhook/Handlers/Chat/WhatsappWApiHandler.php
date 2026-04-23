@@ -499,7 +499,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             }
 
             // Broadcast message updated to refresh reactions
-            broadcast(new MessageUpdated($targetMessage));
+            broadcast(new MessageUpdated($targetMessage->fresh()));
 
         } catch (\Throwable $th) {
             Log::error('WhatsappWApiHandler: Failed to handle reaction', [
