@@ -14,6 +14,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\MessageReaction;
 use App\Services\AutomatedMessageService;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -53,8 +54,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
     {
         if (isset($payload['msgContent']['conversation']) || isset($payload['msgContent']['extendedTextMessage'])) {
             return MessageType::Text;
-        } elseif (isset($payload['msgContent']['reactionMessage'])) {
-            return MessageType::Reaction;
         } elseif (isset($payload['msgContent']['audioMessage'])) {
             return MessageType::Audio;
         } elseif (isset($payload['msgContent']['imageMessage'])) {
@@ -105,6 +104,20 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             ?? null;
     }
 
+    public function getReactionData(array $payload): ?array
+    {
+        $reactionMessage = $payload['msgContent']['reactionMessage'] ?? null;
+
+        if (!$reactionMessage) {
+            return null;
+        }
+
+        return [
+            'emoji' => $reactionMessage['text'] ?? null,
+            'message_id' => $reactionMessage['key']['id'] ?? null,
+        ];
+    }
+
     public function handle(Connection $connection, array $payload)
     {
         $event = $payload['event'] ?? null;
@@ -139,7 +152,12 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                         break;
 
                     default:
-                        $this->handleReceived($connection, $payload);
+                        // Check if it's a reaction message
+                        if (isset($payload['msgContent']['reactionMessage'])) {
+                            $this->handleReaction($connection, $payload);
+                        } else {
+                            $this->handleReceived($connection, $payload);
+                        }
                         break;
                 }
                 break;
@@ -411,6 +429,83 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                     }
                 }
             }
+        }
+    }
+
+    private function handleReaction(Connection $connection, array $payload)
+    {
+        if($payload['isGroup'] ?? false) {
+            Log::info('WhatsappWApiHandler: Skipping group reaction');
+            return;
+        }
+
+        $reactionData = $this->getReactionData($payload);
+
+        if (!$reactionData || !$reactionData['message_id']) {
+            Log::warning('WhatsappWApiHandler: Missing reaction data', [
+                'reaction_data' => $reactionData,
+            ]);
+            return;
+        }
+
+        $emoji = $reactionData['emoji'];
+        $targetMessageExternalId = $reactionData['message_id'];
+        $fromMe = $payload['fromMe'] ?? false;
+        $senderType = $fromMe ? SenderType::Outgoing : SenderType::Incoming;
+
+        try {
+            // Find the message that was reacted to
+            $targetMessage = Message::where('external_id', $targetMessageExternalId)
+                ->whereHas('conversation', function($query) use ($connection) {
+                    $query->where('connection_id', $connection->id);
+                })
+                ->first();
+
+            if (!$targetMessage) {
+                Log::warning('WhatsappWApiHandler: Target message not found for reaction', [
+                    'external_id' => $targetMessageExternalId,
+                ]);
+                return;
+            }
+
+            // Check if emoji is empty (unreact)
+            if (empty($emoji)) {
+                // Delete existing reaction
+                MessageReaction::where('message_id', $targetMessage->id)
+                    ->where('sender_type', $senderType)
+                    ->delete();
+
+                Log::info('WhatsappWApiHandler: Reaction removed', [
+                    'message_id' => $targetMessage->id,
+                    'sender_type' => $senderType->value,
+                ]);
+            } else {
+                // Update or create reaction
+                MessageReaction::updateOrCreate(
+                    [
+                        'message_id' => $targetMessage->id,
+                        'sender_type' => $senderType,
+                    ],
+                    [
+                        'emoji' => $emoji,
+                    ]
+                );
+
+                Log::info('WhatsappWApiHandler: Reaction saved', [
+                    'message_id' => $targetMessage->id,
+                    'emoji' => $emoji,
+                    'sender_type' => $senderType->value,
+                ]);
+            }
+
+            // Broadcast message updated to refresh reactions
+            broadcast(new MessageUpdated($targetMessage->load('reactions')));
+
+        } catch (\Throwable $th) {
+            Log::error('WhatsappWApiHandler: Failed to handle reaction', [
+                'error' => $th->getMessage(),
+                'target_message_id' => $targetMessageExternalId,
+            ]);
         }
     }
 

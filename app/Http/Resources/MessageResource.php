@@ -38,6 +38,13 @@ class MessageResource extends JsonResource
                     ? Storage::disk('local')->temporaryUrl($this->repliedMessage->attachment, Carbon::now()->addMonths(6))
                     : null,
             ]),
+            'reactions' => $this->when($this->relationLoaded('reactions'), fn() =>
+                $this->reactions->map(fn($reaction) => [
+                    'emoji' => $reaction->emoji,
+                    'sender_type' => $reaction->sender_type,
+                    'created_at' => $reaction->created_at->timestamp,
+                ])
+            ),
             'sent_at' => $this->sent_at,
             'delivery_at' => $this->delivery_at,
             'read_at' => $this->read_at,

@@ -12,6 +12,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\MessageReaction;
 use App\Services\AutomatedMessageService;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -155,6 +156,7 @@ class InstagramHandler implements ChatHandlerInterface
 
         // Determine event type
         $eventType = match (true) {
+            isset($messaging['reaction']) => 'reaction',
             isset($messaging['message_edit']) => 'message_edit',
             isset($messaging['message']['is_deleted']) => 'message_delete',
             isset($messaging['message']) => 'message',
@@ -164,6 +166,10 @@ class InstagramHandler implements ChatHandlerInterface
 
         // Handle based on event type
         switch ($eventType) {
+            case 'reaction':
+                $this->handleReaction($connection, $payload);
+                break;
+
             case 'message_edit':
                 $this->handleMessageEdit($connection, $payload);
                 break;
@@ -312,6 +318,80 @@ class InstagramHandler implements ChatHandlerInterface
                     }
                 }
             }
+        }
+    }
+
+    private function handleReaction(Connection $connection, array $payload)
+    {
+        $messaging = $payload['messaging'][0] ?? [];
+        $reaction = $messaging['reaction'] ?? [];
+
+        $targetMessageExternalId = $reaction['mid'] ?? null;
+        $action = $reaction['action'] ?? null; // 'react' or 'unreact'
+        $emoji = $reaction['emoji'] ?? null;
+        $isEcho = $messaging['sender']['id'] === $payload['id']; // Check if it's from the page (outgoing)
+
+        if (!$targetMessageExternalId || !$action) {
+            Log::warning('InstagramHandler: Missing reaction data', [
+                'reaction' => $reaction,
+            ]);
+            return;
+        }
+
+        $senderType = $isEcho ? SenderType::Outgoing : SenderType::Incoming;
+
+        try {
+            // Find the message that was reacted to
+            $targetMessage = Message::where('external_id', $targetMessageExternalId)
+                ->whereHas('conversation', function($query) use ($connection) {
+                    $query->where('connection_id', $connection->id);
+                })
+                ->first();
+
+            if (!$targetMessage) {
+                Log::warning('InstagramHandler: Target message not found for reaction', [
+                    'external_id' => $targetMessageExternalId,
+                ]);
+                return;
+            }
+
+            if ($action === 'unreact') {
+                // Delete existing reaction
+                MessageReaction::where('message_id', $targetMessage->id)
+                    ->where('sender_type', $senderType)
+                    ->delete();
+
+                Log::info('InstagramHandler: Reaction removed', [
+                    'message_id' => $targetMessage->id,
+                    'sender_type' => $senderType->value,
+                ]);
+            } else {
+                // Update or create reaction
+                MessageReaction::updateOrCreate(
+                    [
+                        'message_id' => $targetMessage->id,
+                        'sender_type' => $senderType,
+                    ],
+                    [
+                        'emoji' => $emoji,
+                    ]
+                );
+
+                Log::info('InstagramHandler: Reaction saved', [
+                    'message_id' => $targetMessage->id,
+                    'emoji' => $emoji,
+                    'sender_type' => $senderType->value,
+                ]);
+            }
+
+            // Broadcast message updated to refresh reactions
+            broadcast(new MessageUpdated($targetMessage->load('reactions')));
+
+        } catch (\Throwable $th) {
+            Log::error('InstagramHandler: Failed to handle reaction', [
+                'error' => $th->getMessage(),
+                'target_message_id' => $targetMessageExternalId,
+            ]);
         }
     }
 
