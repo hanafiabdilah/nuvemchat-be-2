@@ -385,7 +385,7 @@ class InstagramHandler implements ChatHandlerInterface
             }
 
             // Broadcast message updated to refresh reactions
-            broadcast(new MessageUpdated($targetMessage->load('reactions')));
+            broadcast(new MessageUpdated($targetMessage));
 
         } catch (\Throwable $th) {
             Log::error('InstagramHandler: Failed to handle reaction', [
