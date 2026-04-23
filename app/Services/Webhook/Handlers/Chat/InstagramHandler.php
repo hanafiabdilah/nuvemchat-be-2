@@ -144,6 +144,11 @@ class InstagramHandler implements ChatHandlerInterface
         return $messaging['message']['is_echo'] ?? false;
     }
 
+    public function getRepliedMessageId(array $payload): ?string
+    {
+        return $payload['messaging'][0]['message']['reply_to']['mid'] ?? null;
+    }
+
     public function handle(Connection $connection, array $payload)
     {
         $messaging = $payload['messaging'][0] ?? [];
@@ -232,11 +237,31 @@ class InstagramHandler implements ChatHandlerInterface
 
             if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
 
+            // Lookup replied message if exists
+            $repliedMessageId = null;
+            $repliedMessageExternalId = $this->getRepliedMessageId($payload);
+
+            if ($repliedMessageExternalId) {
+                $repliedMessage = Message::where('external_id', $repliedMessageExternalId)
+                    ->where('conversation_id', $conversation->id)
+                    ->first();
+
+                if ($repliedMessage) {
+                    $repliedMessageId = $repliedMessage->id;
+                } else {
+                    Log::warning('InstagramHandler: Replied message not found in database', [
+                        'replied_external_id' => $repliedMessageExternalId,
+                        'conversation_id' => $conversation->id,
+                    ]);
+                }
+            }
+
             return $conversation->messages()->create([
                 'external_id' => $messageId,
                 'sender_type' => $isOutgoing ? SenderType::Outgoing : SenderType::Incoming,
                 'message_type' => $messageType,
                 'body' => $this->getMessageBody($payload),
+                'replied_message_id' => $repliedMessageId,
                 'sent_at' => $this->getMessageSentAt($payload),
                 'delivery_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
