@@ -173,7 +173,12 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                         break;
 
                     default:
-                        $this->handleDelivery($connection, $payload);
+                        // Check if it's a reaction message
+                        if (isset($payload['msgContent']['reactionMessage'])) {
+                            $this->handleReaction($connection, $payload);
+                        } else {
+                            $this->handleDelivery($connection, $payload);
+                        }
                         break;
                 }
                 break;
