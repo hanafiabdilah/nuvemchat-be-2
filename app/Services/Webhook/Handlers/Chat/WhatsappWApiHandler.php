@@ -94,6 +94,17 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         return $payload['sender']['id'] ?? null;
     }
 
+    public function getRepliedMessageId(array $payload): ?string
+    {
+        return $payload['msgContent']['extendedTextMessage']['contextInfo']['stanzaId']
+            ?? $payload['msgContent']['imageMessage']['contextInfo']['stanzaId']
+            ?? $payload['msgContent']['videoMessage']['contextInfo']['stanzaId']
+            ?? $payload['msgContent']['audioMessage']['contextInfo']['stanzaId']
+            ?? $payload['msgContent']['documentMessage']['contextInfo']['stanzaId']
+            ?? $payload['msgContent']['documentWithCaptionMessage']['message']['documentMessage']['contextInfo']['stanzaId']
+            ?? null;
+    }
+
     public function handle(Connection $connection, array $payload)
     {
         $event = $payload['event'] ?? null;
@@ -339,11 +350,31 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 return;
             }
 
+            // Lookup replied message if exists
+            $repliedMessageId = null;
+            $repliedMessageExternalId = $this->getRepliedMessageId($payload);
+
+            if ($repliedMessageExternalId) {
+                $repliedMessage = Message::where('external_id', $repliedMessageExternalId)
+                    ->where('conversation_id', $conversation->id)
+                    ->first();
+
+                if ($repliedMessage) {
+                    $repliedMessageId = $repliedMessage->id;
+                } else {
+                    Log::warning('WhatsappWApiHandler: Replied message not found in database', [
+                        'replied_external_id' => $repliedMessageExternalId,
+                        'conversation_id' => $conversation->id,
+                    ]);
+                }
+            }
+
             return $conversation->messages()->create([
                 'external_id' => $messageId,
                 'sender_type' => SenderType::Incoming,
                 'message_type' => $messageType,
                 'body' => $this->getMessageBody($payload),
+                'replied_message_id' => $repliedMessageId,
                 'sent_at' => $this->getMessageSentAt($payload),
                 'delivery_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
@@ -449,12 +480,32 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 ]);
             }
 
+            // Lookup replied message if exists
+            $repliedMessageId = null;
+            $repliedMessageExternalId = $this->getRepliedMessageId($payload);
+
+            if ($repliedMessageExternalId) {
+                $repliedMessage = Message::where('external_id', $repliedMessageExternalId)
+                    ->where('conversation_id', $conversation->id)
+                    ->first();
+
+                if ($repliedMessage) {
+                    $repliedMessageId = $repliedMessage->id;
+                } else {
+                    Log::warning('WhatsappWApiHandler: Replied message not found in database', [
+                        'replied_external_id' => $repliedMessageExternalId,
+                        'conversation_id' => $conversation->id,
+                    ]);
+                }
+            }
+
             return $conversation->messages()->updateOrCreate([
                 'external_id' => $messageId,
             ], [
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => $messageType,
                 'body' => $this->getMessageBody($payload),
+                'replied_message_id' => $repliedMessageId,
                 'sent_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
             ]);
