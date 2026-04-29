@@ -199,6 +199,8 @@ class FlowController extends Controller
             $data = $node['data'] ?? null;
 
             if ($data === null) {
+                if ($type === 'start') continue;
+
                 throw ValidationException::withMessages([
                     "nodes.{$index}.data" => ["The data field is required for node type {$type}."]
                 ]);
