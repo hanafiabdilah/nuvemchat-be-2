@@ -17,6 +17,7 @@ class FlowNode extends Model
 
     protected $casts = [
         'type' => NodeType::class,
+        'data' => 'array',
     ];
 
     public function flow()
