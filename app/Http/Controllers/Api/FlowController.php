@@ -23,6 +23,18 @@ class FlowController extends Controller
     }
 
     /**
+     * Display the specified flow.
+     */
+    public function show(int $id): JsonResponse
+    {
+        $flow = Flow::findOrFail($id);
+
+        return response()->json([
+            'data' => new FlowResource($flow),
+        ]);
+    }
+
+    /**
      * Store a newly created flow.
      */
     public function store(Request $request): JsonResponse
