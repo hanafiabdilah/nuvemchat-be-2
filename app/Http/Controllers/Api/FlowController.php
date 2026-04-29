@@ -115,7 +115,7 @@ class FlowController extends Controller
         $validated = $request->validate([
             'nodes' => ['required', 'array'],
             'nodes.*.id' => ['nullable', 'string'], // Frontend ID (might not be database ID yet)
-            'nodes.*.type' => ['required', 'string', Rule::in(['message', 'response', 'status', 'tagging', 'condition', 'action'])],
+            'nodes.*.type' => ['required', 'string', Rule::in(['start', 'message', 'response', 'status', 'tagging', 'condition', 'action'])],
             'nodes.*.data' => ['nullable'],
             'nodes.*.position_x' => ['required', 'numeric'],
             'nodes.*.position_y' => ['required', 'numeric'],
