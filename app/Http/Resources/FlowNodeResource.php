@@ -5,7 +5,7 @@ namespace App\Http\Resources;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
-class FlowResource extends JsonResource
+class FlowNodeResource extends JsonResource
 {
     /**
      * Transform the resource into an array.
@@ -16,9 +16,11 @@ class FlowResource extends JsonResource
     {
         return [
             'id' => $this->id,
-            'name' => $this->name,
-            'nodes' => FlowNodeResource::collection($this->whenLoaded('nodes')),
-            'edges' => FlowEdgeResource::collection($this->whenLoaded('edges')),
+            'flow_id' => $this->flow_id,
+            'type' => $this->type->value,
+            'data' => $this->data,
+            'position_x' => $this->position_x,
+            'position_y' => $this->position_y,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];

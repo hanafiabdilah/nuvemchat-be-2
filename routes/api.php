@@ -89,6 +89,7 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
     Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
     Route::delete('/flows/{id}', [FlowController::class, 'destroy'])->middleware('permission:flows.delete');
+    Route::post('/flows/{id}/save', [FlowController::class, 'saveNodesAndEdges'])->middleware('permission:flows.update');
 
     // Permission list (read-only) - permissions are managed via seeders/migrations only
     Route::get('/permissions', [PermissionController::class, 'index']);
