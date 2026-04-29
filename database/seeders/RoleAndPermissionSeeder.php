@@ -51,6 +51,12 @@ class RoleAndPermissionSeeder extends Seeder
             'roles.create',
             'roles.update',
             'roles.delete',
+
+            // Flow
+            'flows.view',
+            'flows.create',
+            'flows.update',
+            'flows.delete',
         ];
 
         foreach ($permissions as $permission) {

@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
+use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\QuickMessageController;
@@ -81,6 +82,12 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::post('/roles', [RoleController::class, 'store'])->middleware('permission:roles.create');
     Route::put('/roles/{id}', [RoleController::class, 'update'])->middleware('permission:roles.update');
     Route::delete('/roles/{id}', [RoleController::class, 'destroy'])->middleware('permission:roles.delete');
+
+    // Flow routes - protected by permissions
+    Route::get('/flows', [FlowController::class, 'index'])->middleware('permission:flows.view');
+    Route::post('/flows', [FlowController::class, 'store'])->middleware('permission:flows.create');
+    Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
+    Route::delete('/flows/{id}', [FlowController::class, 'destroy'])->middleware('permission:flows.delete');
 
     // Permission list (read-only) - permissions are managed via seeders/migrations only
     Route::get('/permissions', [PermissionController::class, 'index']);
