@@ -4,6 +4,7 @@ namespace App\Enums\Flow;
 
 enum NodeType: string
 {
+    case Start = 'start';
     case Message = 'message';
     case Response = 'response';
     case Status = 'status';

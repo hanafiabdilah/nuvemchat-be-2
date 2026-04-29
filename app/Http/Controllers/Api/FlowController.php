@@ -59,6 +59,13 @@ class FlowController extends Controller
 
         $flow = Flow::create($validated);
 
+        $flow->nodes()->create([
+            'type' => NodeType::Start,
+            'data' => null,
+            'position_x' => 0,
+            'position_y' => 0,
+        ]);
+
         return response()->json([
             'message' => 'Flow created successfully',
             'data' => new FlowResource($flow),
