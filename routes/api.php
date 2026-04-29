@@ -86,6 +86,7 @@ Route::middleware('auth:sanctum')->group(function(){
     // Flow routes - protected by permissions
     Route::get('/flows', [FlowController::class, 'index'])->middleware('permission:flows.view');
     Route::post('/flows', [FlowController::class, 'store'])->middleware('permission:flows.create');
+    Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
     Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
     Route::delete('/flows/{id}', [FlowController::class, 'destroy'])->middleware('permission:flows.delete');
 
