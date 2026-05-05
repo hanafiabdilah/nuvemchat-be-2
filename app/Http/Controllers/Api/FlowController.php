@@ -57,10 +57,10 @@ class FlowController extends Controller
             'name' => ['required', 'string', 'max:255'],
         ]);
 
+        $validated['tenant_id'] = auth()->user()->tenant_id;
         $flow = Flow::create($validated);
 
         $flow->nodes()->create([
-            'tenant_id' =>  auth()->user()->tenant_id,
             'type' => NodeType::Start,
             'data' => null,
             'position_x' => 0,
