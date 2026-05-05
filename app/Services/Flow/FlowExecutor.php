@@ -2,6 +2,8 @@
 
 namespace App\Services\Flow;
 
+use App\Enums\Conversation\Status as ConversationStatus;
+use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
 use App\Events\MessageReceived;
 use App\Models\Conversation;
@@ -27,6 +29,15 @@ class FlowExecutor
         $connection = $conversation->connection;
 
         if (!$connection->flow_id) {
+            return;
+        }
+
+        // Only start flow for Pending conversations (waiting for admin)
+        if ($conversation->status !== ConversationStatus::Pending) {
+            Log::info('FlowExecutor: Cannot start flow, conversation is not pending', [
+                'conversation_id' => $conversation->id,
+                'status' => $conversation->status->value,
+            ]);
             return;
         }
 
@@ -57,6 +68,7 @@ class FlowExecutor
             'flow_id' => $connection->flow_id,
             'current_node_id' => $startNode->id,
             'state_data' => [],
+            'status' => FlowStateStatus::Running,
         ]);
 
         // Execute from start node
@@ -68,6 +80,20 @@ class FlowExecutor
      */
     protected function executeFromNode(FlowState $flowState, FlowNode $node): void
     {
+        // Check if conversation is still Pending before executing
+        $conversation = $flowState->conversation->fresh();
+
+        if ($conversation->status !== ConversationStatus::Pending) {
+            Log::info('FlowExecutor: Flow stopped, conversation is no longer pending (flow state preserved)', [
+                'conversation_id' => $conversation->id,
+                'status' => $conversation->status->value,
+                'flow_state_id' => $flowState->id,
+            ]);
+
+            // Don't delete flow state - preserve context data
+            return;
+        }
+
         Log::info('FlowExecutor: Executing node', [
             'node_id' => $node->id,
             'node_type' => $node->type->value,
@@ -154,13 +180,12 @@ class FlowExecutor
 
         if (!$edge) {
             // No next node, flow ends
-            Log::info('FlowExecutor: Flow ended (no next node)', [
+            Log::info('FlowExecutor: Flow completed (no next node, flow state preserved)', [
                 'flow_state_id' => $flowState->id,
                 'current_node_id' => $currentNode->id,
             ]);
 
-            // Delete the flow state to indicate completion
-            $flowState->delete();
+            // Don't delete flow state - preserve context data for completed flows
             return;
         }
 
@@ -168,10 +193,19 @@ class FlowExecutor
         $nextNode = FlowNode::find($edge->target_node_id);
 
         if (!$nextNode) {
-            Log::error('FlowExecutor: Next node not found', [
+            $flowState->update([
+                'status' => FlowStateStatus::Failed,
+                'completed_at' => now(),
+            ]);
+
+            Log::error('FlowExecutor: Next node not found (flow state preserved)', [
                 'edge_id' => $edge->id,
                 'target_node_id' => $edge->target_node_id,
+                'flow_state_id' => $flowState->id,
+                'status' => 'failed',
             ]);
+            
+            // Don't delete flow state - preserve context data even on error
             return;
         }
 
@@ -194,13 +228,18 @@ class FlowExecutor
 
         if (!$edge) {
             // No next node, flow ends
-            Log::info('FlowExecutor: Flow ended (no next node)', [
-                'flow_state_id' => $flowState->id,
-                'current_node_id' => $currentNode->id,
+            $flowState->update([
+                'status' => FlowStateStatus::Completed,
+                'completed_at' => now(),
             ]);
 
-            // Delete the flow state to indicate completion
-            $flowState->delete();
+            Log::info('FlowExecutor: Flow completed (no next node, flow state preserved)', [
+                'flow_state_id' => $flowState->id,
+                'current_node_id' => $currentNode->id,
+                'status' => 'completed',
+            ]);
+
+            // Don't delete flow state - preserve context data for completed flows
             return;
         }
 
@@ -208,13 +247,19 @@ class FlowExecutor
         $nextNode = FlowNode::find($edge->target_node_id);
 
         if (!$nextNode) {
-            Log::error('FlowExecutor: Next node not found', [
-                'edge_id' => $edge->id,
-                'target_node_id' => $edge->target_node_id,
+            $flowState->update([
+                'status' => FlowStateStatus::Failed,
+                'completed_at' => now(),
             ]);
 
-            // Delete flow state if next node is missing
-            $flowState->delete();
+            Log::error('FlowExecutor: Next node not found (flow state preserved)', [
+                'edge_id' => $edge->id,
+                'target_node_id' => $edge->target_node_id,
+                'flow_state_id' => $flowState->id,
+                'status' => 'failed',
+            ]);
+            
+            // Don't delete flow state - preserve context data even on error
             return;
         }
 
@@ -231,25 +276,73 @@ class FlowExecutor
     }
 
     /**
+     * Stop a flow for a conversation (called when admin accepts)
+     * Note: Flow state is preserved for context data
+     */
+    public function stopFlow(Conversation $conversation): void
+    {
+        $flowState = FlowState::where('conversation_id', $conversation->id)->first();
+
+        if ($flowState) {
+            // Mark flow as stopped with timestamp
+            $flowState->update([
+                'status' => FlowStateStatus::Stopped,
+                'completed_at' => now(),
+            ]);
+
+            Log::info('FlowExecutor: Flow stopped due to admin handover (flow state preserved)', [
+                'conversation_id' => $conversation->id,
+                'flow_state_id' => $flowState->id,
+                'current_node_id' => $flowState->current_node_id,
+                'status' => 'stopped',
+            ]);
+            
+            // Don't delete flow state - preserve context data
+            // Flow will automatically stop executing due to status check
+        }
+    }
+
+    /**
      * Resume a flow after receiving user input
      */
     public function resumeFlow(Conversation $conversation, string $userInput): void
     {
+        // Only resume flow for Pending conversations
+        if ($conversation->status !== ConversationStatus::Pending) {
+            Log::info('FlowExecutor: Cannot resume flow, conversation is not pending', [
+                'conversation_id' => $conversation->id,
+                'status' => $conversation->status->value,
+            ]);
+
+            // Stop any active flow
+            $this->stopFlow($conversation);
+            return;
+        }
+
         $flowState = FlowState::where('conversation_id', $conversation->id)->first();
 
         if (!$flowState) {
             return; // No active flow
         }
 
+        // Don't resume flows that are already completed, stopped, or failed
+        if ($flowState->status !== FlowStateStatus::Running) {
+            Log::info('FlowExecutor: Cannot resume flow, flow is not running', [
+                'conversation_id' => $conversation->id,
+                'flow_state_id' => $flowState->id,
+                'status' => $flowState->status->value,
+            ]);
+            return;
+        }
+
         $currentNode = $flowState->currentNode;
 
         if (!$currentNode) {
-            Log::error('FlowExecutor: Current node not found', [
+            Log::error('FlowExecutor: Current node not found (flow state preserved)', [
                 'flow_state_id' => $flowState->id,
             ]);
-
-            // Delete orphaned flow state
-            $flowState->delete();
+            
+            // Don't delete flow state - preserve for debugging
             return;
         }
 

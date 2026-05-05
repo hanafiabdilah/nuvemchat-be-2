@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\Flow\FlowStateStatus;
 use Illuminate\Database\Eloquent\Model;
 
 class FlowState extends Model
@@ -11,10 +12,14 @@ class FlowState extends Model
         'flow_id',
         'current_node_id',
         'state_data',
+        'status',
+        'completed_at',
     ];
 
     protected $casts = [
         'state_data' => 'array',
+        'status' => FlowStateStatus::class,
+        'completed_at' => 'datetime',
     ];
 
     public function conversation()
