@@ -128,8 +128,8 @@ class FlowExecutor
 
                 broadcast(new MessageReceived($message));
 
-                // Move to next node
-                $this->moveToNextNode($flowState, $node);
+                // Move to next node WITHOUT executing it (wait for user response)
+                $this->moveToNextNodeWithoutExecute($flowState, $node);
             } else {
                 Log::error('FlowExecutor: Failed to send message', [
                     'node_id' => $node->id,
@@ -145,7 +145,7 @@ class FlowExecutor
     }
 
     /**
-     * Move to the next node in the flow
+     * Move to the next node in the flow and execute it
      */
     protected function moveToNextNode(FlowState $flowState, FlowNode $currentNode): void
     {
@@ -185,6 +185,52 @@ class FlowExecutor
     }
 
     /**
+     * Move to the next node WITHOUT executing it (wait for user interaction)
+     */
+    protected function moveToNextNodeWithoutExecute(FlowState $flowState, FlowNode $currentNode): void
+    {
+        // Find the next node via edge
+        $edge = $currentNode->outgoingEdges()->first();
+
+        if (!$edge) {
+            // No next node, flow ends
+            Log::info('FlowExecutor: Flow ended (no next node)', [
+                'flow_state_id' => $flowState->id,
+                'current_node_id' => $currentNode->id,
+            ]);
+
+            // Delete the flow state to indicate completion
+            $flowState->delete();
+            return;
+        }
+
+        // Load the next node
+        $nextNode = FlowNode::find($edge->target_node_id);
+
+        if (!$nextNode) {
+            Log::error('FlowExecutor: Next node not found', [
+                'edge_id' => $edge->id,
+                'target_node_id' => $edge->target_node_id,
+            ]);
+
+            // Delete flow state if next node is missing
+            $flowState->delete();
+            return;
+        }
+
+        // Update flow state to the next node WITHOUT executing
+        $flowState->update([
+            'current_node_id' => $nextNode->id,
+        ]);
+
+        Log::info('FlowExecutor: Moved to next node, waiting for user interaction', [
+            'flow_state_id' => $flowState->id,
+            'next_node_id' => $nextNode->id,
+            'next_node_type' => $nextNode->type->value,
+        ]);
+    }
+
+    /**
      * Resume a flow after receiving user input
      */
     public function resumeFlow(Conversation $conversation, string $userInput): void
@@ -201,13 +247,20 @@ class FlowExecutor
             Log::error('FlowExecutor: Current node not found', [
                 'flow_state_id' => $flowState->id,
             ]);
+
+            // Delete orphaned flow state
+            $flowState->delete();
             return;
         }
 
-        // For now, we only handle Message and Start nodes
-        // Response and other interactive nodes will be implemented later
-        Log::info('FlowExecutor: Flow is active but current node does not expect input', [
-            'node_type' => $currentNode->type->value,
+        Log::info('FlowExecutor: Resuming flow from user input', [
+            'conversation_id' => $conversation->id,
+            'current_node_id' => $currentNode->id,
+            'current_node_type' => $currentNode->type->value,
+            'user_input' => substr($userInput, 0, 50), // Log first 50 chars only
         ]);
+
+        // Execute the current node (which was set but not executed)
+        $this->executeFromNode($flowState, $currentNode);
     }
 }
