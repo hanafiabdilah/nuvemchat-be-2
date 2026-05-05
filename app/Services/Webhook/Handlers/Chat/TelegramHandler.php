@@ -207,9 +207,8 @@ class TelegramHandler implements ChatHandlerInterface
 
             $flowExecutor = new FlowExecutor();
 
-            // Handle new conversation - start flow or send welcoming message
+            // Handle new conversation - start flow
             if ($isNewConversation && $conversationForWelcome) {
-                // Check if connection has a flow configured
                 if ($connection->flow_id) {
                     try {
                         $flowExecutor->startFlow($conversationForWelcome);
@@ -219,27 +218,6 @@ class TelegramHandler implements ChatHandlerInterface
                             'flow_id' => $connection->flow_id,
                             'error' => $th->getMessage(),
                         ]);
-                    }
-                } else {
-                    // Fallback to welcoming message if no flow is configured
-                    $automatedMessageService = new AutomatedMessageService();
-                    $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
-
-                    if ($welcomingMessage) {
-                        try {
-                            $messageService = new MessageService();
-                            $welcomeMsg = $messageService->sendMessage($conversationForWelcome, ['message' => $welcomingMessage]);
-
-                            if ($welcomeMsg) {
-                                broadcast(new MessageReceived($welcomeMsg));
-                                broadcast(new ConversationUpdated($welcomeMsg->conversation));
-                            }
-                        } catch (\Throwable $th) {
-                            Log::error('TelegramHandler: Failed to send welcoming message', [
-                                'conversation_id' => $conversationForWelcome->id,
-                                'error' => $th->getMessage(),
-                            ]);
-                        }
                     }
                 }
             } else {

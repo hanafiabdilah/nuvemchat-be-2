@@ -12,7 +12,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
-use App\Services\AutomatedMessageService;
+use App\Services\Flow\FlowExecutor;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
@@ -222,33 +222,35 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
                 'type' => $messageType->value,
             ]);
 
-            // Send welcoming message AFTER broadcasting the main message
-            // Only for new conversations and incoming messages
-            if ($isNewConversation && $conversationForWelcome && !$isOutgoing) {
-                $automatedMessageService = new AutomatedMessageService();
-                $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
+            // Only process flow for incoming messages (from user, not from bot)
+            if ($message->sender_type !== SenderType::Incoming) {
+                return;
+            }
 
-                if ($welcomingMessage) {
+            $flowExecutor = new FlowExecutor();
+
+            // Handle new conversation - start flow
+            if ($isNewConversation && $conversationForWelcome) {
+                if ($connection->flow_id) {
                     try {
-                        $messageService = new MessageService();
-                        $welcomeMsg = $messageService->sendMessage($conversationForWelcome, ['message' => $welcomingMessage]);
-
-                        if ($welcomeMsg) {
-                            broadcast(new MessageReceived($welcomeMsg));
-                            broadcast(new ConversationUpdated($welcomeMsg->conversation));
-
-                            Log::info('WhatsappOfficialHandler: Welcoming message sent', [
-                                'conversation_id' => $conversationForWelcome->id,
-                                'message_id' => $welcomeMsg->id,
-                            ]);
-                        }
+                        $flowExecutor->startFlow($conversationForWelcome);
                     } catch (\Throwable $th) {
-                        Log::error('WhatsappOfficialHandler: Failed to send welcoming message', [
+                        Log::error('WhatsappOfficialHandler: Failed to start flow', [
                             'conversation_id' => $conversationForWelcome->id,
+                            'flow_id' => $connection->flow_id,
                             'error' => $th->getMessage(),
-                            'trace' => $th->getTraceAsString(),
                         ]);
                     }
+                }
+            } else {
+                // Resume flow if there's an active flow state
+                try {
+                    $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($payload) ?? '');
+                } catch (\Throwable $th) {
+                    Log::error('WhatsappOfficialHandler: Failed to resume flow', [
+                        'conversation_id' => $message->conversation->id,
+                        'error' => $th->getMessage(),
+                    ]);
                 }
             }
         }

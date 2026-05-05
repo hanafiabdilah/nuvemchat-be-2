@@ -15,7 +15,7 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
-use App\Services\AutomatedMessageService;
+use App\Services\Flow\FlowExecutor;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
@@ -412,26 +412,35 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
-            // Send welcoming message AFTER broadcasting the main message
+            // Only process flow for incoming messages (from user, not from bot)
+            if ($message->sender_type !== SenderType::Incoming) {
+                return;
+            }
+
+            $flowExecutor = new FlowExecutor();
+
+            // Handle new conversation - start flow
             if ($isNewConversation && $conversationForWelcome) {
-                $automatedMessageService = new AutomatedMessageService();
-                $welcomingMessage = $automatedMessageService->getWelcomingMessage($connection);
-
-                if ($welcomingMessage) {
+                if ($connection->flow_id) {
                     try {
-                        $messageService = new MessageService();
-                        $welcomeMsg = $messageService->sendMessage($conversationForWelcome, ['message' => $welcomingMessage]);
-
-                        if ($welcomeMsg) {
-                            broadcast(new MessageReceived($welcomeMsg));
-                            broadcast(new ConversationUpdated($welcomeMsg->conversation));
-                        }
+                        $flowExecutor->startFlow($conversationForWelcome);
                     } catch (\Throwable $th) {
-                        Log::error('WhatsappWApiHandler: Failed to send welcoming message', [
+                        Log::error('WhatsappWApiHandler: Failed to start flow', [
                             'conversation_id' => $conversationForWelcome->id,
+                            'flow_id' => $connection->flow_id,
                             'error' => $th->getMessage(),
                         ]);
                     }
+                }
+            } else {
+                // Resume flow if there's an active flow state
+                try {
+                    $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($payload) ?? '');
+                } catch (\Throwable $th) {
+                    Log::error('WhatsappWApiHandler: Failed to resume flow', [
+                        'conversation_id' => $message->conversation->id,
+                        'error' => $th->getMessage(),
+                    ]);
                 }
             }
         }
