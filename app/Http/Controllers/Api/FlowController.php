@@ -22,7 +22,7 @@ class FlowController extends Controller
      */
     public function index(): JsonResponse
     {
-        $flows = Flow::orderBy('name', 'ASC')->get();
+        $flows = Flow::where('tenant_id', auth()->user()->tenant_id)->orderBy('name', 'ASC')->get();
 
         return response()->json([
             'data' => FlowResource::collection($flows),
@@ -34,7 +34,7 @@ class FlowController extends Controller
      */
     public function show(int $id): JsonResponse
     {
-        $flow = Flow::with('nodes')->findOrFail($id);
+        $flow = Flow::with('nodes')->where('tenant_id', auth()->user()->tenant_id)->findOrFail($id);
 
         // Manually load edges for this flow's nodes
         $nodeIds = $flow->nodes->pluck('id');
@@ -60,6 +60,7 @@ class FlowController extends Controller
         $flow = Flow::create($validated);
 
         $flow->nodes()->create([
+            'tenant_id' =>  auth()->user()->tenant_id,
             'type' => NodeType::Start,
             'data' => null,
             'position_x' => 0,
@@ -77,7 +78,7 @@ class FlowController extends Controller
      */
     public function update(int $id, Request $request): JsonResponse
     {
-        $flow = Flow::findOrFail($id);
+        $flow = Flow::where('tenant_id', auth()->user()->tenant_id)->findOrFail($id);
 
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
@@ -96,7 +97,7 @@ class FlowController extends Controller
      */
     public function destroy(int $id): JsonResponse
     {
-        $flow = Flow::findOrFail($id);
+        $flow = Flow::where('tenant_id', auth()->user()->tenant_id)->findOrFail($id);
 
         $flow->delete();
 
@@ -110,7 +111,7 @@ class FlowController extends Controller
      */
     public function saveNodesAndEdges(int $id, Request $request): JsonResponse
     {
-        $flow = Flow::findOrFail($id);
+        $flow = Flow::where('tenant_id', auth()->user()->tenant_id)->findOrFail($id);
 
         $validated = $request->validate([
             'nodes' => ['required', 'array'],
