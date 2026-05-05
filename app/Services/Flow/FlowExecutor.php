@@ -110,6 +110,10 @@ class FlowExecutor
                 $this->executeMessageNode($flowState, $node);
                 break;
 
+            case NodeType::Response:
+                $this->executeResponseNode($flowState, $node);
+                break;
+
             case NodeType::Condition:
                 $this->executeConditionNode($flowState, $node);
                 break;
@@ -168,6 +172,56 @@ class FlowExecutor
             }
         } catch (\Throwable $th) {
             Log::error('FlowExecutor: Error executing message node', [
+                'node_id' => $node->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Execute a Response node - sends a prompt and WAITS for user input
+     * Note: Does NOT move to next node - waits for resumeFlow() with user input
+     */
+    protected function executeResponseNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data;
+        $conversation = $flowState->conversation;
+
+        try {
+            // Prepare message data
+            $messageData = [
+                'message' => $data['body'] ?? '',
+            ];
+
+            // Add attachment if present
+            if (isset($data['attachment']) && $data['attachment']) {
+                $messageData['attachment'] = $data['attachment'];
+                $messageData['message_type'] = $data['message_type'] ?? 'text';
+            }
+
+            // Send the prompt message
+            $message = $this->messageService->sendMessage($conversation, $messageData);
+
+            if ($message) {
+                Log::info('FlowExecutor: Response prompt sent, waiting for user input', [
+                    'message_id' => $message->id,
+                    'conversation_id' => $conversation->id,
+                    'node_id' => $node->id,
+                    'variable_key' => $data['variable_key'] ?? null,
+                ]);
+
+                broadcast(new MessageReceived($message));
+
+                // DON'T move to next node - stay on this Response node
+                // Wait for user to reply, which will be handled in resumeFlow()
+            } else {
+                Log::error('FlowExecutor: Failed to send response prompt', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $conversation->id,
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing response node', [
                 'node_id' => $node->id,
                 'error' => $th->getMessage(),
             ]);
@@ -266,6 +320,36 @@ class FlowExecutor
             'conversation' => $conversation->{$key} ?? null,
             default => null,
         };
+    }
+
+    /**
+     * Validate user input based on validation type
+     */
+    protected function validateInput(string $input, ?string $validationType): bool
+    {
+        if (!$validationType || $validationType === 'any') {
+            return true; // Accept any input
+        }
+
+        return match($validationType) {
+            'number' => is_numeric($input),
+            'email' => filter_var($input, FILTER_VALIDATE_EMAIL) !== false,
+            'phone' => $this->validatePhoneNumber($input),
+            default => true,
+        };
+    }
+
+    /**
+     * Validate phone number (basic validation)
+     */
+    protected function validatePhoneNumber(string $phone): bool
+    {
+        // Remove common phone number characters
+        $cleaned = preg_replace('/[^0-9+]/', '', $phone);
+
+        // Check if it has at least 8 digits (minimum valid phone length)
+        // and starts with + or digit
+        return strlen($cleaned) >= 8 && preg_match('/^[+]?[0-9]{8,}$/', $cleaned);
     }
 
     /**
@@ -511,7 +595,82 @@ class FlowExecutor
             'user_input' => substr($userInput, 0, 50), // Log first 50 chars only
         ]);
 
-        // Execute the current node (which was set but not executed)
+        // Special handling for Response nodes - validate and store input
+        if ($currentNode->type === NodeType::Response) {
+            $this->handleResponseNodeInput($flowState, $currentNode, $userInput);
+            return;
+        }
+
+        // For other node types, execute the current node
         $this->executeFromNode($flowState, $currentNode);
+    }
+
+    /**
+     * Handle user input for Response node - validate, store, and move to next
+     */
+    protected function handleResponseNodeInput(FlowState $flowState, FlowNode $node, string $userInput): void
+    {
+        $data = $node->data;
+        $conversation = $flowState->conversation;
+        $variableKey = $data['variable_key'] ?? null;
+        $validationType = $data['validation'] ?? 'any';
+        $errorMessage = $data['error_message'] ?? 'Input tidak valid. Silakan coba lagi.';
+
+        Log::info('FlowExecutor: Processing Response node input', [
+            'node_id' => $node->id,
+            'variable_key' => $variableKey,
+            'validation_type' => $validationType,
+            'input_length' => strlen($userInput),
+        ]);
+
+        // Validate input
+        $isValid = $this->validateInput($userInput, $validationType);
+
+        if (!$isValid) {
+            // Send error message and ask again (don't move to next node)
+            Log::warning('FlowExecutor: Response validation failed', [
+                'node_id' => $node->id,
+                'validation_type' => $validationType,
+                'input' => substr($userInput, 0, 50),
+            ]);
+
+            try {
+                $errorMessageData = [
+                    'message' => $errorMessage,
+                ];
+
+                $message = $this->messageService->sendMessage($conversation, $errorMessageData);
+
+                if ($message) {
+                    broadcast(new MessageReceived($message));
+                }
+            } catch (\Throwable $th) {
+                Log::error('FlowExecutor: Failed to send validation error message', [
+                    'error' => $th->getMessage(),
+                ]);
+            }
+
+            // Stay on current Response node - don't move
+            return;
+        }
+
+        // Valid input - store in state_data
+        if ($variableKey) {
+            $stateData = $flowState->state_data ?? [];
+            $stateData[$variableKey] = $userInput;
+
+            $flowState->update([
+                'state_data' => $stateData,
+            ]);
+
+            Log::info('FlowExecutor: Response input stored in state_data', [
+                'node_id' => $node->id,
+                'variable_key' => $variableKey,
+                'value' => substr($userInput, 0, 50),
+            ]);
+        }
+
+        // Move to next node and execute it
+        $this->moveToNextNode($flowState, $node);
     }
 }
