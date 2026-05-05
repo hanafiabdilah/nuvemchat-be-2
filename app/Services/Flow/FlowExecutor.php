@@ -216,6 +216,11 @@ class FlowExecutor
 
                 broadcast(new MessageReceived($message));
 
+                // Set flag to indicate prompt has been sent
+                $stateData = $flowState->state_data ?? [];
+                $stateData["_response_sent_{$node->id}"] = true;
+                $flowState->update(['state_data' => $stateData]);
+
                 // DON'T move to next node - stay on this Response node
                 // Wait for user to reply, which will be handled in resumeFlow()
             } else {
@@ -660,6 +665,22 @@ class FlowExecutor
 
         // Special handling for Response nodes - validate and store input
         if ($currentNode->type === NodeType::Response) {
+            // Check if this Response node has sent its prompt yet
+            $stateData = $flowState->state_data ?? [];
+            $promptSentFlag = "_response_sent_{$currentNode->id}";
+
+            if (!isset($stateData[$promptSentFlag])) {
+                // Prompt hasn't been sent yet - execute Response node first (send prompt)
+                Log::info('FlowExecutor: Response node reached but prompt not sent yet, executing Response node', [
+                    'node_id' => $currentNode->id,
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                $this->executeResponseNode($flowState, $currentNode);
+                return;
+            }
+
+            // Prompt already sent - handle user input
             $this->handleResponseNodeInput($flowState, $currentNode, $userInput);
             return;
         }
@@ -717,14 +738,11 @@ class FlowExecutor
             return;
         }
 
-        // Valid input - store in state_data
-        if ($variableKey) {
-            $stateData = $flowState->state_data ?? [];
-            $stateData[$variableKey] = $userInput;
+        // Valid input - store in state_data and clear the flag
+        $stateData = $flowState->state_data ?? [];
 
-            $flowState->update([
-                'state_data' => $stateData,
-            ]);
+        if ($variableKey) {
+            $stateData[$variableKey] = $userInput;
 
             Log::info('FlowExecutor: Response input stored in state_data', [
                 'node_id' => $node->id,
@@ -732,6 +750,13 @@ class FlowExecutor
                 'value' => substr($userInput, 0, 50),
             ]);
         }
+
+        // Clear the response sent flag since we're moving to next node
+        unset($stateData["_response_sent_{$node->id}"]);
+
+        $flowState->update([
+            'state_data' => $stateData,
+        ]);
 
         // Move to next node and execute it
         $this->moveToNextNode($flowState, $node);
