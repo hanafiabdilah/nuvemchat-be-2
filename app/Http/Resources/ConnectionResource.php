@@ -28,6 +28,7 @@ class ConnectionResource extends JsonResource
             ],
             // 'api_key' => $this->api_key,
             // 'webhook_url' => route('webhook.chat', $this->id),
+            'flow' => new FlowResource($this->flow),
             'created_at' => $this->created_at,
         ];
     }

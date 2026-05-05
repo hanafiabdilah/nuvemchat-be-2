@@ -10,6 +10,7 @@ class Connection extends Model
 {
     protected $fillable = [
         'tenant_id',
+        'flow_id',
         'channel',
         'name',
         'color',
@@ -49,5 +50,13 @@ class Connection extends Model
     public function conversations()
     {
         return $this->hasMany(Conversation::class);
+    }
+
+    /**
+     * Get the flow associated with this connection.
+     */
+    public function flow()
+    {
+        return $this->belongsTo(Flow::class);
     }
 }

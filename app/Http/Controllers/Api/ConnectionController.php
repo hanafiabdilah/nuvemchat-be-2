@@ -48,6 +48,7 @@ class ConnectionController extends Controller
             'channel' => ['required', Rule::enum(Channel::class)],
             'name' => ['required', 'string', 'max:100'],
             'color' => ['nullable', 'hex_color', 'max:7'],
+            'flow_id' => ['nullable', 'exists:flows,id'],
         ]);
 
         $connection = $request->user()->tenant->connections()->create($validated);
@@ -65,6 +66,7 @@ class ConnectionController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:100'],
             'color' => ['nullable', 'hex_color', 'max:7'],
+            'flow_id' => ['nullable', 'exists:flows,id'],
         ]);
 
         $connection->update($validated);

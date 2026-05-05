@@ -27,4 +27,9 @@ class Flow extends Model
             'id'              // Local key on FlowNode table
         );
     }
+
+    public function connections()
+    {
+        return $this->hasMany(Connection::class);
+    }
 }
