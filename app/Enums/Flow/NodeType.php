@@ -7,9 +7,9 @@ enum NodeType: string
     case Start = 'start';
     case Message = 'message';
     case Response = 'response';
-    case Status = 'status';
     case Tagging = 'tagging';
     case Condition = 'condition';
+    case Status = 'status';
     case Action = 'action';
 
     public function data(): array
@@ -33,6 +33,7 @@ enum NodeType: string
                 'value' => 'open', // open, pending, resolved
             ],
             self::Tagging => [
+                'action' => 'add', // 'add' or 'remove'
                 'tags' => [], // array of tag IDs
             ],
             self::Condition => [

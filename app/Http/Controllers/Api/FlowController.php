@@ -246,6 +246,7 @@ class FlowController extends Controller
                 'value' => ['required', 'string', Rule::in(['open', 'pending', 'resolved'])],
             ],
             'tagging' => [
+                'action' => ['required', 'string', Rule::in(['add', 'remove'])],
                 'tags' => ['required', 'array'],
                 'tags.*' => ['integer', 'exists:tags,id'],
             ],

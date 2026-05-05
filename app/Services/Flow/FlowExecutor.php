@@ -118,6 +118,10 @@ class FlowExecutor
                 $this->executeConditionNode($flowState, $node);
                 break;
 
+            case NodeType::Tagging:
+                $this->executeTaggingNode($flowState, $node);
+                break;
+
             default:
                 Log::warning('FlowExecutor: Unsupported node type', [
                     'node_type' => $node->type->value,
@@ -225,6 +229,65 @@ class FlowExecutor
                 'node_id' => $node->id,
                 'error' => $th->getMessage(),
             ]);
+        }
+    }
+
+    /**
+     * Execute a tagging node - add or remove tags from conversation
+     */
+    protected function executeTaggingNode(FlowState $flowState, FlowNode $node): void
+    {
+        try {
+            $conversation = $flowState->conversation;
+            $data = $node->data;
+
+            $action = $data['action'] ?? 'add';
+            $tagIds = $data['tags'] ?? [];
+
+            if (empty($tagIds)) {
+                Log::warning('FlowExecutor: No tags provided for tagging node', [
+                    'node_id' => $node->id,
+                ]);
+                $this->moveToNextNode($flowState, $node);
+                return;
+            }
+
+            Log::info('FlowExecutor: Executing tagging node', [
+                'node_id' => $node->id,
+                'action' => $action,
+                'tag_ids' => $tagIds,
+                'conversation_id' => $conversation->id,
+            ]);
+
+            if ($action === 'add') {
+                // Add tags to conversation (sync will only add tags that don't exist)
+                $conversation->tags()->syncWithoutDetaching($tagIds);
+
+                Log::info('FlowExecutor: Tags added to conversation', [
+                    'conversation_id' => $conversation->id,
+                    'tag_ids' => $tagIds,
+                ]);
+            } elseif ($action === 'remove') {
+                // Remove tags from conversation
+                $conversation->tags()->detach($tagIds);
+
+                Log::info('FlowExecutor: Tags removed from conversation', [
+                    'conversation_id' => $conversation->id,
+                    'tag_ids' => $tagIds,
+                ]);
+            }
+
+            // Move to next node
+            $this->moveToNextNode($flowState, $node);
+
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing tagging node', [
+                'node_id' => $node->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            // Continue flow even on error
+            $this->moveToNextNode($flowState, $node);
         }
     }
 
