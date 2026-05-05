@@ -24,4 +24,14 @@ class FlowNode extends Model
     {
         return $this->belongsTo(Flow::class);
     }
+
+    public function outgoingEdges()
+    {
+        return $this->hasMany(FlowEdge::class, 'source_node_id');
+    }
+
+    public function incomingEdges()
+    {
+        return $this->hasMany(FlowEdge::class, 'target_node_id');
+    }
 }
