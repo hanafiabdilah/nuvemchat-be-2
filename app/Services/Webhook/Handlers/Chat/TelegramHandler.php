@@ -200,6 +200,11 @@ class TelegramHandler implements ChatHandlerInterface
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
+            // Only process flow for incoming messages (from user, not from bot)
+            if ($message->sender_type !== SenderType::Incoming) {
+                return;
+            }
+
             $flowExecutor = new FlowExecutor();
 
             // Handle new conversation - start flow or send welcoming message
