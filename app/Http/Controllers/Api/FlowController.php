@@ -122,6 +122,7 @@ class FlowController extends Controller
             'edges' => ['required', 'array'],
             'edges.*.source_node_id' => ['required', 'string'], // Frontend node ID
             'edges.*.target_node_id' => ['required', 'string'], // Frontend node ID
+            'edges.*.condition_value' => ['nullable', 'string', Rule::in(['true', 'false'])], // For condition nodes
         ]);
 
         // Validate each node's data based on its type
@@ -170,6 +171,7 @@ class FlowController extends Controller
                     FlowEdge::create([
                         'source_node_id' => $sourceId,
                         'target_node_id' => $targetId,
+                        'condition_value' => $edgeData['condition_value'] ?? null,
                     ]);
                 }
             }
@@ -249,8 +251,8 @@ class FlowController extends Controller
             ],
             'condition' => [
                 'field' => ['required', 'string'],
-                'operator' => ['required', 'string', Rule::in(['equals', 'not_equals', 'contains', 'not_contains'])],
-                'value' => ['required', 'string'],
+                'operator' => ['required', 'string', Rule::in(['equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'is_not_empty'])],
+                'value' => ['nullable', 'string'], // nullable for is_empty/is_not_empty operators
             ],
             'action' => [
                 'type' => ['required', 'string'],
