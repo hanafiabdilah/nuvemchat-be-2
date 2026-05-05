@@ -110,6 +110,10 @@ class FlowExecutor
                 $this->executeMessageNode($flowState, $node);
                 break;
 
+            case NodeType::Condition:
+                $this->executeConditionNode($flowState, $node);
+                break;
+
             default:
                 Log::warning('FlowExecutor: Unsupported node type', [
                     'node_type' => $node->type->value,
@@ -171,6 +175,160 @@ class FlowExecutor
     }
 
     /**
+     * Execute a condition node - evaluate condition and branch to TRUE or FALSE path
+     */
+    protected function executeConditionNode(FlowState $flowState, FlowNode $node): void
+    {
+        try {
+            $conversation = $flowState->conversation;
+            $data = $node->data;
+
+            $field = $data['field'] ?? '';
+            $operator = $data['operator'] ?? 'equals';
+            $expectedValue = $data['value'] ?? '';
+
+            Log::info('FlowExecutor: Evaluating condition', [
+                'node_id' => $node->id,
+                'field' => $field,
+                'operator' => $operator,
+                'expected_value' => $expectedValue,
+            ]);
+
+            // Evaluate the condition
+            $result = $this->evaluateCondition($flowState, $field, $operator, $expectedValue);
+
+            Log::info('FlowExecutor: Condition evaluated', [
+                'node_id' => $node->id,
+                'result' => $result ? 'true' : 'false',
+            ]);
+
+            // Move to the appropriate branch (true or false)
+            $this->moveToNextNodeByCondition($flowState, $node, $result);
+
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing condition node', [
+                'node_id' => $node->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            // On error, treat as false condition
+            $this->moveToNextNodeByCondition($flowState, $node, false);
+        }
+    }
+
+    /**
+     * Evaluate a condition based on field, operator, and value
+     */
+    protected function evaluateCondition(FlowState $flowState, string $field, string $operator, $expectedValue): bool
+    {
+        // Get the actual value from the field
+        $actualValue = $this->getFieldValue($flowState, $field);
+
+        Log::debug('FlowExecutor: Condition comparison', [
+            'field' => $field,
+            'actual_value' => $actualValue,
+            'operator' => $operator,
+            'expected_value' => $expectedValue,
+        ]);
+
+        // Evaluate based on operator
+        return match($operator) {
+            'equals' => $actualValue == $expectedValue,
+            'not_equals' => $actualValue != $expectedValue,
+            'contains' => is_string($actualValue) && str_contains($actualValue, $expectedValue),
+            'not_contains' => is_string($actualValue) && !str_contains($actualValue, $expectedValue),
+            'greater_than' => is_numeric($actualValue) && is_numeric($expectedValue) && $actualValue > $expectedValue,
+            'less_than' => is_numeric($actualValue) && is_numeric($expectedValue) && $actualValue < $expectedValue,
+            'is_empty' => empty($actualValue),
+            'is_not_empty' => !empty($actualValue),
+            default => false,
+        };
+    }
+
+    /**
+     * Get field value from conversation, contact, or state data
+     */
+    protected function getFieldValue(FlowState $flowState, string $field)
+    {
+        $conversation = $flowState->conversation;
+        $parts = explode('.', $field);
+
+        if (count($parts) < 2) {
+            return null;
+        }
+
+        $source = $parts[0]; // 'variable', 'contact', 'conversation'
+        $key = $parts[1];
+
+        return match($source) {
+            'variable' => $flowState->state_data[$key] ?? null,
+            'contact' => $conversation->contact->{$key} ?? null,
+            'conversation' => $conversation->{$key} ?? null,
+            default => null,
+        };
+    }
+
+    /**
+     * Move to next node based on condition result (TRUE or FALSE branch)
+     */
+    protected function moveToNextNodeByCondition(FlowState $flowState, FlowNode $currentNode, bool $conditionResult): void
+    {
+        // Find the edge with matching condition_value
+        $conditionValue = $conditionResult ? 'true' : 'false';
+
+        $edge = $currentNode->outgoingEdges()
+            ->where('condition_value', $conditionValue)
+            ->first();
+
+        if (!$edge) {
+            // No edge found for this condition result
+            $flowState->update([
+                'status' => FlowStateStatus::Failed,
+                'completed_at' => now(),
+            ]);
+
+            Log::error('FlowExecutor: No edge found for condition result (flow state preserved)', [
+                'node_id' => $currentNode->id,
+                'condition_result' => $conditionValue,
+                'flow_state_id' => $flowState->id,
+            ]);
+            return;
+        }
+
+        // Load the next node
+        $nextNode = FlowNode::find($edge->target_node_id);
+
+        if (!$nextNode) {
+            $flowState->update([
+                'status' => FlowStateStatus::Failed,
+                'completed_at' => now(),
+            ]);
+
+            Log::error('FlowExecutor: Next node not found (flow state preserved)', [
+                'edge_id' => $edge->id,
+                'target_node_id' => $edge->target_node_id,
+                'flow_state_id' => $flowState->id,
+            ]);
+            return;
+        }
+
+        // Update flow state
+        $flowState->update([
+            'current_node_id' => $nextNode->id,
+        ]);
+
+        Log::info('FlowExecutor: Moved to next node via condition', [
+            'condition_result' => $conditionValue,
+            'next_node_id' => $nextNode->id,
+            'next_node_type' => $nextNode->type->value,
+        ]);
+
+        // Execute the next node
+        $this->executeFromNode($flowState, $nextNode);
+    }
+
+
+    /**
      * Move to the next node in the flow and execute it
      */
     protected function moveToNextNode(FlowState $flowState, FlowNode $currentNode): void
@@ -204,7 +362,7 @@ class FlowExecutor
                 'flow_state_id' => $flowState->id,
                 'status' => 'failed',
             ]);
-            
+
             // Don't delete flow state - preserve context data even on error
             return;
         }
@@ -258,7 +416,7 @@ class FlowExecutor
                 'flow_state_id' => $flowState->id,
                 'status' => 'failed',
             ]);
-            
+
             // Don't delete flow state - preserve context data even on error
             return;
         }
@@ -296,7 +454,7 @@ class FlowExecutor
                 'current_node_id' => $flowState->current_node_id,
                 'status' => 'stopped',
             ]);
-            
+
             // Don't delete flow state - preserve context data
             // Flow will automatically stop executing due to status check
         }
@@ -341,7 +499,7 @@ class FlowExecutor
             Log::error('FlowExecutor: Current node not found (flow state preserved)', [
                 'flow_state_id' => $flowState->id,
             ]);
-            
+
             // Don't delete flow state - preserve for debugging
             return;
         }

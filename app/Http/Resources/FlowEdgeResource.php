@@ -18,6 +18,7 @@ class FlowEdgeResource extends JsonResource
             'id' => $this->id,
             'source_node_id' => $this->source_node_id,
             'target_node_id' => $this->target_node_id,
+            'condition_value' => $this->condition_value,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];

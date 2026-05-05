@@ -36,9 +36,12 @@ enum NodeType: string
                 'tags' => [], // array of tag IDs
             ],
             self::Condition => [
-                'field' => '', // e.g. "contact.custom_field"
-                'operator' => 'equals', // equals, not_equals, contains, not_contains
-                'value' => '', // value to compare against
+                'field' => '', // Field to check:
+                               // - "variable.{key}" for flow state variables (e.g. "variable.user_age")
+                               // - "contact.name", "contact.phone", "contact.email"
+                               // - "conversation.status"
+                'operator' => 'equals', // equals, not_equals, contains, not_contains, greater_than, less_than, is_empty, is_not_empty
+                'value' => '', // Value to compare against (not used for is_empty/is_not_empty)
             ],
             self::Action => [
                 'type' => '', // e.g. "assign_agent", "add_tag", "remove_tag"

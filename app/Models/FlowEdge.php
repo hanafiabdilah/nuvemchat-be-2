@@ -9,6 +9,7 @@ class FlowEdge extends Model
     protected $fillable = [
         'source_node_id',
         'target_node_id',
+        'condition_value', // 'true', 'false', or null
     ];
 
     public function sourceNode()
