@@ -9,6 +9,11 @@ class Flow extends Model
     protected $fillable = [
         'tenant_id',
         'name',
+        'last_updated_at',
+    ];
+
+    protected $casts = [
+        'last_updated_at' => 'timestamp',
     ];
 
     public function tenant()

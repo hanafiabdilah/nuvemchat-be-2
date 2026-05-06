@@ -186,6 +186,8 @@ class FlowController extends Controller
             ->get();
         $flow->setRelation('edges', $edges);
 
+        $flow->update(['last_updated_at' => now()]);
+
         return response()->json([
             'message' => 'Flow saved successfully',
             'data' => new FlowResource($flow),
