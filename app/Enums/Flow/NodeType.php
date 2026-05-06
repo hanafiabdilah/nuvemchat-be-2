@@ -20,6 +20,7 @@ enum NodeType: string
                 'message_type' => 'text', // text, image, audio, video, document
                 'attachment' => null, // for non-text messages
                 'delay' => 0, // delay in seconds before sending the message
+                'wait_for_reply' => true, // true = wait for user reply before moving to next node, false = move immediately
             ],
             self::Response => [
                 'body' => '',

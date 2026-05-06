@@ -236,6 +236,7 @@ class FlowController extends Controller
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
                 'attachment' => ['nullable', 'string'],
                 'delay' => ['nullable', 'integer', 'min:0'],
+                'wait_for_reply' => ['nullable', 'boolean'],
             ],
             'response' => [
                 'body' => ['required', 'string'],
@@ -250,7 +251,7 @@ class FlowController extends Controller
             ],
             'tagging' => [
                 'action' => ['required', 'string', Rule::in(['add', 'remove'])],
-                'tags' => ['required', 'array'],
+                'tags' => ['nullable', 'array'],
                 'tags.*' => ['integer', 'exists:tags,id'],
             ],
             'condition' => [

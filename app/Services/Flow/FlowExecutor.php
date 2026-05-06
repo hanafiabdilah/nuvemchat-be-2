@@ -162,12 +162,21 @@ class FlowExecutor
                 Log::info('FlowExecutor: Message sent', [
                     'message_id' => $message->id,
                     'conversation_id' => $conversation->id,
+                    'wait_for_reply' => $data['wait_for_reply'] ?? true,
                 ]);
 
                 broadcast(new MessageReceived($message));
 
-                // Move to next node WITHOUT executing it (wait for user response)
-                $this->moveToNextNodeWithoutExecute($flowState, $node);
+                // Check if we should wait for reply or proceed immediately
+                $waitForReply = $data['wait_for_reply'] ?? true;
+
+                if ($waitForReply) {
+                    // Move to next node WITHOUT executing it (wait for user response)
+                    $this->moveToNextNodeWithoutExecute($flowState, $node);
+                } else {
+                    // Move to next node and execute it immediately
+                    $this->moveToNextNode($flowState, $node);
+                }
             } else {
                 Log::error('FlowExecutor: Failed to send message', [
                     'node_id' => $node->id,
