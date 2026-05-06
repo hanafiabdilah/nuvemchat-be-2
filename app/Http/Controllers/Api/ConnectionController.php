@@ -216,7 +216,6 @@ class ConnectionController extends Controller
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
         $validated = $request->validate([
-            'welcoming_message' => ['nullable', 'string', 'max:1000'],
             'accept_message' => ['nullable', 'string', 'max:1000'],
             'closing_message' => ['nullable', 'string', 'max:1000'],
         ]);

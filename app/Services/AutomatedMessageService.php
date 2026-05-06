@@ -21,18 +21,6 @@ class AutomatedMessageService
     }
 
     /**
-     * Get welcoming message for a new conversation
-     */
-    public function getWelcomingMessage(Connection $connection): ?string
-    {
-        if (empty($connection->welcoming_message)) {
-            return null;
-        }
-
-        return $connection->welcoming_message;
-    }
-
-    /**
      * Get accept message when agent accepts a conversation
      */
     public function getAcceptMessage(Connection $connection, User $agent): ?string

@@ -22,7 +22,6 @@ class ConnectionResource extends JsonResource
             'status' => $this->status,
             'credentials' => $this->credentials,
             'automated_messages' => [
-                'welcoming_message' => $this->welcoming_message,
                 'accept_message' => $this->accept_message,
                 'closing_message' => $this->closing_message,
             ],
