@@ -130,37 +130,69 @@ class FlowController extends Controller
         $this->validateNodesData($validated['nodes']);
 
         DB::transaction(function () use ($flow, $validated) {
-            // Get existing node IDs before deletion
-            $existingNodeIds = FlowNode::where('flow_id', $flow->id)->pluck('id');
+            // Get all existing nodes for this flow
+            $existingNodes = FlowNode::where('flow_id', $flow->id)->get()->keyBy('id');
 
-            // Delete edges associated with these nodes
-            if ($existingNodeIds->isNotEmpty()) {
-                FlowEdge::whereIn('source_node_id', $existingNodeIds)
-                    ->orWhereIn('target_node_id', $existingNodeIds)
-                    ->delete();
-            }
-
-            // Delete existing nodes
-            FlowNode::where('flow_id', $flow->id)->delete();
+            // Track which nodes are in the new request (by database ID)
+            $requestedNodeIds = [];
 
             // Map frontend node IDs to database IDs
             $nodeIdMap = [];
 
-            // Create nodes
+            // Update or create nodes
             foreach ($validated['nodes'] as $nodeData) {
                 $frontendId = $nodeData['id'] ?? null;
 
-                $node = FlowNode::create([
-                    'flow_id' => $flow->id,
-                    'type' => $nodeData['type'],
-                    'data' => $nodeData['data'] ?? null,
-                    'position_x' => $nodeData['position_x'],
-                    'position_y' => $nodeData['position_y'],
-                ]);
+                // Check if this is an existing node (numeric ID) or new node (UUID/string)
+                $isExistingNode = $frontendId && is_numeric($frontendId) && $existingNodes->has((int)$frontendId);
 
-                if ($frontendId) {
-                    $nodeIdMap[$frontendId] = $node->id;
+                if ($isExistingNode) {
+                    // UPDATE existing node (preserve ID)
+                    $nodeId = (int)$frontendId;
+                    $existingNodes->get($nodeId)->update([
+                        'type' => $nodeData['type'],
+                        'data' => $nodeData['data'] ?? null,
+                        'position_x' => $nodeData['position_x'],
+                        'position_y' => $nodeData['position_y'],
+                    ]);
+
+                    $requestedNodeIds[] = $nodeId;
+                    $nodeIdMap[$frontendId] = $nodeId;
+                } else {
+                    // CREATE new node
+                    $node = FlowNode::create([
+                        'flow_id' => $flow->id,
+                        'type' => $nodeData['type'],
+                        'data' => $nodeData['data'] ?? null,
+                        'position_x' => $nodeData['position_x'],
+                        'position_y' => $nodeData['position_y'],
+                    ]);
+
+                    $requestedNodeIds[] = $node->id;
+                    if ($frontendId) {
+                        $nodeIdMap[$frontendId] = $node->id;
+                    }
                 }
+            }
+
+            // Delete nodes that are no longer in the request
+            $nodesToDelete = $existingNodes->keys()->diff($requestedNodeIds);
+            if ($nodesToDelete->isNotEmpty()) {
+                // Delete edges associated with deleted nodes
+                FlowEdge::whereIn('source_node_id', $nodesToDelete)
+                    ->orWhereIn('target_node_id', $nodesToDelete)
+                    ->delete();
+
+                // Delete the nodes
+                FlowNode::whereIn('id', $nodesToDelete)->delete();
+            }
+
+            // Recreate all edges (simpler than diffing)
+            // First, delete all edges for remaining nodes
+            if (!empty($requestedNodeIds)) {
+                FlowEdge::whereIn('source_node_id', $requestedNodeIds)
+                    ->orWhereIn('target_node_id', $requestedNodeIds)
+                    ->delete();
             }
 
             // Create edges with mapped node IDs
