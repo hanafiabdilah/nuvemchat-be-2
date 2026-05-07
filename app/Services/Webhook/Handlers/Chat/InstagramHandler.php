@@ -411,6 +411,14 @@ class InstagramHandler implements ChatHandlerInterface
         $newText = $messageEdit['text'] ?? null;
         $numEdit = $messageEdit['num_edit'] ?? 0;
         $timestamp = $messaging['timestamp'] ?? null;
+        $numEdit = $messaging['message_edit']['num_edit'] ?? null;
+
+        if($numEdit === 0) {
+            Log::warning('InstagramHandler: Edit event received with num_edit = 0, ignoring', [
+                'payload' => $payload,
+            ]);
+            return;
+        }
 
         if (!$messageId) {
             Log::warning('InstagramHandler: Missing message ID in edit payload', [
