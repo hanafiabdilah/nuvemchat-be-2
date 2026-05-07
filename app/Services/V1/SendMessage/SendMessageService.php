@@ -6,9 +6,9 @@ use App\Models\Connection;
 
 class SendMessageService
 {
-    public function send(Connection $connection, array $data)
+    public function sendMessage(Connection $connection, array $data): array
     {
-        $handler = SendMessageFactory::make($connection->channel, $data);
-        $handler->handle($connection, $data);
+        $handler = SendMessageFactory::make($connection->channel);
+        return $handler->handleSendMessage($connection, $data);
     }
 }

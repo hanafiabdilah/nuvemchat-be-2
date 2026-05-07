@@ -19,7 +19,7 @@ class SendMessageController extends Controller
         $connection = Connection::where('api_key', request()->header('X-Api-Key'))->firstOrFail();
 
         try {
-            $this->sendMessageService->send($connection, $request->all());
+            $this->sendMessageService->sendMessage($connection, $request->all());
 
             return response()->json([
                 'message' => 'Message sent successfully'
