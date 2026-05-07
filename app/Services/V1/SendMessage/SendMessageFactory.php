@@ -3,6 +3,7 @@
 namespace App\Services\V1\SendMessage;
 
 use App\Enums\Connection\Channel;
+use App\Services\V1\SendMessage\Handlers\InstagramHandler;
 use App\Services\V1\SendMessage\Handlers\TelegramHandler;
 use App\Services\V1\SendMessage\Handlers\WhatsappOfficialHandler;
 use App\Services\V1\SendMessage\Handlers\WhatsappWApiHandler;
@@ -16,6 +17,7 @@ class SendMessageFactory
         return match($channel){
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
             Channel::WhatsappWApi => new WhatsappWApiHandler(),
+            Channel::Instagram => new InstagramHandler(),
             Channel::Telegram => new TelegramHandler(),
             default => throw new InvalidArgumentException("Unsupported channel: " . $channel->value),
         };
