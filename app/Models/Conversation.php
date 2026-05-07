@@ -50,4 +50,9 @@ class Conversation extends Model
     {
         return $this->belongsTo(User::class, 'user_id');
     }
+
+    public function flowState()
+    {
+        return $this->hasOne(FlowState::class);
+    }
 }
