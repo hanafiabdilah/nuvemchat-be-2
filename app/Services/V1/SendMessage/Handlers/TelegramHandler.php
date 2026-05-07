@@ -34,6 +34,7 @@ class TelegramHandler implements SendMessageHandlerInterface
                 'connection_id' => $connection->id,
                 'chat_id' => $data['chat_id'],
                 'message_id' => $responseArray['message_id'] ?? null,
+                'response' => $responseArray,
             ]);
 
             return $responseArray;
