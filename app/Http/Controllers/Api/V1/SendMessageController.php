@@ -7,6 +7,7 @@ use App\Models\Connection;
 use App\Services\V1\SendMessage\SendMessageService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use Telegram\Bot\Exceptions\TelegramSDKException;
 
 class SendMessageController extends Controller
 {
@@ -26,6 +27,10 @@ class SendMessageController extends Controller
             ], 201);
         } catch(ValidationException $th){
             throw $th;
+        } catch(TelegramSDKException $th){
+            return response()->json([
+                'message' => 'Failed to send Telegram message: ' . $th->getMessage(),
+            ], 500);
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to send message',

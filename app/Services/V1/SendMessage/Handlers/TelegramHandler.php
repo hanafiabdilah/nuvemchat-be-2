@@ -7,6 +7,9 @@ use App\Services\V1\SendMessage\SendMessageHandlerInterface;
 use Exception;
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
+use Telegram\Bot\Exceptions\TelegramOtherException;
+use Telegram\Bot\Exceptions\TelegramSDKException;
+use Telegram\Bot\Laravel\Facades\Telegram;
 
 class TelegramHandler implements SendMessageHandlerInterface
 {
@@ -34,6 +37,13 @@ class TelegramHandler implements SendMessageHandlerInterface
             ]);
 
             return $responseArray;
+        } catch (TelegramSDKException $e) {
+            Log::error('TelegramHandler: Telegram SDK error', [
+                'error' => $e->getMessage(),
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new TelegramSDKException($e->getMessage());
         } catch (\Throwable $th) {
             Log::error('TelegramHandler: Failed to send message', [
                 'error' => $th->getMessage(),
