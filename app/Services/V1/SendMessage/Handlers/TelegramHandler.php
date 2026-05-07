@@ -5,6 +5,7 @@ namespace App\Services\V1\SendMessage\Handlers;
 use App\Models\Connection;
 use App\Services\V1\SendMessage\SendMessageHandlerInterface;
 use Exception;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 use Telegram\Bot\Exceptions\TelegramOtherException;
@@ -36,6 +37,8 @@ class TelegramHandler implements SendMessageHandlerInterface
                 'message_id' => $responseArray['message_id'] ?? null,
                 'response' => $responseArray,
             ]);
+
+            Http::post(route('webhook.chat', $connection->id), $responseArray);
 
             return $responseArray;
         } catch (TelegramSDKException $e) {
