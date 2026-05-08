@@ -9,8 +9,11 @@ use App\Events\MessageReceived;
 use App\Models\Conversation;
 use App\Models\FlowNode;
 use App\Models\FlowState;
+use App\Models\Message;
 use App\Services\Message\MessageService;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class FlowExecutor
 {
@@ -144,24 +147,29 @@ class FlowExecutor
                 sleep($data['delay']);
             }
 
-            // Prepare message data
-            $messageData = [
-                'message' => $data['body'] ?? '',
-            ];
+            // Determine message type
+            $messageType = $data['message_type'] ?? 'text';
+            $hasAttachment = isset($data['attachment']) && !empty($data['attachment']);
 
-            // Add attachment if present
-            if (isset($data['attachment']) && $data['attachment']) {
-                $messageData['attachment'] = $data['attachment'];
-                $messageData['message_type'] = $data['message_type'] ?? 'text';
+            $message = null;
+
+            // Send message based on type
+            if ($hasAttachment && $messageType !== 'text') {
+                // Send media message
+                $message = $this->sendMediaMessage($conversation, $data, $messageType);
+            } else {
+                // Send text message
+                $messageData = [
+                    'message' => $data['body'] ?? '',
+                ];
+                $message = $this->messageService->sendMessage($conversation, $messageData);
             }
-
-            // Send the message
-            $message = $this->messageService->sendMessage($conversation, $messageData);
 
             if ($message) {
                 Log::info('FlowExecutor: Message sent', [
                     'message_id' => $message->id,
                     'conversation_id' => $conversation->id,
+                    'message_type' => $messageType,
                     'wait_for_reply' => $data['wait_for_reply'] ?? true,
                 ]);
 
@@ -187,6 +195,7 @@ class FlowExecutor
             Log::error('FlowExecutor: Error executing message node', [
                 'node_id' => $node->id,
                 'error' => $th->getMessage(),
+                'trace' => $th->getTraceAsString(),
             ]);
         }
     }
@@ -201,25 +210,30 @@ class FlowExecutor
         $conversation = $flowState->conversation;
 
         try {
-            // Prepare message data
-            $messageData = [
-                'message' => $data['body'] ?? '',
-            ];
+            // Determine message type
+            $messageType = $data['message_type'] ?? 'text';
+            $hasAttachment = isset($data['attachment']) && !empty($data['attachment']);
 
-            // Add attachment if present
-            if (isset($data['attachment']) && $data['attachment']) {
-                $messageData['attachment'] = $data['attachment'];
-                $messageData['message_type'] = $data['message_type'] ?? 'text';
+            $message = null;
+
+            // Send message based on type
+            if ($hasAttachment && $messageType !== 'text') {
+                // Send media message
+                $message = $this->sendMediaMessage($conversation, $data, $messageType);
+            } else {
+                // Send text message
+                $messageData = [
+                    'message' => $data['body'] ?? '',
+                ];
+                $message = $this->messageService->sendMessage($conversation, $messageData);
             }
-
-            // Send the prompt message
-            $message = $this->messageService->sendMessage($conversation, $messageData);
 
             if ($message) {
                 Log::info('FlowExecutor: Response prompt sent, waiting for user input', [
                     'message_id' => $message->id,
                     'conversation_id' => $conversation->id,
                     'node_id' => $node->id,
+                    'message_type' => $messageType,
                     'variable_key' => $data['variable_key'] ?? null,
                 ]);
 
@@ -242,6 +256,7 @@ class FlowExecutor
             Log::error('FlowExecutor: Error executing response node', [
                 'node_id' => $node->id,
                 'error' => $th->getMessage(),
+                'trace' => $th->getTraceAsString(),
             ]);
         }
     }
@@ -769,5 +784,139 @@ class FlowExecutor
 
         // Move to next node and execute it
         $this->moveToNextNode($flowState, $node);
+    }
+
+    /**
+     * Send media message based on type
+     */
+    protected function sendMediaMessage(Conversation $conversation, array $data, string $messageType): ?Message
+    {
+        $attachmentPath = $data['attachment'];
+        $caption = $data['body'] ?? null;
+
+        // Check if file exists in storage
+        if (!Storage::disk('local')->exists($attachmentPath)) {
+            Log::error('FlowExecutor: Attachment file not found', [
+                'path' => $attachmentPath,
+                'conversation_id' => $conversation->id,
+            ]);
+            return null;
+        }
+
+        try {
+            // Get file content from storage
+            $fileContent = Storage::disk('local')->get($attachmentPath);
+            
+            // Create temporary file
+            $tempPath = sys_get_temp_dir() . '/' . basename($attachmentPath);
+            file_put_contents($tempPath, $fileContent);
+
+            // Create UploadedFile instance
+            $extension = pathinfo($attachmentPath, PATHINFO_EXTENSION);
+            $mimeType = $this->getMimeTypeForExtension($extension, $messageType);
+            
+            $file = new UploadedFile(
+                $tempPath,
+                basename($attachmentPath),
+                $mimeType,
+                null,
+                true // Mark as test to bypass some validations
+            );
+
+            Log::info('FlowExecutor: Sending media message', [
+                'message_type' => $messageType,
+                'file_path' => $attachmentPath,
+                'file_size' => strlen($fileContent),
+                'conversation_id' => $conversation->id,
+            ]);
+
+            // Send based on message type
+            $message = match ($messageType) {
+                'image' => $this->messageService->sendImage($conversation, [
+                    'image' => $file,
+                    'message' => $caption,
+                ]),
+                'audio' => $this->messageService->sendAudio($conversation, [
+                    'audio' => $file,
+                ]),
+                'video' => $this->messageService->sendVideo($conversation, [
+                    'video' => $file,
+                    'message' => $caption,
+                ]),
+                'document' => $this->messageService->sendDocument($conversation, [
+                    'document' => $file,
+                    'message' => $caption,
+                ]),
+                default => null,
+            };
+
+            // Clean up temp file
+            @unlink($tempPath);
+
+            return $message;
+
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Failed to send media message', [
+                'error' => $th->getMessage(),
+                'trace' => $th->getTraceAsString(),
+                'message_type' => $messageType,
+                'attachment_path' => $attachmentPath,
+            ]);
+
+            // Clean up temp file on error
+            if (isset($tempPath) && file_exists($tempPath)) {
+                @unlink($tempPath);
+            }
+
+            return null;
+        }
+    }
+
+    /**
+     * Get MIME type for file extension based on message type
+     */
+    protected function getMimeTypeForExtension(string $extension, string $messageType): string
+    {
+        return match ($messageType) {
+            'image' => match ($extension) {
+                'jpg', 'jpeg' => 'image/jpeg',
+                'png' => 'image/png',
+                'gif' => 'image/gif',
+                'webp' => 'image/webp',
+                default => 'image/jpeg',
+            },
+            'audio' => match ($extension) {
+                'mp3' => 'audio/mpeg',
+                'ogg' => 'audio/ogg',
+                'wav' => 'audio/wav',
+                'm4a' => 'audio/mp4',
+                'opus' => 'audio/opus',
+                'webm' => 'audio/webm',
+                default => 'audio/mpeg',
+            },
+            'video' => match ($extension) {
+                'mp4' => 'video/mp4',
+                'avi' => 'video/x-msvideo',
+                'mov' => 'video/quicktime',
+                'wmv' => 'video/x-ms-wmv',
+                'flv' => 'video/x-flv',
+                'webm' => 'video/webm',
+                'mkv' => 'video/x-matroska',
+                default => 'video/mp4',
+            },
+            'document' => match ($extension) {
+                'pdf' => 'application/pdf',
+                'doc' => 'application/msword',
+                'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xls' => 'application/vnd.ms-excel',
+                'xlsx' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                'ppt' => 'application/vnd.ms-powerpoint',
+                'pptx' => 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                'txt' => 'text/plain',
+                'csv' => 'text/csv',
+                default => 'application/octet-stream',
+            },
+            default => 'application/octet-stream',
+        };
     }
 }

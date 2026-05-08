@@ -11,6 +11,7 @@ use App\Models\FlowNode;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -254,7 +255,70 @@ class FlowController extends Controller
                 }
                 throw ValidationException::withMessages($errors);
             }
+
+            // Handle file upload for attachment
+            $this->handleAttachmentUpload($node, $index);
         }
+    }
+
+    /**
+     * Handle attachment file upload for message and response nodes
+     */
+    private function handleAttachmentUpload(array &$node, int $index): void
+    {
+        $type = $node['type'];
+
+        if (!in_array($type, ['message', 'response'])) {
+            return;
+        }
+
+        $data = &$node['data'];
+
+        // Check if there's an attachment file in the request
+        $fileKey = "nodes.{$index}.data.attachment_file";
+
+        if (request()->hasFile($fileKey)) {
+            $file = request()->file($fileKey);
+            $messageType = $data['message_type'] ?? 'text';
+
+            // Validate file based on message type
+            $validationRules = $this->getAttachmentValidationRules($messageType);
+
+            $validator = Validator::make(
+                ['attachment_file' => $file],
+                ['attachment_file' => $validationRules]
+            );
+
+            if ($validator->fails()) {
+                $errors = [];
+                foreach ($validator->errors()->messages() as $field => $messages) {
+                    $errors[$fileKey] = $messages;
+                }
+                throw ValidationException::withMessages($errors);
+            }
+
+            // Store file in flow_attachments directory
+            $extension = $file->getClientOriginalExtension();
+            $fileName = 'flow_' . uniqid() . '.' . $extension;
+            $path = $file->storeAs('flow_attachments', $fileName, 'local');
+
+            // Save the storage path to node data
+            $data['attachment'] = $path;
+        }
+    }
+
+    /**
+     * Get validation rules for attachment based on message type
+     */
+    private function getAttachmentValidationRules(string $messageType): array
+    {
+        return match ($messageType) {
+            'image' => ['required', 'image', 'mimes:jpeg,png,jpg,gif,webp', 'max:10240'],
+            'audio' => ['required', 'file', 'mimes:ogg,mp3,wav,m4a,opus,webm', 'max:16384'],
+            'video' => ['required', 'file', 'mimes:mp4,avi,mov,wmv,flv,webm,mkv', 'max:51200'],
+            'document' => ['required', 'file', 'mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,csv', 'max:102400'],
+            default => ['nullable'],
+        };
     }
 
     /**
@@ -264,16 +328,16 @@ class FlowController extends Controller
     {
         return match ($type) {
             'message' => [
-                'body' => ['required', 'string'],
+                'body' => ['nullable', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
-                'attachment' => ['nullable', 'string'],
+                'attachment' => ['nullable', 'string'], // Storage path if file already uploaded
                 'delay' => ['nullable', 'integer', 'min:0'],
                 'wait_for_reply' => ['nullable', 'boolean'],
             ],
             'response' => [
-                'body' => ['required', 'string'],
+                'body' => ['nullable', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
-                'attachment' => ['nullable', 'string'],
+                'attachment' => ['nullable', 'string'], // Storage path if file already uploaded
                 'variable_key' => ['required', 'string'],
                 'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
                 'error_message' => ['nullable', 'string'],
