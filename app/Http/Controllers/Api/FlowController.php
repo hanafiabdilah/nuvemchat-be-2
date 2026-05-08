@@ -372,6 +372,7 @@ class FlowController extends Controller
 
     /**
      * Get validation rules for node data based on type.
+     * Note: attachment_file and attachment_url are validated separately in handleAttachmentUpload()
      */
     private function getValidationRulesForNodeType(string $type): array
     {
@@ -379,16 +380,12 @@ class FlowController extends Controller
             'message' => [
                 'body' => ['nullable', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
-                'attachment_file' => ['nullable', 'string'], // Storage path if file was uploaded
-                'attachment_url' => ['nullable', 'string'], // 'local' or external URL
                 'delay' => ['nullable', 'integer', 'min:0'],
                 'wait_for_reply' => ['nullable', 'boolean'],
             ],
             'response' => [
                 'body' => ['nullable', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
-                'attachment_file' => ['nullable', 'string'], // Storage path if file was uploaded
-                'attachment_url' => ['nullable', 'string'], // 'local' or external URL
                 'variable_key' => ['required', 'string'],
                 'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
                 'error_message' => ['nullable', 'string'],
