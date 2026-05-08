@@ -230,7 +230,7 @@ class FlowController extends Controller
     /**
      * Validate nodes data based on their type.
      */
-    private function validateNodesData(array $nodes): void
+    private function validateNodesData(array &$nodes): void
     {
         foreach ($nodes as $index => $node) {
             $type = $node['type'];
@@ -244,9 +244,13 @@ class FlowController extends Controller
                 ]);
             }
 
+            // Handle file upload for attachment FIRST (converts file to string path)
+            $this->handleAttachmentUpload($nodes[$index], $index);
+
+            // Then validate the processed data
             $rules = $this->getValidationRulesForNodeType($type);
 
-            $validator = Validator::make($data, $rules);
+            $validator = Validator::make($nodes[$index]['data'], $rules);
 
             if ($validator->fails()) {
                 $errors = [];
@@ -255,9 +259,6 @@ class FlowController extends Controller
                 }
                 throw ValidationException::withMessages($errors);
             }
-
-            // Handle file upload for attachment
-            $this->handleAttachmentUpload($node, $index);
         }
     }
 
