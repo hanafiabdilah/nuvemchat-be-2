@@ -11,7 +11,6 @@ use App\Models\FlowNode;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -230,7 +229,7 @@ class FlowController extends Controller
     /**
      * Validate nodes data based on their type.
      */
-    private function validateNodesData(array &$nodes): void
+    private function validateNodesData(array $nodes): void
     {
         foreach ($nodes as $index => $node) {
             $type = $node['type'];
@@ -244,13 +243,9 @@ class FlowController extends Controller
                 ]);
             }
 
-            // Handle file upload for attachment FIRST (converts file to string path)
-            $this->handleAttachmentUpload($nodes[$index], $index);
-
-            // Then validate the processed data
             $rules = $this->getValidationRulesForNodeType($type);
 
-            $validator = Validator::make($nodes[$index]['data'], $rules);
+            $validator = Validator::make($data, $rules);
 
             if ($validator->fails()) {
                 $errors = [];
@@ -263,129 +258,22 @@ class FlowController extends Controller
     }
 
     /**
-     * Handle attachment file upload or URL for message and response nodes
-     */
-    private function handleAttachmentUpload(array &$node, int $index): void
-    {
-        $type = $node['type'];
-
-        if (!in_array($type, ['message', 'response'])) {
-            return;
-        }
-
-        $data = &$node['data'];
-        $messageType = $data['message_type'] ?? 'text';
-
-        // Check if there's an attachment file in the request
-        $fileKey = "nodes.{$index}.data.attachment_file";
-        $urlKey = "nodes.{$index}.data.attachment_url";
-
-        $hasFile = request()->hasFile($fileKey);
-        $hasUrl = request()->has($urlKey) && !empty(request()->input($urlKey));
-
-        // Validasi: tidak boleh keduanya ada atau keduanya kosong untuk non-text
-        if ($messageType !== 'text' && $hasFile && $hasUrl) {
-            throw ValidationException::withMessages([
-                $fileKey => ['Cannot upload both file and URL. Please choose one.'],
-            ]);
-        }
-
-        if ($hasFile) {
-            // Upload file
-            $file = request()->file($fileKey);
-
-            // Validate file based on message type
-            $validationRules = $this->getAttachmentValidationRules($messageType);
-
-            $validator = Validator::make(
-                ['attachment_file' => $file],
-                ['attachment_file' => $validationRules]
-            );
-
-            if ($validator->fails()) {
-                $errors = [];
-                foreach ($validator->errors()->messages() as $field => $messages) {
-                    $errors[$fileKey] = $messages;
-                }
-                throw ValidationException::withMessages($errors);
-            }
-
-            // Store file in flow_attachments directory (private storage)
-            $extension = $file->getClientOriginalExtension();
-            $fileName = 'flow_' . uniqid() . '.' . $extension;
-            $path = $file->storeAs('flow_attachments', $fileName, 'local');
-
-            // Generate temporary URL using Laravel's built-in method (valid for 7 days)
-            // URL will be auto-regenerated when flow is accessed if expired
-            $temporaryUrl = Storage::disk('local')->temporaryUrl($path, now()->addDays(7));
-
-            // Save the storage path and temporary URL
-            $data['attachment_file'] = $path;
-            $data['attachment_url'] = $temporaryUrl;
-
-            // Remove old 'attachment' field if exists
-            unset($data['attachment']);
-        } elseif ($hasUrl) {
-            // Use URL
-            $url = request()->input($urlKey);
-
-            // Validate URL
-            $validator = Validator::make(
-                ['attachment_url' => $url],
-                ['attachment_url' => ['required', 'url']]
-            );
-
-            if ($validator->fails()) {
-                $errors = [];
-                foreach ($validator->errors()->messages() as $field => $messages) {
-                    $errors[$urlKey] = $messages;
-                }
-                throw ValidationException::withMessages($errors);
-            }
-
-            // Save URL and remove file field
-            $data['attachment_url'] = $url;
-            unset($data['attachment_file']);
-            unset($data['attachment']);
-        } else {
-            // No attachment - keep existing data if any
-            // Clean up old 'attachment' field
-            if (isset($data['attachment'])) {
-                unset($data['attachment']);
-            }
-        }
-    }
-
-    /**
-     * Get validation rules for attachment based on message type
-     */
-    private function getAttachmentValidationRules(string $messageType): array
-    {
-        return match ($messageType) {
-            'image' => ['required', 'image', 'mimes:jpeg,png,jpg,gif,webp', 'max:10240'],
-            'audio' => ['required', 'file', 'mimes:ogg,mp3,wav,m4a,opus,webm', 'max:16384'],
-            'video' => ['required', 'file', 'mimes:mp4,avi,mov,wmv,flv,webm,mkv', 'max:51200'],
-            'document' => ['required', 'file', 'mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,csv', 'max:102400'],
-            default => ['nullable'],
-        };
-    }
-
-    /**
      * Get validation rules for node data based on type.
-     * Note: attachment_file and attachment_url are validated separately in handleAttachmentUpload()
      */
     private function getValidationRulesForNodeType(string $type): array
     {
         return match ($type) {
             'message' => [
-                'body' => ['nullable', 'string'],
+                'body' => ['required', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
+                'attachment' => ['nullable', 'string'],
                 'delay' => ['nullable', 'integer', 'min:0'],
                 'wait_for_reply' => ['nullable', 'boolean'],
             ],
             'response' => [
-                'body' => ['nullable', 'string'],
+                'body' => ['required', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
+                'attachment' => ['nullable', 'string'],
                 'variable_key' => ['required', 'string'],
                 'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
                 'error_message' => ['nullable', 'string'],
@@ -410,5 +298,4 @@ class FlowController extends Controller
             default => [],
         };
     }
-
 }
