@@ -10,7 +10,9 @@ use App\Models\FlowEdge;
 use App\Models\FlowNode;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -126,8 +128,14 @@ class FlowController extends Controller
             'edges.*.condition_value' => ['nullable', 'string', Rule::in(['true', 'false'])], // For condition nodes
         ]);
 
-        // Validate each node's data based on its type
-        $this->validateNodesData($validated['nodes']);
+        // Use raw input so UploadedFile instances inside nested data are preserved
+        $rawNodes = $request->all()['nodes'] ?? [];
+
+        // Validate each node's data based on its type (sees UploadedFile for attachment_file)
+        $this->validateNodesData($rawNodes);
+
+        // Persist uploaded attachments and replace UploadedFile with paths/URLs
+        $validated['nodes'] = $this->processNodeAttachments($flow, $validated['nodes'], $rawNodes);
 
         DB::transaction(function () use ($flow, $validated) {
             // Get all existing nodes for this flow
@@ -243,7 +251,7 @@ class FlowController extends Controller
                 ]);
             }
 
-            $rules = $this->getValidationRulesForNodeType($type);
+            $rules = $this->getValidationRulesForNodeType($type, $data);
 
             $validator = Validator::make($data, $rules);
 
@@ -260,20 +268,24 @@ class FlowController extends Controller
     /**
      * Get validation rules for node data based on type.
      */
-    private function getValidationRulesForNodeType(string $type): array
+    private function getValidationRulesForNodeType(string $type, ?array $data = null): array
     {
         return match ($type) {
             'message' => [
                 'body' => ['required', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
-                'attachment' => ['nullable', 'string'],
+                'attachment_file' => $this->getAttachmentFileRules($data['message_type'] ?? null),
+                'attachment_url' => ['nullable', 'string', 'url', 'max:2048'],
+                'attachment_path' => ['nullable', 'string'],
                 'delay' => ['nullable', 'integer', 'min:0'],
                 'wait_for_reply' => ['nullable', 'boolean'],
             ],
             'response' => [
                 'body' => ['required', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
-                'attachment' => ['nullable', 'string'],
+                'attachment_file' => $this->getAttachmentFileRules($data['message_type'] ?? null),
+                'attachment_url' => ['nullable', 'string', 'url', 'max:2048'],
+                'attachment_path' => ['nullable', 'string'],
                 'variable_key' => ['required', 'string'],
                 'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
                 'error_message' => ['nullable', 'string'],
@@ -297,5 +309,50 @@ class FlowController extends Controller
             ],
             default => [],
         };
+    }
+
+    /**
+     * Get file validation rules for attachment_file based on message type.
+     */
+    private function getAttachmentFileRules(?string $messageType): array
+    {
+        $base = ['nullable', 'file'];
+
+        return match ($messageType) {
+            'image' => [...$base, 'mimes:jpeg,png,jpg,webp,gif', 'max:5120'],
+            'audio' => [...$base, 'mimes:mp3,ogg,wav,m4a', 'max:16384'],
+            'video' => [...$base, 'mimes:mp4,mov,avi,webm', 'max:51200'],
+            'document' => [...$base, 'mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,csv', 'max:20480'],
+            default => $base,
+        };
+    }
+
+    /**
+     * Persist uploaded attachment files to local storage and replace
+     * UploadedFile values with attachment_path + attachment_url.
+     */
+    private function processNodeAttachments(Flow $flow, array $validatedNodes, array $rawNodes): array
+    {
+        foreach ($validatedNodes as $index => &$node) {
+            $rawData = $rawNodes[$index]['data'] ?? null;
+            if (!is_array($rawData)) {
+                continue;
+            }
+
+            $cleanData = $rawData;
+            $file = $rawData['attachment_file'] ?? null;
+
+            if ($file instanceof UploadedFile) {
+                $path = $file->store("flows/{$flow->id}", 'local');
+                $cleanData['attachment_path'] = $path;
+                $cleanData['attachment_url'] = Storage::disk('local')
+                    ->temporaryUrl($path, now()->addMonths(6));
+            }
+
+            unset($cleanData['attachment_file']);
+            $node['data'] = $cleanData;
+        }
+
+        return $validatedNodes;
     }
 }
