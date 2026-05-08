@@ -12,6 +12,7 @@ use App\Models\FlowState;
 use App\Models\Message;
 use App\Services\Message\MessageService;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -149,7 +150,11 @@ class FlowExecutor
 
             // Determine message type
             $messageType = $data['message_type'] ?? 'text';
-            $hasAttachment = isset($data['attachment']) && !empty($data['attachment']);
+            $hasAttachment = (
+                isset($data['attachment_url']) && !empty($data['attachment_url'])
+            ) || (
+                isset($data['attachment_file']) && !empty($data['attachment_file'])
+            );
 
             $message = null;
 
@@ -212,7 +217,11 @@ class FlowExecutor
         try {
             // Determine message type
             $messageType = $data['message_type'] ?? 'text';
-            $hasAttachment = isset($data['attachment']) && !empty($data['attachment']);
+            $hasAttachment = (
+                isset($data['attachment_url']) && !empty($data['attachment_url'])
+            ) || (
+                isset($data['attachment_file']) && !empty($data['attachment_file'])
+            );
 
             $message = null;
 
@@ -791,33 +800,88 @@ class FlowExecutor
      */
     protected function sendMediaMessage(Conversation $conversation, array $data, string $messageType): ?Message
     {
-        $attachmentPath = $data['attachment'];
+        $attachmentUrl = $data['attachment_url'] ?? null;
+        $attachmentFile = $data['attachment_file'] ?? null;
         $caption = $data['body'] ?? null;
 
-        // Check if file exists in storage
-        if (!Storage::disk('local')->exists($attachmentPath)) {
-            Log::error('FlowExecutor: Attachment file not found', [
-                'path' => $attachmentPath,
+        // Validate we have attachment URL
+        if (empty($attachmentUrl)) {
+            Log::error('FlowExecutor: No attachment URL provided', [
                 'conversation_id' => $conversation->id,
             ]);
             return null;
         }
 
         try {
-            // Get file content from storage
-            $fileContent = Storage::disk('local')->get($attachmentPath);
-            
+            $fileContent = null;
+            $fileName = null;
+            $extension = null;
+
+            // Try to load from local storage first if path is available (more efficient)
+            if (!empty($attachmentFile) && Storage::disk('local')->exists($attachmentFile)) {
+                // Load directly from storage (faster than downloading via temporary URL)
+                $fileContent = Storage::disk('local')->get($attachmentFile);
+                $fileName = basename($attachmentFile);
+                $extension = pathinfo($attachmentFile, PATHINFO_EXTENSION);
+
+                Log::info('FlowExecutor: Loaded attachment from local storage', [
+                    'path' => $attachmentFile,
+                    'size' => strlen($fileContent),
+                    'conversation_id' => $conversation->id,
+                ]);
+            } else {
+                // Download from URL (could be temporary URL or external URL)
+                Log::info('FlowExecutor: Downloading attachment from URL', [
+                    'url' => substr($attachmentUrl, 0, 100), // Log first 100 chars only
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                $response = Http::timeout(30)->get($attachmentUrl);
+
+                if (!$response->successful()) {
+                    Log::error('FlowExecutor: Failed to download attachment from URL', [
+                        'url' => substr($attachmentUrl, 0, 100),
+                        'status' => $response->status(),
+                        'conversation_id' => $conversation->id,
+                    ]);
+                    return null;
+                }
+
+                $fileContent = $response->body();
+
+                // Try to determine filename and extension from URL or Content-Disposition
+                $fileName = basename(parse_url($attachmentUrl, PHP_URL_PATH));
+                $contentDisposition = $response->header('Content-Disposition');
+
+                if ($contentDisposition && preg_match('/filename="?([^"]+)"?/', $contentDisposition, $matches)) {
+                    $fileName = $matches[1];
+                }
+
+                // If no extension in filename, try to get from Content-Type
+                $extension = pathinfo($fileName, PATHINFO_EXTENSION);
+                if (empty($extension)) {
+                    $contentType = $response->header('Content-Type');
+                    $extension = $this->getExtensionFromMimeType($contentType, $messageType);
+                    $fileName = 'download_' . uniqid() . '.' . $extension;
+                }
+
+                Log::info('FlowExecutor: Downloaded attachment from URL', [
+                    'size' => strlen($fileContent),
+                    'filename' => $fileName,
+                    'conversation_id' => $conversation->id,
+                ]);
+            }
+
             // Create temporary file
-            $tempPath = sys_get_temp_dir() . '/' . basename($attachmentPath);
+            $tempPath = sys_get_temp_dir() . '/' . uniqid() . '_' . $fileName;
             file_put_contents($tempPath, $fileContent);
 
             // Create UploadedFile instance
-            $extension = pathinfo($attachmentPath, PATHINFO_EXTENSION);
             $mimeType = $this->getMimeTypeForExtension($extension, $messageType);
-            
+
             $file = new UploadedFile(
                 $tempPath,
-                basename($attachmentPath),
+                $fileName,
                 $mimeType,
                 null,
                 true // Mark as test to bypass some validations
@@ -825,7 +889,7 @@ class FlowExecutor
 
             Log::info('FlowExecutor: Sending media message', [
                 'message_type' => $messageType,
-                'file_path' => $attachmentPath,
+                'file_name' => $fileName,
                 'file_size' => strlen($fileContent),
                 'conversation_id' => $conversation->id,
             ]);
@@ -860,7 +924,8 @@ class FlowExecutor
                 'error' => $th->getMessage(),
                 'trace' => $th->getTraceAsString(),
                 'message_type' => $messageType,
-                'attachment_path' => $attachmentPath,
+                'attachment_url' => $attachmentUrl ?? 'none',
+                'attachment_file' => $attachmentFile ?? 'none',
             ]);
 
             // Clean up temp file on error
@@ -917,6 +982,67 @@ class FlowExecutor
                 default => 'application/octet-stream',
             },
             default => 'application/octet-stream',
+        };
+    }
+
+    /**
+     * Get file extension from MIME type based on message type
+     */
+    protected function getExtensionFromMimeType(?string $mimeType, string $messageType): string
+    {
+        if (empty($mimeType)) {
+            // Default extensions by message type
+            return match ($messageType) {
+                'image' => 'jpg',
+                'audio' => 'mp3',
+                'video' => 'mp4',
+                'document' => 'pdf',
+                default => 'bin',
+            };
+        }
+
+        // Extract base MIME type (remove charset, etc.)
+        $mimeType = strtolower(explode(';', $mimeType)[0]);
+
+        return match ($mimeType) {
+            // Images
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/gif' => 'gif',
+            'image/webp' => 'webp',
+            // Audio
+            'audio/mpeg', 'audio/mp3' => 'mp3',
+            'audio/ogg' => 'ogg',
+            'audio/wav', 'audio/x-wav' => 'wav',
+            'audio/mp4', 'audio/m4a' => 'm4a',
+            'audio/opus' => 'opus',
+            'audio/webm' => 'webm',
+            // Video
+            'video/mp4' => 'mp4',
+            'video/x-msvideo' => 'avi',
+            'video/quicktime' => 'mov',
+            'video/x-ms-wmv' => 'wmv',
+            'video/x-flv' => 'flv',
+            'video/webm' => 'webm',
+            'video/x-matroska' => 'mkv',
+            // Documents
+            'application/pdf' => 'pdf',
+            'application/msword' => 'doc',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+            'application/vnd.ms-excel' => 'xls',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+            'application/vnd.ms-powerpoint' => 'ppt',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation' => 'pptx',
+            'text/plain' => 'txt',
+            'text/csv' => 'csv',
+            // Default based on message type
+            default => match ($messageType) {
+                'image' => 'jpg',
+                'audio' => 'mp3',
+                'video' => 'mp4',
+                'document' => 'pdf',
+                default => 'bin',
+            },
         };
     }
 }

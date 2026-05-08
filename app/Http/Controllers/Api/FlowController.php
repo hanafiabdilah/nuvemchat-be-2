@@ -262,7 +262,7 @@ class FlowController extends Controller
     }
 
     /**
-     * Handle attachment file upload for message and response nodes
+     * Handle attachment file upload or URL for message and response nodes
      */
     private function handleAttachmentUpload(array &$node, int $index): void
     {
@@ -273,13 +273,25 @@ class FlowController extends Controller
         }
 
         $data = &$node['data'];
+        $messageType = $data['message_type'] ?? 'text';
 
         // Check if there's an attachment file in the request
         $fileKey = "nodes.{$index}.data.attachment_file";
+        $urlKey = "nodes.{$index}.data.attachment_url";
 
-        if (request()->hasFile($fileKey)) {
+        $hasFile = request()->hasFile($fileKey);
+        $hasUrl = request()->has($urlKey) && !empty(request()->input($urlKey));
+
+        // Validasi: tidak boleh keduanya ada atau keduanya kosong untuk non-text
+        if ($messageType !== 'text' && $hasFile && $hasUrl) {
+            throw ValidationException::withMessages([
+                $fileKey => ['Cannot upload both file and URL. Please choose one.'],
+            ]);
+        }
+
+        if ($hasFile) {
+            // Upload file
             $file = request()->file($fileKey);
-            $messageType = $data['message_type'] ?? 'text';
 
             // Validate file based on message type
             $validationRules = $this->getAttachmentValidationRules($messageType);
@@ -297,13 +309,49 @@ class FlowController extends Controller
                 throw ValidationException::withMessages($errors);
             }
 
-            // Store file in flow_attachments directory
+            // Store file in flow_attachments directory (private storage)
             $extension = $file->getClientOriginalExtension();
             $fileName = 'flow_' . uniqid() . '.' . $extension;
             $path = $file->storeAs('flow_attachments', $fileName, 'local');
 
-            // Save the storage path to node data
-            $data['attachment'] = $path;
+            // Generate temporary URL using Laravel's built-in method (valid for 7 days)
+            // URL will be auto-regenerated when flow is accessed if expired
+            $temporaryUrl = Storage::disk('local')->temporaryUrl($path, now()->addDays(7));
+
+            // Save the storage path and temporary URL
+            $data['attachment_file'] = $path;
+            $data['attachment_url'] = $temporaryUrl;
+
+            // Remove old 'attachment' field if exists
+            unset($data['attachment']);
+        } elseif ($hasUrl) {
+            // Use URL
+            $url = request()->input($urlKey);
+
+            // Validate URL
+            $validator = Validator::make(
+                ['attachment_url' => $url],
+                ['attachment_url' => ['required', 'url']]
+            );
+
+            if ($validator->fails()) {
+                $errors = [];
+                foreach ($validator->errors()->messages() as $field => $messages) {
+                    $errors[$urlKey] = $messages;
+                }
+                throw ValidationException::withMessages($errors);
+            }
+
+            // Save URL and remove file field
+            $data['attachment_url'] = $url;
+            unset($data['attachment_file']);
+            unset($data['attachment']);
+        } else {
+            // No attachment - keep existing data if any
+            // Clean up old 'attachment' field
+            if (isset($data['attachment'])) {
+                unset($data['attachment']);
+            }
         }
     }
 
@@ -330,14 +378,16 @@ class FlowController extends Controller
             'message' => [
                 'body' => ['nullable', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
-                'attachment' => ['nullable', 'string'], // Storage path if file already uploaded
+                'attachment_file' => ['nullable', 'string'], // Storage path if file was uploaded
+                'attachment_url' => ['nullable', 'string'], // 'local' or external URL
                 'delay' => ['nullable', 'integer', 'min:0'],
                 'wait_for_reply' => ['nullable', 'boolean'],
             ],
             'response' => [
                 'body' => ['nullable', 'string'],
                 'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
-                'attachment' => ['nullable', 'string'], // Storage path if file already uploaded
+                'attachment_file' => ['nullable', 'string'], // Storage path if file was uploaded
+                'attachment_url' => ['nullable', 'string'], // 'local' or external URL
                 'variable_key' => ['required', 'string'],
                 'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
                 'error_message' => ['nullable', 'string'],
@@ -362,4 +412,5 @@ class FlowController extends Controller
             default => [],
         };
     }
+
 }
