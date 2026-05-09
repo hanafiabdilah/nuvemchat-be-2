@@ -17,8 +17,7 @@ class StoreQuickMessageRequest extends FormRequest
             return $this->user()->hasRole('owner');
         }
 
-        // Allow owner and agent to create user-specific messages
-        return $this->user()->hasAnyRole(['owner', 'agent']);
+        return true;
     }
 
     /**
