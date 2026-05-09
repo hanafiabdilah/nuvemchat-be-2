@@ -29,7 +29,7 @@ class ConversationResource extends JsonResource
             'contact' => ContactResource::make($this->contact),
             'tags' => TagResource::collection($this->tags),
             'agent' => UserResource::make($this->agent),
-            'flow_state' => FlowStateResource::make($this->flowState),
+            'flow_state' => $this->flow ? new FlowStateResource($this->flow) : null,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];
