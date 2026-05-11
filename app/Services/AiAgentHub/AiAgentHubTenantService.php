@@ -9,6 +9,7 @@ use Exception;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Tenant-scoped operations against the AI Agent Hub.
@@ -192,9 +193,9 @@ class AiAgentHubTenantService
      */
     public function createAgent(AiHubTenant $tenant, array $payload): AiHubAgent
     {
-        if (isset($payload['externalId'])) {
-            $payload['externalId'] = $this->buildExternalId($payload['externalId']);
-        }
+        $payload['externalId'] = $this->buildExternalId(
+            $this->normalizeAgentExternalId($payload['externalId'] ?? null, $payload['name'] ?? null)
+        );
 
         $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/agents", $payload);
@@ -323,6 +324,27 @@ class AiAgentHubTenantService
         $appName = (string) config('app.name');
 
         return "{$appName}_{$externalId}";
+    }
+
+    /**
+     * Produce a non-empty agent external id. Falls back to a slugified
+     * name + short random suffix when the caller doesn't supply one
+     * (or supplies an empty/non-string value), so the hub never receives
+     * a missing/invalid `externalId`.
+     */
+    protected function normalizeAgentExternalId(mixed $externalId, ?string $name): string
+    {
+        if (is_string($externalId) && $externalId !== '') {
+            return $externalId;
+        }
+
+        $base = Str::slug($name ?? '');
+
+        if ($base === '') {
+            $base = 'agent';
+        }
+
+        return $base . '-' . Str::lower(Str::random(8));
     }
 
     /**
