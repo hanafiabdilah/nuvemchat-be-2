@@ -38,4 +38,14 @@ class AiHubTenant extends Model
             ->where('status', 'ACTIVE')
             ->latestOfMany();
     }
+
+    public function providerCredentials(): HasMany
+    {
+        return $this->hasMany(AiHubProviderCredential::class);
+    }
+
+    public function agents(): HasMany
+    {
+        return $this->hasMany(AiHubAgent::class);
+    }
 }
