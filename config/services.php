@@ -52,6 +52,11 @@ return [
 
     'wapi' => [
         'managed_token' => env('WAPI_MANAGED_TOKEN'),
-    ]
+    ],
+
+    'ai_agent_hub' => [
+        'base_url' => env('AI_AGENT_HUB_BASE_URL', 'https://api-ia.ipbr.pro/v1'),
+        'admin_token' => env('AI_AGENT_HUB_ADMIN_TOKEN'),
+    ],
 
 ];

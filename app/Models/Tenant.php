@@ -39,4 +39,9 @@ class Tenant extends Model
     {
         return $this->hasMany(QuickMessage::class);
     }
+
+    public function aiHubTenant()
+    {
+        return $this->hasOne(AiHubTenant::class);
+    }
 }
