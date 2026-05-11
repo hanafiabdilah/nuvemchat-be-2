@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\QuickMessageController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\TagController;
+use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\V1\SendMessageController;
 use App\Http\Middleware\V1\Auth;
@@ -19,6 +20,8 @@ use Illuminate\Support\Facades\Route;
 Route::post('/auth/login', [AuthController::class, 'login']);
 
 Route::middleware('auth:sanctum')->group(function(){
+    Route::post('/uploads', [UploadController::class, 'store']);
+
     Route::get('/user', [UserController::class, 'index']);
     Route::put('/user', [UserController::class, 'update']);
 
