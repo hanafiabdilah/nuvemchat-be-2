@@ -185,9 +185,17 @@ class AiAgentHubTenantService
      * $payload keys (per hub spec): externalId, name, description,
      * providerCredentialId (hub id), model, systemPrompt, temperature,
      * maxTokens, status, handoffRules, metadata
+     *
+     * Note: `externalId` is always wrapped with the app-name prefix to
+     * satisfy the hub's ≥ 2 character constraint and to namespace IDs
+     * across apps (same pattern as the tenant externalId).
      */
     public function createAgent(AiHubTenant $tenant, array $payload): AiHubAgent
     {
+        if (isset($payload['externalId'])) {
+            $payload['externalId'] = $this->buildExternalId($payload['externalId']);
+        }
+
         $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/agents", $payload);
 
@@ -234,9 +242,16 @@ class AiAgentHubTenantService
     /**
      * Update an agent on the hub and sync the local record.
      * Assumes the hub exposes PATCH /agents/{id}.
+     *
+     * Note: `externalId` (when sent) is wrapped with the app-name prefix —
+     * same constraint as createAgent.
      */
     public function updateAgent(AiHubAgent $agent, array $payload): AiHubAgent
     {
+        if (isset($payload['externalId'])) {
+            $payload['externalId'] = $this->buildExternalId($payload['externalId']);
+        }
+
         $tenant = $agent->aiHubTenant;
 
         $response = Http::withHeaders($this->headers($tenant))
@@ -296,6 +311,19 @@ class AiAgentHubTenantService
     /* ------------------------------------------------------------------
      | Internals
      * ------------------------------------------------------------------ */
+
+    /**
+     * Wrap a user-supplied external id with the app-name prefix.
+     * Mirrors `AiAgentHubService::buildTenantIdentifier()` — guarantees
+     * the hub's ≥ 2 character constraint on `externalId` and namespaces
+     * IDs across apps sharing the same hub.
+     */
+    protected function buildExternalId(string $externalId): string
+    {
+        $appName = (string) config('app.name');
+
+        return "{$appName}_{$externalId}";
+    }
 
     /**
      * Resolve the tenant's active API key (decrypted via cast).
