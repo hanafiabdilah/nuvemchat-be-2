@@ -26,24 +26,21 @@ class AiAgentHubTenantService
     }
 
     /* ------------------------------------------------------------------
-     | Models (public — no auth)
+     | Models
      * ------------------------------------------------------------------ */
 
     /**
-     * List all provider models available on the hub. Public endpoint.
+     * List all provider models available on the hub. Authenticated with
+     * the tenant's active API key.
      */
-    public function listModels(): array
+    public function listModels(AiHubTenant $tenant): array
     {
-        $response = Http::acceptJson()->get("{$this->baseUrl}/models");
+        $response = Http::withHeaders($this->headers($tenant))
+            ->get("{$this->baseUrl}/models");
 
-        if (!$response->successful()) {
-            Log::error('AiAgentHubTenantService: Failed to list models', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-            ]);
-
-            throw new Exception('Failed to list AI Agent Hub models: ' . $response->body());
-        }
+        $this->ensureSuccessful($response, 'list models', [
+            'ai_hub_tenant_id' => $tenant->id,
+        ]);
 
         return $response->json() ?? [];
     }
