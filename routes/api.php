@@ -1,6 +1,10 @@
 <?php
 
 use App\Http\Controllers\Api\AgentController;
+use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
+use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
+use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
+use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
@@ -96,6 +100,22 @@ Route::middleware('auth:sanctum')->group(function(){
 
     // Permission list (read-only) - permissions are managed via seeders/migrations only
     Route::get('/permissions', [PermissionController::class, 'index']);
+
+    // AI Agent Hub routes - protected by permissions
+    Route::prefix('ai-hub')->group(function () {
+        Route::post('/provision', [AiHubProvisionController::class, 'store'])->middleware('permission:ai-agents.create');
+        Route::get('/models', [AiHubModelController::class, 'index'])->middleware('permission:ai-agents.view');
+
+        Route::get('/provider-credentials', [AiHubProviderCredentialController::class, 'index'])->middleware('permission:ai-agents.view');
+        Route::post('/provider-credentials', [AiHubProviderCredentialController::class, 'store'])->middleware('permission:ai-agents.create');
+        Route::patch('/provider-credentials/{id}', [AiHubProviderCredentialController::class, 'update'])->middleware('permission:ai-agents.update');
+        Route::delete('/provider-credentials/{id}', [AiHubProviderCredentialController::class, 'destroy'])->middleware('permission:ai-agents.delete');
+
+        Route::get('/agents', [AiHubAgentController::class, 'index'])->middleware('permission:ai-agents.view');
+        Route::post('/agents', [AiHubAgentController::class, 'store'])->middleware('permission:ai-agents.create');
+        Route::patch('/agents/{id}', [AiHubAgentController::class, 'update'])->middleware('permission:ai-agents.update');
+        Route::delete('/agents/{id}', [AiHubAgentController::class, 'destroy'])->middleware('permission:ai-agents.delete');
+    });
 });
 
 Route::prefix('/v1')->middleware(Auth::class)->group(function(){

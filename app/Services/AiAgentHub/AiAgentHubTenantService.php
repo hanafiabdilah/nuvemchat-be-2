@@ -6,6 +6,7 @@ use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
 use App\Models\AiHubTenant;
 use Exception;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -143,6 +144,25 @@ class AiAgentHubTenantService
         return $this->updateProviderCredential($credential, ['status' => 'DISABLED']);
     }
 
+    /**
+     * Delete a provider credential on the hub and locally.
+     * Assumes the hub exposes DELETE /provider-credentials/{id}.
+     */
+    public function deleteProviderCredential(AiHubProviderCredential $credential): void
+    {
+        $tenant = $credential->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->delete("{$this->baseUrl}/provider-credentials/{$credential->hub_provider_credential_id}");
+
+        $this->ensureSuccessful($response, 'delete provider credential', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_provider_credential_id' => $credential->hub_provider_credential_id,
+        ]);
+
+        $credential->delete();
+    }
+
     /* ------------------------------------------------------------------
      | Agents
      * ------------------------------------------------------------------ */
@@ -214,6 +234,68 @@ class AiAgentHubTenantService
         return $agent;
     }
 
+    /**
+     * Update an agent on the hub and sync the local record.
+     * Assumes the hub exposes PATCH /agents/{id}.
+     */
+    public function updateAgent(AiHubAgent $agent, array $payload): AiHubAgent
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}", $payload);
+
+        $this->ensureSuccessful($response, 'update agent', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        $data = $response->json();
+
+        $localProviderCredentialId = $agent->ai_hub_provider_credential_id;
+        if (!empty($data['providerCredentialId'])) {
+            $localProviderCredentialId = AiHubProviderCredential::query()
+                ->where('ai_hub_tenant_id', $tenant->id)
+                ->where('hub_provider_credential_id', $data['providerCredentialId'])
+                ->value('id') ?? $localProviderCredentialId;
+        }
+
+        $agent->update(array_filter([
+            'ai_hub_provider_credential_id' => $localProviderCredentialId,
+            'external_id' => $data['externalId'] ?? null,
+            'name' => $data['name'] ?? null,
+            'description' => $data['description'] ?? null,
+            'model' => $data['model'] ?? null,
+            'system_prompt' => $data['systemPrompt'] ?? null,
+            'temperature' => $data['temperature'] ?? null,
+            'max_tokens' => $data['maxTokens'] ?? null,
+            'status' => $data['status'] ?? null,
+            'handoff_rules' => $data['handoffRules'] ?? null,
+            'metadata' => $data['metadata'] ?? null,
+        ], fn ($v) => $v !== null));
+
+        return $agent->refresh();
+    }
+
+    /**
+     * Delete an agent on the hub and locally.
+     * Assumes the hub exposes DELETE /agents/{id}.
+     */
+    public function deleteAgent(AiHubAgent $agent): void
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}");
+
+        $this->ensureSuccessful($response, 'delete agent', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        $agent->delete();
+    }
+
     /* ------------------------------------------------------------------
      | Internals
      * ------------------------------------------------------------------ */
@@ -247,7 +329,7 @@ class AiAgentHubTenantService
         ];
     }
 
-    protected function ensureSuccessful($response, string $action, array $context = []): void
+    protected function ensureSuccessful(Response $response, string $action, array $context = []): void
     {
         if ($response->successful()) {
             return;

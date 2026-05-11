@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(php -l app/Services/Flow/FlowExecutor.php)"
+      "Bash(php -l app/Services/Flow/FlowExecutor.php)",
+      "Bash(php -l app/Http/Controllers/Api/AiHub/AgentController.php app/Http/Controllers/Api/AiHub/ProviderCredentialController.php app/Http/Controllers/Api/AiHub/ModelController.php app/Http/Controllers/Api/AiHub/ProvisionController.php app/Http/Controllers/Api/AiHub/Concerns/ResolvesAiHubTenant.php app/Http/Resources/AiHubTenantResource.php app/Http/Resources/AiHubProviderCredentialResource.php app/Http/Resources/AiHubAgentResource.php app/Services/AiAgentHub/AiAgentHubService.php app/Services/AiAgentHub/AiAgentHubTenantService.php routes/api.php)"
     ]
   }
 }
