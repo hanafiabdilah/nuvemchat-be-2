@@ -389,6 +389,12 @@ class AiAgentHubTenantService
         }
 
         if($response->status() === 400){
+            Log::warning("AiAgentHubTenantService: Validation failed to {$action}", array_merge($context, [
+                'status' => $response->status(),
+                'body' => $response->body(),
+                'message' => $response->body()['message'][0] ?? 'Bad Request',
+            ]));
+
             throw ValidationException::withMessages(['message' => $response->body()['message'][0] ?? 'Bad Request']);
         }
 
