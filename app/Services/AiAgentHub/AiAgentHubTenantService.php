@@ -392,10 +392,10 @@ class AiAgentHubTenantService
             Log::warning("AiAgentHubTenantService: Validation failed to {$action}", array_merge($context, [
                 'status' => $response->status(),
                 'body' => $response->body(),
-                'message' => $response->body()['message'],
+                'json' => $response->json()['message'][0] ?? 'Bad REquest',
             ]));
 
-            throw ValidationException::withMessages(['message' => $response->body()['message'][0] ?? 'Bad Request']);
+            throw ValidationException::withMessages(['message' => $response->json()['message'][0] ?? 'Bad Request']);
         }
 
         Log::error("AiAgentHubTenantService: Failed to {$action}", array_merge($context, [
