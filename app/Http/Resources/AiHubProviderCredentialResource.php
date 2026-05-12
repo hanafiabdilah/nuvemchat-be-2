@@ -20,7 +20,6 @@ class AiHubProviderCredentialResource extends JsonResource
             'key_preview' => $this->key_preview,
             'default_model' => $this->default_model,
             'status' => $this->status,
-            'metadata' => $this->metadata,
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];
