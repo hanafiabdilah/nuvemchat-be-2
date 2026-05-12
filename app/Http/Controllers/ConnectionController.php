@@ -498,6 +498,10 @@ class ConnectionController extends Controller
 
             $debugInfo = $debugResponse->successful() ? $debugResponse->json()['data'] : [];
 
+            Log::info('Facebook token debug info retrieved', [
+                'debug_info' => $debugInfo,
+            ]);
+
             // Get WABA ID from granular_scopes
             $wabaId = null;
             foreach ($debugInfo['granular_scopes'] ?? [] as $scope) {
