@@ -395,7 +395,7 @@ class AiAgentHubTenantService
             ]));
 
             throw ValidationException::withMessages(['message' => $response->json()['message'][0] ?? 'Bad Request']);
-        }elseif($response->status() === '409'){
+        }elseif($response->status() === 409){
             Log::warning("AiAgentHubTenantService: Conflict occurred trying to {$action}", array_merge($context, [
                 'status' => $response->status(),
                 'body' => $response->body(),
