@@ -4,6 +4,7 @@ namespace App\Http\Resources;
 
 use App\Enums\Connection\Channel;
 use App\Enums\Message\MessageType;
+use App\Enums\Message\SenderType;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -50,10 +51,68 @@ class MessageResource extends JsonResource
             'read_at' => $this->read_at,
             'edited_at' => $this->edited_at,
             'unsend_at' => $this->unsend_at,
+            'sender' => $this->getSenderInfo(),
             'meta' => $this->getProcessedMeta(),
             'created_at' => $this->created_at->timestamp,
             'updated_at' => $this->updated_at->timestamp,
         ];
+    }
+
+    /**
+     * Resolve who/what sent this message.
+     * Outgoing only: returns null for incoming messages.
+     *
+     * source values:
+     *   - human       → sent by a logged-in agent via the UI/API
+     *   - ai_flow     → sent by an AI Agent node inside a flow
+     *   - static_flow → sent by a non-AI flow node (Message/Response/validation)
+     *   - external    → outgoing but no tracked sender (e.g. V1 SendMessage API or legacy)
+     */
+    private function getSenderInfo(): ?array
+    {
+        if ($this->sender_type !== SenderType::Outgoing) {
+            return null;
+        }
+
+        if ($this->sent_by_user_id) {
+            $user = $this->sentByUser;
+            return [
+                'source' => 'human',
+                'user' => $user ? [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                ] : null,
+            ];
+        }
+
+        if ($this->sent_by_ai_hub_agent_id) {
+            $agent = $this->sentByAiHubAgent;
+            $flow = $this->sentByFlow;
+            return [
+                'source' => 'ai_flow',
+                'flow' => $flow ? [
+                    'id' => $flow->id,
+                    'name' => $flow->name,
+                ] : null,
+                'ai_hub_agent' => $agent ? [
+                    'id' => $agent->id,
+                    'name' => $agent->name,
+                ] : null,
+            ];
+        }
+
+        if ($this->sent_by_flow_id) {
+            $flow = $this->sentByFlow;
+            return [
+                'source' => 'static_flow',
+                'flow' => $flow ? [
+                    'id' => $flow->id,
+                    'name' => $flow->name,
+                ] : null,
+            ];
+        }
+
+        return ['source' => 'external'];
     }
 
     /**

@@ -118,6 +118,8 @@ class ConversationController extends Controller
                 'message' => $validated['message']
             ]);
 
+            $message?->update(['sent_by_user_id' => Auth::id()]);
+
             // Broadcast events
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($conversation->load('contact')));
@@ -159,7 +161,9 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        $messages = $conversation->messages()->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->get();
+        $messages = $conversation->messages()
+            ->with(['sentByUser', 'sentByFlow', 'sentByAiHubAgent'])
+            ->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->get();
 
         return MessageResource::collection($messages)->response();
     }
@@ -201,6 +205,8 @@ class ConversationController extends Controller
         try {
             $message = $messageService->sendMessage($conversation, $request->all());
 
+            $message?->update(['sent_by_user_id' => Auth::id()]);
+
             broadcast(new ConversationUpdated($conversation));
             broadcast(new MessageReceived($message));
 
@@ -238,6 +244,8 @@ class ConversationController extends Controller
 
         try {
             $message = $messageService->sendImage($conversation, $request->all());
+
+            $message?->update(['sent_by_user_id' => Auth::id()]);
 
             broadcast(new ConversationUpdated($conversation));
             broadcast(new MessageReceived($message));
@@ -277,6 +285,8 @@ class ConversationController extends Controller
         try {
             $message = $messageService->sendAudio($conversation, $request->all());
 
+            $message?->update(['sent_by_user_id' => Auth::id()]);
+
             broadcast(new ConversationUpdated($conversation));
             broadcast(new MessageReceived($message));
 
@@ -315,6 +325,8 @@ class ConversationController extends Controller
         try {
             $message = $messageService->sendVideo($conversation, $request->all());
 
+            $message?->update(['sent_by_user_id' => Auth::id()]);
+
             broadcast(new ConversationUpdated($conversation));
             broadcast(new MessageReceived($message));
 
@@ -352,6 +364,8 @@ class ConversationController extends Controller
 
         try {
             $message = $messageService->sendDocument($conversation, $request->all());
+
+            $message?->update(['sent_by_user_id' => Auth::id()]);
 
             broadcast(new ConversationUpdated($conversation));
             broadcast(new MessageReceived($message));
@@ -394,6 +408,8 @@ class ConversationController extends Controller
             try {
                 $messageService = new MessageService();
                 $acceptMsg = $messageService->sendMessage($conversation, ['message' => $acceptMessage]);
+
+                $acceptMsg?->update(['sent_by_user_id' => Auth::id()]);
 
                 if ($acceptMsg) {
                     broadcast(new MessageReceived($acceptMsg));
@@ -439,6 +455,7 @@ class ConversationController extends Controller
             try {
                 $messageService = new MessageService();
                 $closingMsg = $messageService->sendMessage($conversation, ['message' => $closingMessage]);
+                $closingMsg?->update(['sent_by_user_id' => Auth::id()]);
             } catch (\Throwable $th) {
                 Log::error('ConversationController: Failed to send closing message', [
                     'conversation_id' => $conversation->id,

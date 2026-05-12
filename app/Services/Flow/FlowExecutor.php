@@ -165,7 +165,7 @@ class FlowExecutor
             }
 
             // Dispatch send by message_type (text / image / audio / video / document)
-            $message = $this->sendByMessageType($conversation, $data);
+            $message = $this->sendByMessageType($conversation, $data, $flowState);
 
             if ($message) {
                 Log::info('FlowExecutor: Message sent', [
@@ -211,7 +211,7 @@ class FlowExecutor
 
         try {
             // Dispatch send by message_type (text / image / audio / video / document)
-            $message = $this->sendByMessageType($conversation, $data);
+            $message = $this->sendByMessageType($conversation, $data, $flowState);
 
             if ($message) {
                 Log::info('FlowExecutor: Response prompt sent, waiting for user input', [
@@ -744,6 +744,7 @@ class FlowExecutor
                 $message = $this->messageService->sendMessage($conversation, $errorMessageData);
 
                 if ($message) {
+                    $message->update(['sent_by_flow_id' => $flowState->flow_id]);
                     broadcast(new MessageReceived($message));
                 }
             } catch (\Throwable $th) {
@@ -866,6 +867,8 @@ class FlowExecutor
 
             if ($message) {
                 $message->update([
+                    'sent_by_flow_id' => $flowState->flow_id,
+                    'sent_by_ai_hub_agent_id' => $node->data['ai_hub_agent_id'] ?? null,
                     'meta' => array_merge((array) ($message->meta ?? []), [
                         'ai_welcome' => true,
                         'ai_hub_agent_id' => $node->data['ai_hub_agent_id'] ?? null,
@@ -967,6 +970,8 @@ class FlowExecutor
 
                 if ($message) {
                     $message->update([
+                        'sent_by_flow_id' => $flowState->flow_id,
+                        'sent_by_ai_hub_agent_id' => $agent->id,
                         'meta' => array_merge((array) ($message->meta ?? []), [
                             'ai_generated' => true,
                             'ai_hub_run_id' => $run->id,
@@ -1014,16 +1019,23 @@ class FlowExecutor
      * Downloads `attachment_url` into a temporary UploadedFile so the
      * existing channel handlers (image/audio/video/document) can consume it.
      */
-    protected function sendByMessageType(Conversation $conversation, array $nodeData): ?Message
+    protected function sendByMessageType(Conversation $conversation, array $nodeData, ?FlowState $flowState = null): ?Message
     {
         $messageType = $nodeData['message_type'] ?? 'text';
         $body = $nodeData['body'] ?? '';
         $attachmentUrl = $nodeData['attachment_url'] ?? null;
 
+        $send = function (?Message $message) use ($flowState): ?Message {
+            if ($message && $flowState) {
+                $message->update(['sent_by_flow_id' => $flowState->flow_id]);
+            }
+            return $message;
+        };
+
         if ($messageType === 'text' || !$attachmentUrl) {
-            return $this->messageService->sendMessage($conversation, [
+            return $send($this->messageService->sendMessage($conversation, [
                 'message' => $body,
-            ]);
+            ]));
         }
 
         $tempPath = null;
@@ -1036,12 +1048,12 @@ class FlowExecutor
                     'message_type' => $messageType,
                 ]);
 
-                return $this->messageService->sendMessage($conversation, [
+                return $send($this->messageService->sendMessage($conversation, [
                     'message' => $body,
-                ]);
+                ]));
             }
 
-            return match ($messageType) {
+            return $send(match ($messageType) {
                 'image' => $this->messageService->sendImage($conversation, [
                     'image' => $uploadedFile,
                     'message' => $body,
@@ -1060,7 +1072,7 @@ class FlowExecutor
                 default => $this->messageService->sendMessage($conversation, [
                     'message' => $body,
                 ]),
-            };
+            });
         } finally {
             if ($tempPath && file_exists($tempPath)) {
                 @unlink($tempPath);

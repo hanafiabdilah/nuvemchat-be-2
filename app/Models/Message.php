@@ -13,6 +13,9 @@ class Message extends Model
         'external_id',
         'conversation_id',
         'sender_type',
+        'sent_by_user_id',
+        'sent_by_flow_id',
+        'sent_by_ai_hub_agent_id',
         'message_type',
         'body',
         'attachment',
@@ -61,5 +64,20 @@ class Message extends Model
     public function reactions()
     {
         return $this->hasMany(MessageReaction::class);
+    }
+
+    public function sentByUser()
+    {
+        return $this->belongsTo(User::class, 'sent_by_user_id');
+    }
+
+    public function sentByFlow()
+    {
+        return $this->belongsTo(Flow::class, 'sent_by_flow_id');
+    }
+
+    public function sentByAiHubAgent()
+    {
+        return $this->belongsTo(AiHubAgent::class, 'sent_by_ai_hub_agent_id');
     }
 }
