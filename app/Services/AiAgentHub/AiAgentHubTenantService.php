@@ -401,7 +401,7 @@ class AiAgentHubTenantService
                 'body' => $response->body(),
             ]));
 
-            throw new Exception($response->json()['message'] ?? 'Conflict');
+            throw new Exception($response->json()['message'] ?? 'Conflict', 409);
         }
 
         Log::error("AiAgentHubTenantService: Failed to {$action}", array_merge($context, [
