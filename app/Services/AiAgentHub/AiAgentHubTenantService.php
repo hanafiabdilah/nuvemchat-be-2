@@ -203,11 +203,6 @@ class AiAgentHubTenantService
             $this->normalizeAgentExternalId($payload['externalId'] ?? null, $payload['name'] ?? null)
         );
 
-        Log::info('requesting agent creation on hub', [
-            'ai_hub_tenant_id' => $tenant->id,
-            'payload' => $payload,
-        ]);
-
         $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/agents", $payload);
 
