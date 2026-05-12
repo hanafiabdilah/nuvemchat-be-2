@@ -522,6 +522,11 @@ class ConnectionController extends Controller
             $verifiedName = $primaryPhone['verified_name'] ?? null;
             $qualityRating = $primaryPhone['quality_rating'] ?? null;
 
+            $this->subscribeWabaApp((string) $wabaId, $accessToken);
+
+            $pin = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+            $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
+
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
                 'business_account_id' => (string) $wabaId,
@@ -529,6 +534,7 @@ class ConnectionController extends Controller
                 'display_phone_number' => $displayPhoneNumber,
                 'verified_name' => $verifiedName,
                 'quality_rating' => $qualityRating,
+                'pin' => $pin,
                 'token_type' => 'SYSTEM_USER',
                 'token_expires_at' => null,
             ]);
@@ -597,6 +603,56 @@ class ConnectionController extends Controller
     {
         // Placeholder for future Messenger implementation
         throw new \Exception('Messenger integration is not yet implemented');
+    }
+
+    /**
+     * Subscribe the app (the one that owns the access token) to receive
+     * webhook events for this WABA. Required for incoming messages to be
+     * delivered to our webhook endpoint.
+     */
+    private function subscribeWabaApp(string $wabaId, string $accessToken): void
+    {
+        $response = Http::withToken($accessToken)
+            ->post("https://graph.facebook.com/v25.0/{$wabaId}/subscribed_apps");
+
+        if (!$response->successful()) {
+            Log::error('Failed to subscribe app to WABA webhook', [
+                'waba_id' => $wabaId,
+                'status' => $response->status(),
+                'body' => $response->json(),
+            ]);
+
+            throw new \Exception('Failed to subscribe app to WABA webhook: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+        }
+
+        Log::info('Subscribed app to WABA webhook', ['waba_id' => $wabaId]);
+    }
+
+    /**
+     * Register the phone number on Cloud API. The PIN becomes the 2FA PIN
+     * for the number; for first-time embedded signup any 6-digit PIN works.
+     * The PIN must be persisted — re-registration requires the same value
+     * unless 2FA is reset via Facebook Business settings.
+     */
+    private function registerPhoneNumber(string $phoneNumberId, string $accessToken, string $pin): void
+    {
+        $response = Http::withToken($accessToken)
+            ->post("https://graph.facebook.com/v25.0/{$phoneNumberId}/register", [
+                'messaging_product' => 'whatsapp',
+                'pin' => $pin,
+            ]);
+
+        if (!$response->successful()) {
+            Log::error('Failed to register phone number on Cloud API', [
+                'phone_number_id' => $phoneNumberId,
+                'status' => $response->status(),
+                'body' => $response->json(),
+            ]);
+
+            throw new \Exception('Failed to register phone number: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+        }
+
+        Log::info('Phone number registered on Cloud API', ['phone_number_id' => $phoneNumberId]);
     }
 
     public function facebookDeauthorize(Request $request)
