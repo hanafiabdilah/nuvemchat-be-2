@@ -103,7 +103,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required|file|mimes:aac,m4a,mp3,ogg,opus,amr|max:16384',
+            'audio' => 'required|file|mimes:aac,m4a,wav,mp4,mp3,ogg,opus,webm|max:25600',
         ])->validate();
 
         return $this->sendMediaByLink(
@@ -120,7 +120,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'video' => 'required|file|mimes:mp4,3gp|max:16384',
+            'video' => 'required|file|mimes:mp4,ogg,avi,mov,webm|max:25600',
             'message' => 'nullable|string',
         ])->validate();
 
