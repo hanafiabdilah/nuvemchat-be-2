@@ -11,6 +11,7 @@ enum NodeType: string
     case Condition = 'condition';
     case Status = 'status';
     case Action = 'action';
+    case AIAgent = 'ai_agent';
 
     public function data(): array
     {
@@ -48,6 +49,10 @@ enum NodeType: string
             self::Action => [
                 'type' => '', // e.g. "assign_agent", "add_tag", "remove_tag"
                 'parameters' => [], // parameters for the action
+            ],
+            self::AIAgent => [
+                'ai_hub_agent_id' => null, // FK to ai_hub_agents.id
+                'store_summary_to_variable' => '', // optional: variable key in flow state to store the run summary
             ],
         };
     }

@@ -295,6 +295,21 @@ class FlowController extends Controller
                 'type' => ['required', 'string'],
                 'parameters' => ['required', 'array'],
             ],
+            'ai_agent' => [
+                'ai_hub_agent_id' => [
+                    'required',
+                    'integer',
+                    Rule::exists('ai_hub_agents', 'id')->where(function ($query) {
+                        $tenantId = auth()->user()->tenant_id;
+                        $query->whereIn('ai_hub_tenant_id', function ($sub) use ($tenantId) {
+                            $sub->select('id')
+                                ->from('ai_hub_tenants')
+                                ->where('tenant_id', $tenantId);
+                        })->where('status', 'ACTIVE');
+                    }),
+                ],
+                'store_summary_to_variable' => ['nullable', 'string', 'alpha_dash'],
+            ],
             default => [],
         };
     }

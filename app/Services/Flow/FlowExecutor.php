@@ -6,10 +6,12 @@ use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
 use App\Events\MessageReceived;
+use App\Models\AiHubAgent;
 use App\Models\Conversation;
 use App\Models\FlowNode;
 use App\Models\FlowState;
 use App\Models\Message;
+use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\Message\MessageService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -17,11 +19,21 @@ use Illuminate\Support\Facades\Log;
 
 class FlowExecutor
 {
+    /**
+     * Safety-net cap on AI agent turns within a single AIAgent node before
+     * forcing handoff. Prevents runaway loops if the hub's handoff signal
+     * never fires.
+     */
+    protected const AI_MAX_TURNS = 20;
+
     protected MessageService $messageService;
+
+    protected AiAgentHubTenantService $aiAgentHubService;
 
     public function __construct()
     {
         $this->messageService = new MessageService();
+        $this->aiAgentHubService = new AiAgentHubTenantService();
     }
 
     /**
@@ -123,6 +135,10 @@ class FlowExecutor
 
             case NodeType::Tagging:
                 $this->executeTaggingNode($flowState, $node);
+                break;
+
+            case NodeType::AIAgent:
+                $this->executeAIAgentNode($flowState, $node);
                 break;
 
             default:
@@ -653,6 +669,12 @@ class FlowExecutor
             'user_input' => substr($userInput, 0, 50), // Log first 50 chars only
         ]);
 
+        // Special handling for AIAgent nodes - feed user input to the agent
+        if ($currentNode->type === NodeType::AIAgent) {
+            $this->handleAIAgentInput($flowState, $currentNode, $userInput);
+            return;
+        }
+
         // Special handling for Response nodes - validate and store input
         if ($currentNode->type === NodeType::Response) {
             // Check if this Response node has sent its prompt yet
@@ -750,6 +772,149 @@ class FlowExecutor
 
         // Move to next node and execute it
         $this->moveToNextNode($flowState, $node);
+    }
+
+    /**
+     * Execute an AIAgent node.
+     *
+     * AIAgent nodes do not send a prompt on entry — they simply pause and
+     * wait for the next user input. When the user replies, resumeFlow()
+     * routes the input to handleAIAgentInput() which calls the hub and
+     * relays the AI reply back to the contact.
+     *
+     * Composition over coupling: if you need a greeting before the agent
+     * engages, place a Message node before this one. If you need to assign
+     * a specific human agent after handoff, place an Action node after.
+     */
+    protected function executeAIAgentNode(FlowState $flowState, FlowNode $node): void
+    {
+        $stateData = $flowState->state_data ?? [];
+        $turnsKey = "_ai_turns_{$node->id}";
+
+        if (!isset($stateData[$turnsKey])) {
+            $stateData[$turnsKey] = 0;
+            $flowState->update(['state_data' => $stateData]);
+        }
+
+        Log::info('FlowExecutor: AIAgent node reached, waiting for user input', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'turns' => $stateData[$turnsKey],
+        ]);
+
+        // Stay on this node — next user message will be routed here via resumeFlow().
+    }
+
+    /**
+     * Handle user input for an AIAgent node: call the hub, relay the reply
+     * to the contact, and decide whether to keep looping on this node or
+     * hand off to the next node.
+     *
+     * Handoff path (move to next node):
+     *   - Safety-net: turn counter exceeds AI_MAX_TURNS
+     *   - Error path: hub call throws (fail open to human)
+     *
+     * Note: hub-side handoff signal (humanRequested / angryCustomer /
+     * outOfScope) is not yet wired here. Once the hub exposes a handoff
+     * field in the /runs response, parse it from the run record and call
+     * moveToNextNode() with the reason stored in state_data.
+     */
+    protected function handleAIAgentInput(FlowState $flowState, FlowNode $node, string $userInput): void
+    {
+        $data = $node->data;
+        $conversation = $flowState->conversation;
+        $stateData = $flowState->state_data ?? [];
+        $turnsKey = "_ai_turns_{$node->id}";
+        $reasonKey = "_ai_handoff_reason_{$node->id}";
+
+        $turns = $stateData[$turnsKey] ?? 0;
+
+        if ($turns >= self::AI_MAX_TURNS) {
+            Log::warning('FlowExecutor: AIAgent max turns exceeded, forcing handoff', [
+                'node_id' => $node->id,
+                'turns' => $turns,
+                'limit' => self::AI_MAX_TURNS,
+            ]);
+
+            $stateData[$reasonKey] = 'max_turns_exceeded';
+            $flowState->update(['state_data' => $stateData]);
+            $this->moveToNextNode($flowState, $node);
+            return;
+        }
+
+        $agentId = $data['ai_hub_agent_id'] ?? null;
+        $agent = $agentId ? AiHubAgent::find($agentId) : null;
+
+        if (!$agent) {
+            Log::error('FlowExecutor: AIAgent node has no valid agent, handing off', [
+                'node_id' => $node->id,
+                'ai_hub_agent_id' => $agentId,
+            ]);
+
+            $stateData[$reasonKey] = 'agent_missing';
+            $flowState->update(['state_data' => $stateData]);
+            $this->moveToNextNode($flowState, $node);
+            return;
+        }
+
+        try {
+            $run = $this->aiAgentHubService->runAgent(
+                $agent,
+                $conversation,
+                $userInput,
+                $flowState->id,
+                $node->id
+            );
+
+            $replyText = $run->output_message;
+
+            if (!empty($replyText)) {
+                $message = $this->messageService->sendMessage($conversation, [
+                    'message' => $replyText,
+                ]);
+
+                if ($message) {
+                    $message->update([
+                        'meta' => array_merge((array) ($message->meta ?? []), [
+                            'ai_generated' => true,
+                            'ai_hub_run_id' => $run->id,
+                            'ai_hub_agent_id' => $agent->id,
+                        ]),
+                    ]);
+
+                    $run->update(['message_id' => $message->id]);
+
+                    broadcast(new MessageReceived($message));
+                }
+            } else {
+                Log::warning('FlowExecutor: AIAgent run returned empty reply', [
+                    'node_id' => $node->id,
+                    'run_id' => $run->id,
+                    'status' => $run->status,
+                ]);
+            }
+
+            $stateData[$turnsKey] = $turns + 1;
+            $flowState->update(['state_data' => $stateData]);
+
+            Log::info('FlowExecutor: AIAgent turn completed, waiting for next user input', [
+                'node_id' => $node->id,
+                'turn' => $turns + 1,
+                'run_id' => $run->id,
+            ]);
+
+            // Stay on this node — wait for the next user reply.
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error running AIAgent, handing off to human', [
+                'node_id' => $node->id,
+                'ai_hub_agent_id' => $agent->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            $stateData[$reasonKey] = 'error';
+            $flowState->update(['state_data' => $stateData]);
+            $this->moveToNextNode($flowState, $node);
+        }
     }
 
     /**
