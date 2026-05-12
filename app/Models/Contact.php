@@ -13,6 +13,7 @@ class Contact extends Model
         'external_id',
         'channel',
         'name',
+        'name_locked',
         'username',
         'photo_profile',
         'meta'
@@ -32,8 +33,8 @@ class Contact extends Model
         if (!$contact->wasRecentlyCreated) {
             $updates = [];
 
-            // Update name jika data baru valid (bukan placeholder yang sama dengan external_id) dan berbeda
-            if ($name && $name !== $externalId && $contact->name !== $name) {
+            // Update name hanya jika belum di-lock oleh admin, data baru valid (bukan placeholder), dan berbeda
+            if (!$contact->name_locked && $name && $name !== $externalId && $contact->name !== $name) {
                 $updates['name'] = $name;
             }
 
@@ -52,6 +53,7 @@ class Contact extends Model
 
     protected $casts = [
         'channel' => Channel::class,
+        'name_locked' => 'boolean',
     ];
 
     public function tenant()

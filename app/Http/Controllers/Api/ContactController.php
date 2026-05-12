@@ -70,6 +70,10 @@ class ContactController extends Controller
             ->where('tenant_id', $request->user()->tenant_id)
             ->firstOrFail();
 
+        if (array_key_exists('name', $validated)) {
+            $validated['name_locked'] = true;
+        }
+
         $contact->update($validated);
 
         return response()->json([
