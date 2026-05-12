@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class AiHubAgent extends Model
 {
@@ -38,5 +39,10 @@ class AiHubAgent extends Model
     public function providerCredential(): BelongsTo
     {
         return $this->belongsTo(AiHubProviderCredential::class, 'ai_hub_provider_credential_id');
+    }
+
+    public function runs(): HasMany
+    {
+        return $this->hasMany(AiHubRun::class);
     }
 }

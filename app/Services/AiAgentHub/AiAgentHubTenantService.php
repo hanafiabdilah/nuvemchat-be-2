@@ -2,9 +2,13 @@
 
 namespace App\Services\AiAgentHub;
 
+use App\Enums\Connection\Channel;
 use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
+use App\Models\AiHubRun;
 use App\Models\AiHubTenant;
+use App\Models\Conversation;
+use Carbon\Carbon;
 use Exception;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -313,6 +317,139 @@ class AiAgentHubTenantService
         ]);
 
         $agent->delete();
+    }
+
+    /* ------------------------------------------------------------------
+     | Runs (Agent Execution)
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Run an agent synchronously against a conversation and persist the
+     * resulting hub run record locally for billing/observability.
+     *
+     * The hub maintains its own conversation state keyed by
+     * `conversation.externalId`, so we only forward the latest user
+     * message — history is tracked hub-side.
+     *
+     * The caller is responsible for delivering the AI reply to the contact
+     * (via MessageService) and linking the produced Message back to the
+     * AiHubRun by setting `message_id`.
+     */
+    public function runAgent(
+        AiHubAgent $agent,
+        Conversation $conversation,
+        string $userMessage,
+        ?int $flowStateId = null,
+        ?int $flowNodeId = null,
+        array $metadata = []
+    ): AiHubRun {
+        $tenant = $agent->aiHubTenant;
+        $conversation->loadMissing(['contact', 'connection']);
+
+        $payload = [
+            'agentExternalId' => $agent->external_id,
+            'responseMode' => 'sync',
+            'conversation' => [
+                'externalId' => $conversation->external_id,
+                'channel' => $this->mapChannelForHub($conversation->connection->channel),
+                'contactExternalId' => $conversation->contact->external_id,
+                'contactName' => $conversation->contact->name,
+            ],
+            'message' => [
+                'role' => 'USER',
+                'content' => $userMessage,
+            ],
+        ];
+
+        if (!empty($metadata)) {
+            $payload['metadata'] = $metadata;
+        }
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->post("{$this->baseUrl}/runs", $payload);
+
+        $this->ensureSuccessful($response, 'run agent', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'conversation_id' => $conversation->id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        return $this->persistRun(
+            $agent,
+            $conversation,
+            $userMessage,
+            $data,
+            $flowStateId,
+            $flowNodeId,
+            $metadata
+        );
+    }
+
+    /**
+     * Map our internal Channel enum to the channel string the hub expects.
+     * Both WhatsApp variants collapse to a single "whatsapp" identifier.
+     */
+    protected function mapChannelForHub(Channel $channel): string
+    {
+        return match ($channel) {
+            Channel::Instagram => 'instagram',
+            Channel::WhatsappOfficial, Channel::WhatsappWApi => 'whatsapp',
+            Channel::Telegram => 'telegram',
+        };
+    }
+
+    /**
+     * Persist a hub run response as a local AiHubRun for billing and
+     * observability. Latency is derived from hub-reported timestamps when
+     * available.
+     */
+    protected function persistRun(
+        AiHubAgent $agent,
+        Conversation $conversation,
+        string $userMessage,
+        array $data,
+        ?int $flowStateId,
+        ?int $flowNodeId,
+        array $metadata
+    ): AiHubRun {
+        $output = $data['output'] ?? [];
+        $usage = $output['usage'] ?? [];
+        $cost = $output['cost'] ?? [];
+
+        $startedAt = !empty($data['startedAt']) ? Carbon::parse($data['startedAt']) : null;
+        $completedAt = !empty($data['completedAt']) ? Carbon::parse($data['completedAt']) : null;
+        $latencyMs = ($startedAt && $completedAt)
+            ? (int) $startedAt->diffInMilliseconds($completedAt)
+            : null;
+
+        return AiHubRun::create([
+            'tenant_id' => $conversation->contact->tenant_id,
+            'ai_hub_agent_id' => $agent->id,
+            'conversation_id' => $conversation->id,
+            'flow_state_id' => $flowStateId,
+            'flow_node_id' => $flowNodeId,
+            'message_id' => null,
+            'hub_run_id' => $data['id'] ?? null,
+            'status' => $data['status'] ?? 'UNKNOWN',
+            'provider' => $data['provider'] ?? null,
+            'model' => $data['model'] ?? null,
+            'input_message' => $userMessage,
+            'output_message' => $output['message'] ?? null,
+            'input_tokens' => $usage['inputTokens'] ?? 0,
+            'cached_input_tokens' => $usage['cachedInputTokens'] ?? 0,
+            'output_tokens' => $usage['outputTokens'] ?? 0,
+            'total_tokens' => $usage['totalTokens'] ?? 0,
+            'cost_usd' => $data['providerCostUsd'] ?? ($cost['usd'] ?? null),
+            'cost_currency' => $data['providerCostCurrency'] ?? ($cost['currency'] ?? null),
+            'cost_breakdown' => $data['providerCostBreakdown'] ?? ($cost ?: null),
+            'error' => $data['error'] ?? null,
+            'metadata' => $metadata ?: null,
+            'started_at' => $startedAt,
+            'completed_at' => $completedAt,
+            'latency_ms' => $latencyMs,
+        ]);
     }
 
     /* ------------------------------------------------------------------
