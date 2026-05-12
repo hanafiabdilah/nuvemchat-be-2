@@ -86,7 +86,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
 
     public function getContactUsername(array $payload): ?string
     {
-        return $payload['changes'][0]['value']['contacts'][0]['profile']['username'] ?? null;
+        return $payload['changes'][0]['value']['contacts'][0]['wa_id'] ?? null;
     }
 
     public function getContactExternalId(array $payload): ?string
