@@ -29,6 +29,24 @@ class Contact extends Model
             'channel' => $connection->channel,
         ]);
 
+        if (!$contact->wasRecentlyCreated) {
+            $updates = [];
+
+            // Update name jika data baru valid (bukan placeholder yang sama dengan external_id) dan berbeda
+            if ($name && $name !== $externalId && $contact->name !== $name) {
+                $updates['name'] = $name;
+            }
+
+            // Update username jika ada dan berbeda
+            if ($username && $contact->username !== $username) {
+                $updates['username'] = $username;
+            }
+
+            if (!empty($updates)) {
+                $contact->update($updates);
+            }
+        }
+
         return $contact;
     }
 

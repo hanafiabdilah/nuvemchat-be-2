@@ -352,7 +352,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
         $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
-            if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
+            if($contact->wasRecentlyCreated || !$contact->photo_profile) $this->savePhotoProfile($contact, $connection, $payload);
 
             $conversation = Conversation::where('external_id', $conversationId)
                 ->where('contact_id', $contact->id)
