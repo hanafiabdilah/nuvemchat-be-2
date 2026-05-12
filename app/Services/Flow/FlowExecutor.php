@@ -5,6 +5,7 @@ namespace App\Services\Flow;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
+use App\Enums\Message\SenderType;
 use App\Events\MessageReceived;
 use App\Models\AiHubAgent;
 use App\Models\Conversation;
@@ -24,7 +25,7 @@ class FlowExecutor
      * forcing handoff. Prevents runaway loops if the hub's handoff signal
      * never fires.
      */
-    protected const AI_MAX_TURNS = 20;
+    protected const AI_MAX_TURNS = 5;
 
     protected MessageService $messageService;
 
@@ -671,7 +672,12 @@ class FlowExecutor
 
         // Special handling for AIAgent nodes - feed user input to the agent
         if ($currentNode->type === NodeType::AIAgent) {
-            $this->handleAIAgentInput($flowState, $currentNode, $userInput);
+            $latestIncomingId = Message::where('conversation_id', $conversation->id)
+                ->where('sender_type', SenderType::Incoming)
+                ->latest('id')
+                ->value('id');
+
+            $this->handleAIAgentInput($flowState, $currentNode, $userInput, $latestIncomingId);
             return;
         }
 
@@ -777,32 +783,58 @@ class FlowExecutor
     /**
      * Execute an AIAgent node.
      *
-     * AIAgent nodes do not send a prompt on entry — they simply pause and
-     * wait for the next user input. When the user replies, resumeFlow()
-     * routes the input to handleAIAgentInput() which calls the hub and
-     * relays the AI reply back to the contact.
+     * On entry, picks up the latest unprocessed incoming message from the
+     * conversation and feeds it to the agent immediately. This covers two
+     * common entry paths:
+     *   - User's first message triggered startFlow() and the flow walked
+     *     straight to this node (no Response/Message node consumed the
+     *     input first).
+     *   - A prior Message node with wait_for_reply=false transitioned
+     *     here while an unprocessed message exists.
+     *
+     * If no fresh incoming message exists, the node simply waits — the
+     * next user reply will be routed here via resumeFlow().
      *
      * Composition over coupling: if you need a greeting before the agent
-     * engages, place a Message node before this one. If you need to assign
-     * a specific human agent after handoff, place an Action node after.
+     * engages, place a Message node before this one. If you need to
+     * assign a specific human agent after handoff, place an Action node
+     * after.
      */
     protected function executeAIAgentNode(FlowState $flowState, FlowNode $node): void
     {
         $stateData = $flowState->state_data ?? [];
         $turnsKey = "_ai_turns_{$node->id}";
+        $lastProcessedKey = "_ai_last_processed_message_id_{$node->id}";
 
         if (!isset($stateData[$turnsKey])) {
             $stateData[$turnsKey] = 0;
             $flowState->update(['state_data' => $stateData]);
         }
 
-        Log::info('FlowExecutor: AIAgent node reached, waiting for user input', [
+        $lastProcessedId = $stateData[$lastProcessedKey] ?? 0;
+
+        $pendingMessage = Message::where('conversation_id', $flowState->conversation_id)
+            ->where('sender_type', SenderType::Incoming)
+            ->where('id', '>', $lastProcessedId)
+            ->orderBy('id')
+            ->first();
+
+        if ($pendingMessage) {
+            Log::info('FlowExecutor: AIAgent processing pending message on node entry', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+                'message_id' => $pendingMessage->id,
+            ]);
+
+            $this->handleAIAgentInput($flowState, $node, $pendingMessage->body ?? '', $pendingMessage->id);
+            return;
+        }
+
+        Log::info('FlowExecutor: AIAgent node reached, no pending input — waiting', [
             'node_id' => $node->id,
             'conversation_id' => $flowState->conversation_id,
             'turns' => $stateData[$turnsKey],
         ]);
-
-        // Stay on this node — next user message will be routed here via resumeFlow().
     }
 
     /**
@@ -819,13 +851,18 @@ class FlowExecutor
      * field in the /runs response, parse it from the run record and call
      * moveToNextNode() with the reason stored in state_data.
      */
-    protected function handleAIAgentInput(FlowState $flowState, FlowNode $node, string $userInput): void
+    protected function handleAIAgentInput(FlowState $flowState, FlowNode $node, string $userInput, ?int $sourceMessageId = null): void
     {
         $data = $node->data;
         $conversation = $flowState->conversation;
         $stateData = $flowState->state_data ?? [];
         $turnsKey = "_ai_turns_{$node->id}";
         $reasonKey = "_ai_handoff_reason_{$node->id}";
+        $lastProcessedKey = "_ai_last_processed_message_id_{$node->id}";
+
+        if ($sourceMessageId !== null) {
+            $stateData[$lastProcessedKey] = $sourceMessageId;
+        }
 
         $turns = $stateData[$turnsKey] ?? 0;
 
