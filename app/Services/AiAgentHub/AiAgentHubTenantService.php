@@ -392,10 +392,16 @@ class AiAgentHubTenantService
             Log::warning("AiAgentHubTenantService: Validation failed to {$action}", array_merge($context, [
                 'status' => $response->status(),
                 'body' => $response->body(),
-                'json' => $response->json()['message'][0] ?? 'Bad REquest',
             ]));
 
             throw ValidationException::withMessages(['message' => $response->json()['message'][0] ?? 'Bad Request']);
+        }elseif($response->status() === '409'){
+            Log::warning("AiAgentHubTenantService: Conflict occurred trying to {$action}", array_merge($context, [
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]));
+
+            throw new Exception($response->json()['message'] ?? 'Conflict');
         }
 
         Log::error("AiAgentHubTenantService: Failed to {$action}", array_merge($context, [
@@ -403,6 +409,6 @@ class AiAgentHubTenantService
             'body' => $response->body(),
         ]));
 
-        throw new Exception("Failed to {$action}: " . $response->body());
+        throw new Exception("Failed to {$action}");
     }
 }
