@@ -10,6 +10,7 @@ use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Tenant-scoped operations against the AI Agent Hub.
@@ -385,6 +386,10 @@ class AiAgentHubTenantService
     {
         if ($response->successful()) {
             return;
+        }
+
+        if($response->status() === 400){
+            throw ValidationException::withMessages(['message' => $response->body()['message'][0] ?? 'Bad Request']);
         }
 
         Log::error("AiAgentHubTenantService: Failed to {$action}", array_merge($context, [
