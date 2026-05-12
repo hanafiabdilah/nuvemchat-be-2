@@ -38,7 +38,6 @@ class ProviderCredentialController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'apiKey' => ['required', 'string'],
             'defaultModel' => ['nullable', 'string', 'max:100'],
-            'metadata' => ['nullable', 'array'],
         ]);
 
         $aiHubTenant = $this->aiHubTenant();
@@ -58,7 +57,6 @@ class ProviderCredentialController extends Controller
             'apiKey' => ['sometimes', 'string'],
             'defaultModel' => ['sometimes', 'nullable', 'string', 'max:100'],
             'status' => ['sometimes', 'string', 'in:ACTIVE,DISABLED'],
-            'metadata' => ['sometimes', 'nullable', 'array'],
         ]);
 
         $credential = $this->findCredential($id);

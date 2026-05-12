@@ -74,6 +74,11 @@ class AiAgentHubTenantService
      */
     public function createProviderCredential(AiHubTenant $tenant, array $payload): AiHubProviderCredential
     {
+        $payload['metadata'] = [
+            'billingMode' => 'customer_token',
+            'ownerType' => 'customer',
+        ];
+
         $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/provider-credentials", $payload);
 
