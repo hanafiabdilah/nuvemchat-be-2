@@ -385,70 +385,67 @@ class ConnectionController extends Controller
         }
     }
 
+    /**
+     * Handles Facebook OAuth callback for WhatsApp Embedded Signup.
+     *
+     * Accepts both:
+     *  - POST (modern flow): JS SDK popup posts { code, connection_id, waba_id, phone_number_id }.
+     *  - GET (legacy redirect flow): Facebook redirects with ?code=&state= where state is
+     *    base64(json({ connection_id, waba_id?, phone_number_id? })).
+     */
     public function facebookCallback(Request $request)
     {
-        Log::info('Facebook OAuth callback received from frontend', [
-            'query' => $request->query(),
-        ]);
-
-        $code = $request->query('code');
-        $state = $request->query('state');
-        $error = $request->query('error');
-        $errorReason = $request->query('error_reason');
-        $errorDescription = $request->query('error_description');
-
-        // Handle error from Facebook
+        $error = $request->input('error');
         if ($error) {
             Log::error('Facebook OAuth error', [
                 'error' => $error,
-                'error_reason' => $errorReason,
-                'error_description' => $errorDescription,
+                'error_reason' => $request->input('error_reason'),
+                'error_description' => $request->input('error_description'),
             ]);
 
             return response()->json([
                 'status' => 'error',
-                'message' => 'Facebook OAuth error: ' . $errorDescription,
+                'message' => 'Facebook OAuth error: ' . $request->input('error_description'),
             ], 400);
         }
 
-        // Validate required parameters
-        if (!$code || !$state) {
-            Log::error('Missing code or state parameter in Facebook callback');
+        $code = $request->input('code');
+        if (!$code) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Invalid Facebook callback: missing code or state parameter',
+                'message' => 'Invalid Facebook callback: missing code',
             ], 400);
         }
 
-        // Decode state to get connection_id
-        try {
-            $stateData = json_decode(base64_decode($state), true);
+        // Resolve connection_id, waba_id, phone_number_id from either POST body or GET state.
+        $connectionId = $request->input('connection_id');
+        $wabaId = $request->input('waba_id');
+        $phoneNumberId = $request->input('phone_number_id');
+
+        if (!$connectionId && $state = $request->input('state')) {
+            $stateData = json_decode(base64_decode($state), true) ?: [];
             $connectionId = $stateData['connection_id'] ?? null;
+            $wabaId = $wabaId ?: ($stateData['waba_id'] ?? null);
+            $phoneNumberId = $phoneNumberId ?: ($stateData['phone_number_id'] ?? null);
+        }
 
-            if (!$connectionId) {
-                throw new \Exception('Invalid state parameter');
-            }
+        if (!$connectionId) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Missing connection_id',
+            ], 400);
+        }
 
-            // Find the connection
+        try {
             $connection = Connection::findOrFail($connectionId);
 
-            $redirectUri = config('services.facebook.redirect_uri');
-
-            Log::info('Exchanging code for access token', [
-                'connection_id' => $connectionId,
-                'redirect_uri' => $redirectUri,
-                'has_code' => !empty($code),
-            ]);
-
-            // Exchange code for access token
-            // For embedded signup, redirect_uri is optional but if provided must match exactly
             $tokenRequestData = [
                 'client_id' => config('services.facebook.app_id'),
                 'client_secret' => config('services.facebook.app_secret'),
                 'code' => $code,
             ];
 
-            // Only add redirect_uri if it's configured (for embedded signup, it might not be needed)
+            $redirectUri = config('services.facebook.redirect_uri');
             if (!empty($redirectUri)) {
                 $tokenRequestData['redirect_uri'] = $redirectUri;
             }
@@ -459,25 +456,20 @@ class ConnectionController extends Controller
                 Log::error('Failed to exchange Facebook code for token', [
                     'response' => $response->json(),
                     'status' => $response->status(),
-                    'redirect_uri_used' => $redirectUri ?? 'none',
                 ]);
-                throw new \Exception('Failed to obtain access token from Facebook: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+                throw new \Exception('Failed to obtain access token: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
             }
 
-            $data = $response->json();
-            $accessToken = $data['access_token'] ?? null;
-
+            $accessToken = $response->json()['access_token'] ?? null;
             if (!$accessToken) {
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
-            // Handle WhatsApp callback
-            return $this->handleWhatsAppCallback($connection, $accessToken);
+            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId);
 
         } catch (\Throwable $th) {
             Log::error('Error processing Facebook callback', [
                 'error' => $th->getMessage(),
-                'trace' => $th->getTraceAsString(),
             ]);
 
             return response()->json([
@@ -487,64 +479,49 @@ class ConnectionController extends Controller
         }
     }
 
-    private function handleWhatsAppCallback(Connection $connection, string $accessToken)
+    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null)
     {
         try {
-            // Get WhatsApp Business Account info from debug_token
-            $debugResponse = Http::get('https://graph.facebook.com/v25.0/debug_token', [
-                'input_token' => $accessToken,
-                'access_token' => config('services.facebook.app_id') . '|' . config('services.facebook.app_secret'),
-            ]);
-
-            $debugInfo = $debugResponse->successful() ? $debugResponse->json()['data'] : [];
-
-            Log::info('Facebook token debug info retrieved', [
-                'debug_info' => $debugInfo,
-            ]);
-
-            // Get WABA ID from granular_scopes
-            $wabaId = null;
-            foreach ($debugInfo['granular_scopes'] ?? [] as $scope) {
-                if (in_array($scope['scope'], ['whatsapp_business_management', 'whatsapp_business_messaging'])) {
-                    $wabaId = $scope['target_ids'][0] ?? null;
-                    if ($wabaId) break;
-                }
+            // WABA ID must come from the frontend (WA_EMBEDDED_SIGNUP "FINISH" event).
+            // Fallback to /me/businesses lookup for tokens where it was not forwarded.
+            if (!$wabaId) {
+                $wabaId = $this->resolveWabaIdFromBusinesses($accessToken);
             }
 
             if (!$wabaId) {
-                throw new \Exception('Could not retrieve WhatsApp Business Account ID from token');
+                throw new \Exception('Could not retrieve WhatsApp Business Account ID. Frontend must send waba_id from the WA_EMBEDDED_SIGNUP "FINISH" message event.');
             }
 
-            Log::info('WhatsApp Business Account ID retrieved', [
-                'waba_id' => $wabaId,
-                'debug_info' => $debugInfo,
-            ]);
+            $primaryPhone = null;
 
-            // Fetch phone numbers registered to this WABA
-            $phoneNumbersResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/phone_numbers", [
-                'access_token' => $accessToken,
-            ]);
-
-            $phoneNumbersData = $phoneNumbersResponse->successful() ? $phoneNumbersResponse->json() : [];
-            $phoneNumbers = $phoneNumbersData['data'] ?? [];
-
-            if (empty($phoneNumbers)) {
-                throw new \Exception('No phone numbers found for this WhatsApp Business Account');
+            if ($phoneNumberId) {
+                $phoneResponse = Http::get("https://graph.facebook.com/v25.0/{$phoneNumberId}", [
+                    'access_token' => $accessToken,
+                    'fields' => 'id,display_phone_number,verified_name,quality_rating',
+                ]);
+                if ($phoneResponse->successful()) {
+                    $primaryPhone = $phoneResponse->json();
+                }
             }
 
-            // Get the first phone number (or you can let user choose later)
-            $primaryPhone = $phoneNumbers[0];
-            $phoneNumberId = $primaryPhone['id'] ?? null;
+            if (!$primaryPhone) {
+                $phoneNumbersResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/phone_numbers", [
+                    'access_token' => $accessToken,
+                ]);
+                $phoneNumbers = $phoneNumbersResponse->successful() ? ($phoneNumbersResponse->json()['data'] ?? []) : [];
+
+                if (empty($phoneNumbers)) {
+                    throw new \Exception('No phone numbers found for this WhatsApp Business Account');
+                }
+
+                $primaryPhone = $phoneNumbers[0];
+            }
+
+            $phoneNumberId = $primaryPhone['id'] ?? $phoneNumberId;
             $displayPhoneNumber = $primaryPhone['display_phone_number'] ?? null;
             $verifiedName = $primaryPhone['verified_name'] ?? null;
             $qualityRating = $primaryPhone['quality_rating'] ?? null;
 
-            Log::info('WhatsApp phone numbers retrieved', [
-                'phone_count' => count($phoneNumbers),
-                'primary_phone' => $primaryPhone,
-            ]);
-
-            // Connect the WhatsApp account using ConnectionService
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
                 'business_account_id' => (string) $wabaId,
@@ -552,10 +529,8 @@ class ConnectionController extends Controller
                 'display_phone_number' => $displayPhoneNumber,
                 'verified_name' => $verifiedName,
                 'quality_rating' => $qualityRating,
-                'token_type' => $debugInfo['type'] ?? 'USER',
-                'token_expires_at' => isset($debugInfo['expires_at']) && $debugInfo['expires_at'] > 0
-                    ? date('Y-m-d H:i:s', $debugInfo['expires_at'])
-                    : null,
+                'token_type' => 'SYSTEM_USER',
+                'token_expires_at' => null,
             ]);
 
             broadcast(new ConnectionUpdated($connection->fresh()));
@@ -582,6 +557,40 @@ class ConnectionController extends Controller
 
             throw $th;
         }
+    }
+
+    /**
+     * Fallback resolver for SYSTEM_USER tokens where granular_scopes is empty.
+     * Walks /me/businesses → owned_whatsapp_business_accounts / client_whatsapp_business_accounts
+     * and returns the first WABA id found. Returns null if none.
+     */
+    private function resolveWabaIdFromBusinesses(string $accessToken): ?string
+    {
+        $response = Http::get('https://graph.facebook.com/v25.0/me/businesses', [
+            'access_token' => $accessToken,
+            'fields' => 'id,owned_whatsapp_business_accounts{id},client_whatsapp_business_accounts{id}',
+        ]);
+
+        if (!$response->successful()) {
+            Log::warning('Failed to list businesses for WABA resolution', [
+                'status' => $response->status(),
+                'body' => $response->json(),
+            ]);
+            return null;
+        }
+
+        foreach ($response->json()['data'] ?? [] as $business) {
+            $owned = $business['owned_whatsapp_business_accounts']['data'] ?? [];
+            $client = $business['client_whatsapp_business_accounts']['data'] ?? [];
+
+            foreach (array_merge($owned, $client) as $waba) {
+                if (!empty($waba['id'])) {
+                    return (string) $waba['id'];
+                }
+            }
+        }
+
+        return null;
     }
 
     private function handleMessengerCallback(Connection $connection, string $accessToken)
