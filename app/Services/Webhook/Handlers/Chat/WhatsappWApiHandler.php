@@ -342,6 +342,11 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
+        if($conversationId === 'status'){
+            Log::info('WhatsappWApiHandler: Ignoring message with conversation ID "status"');
+            return;
+        }
+
         $isNewConversation = false;
         $conversationForWelcome = null;
 
@@ -547,6 +552,11 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 'message_id' => $messageId,
             ]);
 
+            return;
+        }
+
+        if($conversationId === 'status'){
+            Log::info('WhatsappWApiHandler: Ignoring message with conversation ID "status"');
             return;
         }
 
