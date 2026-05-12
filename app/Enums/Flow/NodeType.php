@@ -52,6 +52,7 @@ enum NodeType: string
             ],
             self::AIAgent => [
                 'ai_hub_agent_id' => null, // FK to ai_hub_agents.id
+                'welcoming_message' => '', // optional: static greeting sent on first turn instead of calling AI
                 'store_summary_to_variable' => '', // optional: variable key in flow state to store the run summary
             ],
         };

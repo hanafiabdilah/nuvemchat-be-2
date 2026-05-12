@@ -783,25 +783,17 @@ class FlowExecutor
     /**
      * Execute an AIAgent node.
      *
-     * On entry, picks up the latest unprocessed incoming message from the
-     * conversation and feeds it to the agent immediately. This covers two
-     * common entry paths:
-     *   - User's first message triggered startFlow() and the flow walked
-     *     straight to this node (no Response/Message node consumed the
-     *     input first).
-     *   - A prior Message node with wait_for_reply=false transitioned
-     *     here while an unprocessed message exists.
+     * First turn is always answered with the configured `welcoming_message`
+     * — the AI is never called on the first interaction. This avoids the
+     * common case where an LLM with no prior context responds awkwardly
+     * to bare greetings like "Halo". Subsequent turns go through the AI.
      *
      * If no fresh incoming message exists, the node simply waits — the
      * next user reply will be routed here via resumeFlow().
-     *
-     * Composition over coupling: if you need a greeting before the agent
-     * engages, place a Message node before this one. If you need to
-     * assign a specific human agent after handoff, place an Action node
-     * after.
      */
     protected function executeAIAgentNode(FlowState $flowState, FlowNode $node): void
     {
+        $data = $node->data ?? [];
         $stateData = $flowState->state_data ?? [];
         $turnsKey = "_ai_turns_{$node->id}";
         $lastProcessedKey = "_ai_last_processed_message_id_{$node->id}";
@@ -819,21 +811,84 @@ class FlowExecutor
             ->orderBy('id')
             ->first();
 
-        if ($pendingMessage) {
-            Log::info('FlowExecutor: AIAgent processing pending message on node entry', [
+        if (!$pendingMessage) {
+            Log::info('FlowExecutor: AIAgent node reached, no pending input — waiting', [
                 'node_id' => $node->id,
                 'conversation_id' => $flowState->conversation_id,
-                'message_id' => $pendingMessage->id,
+                'turns' => $stateData[$turnsKey],
             ]);
-
-            $this->handleAIAgentInput($flowState, $node, $pendingMessage->body ?? '', $pendingMessage->id);
             return;
         }
 
-        Log::info('FlowExecutor: AIAgent node reached, no pending input — waiting', [
+        $isFirstTurn = ($stateData[$turnsKey] ?? 0) === 0;
+
+        if ($isFirstTurn) {
+            $welcomingMessage = trim((string) ($data['welcoming_message'] ?? ''));
+
+            if ($welcomingMessage === '') {
+                Log::error('FlowExecutor: AIAgent node missing required welcoming_message, skipping AI on first turn', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $flowState->conversation_id,
+                ]);
+
+                $stateData[$turnsKey] = 1;
+                $stateData[$lastProcessedKey] = $pendingMessage->id;
+                $flowState->update(['state_data' => $stateData]);
+                return;
+            }
+
+            $this->sendAIAgentWelcome($flowState, $node, $welcomingMessage, $pendingMessage->id);
+            return;
+        }
+
+        Log::info('FlowExecutor: AIAgent processing pending message on node entry', [
             'node_id' => $node->id,
             'conversation_id' => $flowState->conversation_id,
-            'turns' => $stateData[$turnsKey],
+            'message_id' => $pendingMessage->id,
+        ]);
+
+        $this->handleAIAgentInput($flowState, $node, $pendingMessage->body ?? '', $pendingMessage->id);
+    }
+
+    /**
+     * Send the configured welcoming message and advance the turn counter
+     * without calling the AI. The triggering user message is marked as
+     * processed so the next user reply will be routed to the AI normally.
+     */
+    protected function sendAIAgentWelcome(FlowState $flowState, FlowNode $node, string $welcomingMessage, int $triggeringMessageId): void
+    {
+        $conversation = $flowState->conversation;
+
+        try {
+            $message = $this->messageService->sendMessage($conversation, [
+                'message' => $welcomingMessage,
+            ]);
+
+            if ($message) {
+                $message->update([
+                    'meta' => array_merge((array) ($message->meta ?? []), [
+                        'ai_welcome' => true,
+                        'ai_hub_agent_id' => $node->data['ai_hub_agent_id'] ?? null,
+                    ]),
+                ]);
+
+                broadcast(new MessageReceived($message));
+            }
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Failed to send AIAgent welcoming message', [
+                'node_id' => $node->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData["_ai_turns_{$node->id}"] = ($stateData["_ai_turns_{$node->id}"] ?? 0) + 1;
+        $stateData["_ai_last_processed_message_id_{$node->id}"] = $triggeringMessageId;
+        $flowState->update(['state_data' => $stateData]);
+
+        Log::info('FlowExecutor: AIAgent welcoming message sent, waiting for next user input', [
+            'node_id' => $node->id,
+            'conversation_id' => $conversation->id,
         ]);
     }
 

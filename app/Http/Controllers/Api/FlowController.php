@@ -308,6 +308,7 @@ class FlowController extends Controller
                         })->where('status', 'ACTIVE');
                     }),
                 ],
+                'welcoming_message' => ['required', 'string', 'max:4000'],
                 'store_summary_to_variable' => ['nullable', 'string', 'alpha_dash'],
             ],
             default => [],
