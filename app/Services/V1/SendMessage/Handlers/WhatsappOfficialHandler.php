@@ -19,7 +19,7 @@ class WhatsappOfficialHandler implements SendMessageHandlerInterface
 
         try {
             $response = Http::withToken($connection->credentials['access_token'])
-                ->post('https://graph.facebook.com/v22.0/' . $connection->credentials['phone_number_id'] . '/messages', [
+                ->post('https://graph.facebook.com/v25.0/' . $connection->credentials['phone_number_id'] . '/messages', [
                     'messaging_product' => 'whatsapp',
                     'recipient_type' => 'individual',
                     'to' => $data['to'],

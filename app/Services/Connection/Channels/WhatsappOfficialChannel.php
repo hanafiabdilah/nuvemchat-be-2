@@ -31,6 +31,7 @@ class WhatsappOfficialChannel implements ChannelInterface
             'display_phone_number' => ['nullable', 'string'],
             'verified_name' => ['nullable', 'string'],
             'quality_rating' => ['nullable', 'string'],
+            'pin' => ['nullable', 'string'],
             'token_type' => ['nullable', 'string'],
             'token_expires_at' => ['nullable', 'string'],
         ])->validate();
@@ -71,6 +72,7 @@ class WhatsappOfficialChannel implements ChannelInterface
                     'display_phone_number' => $phoneInfo['display_phone_number'] ?? $data['display_phone_number'] ?? null,
                     'verified_name' => $phoneInfo['verified_name'] ?? $data['verified_name'] ?? null,
                     'quality_rating' => $phoneInfo['quality_rating'] ?? $data['quality_rating'] ?? null,
+                    'pin' => $data['pin'] ?? null,
                     'token_type' => $data['token_type'] ?? null,
                     'token_expires_at' => $data['token_expires_at'] ?? null,
                 ],

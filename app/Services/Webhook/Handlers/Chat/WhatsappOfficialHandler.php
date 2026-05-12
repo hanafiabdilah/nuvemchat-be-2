@@ -12,6 +12,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\MessageReaction;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -103,13 +104,21 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
         return false;
     }
 
+    public function getRepliedMessageId(array $payload): ?string
+    {
+        return $payload['changes'][0]['value']['messages'][0]['context']['id'] ?? null;
+    }
+
     public function handle(Connection $connection, array $payload)
     {
         $changes = $payload['changes'][0] ?? [];
         $value = $changes['value'] ?? [];
 
+        $isReaction = ($value['messages'][0]['type'] ?? null) === 'reaction';
+
         // Determine event type
         $eventType = match (true) {
+            $isReaction => 'reaction',
             isset($value['messages']) => 'message',
             isset($value['statuses']) => 'status',
             default => 'unsupported',
@@ -122,6 +131,10 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
 
         // Handle based on event type
         switch ($eventType) {
+            case 'reaction':
+                $this->handleReaction($connection, $payload);
+                break;
+
             case 'message':
                 $this->handleMessage($connection, $payload);
                 break;
@@ -195,11 +208,31 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
                 return null;
             }
 
+            // Resolve replied message via WhatsApp context.id
+            $repliedMessageId = null;
+            $repliedExternalId = $this->getRepliedMessageId($payload);
+
+            if ($repliedExternalId) {
+                $repliedMessage = Message::where('external_id', $repliedExternalId)
+                    ->where('conversation_id', $conversation->id)
+                    ->first();
+
+                if ($repliedMessage) {
+                    $repliedMessageId = $repliedMessage->id;
+                } else {
+                    Log::warning('WhatsappOfficialHandler: Replied message not found', [
+                        'replied_external_id' => $repliedExternalId,
+                        'conversation_id' => $conversation->id,
+                    ]);
+                }
+            }
+
             return $conversation->messages()->create([
                 'external_id' => $messageId,
                 'sender_type' => $isOutgoing ? SenderType::Outgoing : SenderType::Incoming,
                 'message_type' => $messageType,
                 'body' => $this->getMessageBody($payload),
+                'replied_message_id' => $repliedMessageId,
                 'sent_at' => $this->getMessageSentAt($payload),
                 'delivery_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
@@ -253,6 +286,75 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
                     ]);
                 }
             }
+        }
+    }
+
+    /**
+     * Handle a WhatsApp reaction event. Cloud API sends reactions as a
+     * message with type=reaction and a `reaction` object containing the
+     * target message_id and emoji (empty emoji = unreact).
+     */
+    private function handleReaction(Connection $connection, array $payload)
+    {
+        $reaction = $payload['changes'][0]['value']['messages'][0]['reaction'] ?? [];
+        $targetMessageExternalId = $reaction['message_id'] ?? null;
+        $emoji = $reaction['emoji'] ?? null;
+
+        if (!$targetMessageExternalId) {
+            Log::warning('WhatsappOfficialHandler: Missing target message_id in reaction', [
+                'payload' => $payload,
+            ]);
+            return;
+        }
+
+        // WhatsApp reactions from webhook are always from the contact (incoming)
+        $senderType = SenderType::Incoming;
+
+        try {
+            $targetMessage = Message::where('external_id', $targetMessageExternalId)
+                ->whereHas('conversation', function($query) use ($connection) {
+                    $query->where('connection_id', $connection->id);
+                })
+                ->first();
+
+            if (!$targetMessage) {
+                Log::warning('WhatsappOfficialHandler: Target message not found for reaction', [
+                    'external_id' => $targetMessageExternalId,
+                ]);
+                return;
+            }
+
+            if (empty($emoji)) {
+                MessageReaction::where('message_id', $targetMessage->id)
+                    ->where('sender_type', $senderType)
+                    ->delete();
+
+                Log::info('WhatsappOfficialHandler: Reaction removed', [
+                    'message_id' => $targetMessage->id,
+                ]);
+            } else {
+                MessageReaction::updateOrCreate(
+                    [
+                        'message_id' => $targetMessage->id,
+                        'sender_type' => $senderType,
+                    ],
+                    [
+                        'emoji' => $emoji,
+                    ],
+                );
+
+                Log::info('WhatsappOfficialHandler: Reaction saved', [
+                    'message_id' => $targetMessage->id,
+                    'emoji' => $emoji,
+                ]);
+            }
+
+            broadcast(new MessageUpdated($targetMessage->fresh()));
+        } catch (\Throwable $th) {
+            Log::error('WhatsappOfficialHandler: Failed to handle reaction', [
+                'error' => $th->getMessage(),
+                'target_message_id' => $targetMessageExternalId,
+            ]);
         }
     }
 
