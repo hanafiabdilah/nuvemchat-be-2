@@ -527,8 +527,26 @@ class ConnectionController extends Controller
             $pin = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
             $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $connection->credentials['pin'] ?? $pin);
 
+            // Resolve the Facebook user_id so deauth/data-deletion webhooks
+            // (which key off the signed_request user_id) can locate this connection.
+            $facebookUserId = null;
+            $meResponse = Http::get('https://graph.facebook.com/v25.0/me', [
+                'access_token' => $accessToken,
+                'fields' => 'id',
+            ]);
+            if ($meResponse->successful()) {
+                $facebookUserId = $meResponse->json()['id'] ?? null;
+            } else {
+                Log::warning('Failed to resolve Facebook user_id during WhatsApp connect', [
+                    'connection_id' => $connection->id,
+                    'status' => $meResponse->status(),
+                    'body' => $meResponse->json(),
+                ]);
+            }
+
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
+                'user_id' => $facebookUserId,
                 'business_account_id' => (string) $wabaId,
                 'phone_number_id' => (string) $phoneNumberId,
                 'display_phone_number' => $displayPhoneNumber,
