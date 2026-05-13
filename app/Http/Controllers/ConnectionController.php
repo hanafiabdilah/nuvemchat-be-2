@@ -831,6 +831,7 @@ class ConnectionController extends Controller
                 'facebook_user_id' => $facebookUserId,
                 'confirmation_code' => $confirmationCode,
                 'status_url' => $statusUrl,
+                'data' => $data,
             ]);
 
             // Initialize counters
