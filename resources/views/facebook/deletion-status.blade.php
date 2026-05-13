@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Instagram Data Deletion Status</title>
+    <title>Facebook Data Deletion Status</title>
     <style>
         * {
             margin: 0;
@@ -13,7 +13,7 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1877F2 0%, #0866FF 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -111,7 +111,7 @@
             padding: 15px;
             background: #edf2f7;
             border-radius: 8px;
-            border-left: 4px solid #667eea;
+            border-left: 4px solid #1877F2;
         }
 
         .confirmation-code p {
@@ -162,7 +162,7 @@
                 <path d="M20 32L28 40L44 24" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <h1>Data Deletion Completed</h1>
-            <p>Your Instagram data has been successfully removed from our system</p>
+            <p>Your Facebook data has been successfully removed from our system</p>
             <span class="status-badge status-{{ strtolower($log->status) }}">
                 {{ ucfirst($log->status) }}
             </span>
@@ -170,8 +170,8 @@
 
         <div class="info-section">
             <div class="info-row">
-                <span class="info-label">Instagram User ID</span>
-                <span class="info-value">{{ $log->instagram_user_id }}</span>
+                <span class="info-label">Facebook User ID</span>
+                <span class="info-value">{{ $log->facebook_user_id }}</span>
             </div>
             <div class="info-row">
                 <span class="info-label">Request Date</span>
@@ -201,7 +201,7 @@
         </div>
 
         <div class="footer">
-            <p>This page is provided for your records. Your Instagram credentials, conversations, and messages have been permanently deleted as per your request.</p>
+            <p>This page is provided for your records. Your Facebook credentials, conversations, and messages have been permanently deleted as per your request.</p>
         </div>
     </div>
 </body>
