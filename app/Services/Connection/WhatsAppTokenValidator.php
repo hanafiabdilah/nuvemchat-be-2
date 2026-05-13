@@ -26,51 +26,43 @@ use Illuminate\Support\Facades\Log;
 class WhatsAppTokenValidator
 {
     /**
-     * Inspect a single access token. Returns the raw `data` payload from
-     * /debug_token, or null on transport failure. Caller should treat null as
-     * "unknown — do not act" (e.g. transient network error), and act only on
-     * an explicit `is_valid: false`.
-     */
-    public function inspect(string $accessToken): ?array
-    {
-        $appId = config('services.facebook.app_id');
-        $appSecret = config('services.facebook.app_secret');
-
-        if (!$appId || !$appSecret) {
-            Log::error('WhatsAppTokenValidator: missing facebook.app_id/app_secret config');
-            return null;
-        }
-
-        // /debug_token is NOT version-namespaced — calling /v25.0/debug_token
-        // returns "Unsupported request - method type: get" (GraphMethodException).
-        $response = Http::get('https://graph.facebook.com/debug_token', [
-            'input_token' => $accessToken,
-            'access_token' => "{$appId}|{$appSecret}",
-        ]);
-
-        if (!$response->successful()) {
-            Log::warning('WhatsAppTokenValidator: debug_token request failed', [
-                'status' => $response->status(),
-                'body' => $response->json(),
-            ]);
-            return null;
-        }
-
-        return $response->json('data');
-    }
-
-    /**
-     * True only if Meta explicitly returns is_valid=false. Other states (null,
-     * missing key, transport error) are treated as "still valid" so we never
-     * deauthorize on a transient failure.
+     * Probe the token with an actual API call to /me. Returns true if Meta
+     * explicitly rejects the token as revoked/expired (OAuthException code 190),
+     * false otherwise. Transport errors and unrelated HTTP failures are treated
+     * as "still valid" so we never deauthorize on a transient blip.
+     *
+     * We use /me instead of /debug_token because:
+     *   - /debug_token returns GraphMethodException for WhatsApp Business app
+     *     tokens in this environment.
+     *   - /me deterministically returns code 190 once the user revokes the app,
+     *     and that's the only signal we actually need.
      */
     public function isExplicitlyInvalid(string $accessToken): bool
     {
-        $data = $this->inspect($accessToken);
-        if ($data === null) {
+        $response = Http::get('https://graph.facebook.com/v25.0/me', [
+            'access_token' => $accessToken,
+            'fields' => 'id',
+        ]);
+
+        if ($response->successful()) {
             return false;
         }
-        return ($data['is_valid'] ?? true) === false;
+
+        $error = $response->json('error') ?? [];
+        $type = $error['type'] ?? null;
+        $code = $error['code'] ?? null;
+
+        // Meta returns OAuthException code 190 for any auth-side rejection:
+        // revoked, expired, password-change invalidation, etc.
+        if ($type === 'OAuthException' && (int) $code === 190) {
+            return true;
+        }
+
+        Log::warning('WhatsAppTokenValidator: /me probe returned a non-auth error; treating token as still valid', [
+            'status' => $response->status(),
+            'error' => $error,
+        ]);
+        return false;
     }
 
     /**
