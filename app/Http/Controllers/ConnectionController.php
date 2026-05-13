@@ -415,16 +415,18 @@ class ConnectionController extends Controller
             ], 400);
         }
 
-        // Resolve connection_id, waba_id, phone_number_id from either POST body or GET state.
+        // Resolve connection_id, waba_id, phone_number_id, fb_user_id from either POST body or GET state.
         $connectionId = $request->input('connection_id');
         $wabaId = $request->input('waba_id');
         $phoneNumberId = $request->input('phone_number_id');
+        $fbUserId = $request->input('fb_user_id');
 
         if (!$connectionId && $state = $request->input('state')) {
             $stateData = json_decode(base64_decode($state), true) ?: [];
             $connectionId = $stateData['connection_id'] ?? null;
             $wabaId = $wabaId ?: ($stateData['waba_id'] ?? null);
             $phoneNumberId = $phoneNumberId ?: ($stateData['phone_number_id'] ?? null);
+            $fbUserId = $fbUserId ?: ($stateData['fb_user_id'] ?? null);
         }
 
         if (!$connectionId) {
@@ -463,7 +465,7 @@ class ConnectionController extends Controller
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
-            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId);
+            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId, $fbUserId);
 
         } catch (\Throwable $th) {
             Log::error('Error processing Facebook callback', [
@@ -477,7 +479,7 @@ class ConnectionController extends Controller
         }
     }
 
-    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null)
+    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null, ?string $fbUserId = null)
     {
         try {
             // WABA ID must come from the frontend (WA_EMBEDDED_SIGNUP "FINISH" event).
@@ -526,21 +528,36 @@ class ConnectionController extends Controller
                 ?? str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
             $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
 
-            // Resolve the Facebook user_id so deauth/data-deletion webhooks
-            // (which key off the signed_request user_id) can locate this connection.
-            $facebookUserId = null;
-            $meResponse = Http::get('https://graph.facebook.com/v25.0/me', [
-                'access_token' => $accessToken,
-                'fields' => 'id',
-            ]);
-            if ($meResponse->successful()) {
-                $facebookUserId = $meResponse->json()['id'] ?? null;
-            } else {
-                Log::warning('Failed to resolve Facebook user_id during WhatsApp connect', [
-                    'connection_id' => $connection->id,
-                    'status' => $meResponse->status(),
-                    'body' => $meResponse->json(),
+            // Resolve the Facebook user ASID so deauth/data-deletion webhooks
+            // (which key off signed_request user_id) can locate this connection.
+            //
+            // Authoritative source: frontend FB.getLoginStatus().authResponse.userID,
+            // forwarded as `fb_user_id`. The token from Embedded Signup is a
+            // SYSTEM_USER token, so calling /me?fields=id with it returns the
+            // system user ID — NOT the Facebook user ASID — and would never
+            // match what Meta sends in the deauth signed_request.
+            //
+            // Fallback to /me only if frontend did not supply fb_user_id (legacy
+            // flow). This may store the wrong ID for SYSTEM_USER tokens.
+            $facebookUserId = $fbUserId;
+            if (!$facebookUserId) {
+                $meResponse = Http::get('https://graph.facebook.com/v25.0/me', [
+                    'access_token' => $accessToken,
+                    'fields' => 'id',
                 ]);
+                if ($meResponse->successful()) {
+                    $facebookUserId = $meResponse->json()['id'] ?? null;
+                    Log::warning('fb_user_id not provided by frontend; fell back to /me. Deauth lookup may fail for SYSTEM_USER tokens.', [
+                        'connection_id' => $connection->id,
+                        'resolved_id' => $facebookUserId,
+                    ]);
+                } else {
+                    Log::error('Failed to resolve Facebook user_id during WhatsApp connect', [
+                        'connection_id' => $connection->id,
+                        'status' => $meResponse->status(),
+                        'body' => $meResponse->json(),
+                    ]);
+                }
             }
 
             $this->connectionService->connect($connection, [
