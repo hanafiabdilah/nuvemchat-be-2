@@ -881,78 +881,87 @@ class ConnectionController extends Controller
     }
 
     /**
-     * Parse Instagram signed request
-     *
-     * @param string $signedRequest
-     * @return array|null
+     * Parse Instagram signed request. Returns null if the signature is missing,
+     * malformed, or invalid — never returns the payload of an unverified request.
      */
     private function parseSignedRequest(string $signedRequest): ?array
     {
-        try {
-            list($encodedSig, $payload) = explode('.', $signedRequest, 2);
-
-            // Decode signature
-            $sig = base64_decode(strtr($encodedSig, '-_', '+/'));
-
-            // Decode payload
-            $data = json_decode(base64_decode(strtr($payload, '-_', '+/')), true);
-
-            if (!$data) {
-                return null;
-            }
-
-            // Verify signature
-            $expectedSig = hash_hmac('sha256', $payload, config('services.instagram.client_secret'), true);
-
-            if ($sig !== $expectedSig) {
-                Log::warning('Instagram signed request: signature mismatch');
-                // Still return data for logging/debugging, but you might want to reject in production
-            }
-
-            return $data;
-        } catch (\Throwable $th) {
-            Log::error('Error parsing signed request', [
-                'error' => $th->getMessage(),
-            ]);
-            return null;
-        }
+        return $this->verifyAndDecodeSignedRequest(
+            $signedRequest,
+            (string) config('services.instagram.client_secret'),
+            'instagram'
+        );
     }
 
     /**
-     * Parse Facebook signed request (for WhatsApp & Messenger)
-     *
-     * @param string $signedRequest
-     * @return array|null
+     * Parse Facebook signed request (for WhatsApp & Messenger). Returns null
+     * if the signature is missing, malformed, or invalid.
      */
     private function parseFacebookSignedRequest(string $signedRequest): ?array
     {
-        try {
-            list($encodedSig, $payload) = explode('.', $signedRequest, 2);
+        return $this->verifyAndDecodeSignedRequest(
+            $signedRequest,
+            (string) config('services.facebook.app_secret'),
+            'facebook'
+        );
+    }
 
-            // Decode signature
-            $sig = base64_decode(strtr($encodedSig, '-_', '+/'));
+    /**
+     * Verify a Meta signed_request and return its decoded payload, or null on
+     * any failure. Hard-fails on signature mismatch — Meta App Review and basic
+     * security require that we NEVER act on an unverified payload (an attacker
+     * could otherwise craft a signed_request with an arbitrary user_id and
+     * trigger deauth/data-deletion against any account).
+     *
+     * Uses hash_equals for timing-safe comparison and validates the declared
+     * algorithm matches what we compute.
+     */
+    private function verifyAndDecodeSignedRequest(string $signedRequest, string $secret, string $provider): ?array
+    {
+        if ($secret === '') {
+            Log::error('Signed request: app secret not configured', ['provider' => $provider]);
+            return null;
+        }
 
-            // Decode payload
-            $data = json_decode(base64_decode(strtr($payload, '-_', '+/')), true);
+        $parts = explode('.', $signedRequest, 2);
+        if (count($parts) !== 2) {
+            Log::warning('Signed request: malformed (missing "." separator)', ['provider' => $provider]);
+            return null;
+        }
+        [$encodedSig, $payload] = $parts;
 
-            if (!$data) {
-                return null;
-            }
+        $sig = base64_decode(strtr($encodedSig, '-_', '+/'), true);
+        $jsonPayload = base64_decode(strtr($payload, '-_', '+/'), true);
 
-            // Verify signature
-            $expectedSig = hash_hmac('sha256', $payload, config('services.facebook.app_secret'), true);
+        if ($sig === false || $jsonPayload === false) {
+            Log::warning('Signed request: base64 decode failed', ['provider' => $provider]);
+            return null;
+        }
 
-            if ($sig !== $expectedSig) {
-                Log::warning('Facebook signed request: signature mismatch');
-                // Still return data for logging/debugging, but you might want to reject in production
-            }
+        $data = json_decode($jsonPayload, true);
+        if (!is_array($data)) {
+            Log::warning('Signed request: payload not a JSON object', ['provider' => $provider]);
+            return null;
+        }
 
-            return $data;
-        } catch (\Throwable $th) {
-            Log::error('Error parsing Facebook signed request', [
-                'error' => $th->getMessage(),
+        $algorithm = strtoupper((string) ($data['algorithm'] ?? ''));
+        if ($algorithm !== 'HMAC-SHA256') {
+            Log::warning('Signed request: unsupported algorithm', [
+                'provider' => $provider,
+                'algorithm' => $algorithm,
             ]);
             return null;
         }
+
+        $expectedSig = hash_hmac('sha256', $payload, $secret, true);
+
+        if (!hash_equals($expectedSig, $sig)) {
+            Log::error('Signed request: signature verification failed — REJECTING request', [
+                'provider' => $provider,
+            ]);
+            return null;
+        }
+
+        return $data;
     }
 }
