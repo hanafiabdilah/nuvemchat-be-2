@@ -19,3 +19,12 @@ Schedule::command('instagram:refresh-tokens --days-before=7')
     ->onFailure(function () {
         logger()->error('Instagram token refresh failed');
     });
+
+// Reactively detect WhatsApp connections whose access_token has been revoked
+// (e.g. user removed app from Facebook Settings). Catches revocations missed
+// by the deauth webhook or where signed_request user_id could not be matched.
+Schedule::command('whatsapp:validate-tokens')
+    ->hourly()
+    ->onFailure(function () {
+        logger()->error('WhatsApp token validation failed');
+    });

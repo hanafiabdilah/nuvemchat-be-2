@@ -8,6 +8,7 @@ use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\ConnectionService;
+use App\Services\Connection\WhatsAppTokenValidator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -17,6 +18,7 @@ class ConnectionController extends Controller
 {
     public function __construct(
         protected ConnectionService $connectionService,
+        protected WhatsAppTokenValidator $whatsAppTokenValidator,
     ){
         //
     }
@@ -415,18 +417,16 @@ class ConnectionController extends Controller
             ], 400);
         }
 
-        // Resolve connection_id, waba_id, phone_number_id, fb_user_id from either POST body or GET state.
+        // Resolve connection_id, waba_id, phone_number_id from either POST body or GET state.
         $connectionId = $request->input('connection_id');
         $wabaId = $request->input('waba_id');
         $phoneNumberId = $request->input('phone_number_id');
-        $fbUserId = $request->input('fb_user_id');
 
         if (!$connectionId && $state = $request->input('state')) {
             $stateData = json_decode(base64_decode($state), true) ?: [];
             $connectionId = $stateData['connection_id'] ?? null;
             $wabaId = $wabaId ?: ($stateData['waba_id'] ?? null);
             $phoneNumberId = $phoneNumberId ?: ($stateData['phone_number_id'] ?? null);
-            $fbUserId = $fbUserId ?: ($stateData['fb_user_id'] ?? null);
         }
 
         if (!$connectionId) {
@@ -465,7 +465,7 @@ class ConnectionController extends Controller
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
-            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId, $fbUserId);
+            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId);
 
         } catch (\Throwable $th) {
             Log::error('Error processing Facebook callback', [
@@ -479,7 +479,7 @@ class ConnectionController extends Controller
         }
     }
 
-    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null, ?string $fbUserId = null)
+    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null)
     {
         try {
             // WABA ID must come from the frontend (WA_EMBEDDED_SIGNUP "FINISH" event).
@@ -528,29 +528,18 @@ class ConnectionController extends Controller
                 ?? str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
             $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
 
-            // Resolve the Facebook user ASIDs so deauth/data-deletion webhooks
-            // (which key off signed_request user_id) can locate this connection.
+            // Note: we intentionally do NOT try to resolve a Facebook user ASID
+            // here. The Embedded Signup token is a SYSTEM_USER token scoped to
+            // a WABA, and there is no API path it can call to obtain the ASID
+            // Meta sends in deauth/data-deletion signed_requests (assigned_users
+            // returns Business User entity IDs, /me returns the system user ID,
+            // and Business-level admin queries require business_management on
+            // the parent Business — a permission Embedded Signup does not grant).
             //
-            // The Embedded Signup token is a SYSTEM_USER token: /me?fields=id
-            // would return the system user ID, NOT a Facebook user ASID, and
-            // never match what Meta sends in the deauth signed_request.
-            //
-            // Strategy: WABA -> owner_business_info -> business_users. Stores
-            // every admin ASID, so deauth from any admin can locate this row.
-            //
-            // If frontend supplied fb_user_id (FB.getLoginStatus.authResponse.userID),
-            // include it as well — useful when the user is not a business admin
-            // but holds the access grant directly.
-            $facebookUserIds = $this->resolveBusinessAdminAsids((string) $wabaId, $accessToken);
-            if ($fbUserId && !in_array($fbUserId, $facebookUserIds, true)) {
-                $facebookUserIds[] = $fbUserId;
-            }
-            $facebookUserId = $facebookUserIds[0] ?? null;
-
+            // Instead, deauth/data-deletion is handled reactively via
+            // WhatsAppTokenValidator (debug_token + App Access Token).
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
-                'user_id' => $facebookUserId,
-                'facebook_user_ids' => $facebookUserIds,
                 'business_account_id' => (string) $wabaId,
                 'phone_number_id' => (string) $phoneNumberId,
                 'display_phone_number' => $displayPhoneNumber,
@@ -628,91 +617,6 @@ class ConnectionController extends Controller
     }
 
     /**
-     * Resolve the Facebook user ASIDs assigned to the given WABA. These ASIDs
-     * are what Meta sends in deauth/data-deletion signed_requests, so storing
-     * them lets us match the connection regardless of which assigned user
-     * revokes access.
-     *
-     * Uses /{waba_id}/assigned_users which works with the whatsapp_business_management
-     * scope granted by Embedded Signup. Avoids /{business_id}/business_users —
-     * that endpoint requires business_management on the parent Business, a
-     * permission Embedded Signup tokens are not granted.
-     *
-     * Returns an empty array on failure; caller should log and proceed.
-     */
-    private function resolveBusinessAdminAsids(string $wabaId, string $accessToken): array
-    {
-        $asids = [];
-
-        // Step 1: WABA -> owner business id (needed as required `business` param
-        // by /{waba_id}/assigned_users to scope the lookup).
-        $wabaResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}", [
-            'access_token' => $accessToken,
-            'fields' => 'owner_business_info{id}',
-        ]);
-
-        if (!$wabaResponse->successful()) {
-            Log::warning('Could not fetch WABA owner_business_info for ASID resolution', [
-                'waba_id' => $wabaId,
-                'status' => $wabaResponse->status(),
-                'body' => $wabaResponse->json(),
-            ]);
-            return $asids;
-        }
-
-        $businessId = $wabaResponse->json()['owner_business_info']['id'] ?? null;
-        if (!$businessId) {
-            Log::warning('WABA has no owner_business_info; cannot resolve admin ASIDs', [
-                'waba_id' => $wabaId,
-            ]);
-            return $asids;
-        }
-
-        // Step 2: Assigned users on this WABA, scoped to the owning business.
-        // IMPORTANT: top-level `id` in this edge is the Business User entity ID
-        // (an internal Business Manager ID, ~18 digits), NOT the Facebook ASID
-        // that Meta sends in deauth signed_requests. The actual Facebook user
-        // ID lives in the nested `user{id}` field — request it explicitly and
-        // prefer it over the top-level id.
-        $response = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/assigned_users", [
-            'access_token' => $accessToken,
-            'business' => $businessId,
-            'fields' => 'id,name,tasks,user{id}',
-            'limit' => 100,
-        ]);
-
-        if (!$response->successful()) {
-            Log::warning('Could not fetch WABA assigned_users for ASID resolution', [
-                'waba_id' => $wabaId,
-                'business_id' => $businessId,
-                'status' => $response->status(),
-                'body' => $response->json(),
-            ]);
-            return $asids;
-        }
-
-        $payload = $response->json();
-        foreach ($payload['data'] ?? [] as $entry) {
-            // Prefer nested user.id (real Facebook ASID). Fall back to top-level
-            // id only if the nested field is missing — that fallback will not
-            // match deauth signed_requests, but we keep it for diagnostics.
-            $asid = $entry['user']['id'] ?? $entry['id'] ?? null;
-            if ($asid && !in_array($asid, $asids, true)) {
-                $asids[] = (string) $asid;
-            }
-        }
-
-        Log::info('Resolved WABA assigned_users for ASID lookup', [
-            'waba_id' => $wabaId,
-            'business_id' => $businessId,
-            'asid_count' => count($asids),
-            'raw_response' => $payload,
-        ]);
-
-        return $asids;
-    }
-
-    /**
      * Subscribe the app (the one that owns the access token) to receive
      * webhook events for this WABA. Required for incoming messages to be
      * delivered to our webhook endpoint.
@@ -772,7 +676,6 @@ class ConnectionController extends Controller
                 return response()->json(['error' => 'Missing signed_request'], 400);
             }
 
-            // Parse signed request
             $data = $this->parseFacebookSignedRequest($signedRequest);
 
             if (!$data || !isset($data['user_id'])) {
@@ -780,37 +683,21 @@ class ConnectionController extends Controller
                 return response()->json(['error' => 'Invalid signed_request'], 400);
             }
 
-            $facebookUserId = $data['user_id'];
-
-            Log::info('Facebook deauthorization processing', [
-                'facebook_user_id' => $facebookUserId,
+            // We cannot map signed_request user_id -> a specific connection
+            // (Embedded Signup tokens are SYSTEM_USER tokens with no resolvable
+            // ASID — see handleWhatsAppCallback). Instead, ask Meta which of
+            // our stored tokens are now invalid and deauthorize those.
+            Log::info('Facebook deauthorization: validating stored WhatsApp tokens', [
+                'facebook_user_id' => $data['user_id'],
             ]);
 
-            // Find all connections matching this Facebook user_id (WhatsApp & Messenger).
-            // facebook_user_ids[] holds every business admin ASID resolved at OAuth
-            // time, so deauth from any admin will match. user_id and
-            // business_account_id are kept as fallbacks for legacy rows.
-            $connections = Connection::whereIn('channel', ['whatsapp_official', 'messenger'])
-                ->where(function ($query) use ($facebookUserId) {
-                    $query->whereJsonContains('credentials->facebook_user_ids', $facebookUserId)
-                          ->orWhereJsonContains('credentials->user_id', $facebookUserId)
-                          ->orWhereJsonContains('credentials->business_account_id', $facebookUserId);
-                })
-                ->get();
+            $deauthorized = $this->whatsAppTokenValidator->deauthorizeRevoked();
 
-            foreach ($connections as $connection) {
-                $connection->update([
-                    'status' => Status::Inactive,
-                ]);
-
-                broadcast(new ConnectionUpdated($connection->fresh()));
-
-                Log::info('Facebook connection deauthorized', [
-                    'connection_id' => $connection->id,
-                    'facebook_user_id' => $facebookUserId,
-                    'channel' => $connection->channel,
-                ]);
-            }
+            Log::info('Facebook deauthorization processed', [
+                'facebook_user_id' => $data['user_id'],
+                'deauthorized_count' => $deauthorized->count(),
+                'connection_ids' => $deauthorized->pluck('id')->all(),
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -839,7 +726,6 @@ class ConnectionController extends Controller
                 return response()->json(['error' => 'Missing signed_request'], 400);
             }
 
-            // Parse signed request
             $data = $this->parseFacebookSignedRequest($signedRequest);
 
             if (!$data || !isset($data['user_id'])) {
@@ -848,84 +734,33 @@ class ConnectionController extends Controller
             }
 
             $facebookUserId = $data['user_id'];
-
-            // Generate confirmation code
             $confirmationCode = hash('sha256', $facebookUserId . time() . uniqid());
             $statusUrl = route('oauth.facebook.deletion-status', ['code' => $confirmationCode]);
 
-            Log::info('Facebook data deletion processing', [
+            Log::info('Facebook data deletion: validating stored WhatsApp tokens', [
                 'facebook_user_id' => $facebookUserId,
                 'confirmation_code' => $confirmationCode,
-                'status_url' => $statusUrl,
-                'data' => $data,
             ]);
 
-            // Initialize counters
-            $connectionsAffected = 0;
-            $conversationsDeleted = 0;
-            $messagesDeleted = 0;
+            // Same rationale as facebookDeauthorize: cannot map signed_request
+            // user_id to a specific connection. Ask Meta which stored tokens
+            // are now invalid and delete the data backing those connections.
+            $stats = $this->whatsAppTokenValidator->deleteRevokedData();
 
-            // Find all connections matching this Facebook user_id (WhatsApp & Messenger).
-            // See facebookDeauthorize for lookup-key rationale.
-            $connections = Connection::whereIn('channel', ['whatsapp_official', 'messenger'])
-                ->where(function ($query) use ($facebookUserId) {
-                    $query->whereJsonContains('credentials->facebook_user_ids', $facebookUserId)
-                          ->orWhereJsonContains('credentials->user_id', $facebookUserId)
-                          ->orWhereJsonContains('credentials->business_account_id', $facebookUserId);
-                })
-                ->get();
-
-            foreach ($connections as $connection) {
-                // Delete all conversations and messages related to this connection
-                $conversations = $connection->conversations ?? Conversation::where('connection_id', $connection->id)->get();
-
-                foreach ($conversations as $conversation) {
-                    // Count and delete all messages in this conversation
-                    $messageCount = Message::where('conversation_id', $conversation->id)->count();
-                    Message::where('conversation_id', $conversation->id)->delete();
-                    $messagesDeleted += $messageCount;
-
-                    // Delete conversation tags
-                    $conversation->tags()->detach();
-
-                    // Delete the conversation
-                    $conversation->delete();
-                    $conversationsDeleted++;
-                }
-
-                // Disconnect by removing credentials and setting status
-                // DO NOT delete the connection - keep it as historical record
-                $connection->update([
-                    'status' => Status::Inactive,
-                    'credentials' => null,
-                ]);
-
-                $connectionsAffected++;
-
-                broadcast(new ConnectionUpdated($connection->fresh()));
-
-                Log::info('Facebook connection data deleted', [
-                    'connection_id' => $connection->id,
-                    'facebook_user_id' => $facebookUserId,
-                    'channel' => $connection->channel,
-                    'conversations_deleted' => count($conversations),
-                ]);
-            }
-
-            // Save deletion log to database for audit
             DB::table('facebook_deletion_logs')->insert([
                 'confirmation_code' => $confirmationCode,
                 'facebook_user_id' => $facebookUserId,
                 'status' => 'completed',
-                'connections_deleted' => $connectionsAffected,
-                'conversations_deleted' => $conversationsDeleted,
-                'messages_deleted' => $messagesDeleted,
+                'connections_deleted' => $stats['connections'],
+                'conversations_deleted' => $stats['conversations'],
+                'messages_deleted' => $stats['messages'],
                 'requested_at' => now(),
                 'completed_at' => now(),
                 'meta' => json_encode([
                     'algorithm' => $data['algorithm'] ?? null,
                     'issued_at' => $data['issued_at'] ?? null,
                     'status_url' => $statusUrl,
+                    'connection_ids' => $stats['connection_ids'],
                 ]),
                 'created_at' => now(),
                 'updated_at' => now(),
@@ -934,15 +769,9 @@ class ConnectionController extends Controller
             Log::info('Facebook data deletion completed', [
                 'facebook_user_id' => $facebookUserId,
                 'confirmation_code' => $confirmationCode,
-                'status_url' => $statusUrl,
-                'stats' => [
-                    'connections_affected' => $connectionsAffected,
-                    'conversations_deleted' => $conversationsDeleted,
-                    'messages_deleted' => $messagesDeleted,
-                ],
+                'stats' => $stats,
             ]);
 
-            // Meta expects this specific response format
             return response()->json([
                 'url' => $statusUrl,
                 'confirmation_code' => $confirmationCode,
