@@ -644,8 +644,34 @@ class ConnectionController extends Controller
     {
         $asids = [];
 
+        // Step 1: WABA -> owner business id (needed as required `business` param
+        // by /{waba_id}/assigned_users to scope the lookup).
+        $wabaResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}", [
+            'access_token' => $accessToken,
+            'fields' => 'owner_business_info{id}',
+        ]);
+
+        if (!$wabaResponse->successful()) {
+            Log::warning('Could not fetch WABA owner_business_info for ASID resolution', [
+                'waba_id' => $wabaId,
+                'status' => $wabaResponse->status(),
+                'body' => $wabaResponse->json(),
+            ]);
+            return $asids;
+        }
+
+        $businessId = $wabaResponse->json()['owner_business_info']['id'] ?? null;
+        if (!$businessId) {
+            Log::warning('WABA has no owner_business_info; cannot resolve admin ASIDs', [
+                'waba_id' => $wabaId,
+            ]);
+            return $asids;
+        }
+
+        // Step 2: Assigned users on this WABA, scoped to the owning business.
         $response = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/assigned_users", [
             'access_token' => $accessToken,
+            'business' => $businessId,
             'fields' => 'id,name,tasks',
             'limit' => 100,
         ]);
@@ -653,6 +679,7 @@ class ConnectionController extends Controller
         if (!$response->successful()) {
             Log::warning('Could not fetch WABA assigned_users for ASID resolution', [
                 'waba_id' => $wabaId,
+                'business_id' => $businessId,
                 'status' => $response->status(),
                 'body' => $response->json(),
             ]);
