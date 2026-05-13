@@ -525,7 +525,7 @@ class ConnectionController extends Controller
             $this->subscribeWabaApp((string) $wabaId, $accessToken);
 
             $pin = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-            $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
+            $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $connection->credentials['pin'] ?? $pin);
 
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
