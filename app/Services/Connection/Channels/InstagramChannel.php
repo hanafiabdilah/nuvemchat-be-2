@@ -129,7 +129,7 @@ class InstagramChannel implements ChannelInterface
             // Subscribe to Instagram webhooks
             // POST /{instagram-account-id}/subscribed_apps
             $response = Http::post("https://graph.instagram.com/v25.0/{$instagramAccountId}/subscribed_apps", [
-                'subscribed_fields' => 'messages,messaging_postbacks,message_reactions',
+                'subscribed_fields' => 'messages,message_reactions',
                 'access_token' => $accessToken,
             ]);
 
