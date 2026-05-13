@@ -187,10 +187,8 @@ class ConnectionController extends Controller
                 ->get();
 
             foreach ($connections as $connection) {
-                // Disconnect by removing credentials
                 $connection->update([
                     'status' => Status::Inactive,
-                    'credentials' => null,
                 ]);
 
                 broadcast(new ConnectionUpdated($connection->fresh()));
@@ -707,10 +705,8 @@ class ConnectionController extends Controller
                 ->get();
 
             foreach ($connections as $connection) {
-                // Disconnect by removing credentials
                 $connection->update([
                     'status' => Status::Inactive,
-                    'credentials' => null,
                 ]);
 
                 broadcast(new ConnectionUpdated($connection->fresh()));
