@@ -628,10 +628,15 @@ class ConnectionController extends Controller
     }
 
     /**
-     * Resolve the Facebook user ASIDs of all admins on the Business that owns
-     * the given WABA. These ASIDs are what Meta sends in deauth/data-deletion
-     * signed_requests, so storing them lets us match the connection regardless
-     * of which admin revokes access.
+     * Resolve the Facebook user ASIDs assigned to the given WABA. These ASIDs
+     * are what Meta sends in deauth/data-deletion signed_requests, so storing
+     * them lets us match the connection regardless of which assigned user
+     * revokes access.
+     *
+     * Uses /{waba_id}/assigned_users which works with the whatsapp_business_management
+     * scope granted by Embedded Signup. Avoids /{business_id}/business_users —
+     * that endpoint requires business_management on the parent Business, a
+     * permission Embedded Signup tokens are not granted.
      *
      * Returns an empty array on failure; caller should log and proceed.
      */
@@ -639,45 +644,23 @@ class ConnectionController extends Controller
     {
         $asids = [];
 
-        $wabaResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}", [
+        $response = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/assigned_users", [
             'access_token' => $accessToken,
-            'fields' => 'owner_business_info{id}',
-        ]);
-
-        if (!$wabaResponse->successful()) {
-            Log::warning('Could not fetch WABA owner_business_info for ASID resolution', [
-                'waba_id' => $wabaId,
-                'status' => $wabaResponse->status(),
-                'body' => $wabaResponse->json(),
-            ]);
-            return $asids;
-        }
-
-        $businessId = $wabaResponse->json()['owner_business_info']['id'] ?? null;
-        if (!$businessId) {
-            Log::warning('WABA has no owner_business_info; cannot resolve admin ASIDs', [
-                'waba_id' => $wabaId,
-            ]);
-            return $asids;
-        }
-
-        $businessUsersResponse = Http::get("https://graph.facebook.com/v25.0/{$businessId}/business_users", [
-            'access_token' => $accessToken,
-            'fields' => 'user{id},role',
+            'fields' => 'id,name,tasks',
             'limit' => 100,
         ]);
 
-        if (!$businessUsersResponse->successful()) {
-            Log::warning('Could not fetch business_users for ASID resolution', [
-                'business_id' => $businessId,
-                'status' => $businessUsersResponse->status(),
-                'body' => $businessUsersResponse->json(),
+        if (!$response->successful()) {
+            Log::warning('Could not fetch WABA assigned_users for ASID resolution', [
+                'waba_id' => $wabaId,
+                'status' => $response->status(),
+                'body' => $response->json(),
             ]);
             return $asids;
         }
 
-        foreach ($businessUsersResponse->json()['data'] ?? [] as $bu) {
-            $asid = $bu['user']['id'] ?? null;
+        foreach ($response->json()['data'] ?? [] as $user) {
+            $asid = $user['id'] ?? null;
             if ($asid && !in_array($asid, $asids, true)) {
                 $asids[] = (string) $asid;
             }
