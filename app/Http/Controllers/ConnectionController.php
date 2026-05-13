@@ -482,15 +482,37 @@ class ConnectionController extends Controller
     private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null)
     {
         try {
-            // WABA ID must come from the frontend (WA_EMBEDDED_SIGNUP "FINISH" event).
-            // Fallback to /me/businesses lookup for tokens where it was not forwarded.
+            // Always call /me/businesses up front. This single call:
+            //   1. Exercises the `business_management` permission, so Meta App
+            //      Review can observe it in their API-call logs (otherwise the
+            //      permission appears unused).
+            //   2. Enumerates the WABAs the user owns or has client access to,
+            //      letting us validate (or resolve) the WABA we'll subscribe.
+            //   3. Lets us persist business name/id alongside the connection
+            //      for display in the UI later.
+            $businesses = $this->listUserBusinesses($accessToken);
+            $accessibleWabaIds = $this->collectAccessibleWabaIds($businesses);
+
+            // Frontend should send waba_id from the WA_EMBEDDED_SIGNUP "FINISH"
+            // event. If missing, fall back to the first owned WABA reachable
+            // through /me/businesses (same API call we just made).
             if (!$wabaId) {
-                $wabaId = $this->resolveWabaIdFromBusinesses($accessToken);
+                $wabaId = $accessibleWabaIds[0] ?? null;
             }
 
             if (!$wabaId) {
                 throw new \Exception('Could not retrieve WhatsApp Business Account ID. Frontend must send waba_id from the WA_EMBEDDED_SIGNUP "FINISH" message event.');
             }
+
+            if (!empty($accessibleWabaIds) && !in_array((string) $wabaId, $accessibleWabaIds, true)) {
+                Log::warning('Provided waba_id is not in the user\'s accessible WABAs via /me/businesses', [
+                    'connection_id' => $connection->id,
+                    'waba_id' => $wabaId,
+                    'accessible_waba_ids' => $accessibleWabaIds,
+                ]);
+            }
+
+            $primaryBusiness = $this->matchBusinessForWaba($businesses, (string) $wabaId);
 
             // Fields requested for both single-phone and list-phone lookups.
             // platform_type + code_verification_status drive the "already
@@ -569,6 +591,8 @@ class ConnectionController extends Controller
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
                 'business_account_id' => (string) $wabaId,
+                'business_id' => $primaryBusiness['id'] ?? null,
+                'business_name' => $primaryBusiness['name'] ?? null,
                 'phone_number_id' => (string) $phoneNumberId,
                 'display_phone_number' => $displayPhoneNumber,
                 'verified_name' => $verifiedName,
@@ -605,36 +629,80 @@ class ConnectionController extends Controller
     }
 
     /**
-     * Fallback resolver for SYSTEM_USER tokens where granular_scopes is empty.
-     * Walks /me/businesses → owned_whatsapp_business_accounts / client_whatsapp_business_accounts
-     * and returns the first WABA id found. Returns null if none.
+     * GET /me/businesses — the single canonical API call that requires the
+     * `business_management` permission. We call this on every WhatsApp OAuth
+     * completion (not just as a fallback) so the permission usage is visible
+     * to Meta App Review and so we can capture the user's business catalog
+     * for display + WABA validation.
+     *
+     * Returns the raw `data` array from Meta; an empty array on failure.
      */
-    private function resolveWabaIdFromBusinesses(string $accessToken): ?string
+    private function listUserBusinesses(string $accessToken): array
     {
         $response = Http::get('https://graph.facebook.com/v25.0/me/businesses', [
             'access_token' => $accessToken,
-            'fields' => 'id,owned_whatsapp_business_accounts{id},client_whatsapp_business_accounts{id}',
+            'fields' => 'id,name,verification_status,'
+                . 'owned_whatsapp_business_accounts{id,name},'
+                . 'client_whatsapp_business_accounts{id,name}',
         ]);
 
         if (!$response->successful()) {
-            Log::warning('Failed to list businesses for WABA resolution', [
+            Log::warning('Failed to list businesses via /me/businesses', [
                 'status' => $response->status(),
                 'body' => $response->json(),
             ]);
-            return null;
+            return [];
         }
 
-        foreach ($response->json()['data'] ?? [] as $business) {
+        $businesses = $response->json()['data'] ?? [];
+
+        Log::info('Fetched /me/businesses for business_management exercise', [
+            'business_count' => count($businesses),
+            'business_ids' => array_column($businesses, 'id'),
+        ]);
+
+        return $businesses;
+    }
+
+    /**
+     * Flatten the businesses payload into a list of WABA ids the user owns or
+     * has client access to.
+     */
+    private function collectAccessibleWabaIds(array $businesses): array
+    {
+        $ids = [];
+        foreach ($businesses as $business) {
             $owned = $business['owned_whatsapp_business_accounts']['data'] ?? [];
             $client = $business['client_whatsapp_business_accounts']['data'] ?? [];
 
             foreach (array_merge($owned, $client) as $waba) {
                 if (!empty($waba['id'])) {
-                    return (string) $waba['id'];
+                    $ids[] = (string) $waba['id'];
                 }
             }
         }
+        return array_values(array_unique($ids));
+    }
 
+    /**
+     * Find the Business that owns (or has client access to) the given WABA.
+     * Returns the matched business entry (with id + name) or null if not found.
+     */
+    private function matchBusinessForWaba(array $businesses, string $wabaId): ?array
+    {
+        foreach ($businesses as $business) {
+            $owned = $business['owned_whatsapp_business_accounts']['data'] ?? [];
+            $client = $business['client_whatsapp_business_accounts']['data'] ?? [];
+
+            foreach (array_merge($owned, $client) as $waba) {
+                if (($waba['id'] ?? null) === $wabaId) {
+                    return [
+                        'id' => $business['id'] ?? null,
+                        'name' => $business['name'] ?? null,
+                    ];
+                }
+            }
+        }
         return null;
     }
 
