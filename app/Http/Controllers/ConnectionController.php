@@ -528,41 +528,29 @@ class ConnectionController extends Controller
                 ?? str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
             $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
 
-            // Resolve the Facebook user ASID so deauth/data-deletion webhooks
+            // Resolve the Facebook user ASIDs so deauth/data-deletion webhooks
             // (which key off signed_request user_id) can locate this connection.
             //
-            // Authoritative source: frontend FB.getLoginStatus().authResponse.userID,
-            // forwarded as `fb_user_id`. The token from Embedded Signup is a
-            // SYSTEM_USER token, so calling /me?fields=id with it returns the
-            // system user ID — NOT the Facebook user ASID — and would never
-            // match what Meta sends in the deauth signed_request.
+            // The Embedded Signup token is a SYSTEM_USER token: /me?fields=id
+            // would return the system user ID, NOT a Facebook user ASID, and
+            // never match what Meta sends in the deauth signed_request.
             //
-            // Fallback to /me only if frontend did not supply fb_user_id (legacy
-            // flow). This may store the wrong ID for SYSTEM_USER tokens.
-            $facebookUserId = $fbUserId;
-            if (!$facebookUserId) {
-                $meResponse = Http::get('https://graph.facebook.com/v25.0/me', [
-                    'access_token' => $accessToken,
-                    'fields' => 'id',
-                ]);
-                if ($meResponse->successful()) {
-                    $facebookUserId = $meResponse->json()['id'] ?? null;
-                    Log::warning('fb_user_id not provided by frontend; fell back to /me. Deauth lookup may fail for SYSTEM_USER tokens.', [
-                        'connection_id' => $connection->id,
-                        'resolved_id' => $facebookUserId,
-                    ]);
-                } else {
-                    Log::error('Failed to resolve Facebook user_id during WhatsApp connect', [
-                        'connection_id' => $connection->id,
-                        'status' => $meResponse->status(),
-                        'body' => $meResponse->json(),
-                    ]);
-                }
+            // Strategy: WABA -> owner_business_info -> business_users. Stores
+            // every admin ASID, so deauth from any admin can locate this row.
+            //
+            // If frontend supplied fb_user_id (FB.getLoginStatus.authResponse.userID),
+            // include it as well — useful when the user is not a business admin
+            // but holds the access grant directly.
+            $facebookUserIds = $this->resolveBusinessAdminAsids((string) $wabaId, $accessToken);
+            if ($fbUserId && !in_array($fbUserId, $facebookUserIds, true)) {
+                $facebookUserIds[] = $fbUserId;
             }
+            $facebookUserId = $facebookUserIds[0] ?? null;
 
             $this->connectionService->connect($connection, [
                 'access_token' => $accessToken,
                 'user_id' => $facebookUserId,
+                'facebook_user_ids' => $facebookUserIds,
                 'business_account_id' => (string) $wabaId,
                 'phone_number_id' => (string) $phoneNumberId,
                 'display_phone_number' => $displayPhoneNumber,
@@ -640,6 +628,65 @@ class ConnectionController extends Controller
     }
 
     /**
+     * Resolve the Facebook user ASIDs of all admins on the Business that owns
+     * the given WABA. These ASIDs are what Meta sends in deauth/data-deletion
+     * signed_requests, so storing them lets us match the connection regardless
+     * of which admin revokes access.
+     *
+     * Returns an empty array on failure; caller should log and proceed.
+     */
+    private function resolveBusinessAdminAsids(string $wabaId, string $accessToken): array
+    {
+        $asids = [];
+
+        $wabaResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}", [
+            'access_token' => $accessToken,
+            'fields' => 'owner_business_info{id}',
+        ]);
+
+        if (!$wabaResponse->successful()) {
+            Log::warning('Could not fetch WABA owner_business_info for ASID resolution', [
+                'waba_id' => $wabaId,
+                'status' => $wabaResponse->status(),
+                'body' => $wabaResponse->json(),
+            ]);
+            return $asids;
+        }
+
+        $businessId = $wabaResponse->json()['owner_business_info']['id'] ?? null;
+        if (!$businessId) {
+            Log::warning('WABA has no owner_business_info; cannot resolve admin ASIDs', [
+                'waba_id' => $wabaId,
+            ]);
+            return $asids;
+        }
+
+        $businessUsersResponse = Http::get("https://graph.facebook.com/v25.0/{$businessId}/business_users", [
+            'access_token' => $accessToken,
+            'fields' => 'user{id},role',
+            'limit' => 100,
+        ]);
+
+        if (!$businessUsersResponse->successful()) {
+            Log::warning('Could not fetch business_users for ASID resolution', [
+                'business_id' => $businessId,
+                'status' => $businessUsersResponse->status(),
+                'body' => $businessUsersResponse->json(),
+            ]);
+            return $asids;
+        }
+
+        foreach ($businessUsersResponse->json()['data'] ?? [] as $bu) {
+            $asid = $bu['user']['id'] ?? null;
+            if ($asid && !in_array($asid, $asids, true)) {
+                $asids[] = (string) $asid;
+            }
+        }
+
+        return $asids;
+    }
+
+    /**
      * Subscribe the app (the one that owns the access token) to receive
      * webhook events for this WABA. Required for incoming messages to be
      * delivered to our webhook endpoint.
@@ -713,10 +760,14 @@ class ConnectionController extends Controller
                 'facebook_user_id' => $facebookUserId,
             ]);
 
-            // Find all connections with this Facebook user_id (WhatsApp & Messenger)
+            // Find all connections matching this Facebook user_id (WhatsApp & Messenger).
+            // facebook_user_ids[] holds every business admin ASID resolved at OAuth
+            // time, so deauth from any admin will match. user_id and
+            // business_account_id are kept as fallbacks for legacy rows.
             $connections = Connection::whereIn('channel', ['whatsapp_official', 'messenger'])
                 ->where(function ($query) use ($facebookUserId) {
-                    $query->whereJsonContains('credentials->user_id', $facebookUserId)
+                    $query->whereJsonContains('credentials->facebook_user_ids', $facebookUserId)
+                          ->orWhereJsonContains('credentials->user_id', $facebookUserId)
                           ->orWhereJsonContains('credentials->business_account_id', $facebookUserId);
                 })
                 ->get();
@@ -787,10 +838,12 @@ class ConnectionController extends Controller
             $conversationsDeleted = 0;
             $messagesDeleted = 0;
 
-            // Find all connections with this Facebook user_id (WhatsApp & Messenger)
+            // Find all connections matching this Facebook user_id (WhatsApp & Messenger).
+            // See facebookDeauthorize for lookup-key rationale.
             $connections = Connection::whereIn('channel', ['whatsapp_official', 'messenger'])
                 ->where(function ($query) use ($facebookUserId) {
-                    $query->whereJsonContains('credentials->user_id', $facebookUserId)
+                    $query->whereJsonContains('credentials->facebook_user_ids', $facebookUserId)
+                          ->orWhereJsonContains('credentials->user_id', $facebookUserId)
                           ->orWhereJsonContains('credentials->business_account_id', $facebookUserId);
                 })
                 ->get();
