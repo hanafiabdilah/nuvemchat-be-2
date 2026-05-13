@@ -524,8 +524,9 @@ class ConnectionController extends Controller
 
             $this->subscribeWabaApp((string) $wabaId, $accessToken);
 
-            $pin = str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-            $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $connection->credentials['pin'] ?? $pin);
+            $pin = $connection->credentials['pin']
+                ?? str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+            $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
 
             // Resolve the Facebook user_id so deauth/data-deletion webhooks
             // (which key off the signed_request user_id) can locate this connection.
