@@ -41,7 +41,9 @@ class WhatsAppTokenValidator
             return null;
         }
 
-        $response = Http::get('https://graph.facebook.com/v25.0/debug_token', [
+        // /debug_token is NOT version-namespaced — calling /v25.0/debug_token
+        // returns "Unsupported request - method type: get" (GraphMethodException).
+        $response = Http::get('https://graph.facebook.com/debug_token', [
             'input_token' => $accessToken,
             'access_token' => "{$appId}|{$appSecret}",
         ]);
