@@ -492,12 +492,18 @@ class ConnectionController extends Controller
                 throw new \Exception('Could not retrieve WhatsApp Business Account ID. Frontend must send waba_id from the WA_EMBEDDED_SIGNUP "FINISH" message event.');
             }
 
+            // Fields requested for both single-phone and list-phone lookups.
+            // platform_type + code_verification_status drive the "already
+            // registered on Cloud API?" decision below — without them we'd
+            // re-register every time and risk PIN-mismatch failures.
+            $phoneFields = 'id,display_phone_number,verified_name,quality_rating,code_verification_status,platform_type,is_pin_enabled';
+
             $primaryPhone = null;
 
             if ($phoneNumberId) {
                 $phoneResponse = Http::get("https://graph.facebook.com/v25.0/{$phoneNumberId}", [
                     'access_token' => $accessToken,
-                    'fields' => 'id,display_phone_number,verified_name,quality_rating',
+                    'fields' => $phoneFields,
                 ]);
                 if ($phoneResponse->successful()) {
                     $primaryPhone = $phoneResponse->json();
@@ -507,6 +513,7 @@ class ConnectionController extends Controller
             if (!$primaryPhone) {
                 $phoneNumbersResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/phone_numbers", [
                     'access_token' => $accessToken,
+                    'fields' => $phoneFields,
                 ]);
                 $phoneNumbers = $phoneNumbersResponse->successful() ? ($phoneNumbersResponse->json()['data'] ?? []) : [];
 
@@ -521,12 +528,33 @@ class ConnectionController extends Controller
             $displayPhoneNumber = $primaryPhone['display_phone_number'] ?? null;
             $verifiedName = $primaryPhone['verified_name'] ?? null;
             $qualityRating = $primaryPhone['quality_rating'] ?? null;
+            $platformType = $primaryPhone['platform_type'] ?? null;
+            $codeVerificationStatus = $primaryPhone['code_verification_status'] ?? null;
+            $isPinEnabled = $primaryPhone['is_pin_enabled'] ?? false;
 
             $this->subscribeWabaApp((string) $wabaId, $accessToken);
 
-            $pin = $connection->credentials['pin']
-                ?? str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-            $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
+            // Decide whether to call /register. The /register endpoint is NOT
+            // safely re-runnable: if the number is already registered with a
+            // PIN we don't know, the call fails (133015). Skip when Meta
+            // already reports the number as live on Cloud API and verified.
+            $alreadyRegistered = ($platformType === 'CLOUD_API')
+                && ($codeVerificationStatus === 'VERIFIED');
+
+            $pin = $connection->credentials['pin'] ?? null;
+
+            if ($alreadyRegistered) {
+                Log::info('Phone number already registered on Cloud API; skipping /register', [
+                    'phone_number_id' => $phoneNumberId,
+                    'platform_type' => $platformType,
+                    'code_verification_status' => $codeVerificationStatus,
+                    'is_pin_enabled' => $isPinEnabled,
+                ]);
+            } else {
+                // Use stored PIN if we have one (e.g. previous attempt), else mint a new one.
+                $pin = $pin ?? str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+                $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
+            }
 
             // Note: we intentionally do NOT try to resolve a Facebook user ASID
             // here. The Embedded Signup token is a SYSTEM_USER token scoped to
@@ -653,17 +681,41 @@ class ConnectionController extends Controller
                 'pin' => $pin,
             ]);
 
-        if (!$response->successful()) {
-            Log::error('Failed to register phone number on Cloud API', [
-                'phone_number_id' => $phoneNumberId,
-                'status' => $response->status(),
-                'body' => $response->json(),
-            ]);
-
-            throw new \Exception('Failed to register phone number: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+        if ($response->successful()) {
+            Log::info('Phone number registered on Cloud API', ['phone_number_id' => $phoneNumberId]);
+            return;
         }
 
-        Log::info('Phone number registered on Cloud API', ['phone_number_id' => $phoneNumberId]);
+        // Treat "already registered" as success — the caller's pre-check should
+        // catch this most of the time, but Meta surfaces the same outcome here
+        // when a race or stale GET means we tried anyway.
+        // - 133005 = "two-step verification PIN mismatch" (already registered with a different PIN)
+        // - 133006 = "phone number needs to be verified before registering"
+        // - 133010 = "phone number not registered" (we are NOT in this case)
+        // - subcode 2388023 in error_subcode for "already registered"
+        $error = $response->json('error') ?? [];
+        $code = (int) ($error['code'] ?? 0);
+        $subcode = (int) ($error['error_subcode'] ?? 0);
+        $message = (string) ($error['message'] ?? '');
+
+        $alreadyRegistered = $subcode === 2388023
+            || stripos($message, 'already registered') !== false;
+
+        if ($alreadyRegistered) {
+            Log::info('Phone number already registered on Cloud API (race with pre-check); treating as success', [
+                'phone_number_id' => $phoneNumberId,
+                'error' => $error,
+            ]);
+            return;
+        }
+
+        Log::error('Failed to register phone number on Cloud API', [
+            'phone_number_id' => $phoneNumberId,
+            'status' => $response->status(),
+            'body' => $response->json(),
+        ]);
+
+        throw new \Exception('Failed to register phone number: ' . ($message ?: 'Unknown error') . " (code {$code}, subcode {$subcode})");
     }
 
     public function facebookDeauthorize(Request $request)
