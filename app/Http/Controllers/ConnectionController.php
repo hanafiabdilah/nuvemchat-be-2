@@ -669,10 +669,15 @@ class ConnectionController extends Controller
         }
 
         // Step 2: Assigned users on this WABA, scoped to the owning business.
+        // IMPORTANT: top-level `id` in this edge is the Business User entity ID
+        // (an internal Business Manager ID, ~18 digits), NOT the Facebook ASID
+        // that Meta sends in deauth signed_requests. The actual Facebook user
+        // ID lives in the nested `user{id}` field — request it explicitly and
+        // prefer it over the top-level id.
         $response = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/assigned_users", [
             'access_token' => $accessToken,
             'business' => $businessId,
-            'fields' => 'id,name,tasks',
+            'fields' => 'id,name,tasks,user{id}',
             'limit' => 100,
         ]);
 
@@ -686,12 +691,23 @@ class ConnectionController extends Controller
             return $asids;
         }
 
-        foreach ($response->json()['data'] ?? [] as $user) {
-            $asid = $user['id'] ?? null;
+        $payload = $response->json();
+        foreach ($payload['data'] ?? [] as $entry) {
+            // Prefer nested user.id (real Facebook ASID). Fall back to top-level
+            // id only if the nested field is missing — that fallback will not
+            // match deauth signed_requests, but we keep it for diagnostics.
+            $asid = $entry['user']['id'] ?? $entry['id'] ?? null;
             if ($asid && !in_array($asid, $asids, true)) {
                 $asids[] = (string) $asid;
             }
         }
+
+        Log::info('Resolved WABA assigned_users for ASID lookup', [
+            'waba_id' => $wabaId,
+            'business_id' => $businessId,
+            'asid_count' => count($asids),
+            'raw_response' => $payload,
+        ]);
 
         return $asids;
     }
