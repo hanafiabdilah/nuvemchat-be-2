@@ -4,9 +4,13 @@ namespace App\Services\AiAgentHub;
 
 use App\Enums\Connection\Channel;
 use App\Models\AiHubAgent;
+use App\Models\AiHubAgentProfile;
+use App\Models\AiHubKnowledge;
 use App\Models\AiHubProviderCredential;
 use App\Models\AiHubRun;
+use App\Models\AiHubSkill;
 use App\Models\AiHubTenant;
+use App\Models\AiHubTrainingExample;
 use App\Models\Conversation;
 use Carbon\Carbon;
 use Exception;
@@ -317,6 +321,404 @@ class AiAgentHubTenantService
         ]);
 
         $agent->delete();
+    }
+
+    /* ------------------------------------------------------------------
+     | Agent Training — Profile
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Upsert the operational profile for an agent (language, tone,
+     * response style, instructions, limits). Mirrors the hub response
+     * into the local AiHubAgentProfile (1-to-1 with the agent).
+     *
+     * Payload keys (per hub spec): language, tone, responseStyle,
+     * instructions (array), limits (array), metadata (object).
+     */
+    public function setAgentProfile(AiHubAgent $agent, array $payload): AiHubAgentProfile
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/profile", $payload);
+
+        $this->ensureSuccessful($response, 'set agent profile', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        $profile = AiHubAgentProfile::updateOrCreate(
+            ['ai_hub_agent_id' => $agent->id],
+            [
+                'language' => $data['language'] ?? ($payload['language'] ?? null),
+                'tone' => $data['tone'] ?? ($payload['tone'] ?? null),
+                'response_style' => $data['responseStyle'] ?? ($payload['responseStyle'] ?? null),
+                'instructions' => $data['instructions'] ?? ($payload['instructions'] ?? null),
+                'limits' => $data['limits'] ?? ($payload['limits'] ?? null),
+                'metadata' => $data['metadata'] ?? ($payload['metadata'] ?? null),
+            ]
+        );
+
+        Log::info('AiAgentHubTenantService: Agent profile upserted', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'ai_hub_agent_profile_id' => $profile->id,
+        ]);
+
+        return $profile->fresh();
+    }
+
+    /* ------------------------------------------------------------------
+     | Agent Training — Knowledge
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Fetch the live knowledge list from the hub (read-through, no sync).
+     */
+    public function listAgentKnowledge(AiHubAgent $agent): array
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge");
+
+        $this->ensureSuccessful($response, 'list agent knowledge', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        return $response->json() ?? [];
+    }
+
+    /**
+     * Create a knowledge item on the hub and persist it locally.
+     *
+     * Payload keys (per hub spec): title, content, tags (array),
+     * metadata (object).
+     */
+    public function createAgentKnowledge(AiHubAgent $agent, array $payload): AiHubKnowledge
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge", $payload);
+
+        $this->ensureSuccessful($response, 'create agent knowledge', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        /** @var AiHubKnowledge $knowledge */
+        $knowledge = $agent->knowledge()->create([
+            'hub_knowledge_id' => $data['id'] ?? null,
+            'title' => $data['title'] ?? ($payload['title'] ?? null),
+            'content' => $data['content'] ?? ($payload['content'] ?? null),
+            'tags' => $data['tags'] ?? ($payload['tags'] ?? null),
+            'metadata' => $data['metadata'] ?? ($payload['metadata'] ?? null),
+        ]);
+
+        Log::info('AiAgentHubTenantService: Agent knowledge created', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'hub_knowledge_id' => $knowledge->hub_knowledge_id,
+        ]);
+
+        return $knowledge;
+    }
+
+    /**
+     * Update a knowledge item on the hub and sync the local record.
+     *
+     * If the hub returns status=DISABLED, the local row is hard-deleted
+     * to keep the local table reflecting only active knowledge.
+     */
+    public function updateAgentKnowledge(AiHubKnowledge $knowledge, array $payload): ?AiHubKnowledge
+    {
+        $agent = $knowledge->aiHubAgent;
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge/{$knowledge->hub_knowledge_id}", $payload);
+
+        $this->ensureSuccessful($response, 'update agent knowledge', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_knowledge_id' => $knowledge->hub_knowledge_id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        if (($data['status'] ?? null) === 'DISABLED') {
+            $knowledge->delete();
+            return null;
+        }
+
+        $knowledge->update(array_filter([
+            'title' => $data['title'] ?? null,
+            'content' => $data['content'] ?? null,
+            'tags' => $data['tags'] ?? null,
+            'metadata' => $data['metadata'] ?? null,
+        ], fn ($v) => $v !== null));
+
+        return $knowledge->refresh();
+    }
+
+    /**
+     * Disable a knowledge item on the hub (hub keeps it with status
+     * DISABLED) and hard-delete the local mirror.
+     */
+    public function deleteAgentKnowledge(AiHubKnowledge $knowledge): void
+    {
+        $agent = $knowledge->aiHubAgent;
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge/{$knowledge->hub_knowledge_id}");
+
+        $this->ensureSuccessful($response, 'delete agent knowledge', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_knowledge_id' => $knowledge->hub_knowledge_id,
+        ]);
+
+        $knowledge->delete();
+    }
+
+    /* ------------------------------------------------------------------
+     | Agent Training — Skills
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Fetch the live skills list from the hub (read-through, no sync).
+     */
+    public function listAgentSkills(AiHubAgent $agent): array
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills");
+
+        $this->ensureSuccessful($response, 'list agent skills', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        return $response->json() ?? [];
+    }
+
+    /**
+     * Create a skill on the hub and persist it locally.
+     *
+     * Payload keys (per hub spec): name, description, instructions
+     * (array), metadata (object).
+     */
+    public function createAgentSkill(AiHubAgent $agent, array $payload): AiHubSkill
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills", $payload);
+
+        $this->ensureSuccessful($response, 'create agent skill', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        /** @var AiHubSkill $skill */
+        $skill = $agent->skills()->create([
+            'hub_skill_id' => $data['id'] ?? null,
+            'name' => $data['name'] ?? ($payload['name'] ?? null),
+            'description' => $data['description'] ?? ($payload['description'] ?? null),
+            'instructions' => $data['instructions'] ?? ($payload['instructions'] ?? null),
+            'metadata' => $data['metadata'] ?? ($payload['metadata'] ?? null),
+        ]);
+
+        Log::info('AiAgentHubTenantService: Agent skill created', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'hub_skill_id' => $skill->hub_skill_id,
+        ]);
+
+        return $skill;
+    }
+
+    /**
+     * Update a skill on the hub and sync the local record.
+     *
+     * If the hub returns status=DISABLED, the local row is hard-deleted
+     * to keep the local table reflecting only active skills.
+     */
+    public function updateAgentSkill(AiHubSkill $skill, array $payload): ?AiHubSkill
+    {
+        $agent = $skill->aiHubAgent;
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills/{$skill->hub_skill_id}", $payload);
+
+        $this->ensureSuccessful($response, 'update agent skill', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_skill_id' => $skill->hub_skill_id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        if (($data['status'] ?? null) === 'DISABLED') {
+            $skill->delete();
+            return null;
+        }
+
+        $skill->update(array_filter([
+            'name' => $data['name'] ?? null,
+            'description' => $data['description'] ?? null,
+            'instructions' => $data['instructions'] ?? null,
+            'metadata' => $data['metadata'] ?? null,
+        ], fn ($v) => $v !== null));
+
+        return $skill->refresh();
+    }
+
+    /**
+     * Disable a skill on the hub (hub keeps it with status DISABLED) and
+     * hard-delete the local mirror.
+     */
+    public function deleteAgentSkill(AiHubSkill $skill): void
+    {
+        $agent = $skill->aiHubAgent;
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills/{$skill->hub_skill_id}");
+
+        $this->ensureSuccessful($response, 'delete agent skill', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_skill_id' => $skill->hub_skill_id,
+        ]);
+
+        $skill->delete();
+    }
+
+    /* ------------------------------------------------------------------
+     | Agent Training — Training Examples
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Fetch the live training examples list from the hub (read-through,
+     * no sync).
+     */
+    public function listAgentTrainingExamples(AiHubAgent $agent): array
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples");
+
+        $this->ensureSuccessful($response, 'list agent training examples', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        return $response->json() ?? [];
+    }
+
+    /**
+     * Create a training example on the hub and persist it locally.
+     *
+     * Payload keys (per hub spec): type, input, expectedOutput, notes,
+     * metadata.
+     */
+    public function createAgentTrainingExample(AiHubAgent $agent, array $payload): AiHubTrainingExample
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples", $payload);
+
+        $this->ensureSuccessful($response, 'create agent training example', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        /** @var AiHubTrainingExample $example */
+        $example = $agent->trainingExamples()->create([
+            'hub_example_id' => $data['id'] ?? null,
+            'type' => $data['type'] ?? ($payload['type'] ?? 'style_example'),
+            'input' => $data['input'] ?? ($payload['input'] ?? null),
+            'expected_output' => $data['expectedOutput'] ?? ($payload['expectedOutput'] ?? null),
+            'notes' => $data['notes'] ?? ($payload['notes'] ?? null),
+            'metadata' => $data['metadata'] ?? ($payload['metadata'] ?? null),
+        ]);
+
+        Log::info('AiAgentHubTenantService: Agent training example created', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'hub_example_id' => $example->hub_example_id,
+        ]);
+
+        return $example;
+    }
+
+    /**
+     * Update a training example on the hub and sync the local record.
+     *
+     * If the hub returns status=DISABLED, the local row is hard-deleted
+     * to keep the local table reflecting only active examples.
+     */
+    public function updateAgentTrainingExample(AiHubTrainingExample $example, array $payload): ?AiHubTrainingExample
+    {
+        $agent = $example->aiHubAgent;
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples/{$example->hub_example_id}", $payload);
+
+        $this->ensureSuccessful($response, 'update agent training example', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_example_id' => $example->hub_example_id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        if (($data['status'] ?? null) === 'DISABLED') {
+            $example->delete();
+            return null;
+        }
+
+        $example->update(array_filter([
+            'type' => $data['type'] ?? null,
+            'input' => $data['input'] ?? null,
+            'expected_output' => $data['expectedOutput'] ?? null,
+            'notes' => $data['notes'] ?? null,
+            'metadata' => $data['metadata'] ?? null,
+        ], fn ($v) => $v !== null));
+
+        return $example->refresh();
+    }
+
+    /**
+     * Disable a training example on the hub (hub keeps it with status
+     * DISABLED) and hard-delete the local mirror.
+     */
+    public function deleteAgentTrainingExample(AiHubTrainingExample $example): void
+    {
+        $agent = $example->aiHubAgent;
+        $tenant = $agent->aiHubTenant;
+
+        $response = Http::withHeaders($this->headers($tenant))
+            ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples/{$example->hub_example_id}");
+
+        $this->ensureSuccessful($response, 'delete agent training example', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_example_id' => $example->hub_example_id,
+        ]);
+
+        $example->delete();
     }
 
     /* ------------------------------------------------------------------

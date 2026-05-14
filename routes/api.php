@@ -2,6 +2,10 @@
 
 use App\Http\Controllers\Api\AgentController;
 use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
+use App\Http\Controllers\Api\AiHub\AgentKnowledgeController as AiHubAgentKnowledgeController;
+use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileController;
+use App\Http\Controllers\Api\AiHub\AgentSkillController as AiHubAgentSkillController;
+use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentTrainingExampleController;
 use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
@@ -115,6 +119,28 @@ Route::middleware('auth:sanctum')->group(function(){
         Route::post('/agents', [AiHubAgentController::class, 'store'])->middleware('permission:ai-agents.create');
         Route::patch('/agents/{id}', [AiHubAgentController::class, 'update'])->middleware('permission:ai-agents.update');
         Route::delete('/agents/{id}', [AiHubAgentController::class, 'destroy'])->middleware('permission:ai-agents.delete');
+
+        // Agent training — Profile (1-to-1 with agent, upsert via PUT)
+        Route::get('/agents/{agentId}/profile', [AiHubAgentProfileController::class, 'show'])->middleware('permission:ai-agents.view');
+        Route::put('/agents/{agentId}/profile', [AiHubAgentProfileController::class, 'update'])->middleware('permission:ai-agents.update');
+
+        // Agent training — Knowledge (1-to-many, CRUD)
+        Route::get('/agents/{agentId}/knowledge', [AiHubAgentKnowledgeController::class, 'index'])->middleware('permission:ai-agents.view');
+        Route::post('/agents/{agentId}/knowledge', [AiHubAgentKnowledgeController::class, 'store'])->middleware('permission:ai-agents.create');
+        Route::patch('/agents/{agentId}/knowledge/{knowledgeId}', [AiHubAgentKnowledgeController::class, 'update'])->middleware('permission:ai-agents.update');
+        Route::delete('/agents/{agentId}/knowledge/{knowledgeId}', [AiHubAgentKnowledgeController::class, 'destroy'])->middleware('permission:ai-agents.delete');
+
+        // Agent training — Skills (1-to-many, CRUD)
+        Route::get('/agents/{agentId}/skills', [AiHubAgentSkillController::class, 'index'])->middleware('permission:ai-agents.view');
+        Route::post('/agents/{agentId}/skills', [AiHubAgentSkillController::class, 'store'])->middleware('permission:ai-agents.create');
+        Route::patch('/agents/{agentId}/skills/{skillId}', [AiHubAgentSkillController::class, 'update'])->middleware('permission:ai-agents.update');
+        Route::delete('/agents/{agentId}/skills/{skillId}', [AiHubAgentSkillController::class, 'destroy'])->middleware('permission:ai-agents.delete');
+
+        // Agent training — Training Examples (1-to-many, CRUD)
+        Route::get('/agents/{agentId}/training-examples', [AiHubAgentTrainingExampleController::class, 'index'])->middleware('permission:ai-agents.view');
+        Route::post('/agents/{agentId}/training-examples', [AiHubAgentTrainingExampleController::class, 'store'])->middleware('permission:ai-agents.create');
+        Route::patch('/agents/{agentId}/training-examples/{exampleId}', [AiHubAgentTrainingExampleController::class, 'update'])->middleware('permission:ai-agents.update');
+        Route::delete('/agents/{agentId}/training-examples/{exampleId}', [AiHubAgentTrainingExampleController::class, 'destroy'])->middleware('permission:ai-agents.delete');
     });
 });
 

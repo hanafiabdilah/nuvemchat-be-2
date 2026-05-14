@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class AiHubAgent extends Model
 {
@@ -44,5 +45,25 @@ class AiHubAgent extends Model
     public function runs(): HasMany
     {
         return $this->hasMany(AiHubRun::class);
+    }
+
+    public function profile(): HasOne
+    {
+        return $this->hasOne(AiHubAgentProfile::class);
+    }
+
+    public function knowledge(): HasMany
+    {
+        return $this->hasMany(AiHubKnowledge::class);
+    }
+
+    public function skills(): HasMany
+    {
+        return $this->hasMany(AiHubSkill::class);
+    }
+
+    public function trainingExamples(): HasMany
+    {
+        return $this->hasMany(AiHubTrainingExample::class);
     }
 }
