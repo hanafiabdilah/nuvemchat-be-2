@@ -128,6 +128,19 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
+        // Skip HD video dual-upload child payload. WhatsApp mengirim 2 webhook untuk video HD:
+        // (1) parent message (kualitas standar) — sudah ditangani normal,
+        // (2) child message HD — payload ini, hanya berisi versi HD yang ter-link ke parent via parentMessageKey.
+        // Kita skip yang child agar tidak tersimpan sebagai pesan unsupported terpisah.
+        $associationType = $payload['msgContent']['messageContextInfo']['messageAssociation']['associationType'] ?? null;
+        if($associationType === 'HD_VIDEO_DUAL_UPLOAD') {
+            Log::info('WhatsappWApiHandler: Skipping HD video dual-upload child payload', [
+                'message_id' => $payload['messageId'] ?? null,
+                'parent_message_id' => $payload['msgContent']['messageContextInfo']['messageAssociation']['parentMessageKey']['id'] ?? null,
+            ]);
+            return;
+        }
+
         if(in_array($event, ['webhookReceived', 'webhookDelivery']) && isset($payload['msgContent']['protocolMessage']['type'])){
             $type = $payload['msgContent']['protocolMessage']['type'];
         }
