@@ -66,6 +66,7 @@ Route::middleware('auth:sanctum')->group(function(){
     // Connection routes - protected by permissions
     Route::post('/connections', [ConnectionController::class, 'store'])->middleware('permission:connections.create');
     Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect'])->middleware('permission:connections.connect');
+    Route::post('/connections/{id}/migrate', [ConnectionController::class, 'migrate'])->middleware('permission:connections.connect');
     Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
     Route::put('/connections/{id}', [ConnectionController::class, 'update'])->middleware('permission:connections.update');
     Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus'])->middleware('permission:connections.check-status');

@@ -220,6 +220,62 @@ class WhatsappWApiChannel implements ChannelInterface
         ]);
     }
 
+    public function migrate(Connection $connection, array $data): void
+    {
+        $currentIsManaged = $connection->credentials['is_managed'] ?? false;
+
+        $validated = validator($data, [
+            'is_managed' => ['required', 'boolean'],
+            'instance_id' => ['required_if:is_managed,false', 'string'],
+            'token' => ['required_if:is_managed,false', 'string'],
+        ])->validate();
+
+        if ($validated['is_managed'] === $currentIsManaged) {
+            throw new ConnectionException('Connection is already on the requested mode. Nothing to migrate.', 400);
+        }
+
+        Log::info('Migrating Whatsapp WApi connection', [
+            'connection' => $connection,
+            'from_is_managed' => $currentIsManaged,
+            'to_is_managed' => $validated['is_managed'],
+        ]);
+
+        // Cleanup the previous side based on what the connection currently is.
+        if ($currentIsManaged) {
+            // managed -> own: delete the managed instance at the w-api platform
+            $this->deleteManagedInstance($connection);
+        } else {
+            // own -> managed: disconnect the user-owned instance so their webhooks stop firing
+            try {
+                $this->disconnect($connection);
+            } catch (\Throwable $th) {
+                Log::warning('Failed to disconnect own instance during migration, continuing anyway', [
+                    'connection' => $connection,
+                    'error' => $th->getMessage(),
+                ]);
+            }
+        }
+
+        // Reset credentials and status so the next connect() starts fresh on the new mode.
+        $connection->update([
+            'status' => Status::Inactive,
+            'credentials' => [
+                'is_managed' => $validated['is_managed'],
+            ],
+        ]);
+        $connection->refresh();
+
+        // Setup the new side.
+        if ($validated['is_managed']) {
+            $this->handleManagedInstance($connection);
+        } else {
+            $this->handleOwnInstance($connection, [
+                'instance_id' => $validated['instance_id'],
+                'token' => $validated['token'],
+            ]);
+        }
+    }
+
     public function deleteManagedInstance(Connection $connection): void
     {
         if (!($connection->credentials['is_managed'] ?? false)) {
