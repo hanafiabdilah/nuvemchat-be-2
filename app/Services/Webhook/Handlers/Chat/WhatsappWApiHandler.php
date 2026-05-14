@@ -342,6 +342,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
+        // Skip webhook story
         if($conversationId === 'status'){
             Log::info('WhatsappWApiHandler: Ignoring message with conversation ID "status"');
             return;
@@ -555,6 +556,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
+        // Skip webhook story
         if($conversationId === 'status'){
             Log::info('WhatsappWApiHandler: Ignoring message with conversation ID "status"');
             return;
@@ -678,11 +680,28 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
-        $message->update([
-            $column => isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment'] / 1000) : Carbon::now(),
-        ]);
+        // Hanya proses untuk pesan outgoing (status update hanya relevan untuk pesan keluar)
+        if($message->sender_type !== SenderType::Outgoing) {
+            Log::info('WhatsappWApiHandler: Ignoring status update for non-outgoing message', [
+                'message_id' => $messageId,
+            ]);
+            return;
+        }
 
-        broadcast(new MessageUpdated($message));
+        $timestamp = isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment'] / 1000) : Carbon::now();
+
+        // Update juga semua pesan outgoing sebelumnya yang status kolomnya masih kosong,
+        // untuk menjaga konsistensi status (mengikuti status terbaru)
+        $messagesToUpdate = Message::where('conversation_id', $message->conversation_id)
+            ->where('sender_type', SenderType::Outgoing)
+            ->where('sent_at', '<=', $message->sent_at)
+            ->whereNull($column)
+            ->get();
+
+        foreach($messagesToUpdate as $msg) {
+            $msg->update([$column => $timestamp]);
+            broadcast(new MessageUpdated($msg));
+        }
 
         if($message->conversation->last_message->id == $message->id) {
             broadcast(new ConversationUpdated($message->conversation));
