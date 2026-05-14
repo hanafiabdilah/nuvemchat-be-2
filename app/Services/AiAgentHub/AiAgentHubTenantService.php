@@ -376,6 +376,14 @@ class AiAgentHubTenantService
 
         $data = $response->json() ?? [];
 
+        Log::info('AiAgentHubTenantService: Agent run completed', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'conversation_id' => $conversation->id,
+            'hub_run_id' => $data['id'] ?? null,
+            'response' => $data,
+        ]);
+
         return $this->persistRun(
             $agent,
             $conversation,
