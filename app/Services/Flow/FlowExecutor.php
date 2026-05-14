@@ -25,7 +25,7 @@ class FlowExecutor
      * forcing handoff. Prevents runaway loops if the hub's handoff signal
      * never fires.
      */
-    protected const AI_MAX_TURNS = 5;
+    protected const AI_MAX_TURNS = 20;
 
     protected MessageService $messageService;
 
