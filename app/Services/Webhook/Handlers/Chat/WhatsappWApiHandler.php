@@ -691,12 +691,22 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $timestamp = isset($payload['moment']) ? Carbon::createFromTimestamp($payload['moment'] / 1000) : Carbon::now();
 
         // Update juga semua pesan outgoing sebelumnya yang status kolomnya masih kosong,
-        // untuk menjaga konsistensi status (mengikuti status terbaru)
+        // untuk menjaga konsistensi status (mengikuti status terbaru).
+        // Note: sent_at di-cast sebagai 'timestamp' (Unix int) di model, tapi kolom DB adalah DATETIME,
+        // jadi perlu dikonversi ke Carbon agar pembandingannya valid.
         $messagesToUpdate = Message::where('conversation_id', $message->conversation_id)
             ->where('sender_type', SenderType::Outgoing)
-            ->where('sent_at', '<=', $message->sent_at)
+            ->where('sent_at', '<=', Carbon::createFromTimestamp($message->sent_at))
             ->whereNull($column)
             ->get();
+
+        Log::info('WhatsappWApiHandler: Updating status for message and previous outgoing messages', [
+            'message_id' => $messageId,
+            'status_column' => $column,
+            'timestamp' => $timestamp,
+            'messages_to_update_count' => $messagesToUpdate->count(),
+            'message_ids_to_update' => $messagesToUpdate->pluck('id')->toArray(),
+        ]);
 
         foreach($messagesToUpdate as $msg) {
             $msg->update([$column => $timestamp]);
