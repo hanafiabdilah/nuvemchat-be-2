@@ -33,8 +33,11 @@ class Contact extends Model
         if (!$contact->wasRecentlyCreated) {
             $updates = [];
 
-            // Update name hanya jika belum di-lock oleh admin, data baru valid (bukan placeholder), dan berbeda
-            if (!$contact->name_locked && $name && $name !== $externalId && $contact->name !== $name) {
+            // Update name hanya jika belum di-lock oleh admin, data baru valid (bukan placeholder), dan berbeda.
+            // Khusus Instagram: tolak juga jika $name berupa numeric ID (placeholder id user/bisnis Instagram).
+            $isInstagramIdPlaceholder = $connection->channel === Channel::Instagram && ctype_digit($name);
+
+            if (!$contact->name_locked && $name && $name !== $externalId && !$isInstagramIdPlaceholder && $contact->name !== $name) {
                 $updates['name'] = $name;
             }
 
