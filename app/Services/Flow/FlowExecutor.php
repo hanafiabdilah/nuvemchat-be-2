@@ -991,6 +991,27 @@ class FlowExecutor
                 ]);
             }
 
+            if ($run->handoff_triggered) {
+                $details = (array) ($run->handoff_details ?? []);
+                $reason = $details['trigger']
+                    ?? $details['reason']
+                    ?? 'ai_requested';
+
+                $stateData[$reasonKey] = $reason;
+                $stateData[$turnsKey] = $turns + 1;
+                $flowState->update(['state_data' => $stateData]);
+
+                Log::info('FlowExecutor: AIAgent handoff signaled by hub, moving to next node', [
+                    'node_id' => $node->id,
+                    'run_id' => $run->id,
+                    'reason' => $reason,
+                    'handoff_details' => $details,
+                ]);
+
+                $this->moveToNextNode($flowState, $node);
+                return;
+            }
+
             $stateData[$turnsKey] = $turns + 1;
             $flowState->update(['state_data' => $stateData]);
 

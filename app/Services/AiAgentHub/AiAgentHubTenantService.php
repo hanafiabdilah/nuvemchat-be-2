@@ -445,6 +445,8 @@ class AiAgentHubTenantService
             'model' => $data['model'] ?? null,
             'input_message' => $userMessage,
             'output_message' => $output['message'] ?? null,
+            'handoff_triggered' => (bool) ($output['handoff'] ?? false),
+            'handoff_details' => $output['handoffDetails'] ?? null,
             'input_tokens' => $usage['inputTokens'] ?? 0,
             'cached_input_tokens' => $usage['cachedInputTokens'] ?? 0,
             'output_tokens' => $usage['outputTokens'] ?? 0,

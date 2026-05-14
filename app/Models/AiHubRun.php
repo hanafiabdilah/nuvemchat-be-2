@@ -20,6 +20,8 @@ class AiHubRun extends Model
         'model',
         'input_message',
         'output_message',
+        'handoff_triggered',
+        'handoff_details',
         'input_tokens',
         'cached_input_tokens',
         'output_tokens',
@@ -35,6 +37,8 @@ class AiHubRun extends Model
     ];
 
     protected $casts = [
+        'handoff_triggered' => 'boolean',
+        'handoff_details' => 'array',
         'input_tokens' => 'integer',
         'cached_input_tokens' => 'integer',
         'output_tokens' => 'integer',
