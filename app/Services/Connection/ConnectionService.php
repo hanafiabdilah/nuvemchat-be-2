@@ -98,6 +98,12 @@ class ConnectionService
             }
         }
 
+        // For w-api managed instances, also delete the instance on the w-api platform
+        if ($connection->channel === Channel::WhatsappWApi && ($connection->credentials['is_managed'] ?? false)) {
+            $channel = ChannelFactory::make($connection->channel);
+            $channel->deleteManagedInstance($connection);
+        }
+
         // Delete the connection
         $connection->delete();
     }

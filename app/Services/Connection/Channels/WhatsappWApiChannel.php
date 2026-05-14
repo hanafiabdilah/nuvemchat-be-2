@@ -220,6 +220,42 @@ class WhatsappWApiChannel implements ChannelInterface
         ]);
     }
 
+    public function deleteManagedInstance(Connection $connection): void
+    {
+        if (!($connection->credentials['is_managed'] ?? false)) {
+            return;
+        }
+
+        if (empty($connection->credentials['instance_id'])) {
+            return;
+        }
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . config('services.wapi.managed_token'),
+            ])->delete('https://api.w-api.app/v1/integrator/delete-instance?instanceId=' . $connection->credentials['instance_id']);
+
+            Log::info('Whatsapp WApi managed instance delete response', [
+                'connection' => $connection,
+                'response' => $response->json(),
+                'status code' => $response->status(),
+            ]);
+
+            if ($response->failed()) {
+                Log::warning('Whatsapp WApi managed instance delete request failed, but will continue with connection deletion', [
+                    'connection' => $connection,
+                    'response' => $response->json(),
+                    'status code' => $response->status(),
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::warning('An error occurred while deleting Whatsapp WApi managed instance, but will continue with connection deletion', [
+                'connection' => $connection,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
     public function checkStatus(Connection $connection): void
     {
         try {
