@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\QuickMessageController;
 use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\StatisticsController;
 use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
@@ -105,6 +106,10 @@ Route::middleware('auth:sanctum')->group(function(){
 
     // Permission list (read-only) - permissions are managed via seeders/migrations only
     Route::get('/permissions', [PermissionController::class, 'index']);
+
+    // Statistics
+    Route::get('/statistics/tenant', [StatisticsController::class, 'tenant'])->middleware('permission:statistics.tenant.view');
+    Route::get('/statistics/agents', [StatisticsController::class, 'agents'])->middleware('permission:statistics.agents.view');
 
     // AI Agent Hub routes - protected by permissions
     Route::prefix('ai-hub')->group(function () {

@@ -45,7 +45,6 @@ return [
     'facebook' => [
         'app_id' => env('FACEBOOK_APP_ID'),
         'app_secret' => env('FACEBOOK_APP_SECRET'),
-        'redirect_uri' => env('FACEBOOK_REDIRECT_URI'),
         'webhook_verify_token' => env('FACEBOOK_WEBHOOK_VERIFY_TOKEN'),
         'config_id' => env('FACEBOOK_CONFIG_ID'), // WhatsApp Business Config ID for embedded signup
     ],

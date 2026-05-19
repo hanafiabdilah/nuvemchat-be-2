@@ -63,6 +63,10 @@ class RoleAndPermissionSeeder extends Seeder
             'ai-agents.create',
             'ai-agents.update',
             'ai-agents.delete',
+
+            // Statistics
+            'statistics.tenant.view',
+            'statistics.agents.view',
         ];
 
         foreach ($permissions as $permission) {
