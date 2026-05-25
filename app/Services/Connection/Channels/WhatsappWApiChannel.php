@@ -136,7 +136,8 @@ class WhatsappWApiChannel implements ChannelInterface
 
     public function connect(Connection $connection, array $data)
     {
-        $data['is_managed'] = $connection->credentials['is_managed'] ?? $data['is_managed'] ?? false;
+        $currentIsManaged = $connection->credentials['is_managed'] ?? null;
+        $data['is_managed'] = $data['is_managed'] ?? $currentIsManaged ?? false;
 
         validator($data, [
             'is_managed' => ['required', 'boolean'],
@@ -144,9 +145,12 @@ class WhatsappWApiChannel implements ChannelInterface
             'token' => ['required_if:is_managed,false', 'string'],
         ])->validate();
 
-        if($data['is_managed'] || ($connection->credentials['is_managed'] ?? false)){
+        if ($currentIsManaged !== null && $currentIsManaged !== $data['is_managed']) {
+            $this->migrate($connection, $data);
+            $connection->refresh();
+        } elseif ($data['is_managed']) {
             $connection = $this->handleManagedInstance($connection);
-        }else{
+        } else {
             $connection = $this->handleOwnInstance($connection, $data);
         }
 
