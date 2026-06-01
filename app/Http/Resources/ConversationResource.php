@@ -24,7 +24,7 @@ class ConversationResource extends JsonResource
             'connection_id' => $this->connection_id,
             'status' => $this->status->value,
             'last_message' => $message,
-            'last_message_at' => $this->last_message_at->timestamp,
+            'last_message_at' => $this->last_message_at?->timestamp,
             'unread' => $this->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->count(),
             'contact' => ContactResource::make($this->contact),
             'tags' => TagResource::collection($this->tags),
