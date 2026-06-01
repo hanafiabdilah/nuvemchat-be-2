@@ -18,11 +18,11 @@ class FlowStateResource extends JsonResource
             'id' => $this->id,
             'conversation_id' => $this->conversation_id,
             'flow_id' => $this->flow_id,
-            'current_node' => [
-                'id' => $this->currentNode?->id,
-                'type' => $this->currentNode?->type->value,
-                'data' => $this->currentNode?->data,
-            ],
+            'current_node' => $this->currentNode ? [
+                'id' => $this->currentNode->id,
+                'type' => $this->currentNode->type->value,
+                'data' => $this->currentNode->data,
+            ] : null,
             'state_data' => $this->state_data,
             'status' => $this->status->value,
             'completed_at' => $this->completed_at,
