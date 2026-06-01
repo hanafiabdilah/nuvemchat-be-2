@@ -2,7 +2,9 @@
 
 namespace App\Observers;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status;
+use App\Events\Widget\WidgetConversationStatusChanged;
 use App\Models\Conversation;
 use App\Services\Flow\FlowExecutor;
 use Illuminate\Support\Facades\Log;
@@ -11,7 +13,8 @@ class ConversationObserver
 {
     /**
      * Handle the Conversation "updated" event.
-     * Stop flow when conversation status changes from Pending to Active/Resolved (admin handover)
+     * Stop flow when conversation status changes from Pending to Active/Resolved (admin handover).
+     * Also broadcasts a widget event so embedded SDKs can react to status changes.
      */
     public function updated(Conversation $conversation): void
     {
@@ -34,6 +37,11 @@ class ConversationObserver
 
             $flowExecutor = new FlowExecutor();
             $flowExecutor->stopFlow($conversation);
+        }
+
+        // Notify the embedded widget SDK when this conversation belongs to a Live Chat Widget channel.
+        if ($conversation->connection?->channel === Channel::LiveChatWidget) {
+            broadcast(new WidgetConversationStatusChanged($conversation, $oldStatus, $newStatus));
         }
     }
 }

@@ -309,19 +309,26 @@ Maksimum 200 pesan terakhir, urutan kronologis ASC (oldest first).
 
 ## 5. Realtime — Receive Agent Replies
 
-### 5.1 Channel & Event
+### 5.1 Channel
 
 | | |
 |---|---|
 | Driver | Laravel Reverb (Pusher-protocol kompatibel) |
 | Channel name | `widget-session.{session_token}` |
 | Channel type | **Public** (no auth subscription) |
+
+Channel ini mem-broadcast **dua event** yang berbeda — listen keduanya secara terpisah.
+
+### 5.2 Event: `widget-message-received`
+
+Pesan baru / edit / delete dari agent atau bot.
+
+| | |
+|---|---|
 | Event name | `widget-message-received` |
 | Payload | MessageResource (sama persis dengan response REST) |
 
-### 5.2 Trigger conditions
-
-Event di-broadcast setiap kali:
+**Trigger conditions:**
 - Agent mengirim pesan dari dashboard (text/image/audio/video/document)
 - AI bot membalas via flow
 - Agent edit pesan (cek field `edited_at`)
@@ -337,6 +344,43 @@ if (existing) {
   appendMessage(msg);                     // new
 }
 ```
+
+### 5.2b Event: `widget-conversation-status-changed`
+
+Status conversation berubah (accept / resolve / dst).
+
+| | |
+|---|---|
+| Event name | `widget-conversation-status-changed` |
+| Payload | objek di bawah |
+
+```json
+{
+  "conversation_id": 123,
+  "old_status": "pending",
+  "new_status": "active",
+  "agent": { "id": 3, "name": "Agen Sari" },
+  "changed_at": "2026-05-28T10:30:00+00:00"
+}
+```
+
+**Trigger conditions:**
+- Agent klik **Accept** di dashboard → `pending` → `active`, `agent` ter-assign
+- Agent klik **Resolve** → `active` → `resolved` (biasanya sudah ada `closing_message` ter-broadcast lewat `widget-message-received` sebelumnya)
+- Status berubah lewat cara lain (API, console command, dst.)
+
+SDK harus react sesuai transisi:
+
+| `new_status` | UI action |
+|---|---|
+| `active` | Tampilkan "Agent {name} bergabung" — chat mode normal |
+| `resolved` | Tampilkan banner "Conversation ditutup", disable input, tampilkan CTA "Mulai chat baru" |
+| `pending` | (jarang — fallback) tampilkan "Menunggu agent" |
+
+**Penting — sesi tidak otomatis di-reset saat `resolved`:**
+`session_token` di `localStorage` tetap valid. Endpoint REST masih bisa dipanggil (kirim pesan, fetch status). Yang berubah hanya `conversation.status`. SDK yang memutuskan kapan reset session:
+- Diamkan saja (visitor bisa lihat history) → user klik "Mulai chat baru" → SDK panggil `localStorage.clear()` + `POST /session/{appId}` lagi
+- Atau auto-reset setelah N detik / saat user kirim pesan baru
 
 ### 5.3 Reverb connection config
 
@@ -387,8 +431,14 @@ channel.listen('.widget-message-received', (payload) => {
   handleIncomingFromAgent(payload);
 });
 
+channel.listen('.widget-conversation-status-changed', (payload) => {
+  // payload = { conversation_id, old_status, new_status, agent, changed_at }
+  handleStatusChange(payload);
+});
+
 // Cleanup on widget close
 channel.stopListening('.widget-message-received');
+channel.stopListening('.widget-conversation-status-changed');
 echo.leave(`widget-session.${sessionToken}`);
 ```
 
@@ -581,7 +631,8 @@ Fitur ini akan ditambahkan saat dibutuhkan — SDK boleh mock UI-nya sekarang:
 | Mark as seen | `POST` | `/widget-api/session/{token}/seen` |
 | Send message | `POST` | `/widget-api/session/{token}/messages` |
 | Get history | `GET` | `/widget-api/session/{token}/messages` |
-| Subscribe realtime | WS | channel `widget-session.{token}`, event `.widget-message-received` |
+| Subscribe realtime — messages | WS | channel `widget-session.{token}`, event `.widget-message-received` |
+| Subscribe realtime — status | WS | channel `widget-session.{token}`, event `.widget-conversation-status-changed` |
 
 ---
 
@@ -592,3 +643,4 @@ Fitur ini akan ditambahkan saat dibutuhkan — SDK boleh mock UI-nya sekarang:
 | 0.1 | 2026-05-28 | Initial release: text messaging, public broadcast channel, session-based auth |
 | 0.2 | 2026-05-28 | `GET /config` sekarang mengembalikan block `realtime: { driver, key, host, port, scheme }` — SDK tidak perlu hardcode Reverb credential |
 | 0.3 | 2026-05-28 | Tambah `GET /session/{token}` untuk status + agent + unread_count, dan `POST /session/{token}/seen` untuk mark as read |
+| 0.4 | 2026-05-28 | Tambah event realtime `widget-conversation-status-changed` — broadcast saat agent accept/resolve. SDK tidak perlu polling status |
