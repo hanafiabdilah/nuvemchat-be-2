@@ -15,7 +15,10 @@ return Application::configure(basePath: dirname(__DIR__))
         channels: __DIR__.'/../routes/channels.php',
         health: '/up',
         then: function (): void {
-            \Illuminate\Support\Facades\Route::middleware('web')
+            // Widget routes are called cross-origin from third-party sites.
+            // No sessions, no cookies, no CSRF — just thin HTTP + CORS (handled
+            // globally via config/cors.php).
+            \Illuminate\Support\Facades\Route::middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
                 ->group(__DIR__.'/../routes/widget.php');
         },
     )
@@ -30,7 +33,6 @@ return Application::configure(basePath: dirname(__DIR__))
 
         $middleware->validateCsrfTokens([
             '/webhook/*',
-            '/widget-api/*',
             '/oauth/instagram/deauthorize',
             '/oauth/instagram/data-deletion',
             '/oauth/facebook/deauthorize',
