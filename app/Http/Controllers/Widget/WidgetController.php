@@ -14,9 +14,11 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\LiveChatSession;
+use App\Services\Flow\FlowExecutor;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -202,9 +204,55 @@ class WidgetController extends Controller
         broadcast(new MessageReceived($message));
         broadcast(new ConversationUpdated($session->conversation->load('contact')));
 
+        $this->triggerFlow($session->conversation, $message);
+
         return response()->json([
             'message' => (new MessageResource($message))->resolve(),
         ]);
+    }
+
+    /**
+     * Run the connection's flow (chatbot) against this incoming widget message.
+     *
+     * Mirrors the Telegram/WhatsApp webhook handlers:
+     *   - First incoming message + connection has flow_id → startFlow()
+     *   - Subsequent incoming messages → resumeFlow() with the user input
+     *
+     * "First message" is detected by absence of a FlowState row — the same
+     * signal FlowExecutor uses internally to know whether a conversation has
+     * ever been touched by a flow. Counting messages would mis-handle the
+     * case where a flow was started, the visitor sent N messages, and then
+     * the flow was stopped (e.g. admin handover via ConversationObserver).
+     *
+     * Errors are logged but never propagated — a broken flow must not cause
+     * the visitor's send-message call to fail.
+     */
+    private function triggerFlow(Conversation $conversation, $message): void
+    {
+        if (!$conversation->connection->flow_id) {
+            return;
+        }
+
+        $userInput = $message->body ?? '';
+        $isNewFlow = !$conversation->flowState()->exists();
+
+        $flowExecutor = new FlowExecutor();
+
+        try {
+            if ($isNewFlow) {
+                $flowExecutor->startFlow($conversation);
+            } else {
+                $flowExecutor->resumeFlow($conversation, $userInput);
+            }
+        } catch (\Throwable $th) {
+            Log::error('WidgetController: Failed to execute flow', [
+                'conversation_id' => $conversation->id,
+                'connection_id' => $conversation->connection_id,
+                'flow_id' => $conversation->connection->flow_id,
+                'is_new_flow' => $isNewFlow,
+                'error' => $th->getMessage(),
+            ]);
+        }
     }
 
     /**
