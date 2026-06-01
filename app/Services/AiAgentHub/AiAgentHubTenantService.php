@@ -807,6 +807,7 @@ class AiAgentHubTenantService
             Channel::Instagram => 'instagram',
             Channel::WhatsappOfficial, Channel::WhatsappWApi => 'whatsapp',
             Channel::Telegram => 'telegram',
+            Channel::LiveChatWidget => 'live_chat_widget',
         };
     }
 
