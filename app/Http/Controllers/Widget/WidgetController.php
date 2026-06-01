@@ -40,13 +40,7 @@ class WidgetController extends Controller
                 'color' => $connection->color,
                 'accept_message' => $connection->accept_message,
             ],
-            'realtime' => [
-                'driver' => 'reverb',
-                'key' => config('broadcasting.connections.reverb.key'),
-                'host' => config('broadcasting.connections.reverb.options.host'),
-                'port' => (int) config('broadcasting.connections.reverb.options.port', 443),
-                'scheme' => config('broadcasting.connections.reverb.options.scheme', 'https'),
-            ],
+            'realtime' => $this->resolveRealtimeConfig(),
         ]);
     }
 
@@ -171,6 +165,56 @@ class WidgetController extends Controller
         }
 
         return $connection;
+    }
+
+    /**
+     * Public-facing Reverb connection config for the embedded SDK.
+     *
+     * REVERB_HOST is usually an INTERNAL hostname (localhost, 127.0.0.1, or
+     * a docker service name) used by Laravel to publish events. External
+     * widgets cannot reach that. Resolution order, first non-empty wins:
+     *   1. REVERB_PUBLIC_HOST / REVERB_PUBLIC_PORT / REVERB_PUBLIC_SCHEME
+     *      → explicit override, recommended for production
+     *   2. Host parsed from APP_URL
+     *      → works when Reverb sits behind the same reverse proxy as the app
+     *   3. REVERB_HOST + defaults
+     *      → last-resort fallback (will be 'localhost' in many setups)
+     */
+    private function resolveRealtimeConfig(): array
+    {
+        $publicHost = env('REVERB_PUBLIC_HOST');
+        $publicPort = env('REVERB_PUBLIC_PORT');
+        $publicScheme = env('REVERB_PUBLIC_SCHEME');
+
+        if (!$publicHost) {
+            $appUrl = (string) config('app.url');
+            $parsed = $appUrl ? parse_url($appUrl) : false;
+
+            if (is_array($parsed) && !empty($parsed['host'])) {
+                $publicHost = $parsed['host'];
+                $publicScheme = $publicScheme ?: ($parsed['scheme'] ?? null);
+            }
+        }
+
+        $host = $publicHost
+            ?: config('broadcasting.connections.reverb.options.host')
+            ?: 'localhost';
+
+        $scheme = $publicScheme
+            ?: config('broadcasting.connections.reverb.options.scheme')
+            ?: 'https';
+
+        $port = (int) ($publicPort
+            ?: config('broadcasting.connections.reverb.options.port')
+            ?: ($scheme === 'https' ? 443 : 80));
+
+        return [
+            'driver' => 'reverb',
+            'key' => config('broadcasting.connections.reverb.key'),
+            'host' => $host,
+            'port' => $port,
+            'scheme' => $scheme,
+        ];
     }
 
     private function resolveSession(string $sessionToken): LiveChatSession

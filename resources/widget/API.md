@@ -285,6 +285,22 @@ const { realtime } = await fetch(`${BASE}/widget-api/config/${appId}`).then(r =>
 // realtime = { driver, key, host, port, scheme }
 ```
 
+#### Catatan untuk backend ops
+
+Nilai `realtime.host`/`port`/`scheme` yang dikirim ke SDK external **bukan** `REVERB_HOST` (yang biasanya `localhost` / nama service Docker — untuk publish internal dari Laravel). Backend pakai resolusi berikut:
+
+1. `REVERB_PUBLIC_HOST` + `REVERB_PUBLIC_PORT` + `REVERB_PUBLIC_SCHEME` jika di-set → **direkomendasikan production**
+2. Host dari `APP_URL` jika Reverb di-proxy lewat domain yang sama
+3. Fallback ke `REVERB_HOST` (last resort, kemungkinan localhost)
+
+Set env berikut di production agar widget bisa konek WebSocket dari domain klien:
+
+```env
+REVERB_PUBLIC_HOST=ws.nuvemchat.app
+REVERB_PUBLIC_PORT=443
+REVERB_PUBLIC_SCHEME=https
+```
+
 ### 5.4 Contoh subscribe (laravel-echo + pusher-js)
 
 ```js
