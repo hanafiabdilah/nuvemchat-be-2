@@ -222,9 +222,72 @@ Setelah ini, response `/status` berikutnya akan punya `unread_count: 0` (sampai 
 
 ---
 
-### 4.5 `POST /widget-api/session/{sessionToken}/messages`
+### 4.5 `POST /widget-api/session/{sessionToken}/uploads`
 
-Visitor mengirim pesan teks. Saat ini hanya mendukung text. Pesan langsung muncul di dashboard agent + memicu flow otomatis (kalau connection ter-attach ke flow).
+Pre-upload attachment dari visitor (image / audio / video / document). Mengembalikan URL yang **dipakai dua kali**: untuk preview optimistik di UI, dan untuk dilampirkan ke `sendMessage` berikutnya.
+
+**Request** — `multipart/form-data`
+
+| Field | Type | Required | Catatan |
+|---|---|:---:|---|
+| `file` | binary | ✓ | Max 50 MB. Mime whitelist di bawah. |
+
+**Mime whitelist**
+
+| Tipe | Extensions |
+|---|---|
+| Image | `jpeg, jpg, png, gif, webp` |
+| Audio | `ogg, mp3, wav, m4a, opus` |
+| Video | `mp4, mov, webm` |
+| Document | `pdf, doc, docx, xls, xlsx, ppt, pptx, txt, zip, rar, csv` |
+
+**Response 200**
+
+```json
+{
+  "url": "https://app.nuvemchat.app/storage/widget-uploads/550e8400-.../abc123.png?expires=1748462834&signature=...",
+  "message_type": "image",
+  "filename": "screenshot.png",
+  "mime_type": "image/png",
+  "size": 234567,
+  "expires_at": "2026-05-28T16:30:34+00:00"
+}
+```
+
+| Field | Catatan |
+|---|---|
+| `url` | Temporary signed URL — valid 6 jam. Aman ditampilkan langsung di `<img>` / `<audio>` / `<video>` |
+| `message_type` | Sudah di-inferred dari MIME: `image` / `audio` / `video` / `document` |
+| `expires_at` | ISO 8601. SDK boleh re-upload kalau visitor menunda kirim > 6 jam |
+
+**Flow yang benar:**
+
+```js
+// 1. upload
+const fd = new FormData();
+fd.append('file', file);
+const { url, message_type } = await fetch(`${BASE}/widget-api/session/${token}/uploads`, {
+  method: 'POST', body: fd
+}).then(r => r.json());
+
+// 2. preview optimistik
+appendLocalMessage({ pending: true, attachment_url: url, message_type });
+
+// 3. send with caption
+await fetch(`${BASE}/widget-api/session/${token}/messages`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ message: 'Tolong cek ini', attachment_url: url })
+});
+```
+
+**Ownership check:** URL yang di-return mengandung `widget-uploads/{session_token}/` di path-nya. `sendMessage` akan menolak URL yang tidak punya `session_token` Anda — visitor lain tidak bisa "mencuri" attachment.
+
+---
+
+### 4.6 `POST /widget-api/session/{sessionToken}/messages`
+
+Visitor mengirim pesan teks dan/atau attachment. Pesan langsung muncul di dashboard agent + memicu flow otomatis (kalau connection ter-attach ke flow).
 
 **Path parameters**
 
@@ -232,11 +295,28 @@ Visitor mengirim pesan teks. Saat ini hanya mendukung text. Pesan langsung muncu
 |---|---|:---:|
 | `sessionToken` | string (UUID) | ✓ |
 
-**Request body**
+**Request body** — minimal salah satu dari `message` atau `attachment_url` wajib ada.
 
 ```json
+// Text only
 { "message": "Halo, saya mau tanya tentang produk X" }
+
+// Attachment only
+{ "attachment_url": "https://app.nuvemchat.app/storage/widget-uploads/.../abc.png?..." }
+
+// Attachment with caption
+{
+  "message": "Ini screenshot error-nya",
+  "attachment_url": "https://app.nuvemchat.app/storage/widget-uploads/.../abc.png?..."
+}
 ```
+
+| Field | Type | Required | Catatan |
+|---|---|:---:|---|
+| `message` | string | conditional | Wajib kalau `attachment_url` tidak ada |
+| `attachment_url` | string | conditional | Wajib kalau `message` tidak ada. URL harus dari response `/uploads` milik session yang sama |
+
+Backend otomatis menentukan `message_type` dari ekstensi/MIME attachment — SDK tidak perlu (dan tidak bisa) override.
 
 **Response 200**
 
@@ -246,9 +326,9 @@ Visitor mengirim pesan teks. Saat ini hanya mendukung text. Pesan langsung muncu
     "id": 99,
     "conversation_id": 123,
     "sender_type": "incoming",
-    "message_type": "text",
-    "body": "Halo, saya mau tanya tentang produk X",
-    "attachment_url": null,
+    "message_type": "image",
+    "body": "Ini screenshot error-nya",
+    "attachment_url": "https://...long-lived-signed-url...",
     "replied_message": null,
     "sent_at": 1748441234,
     "delivery_at": 1748441234,
@@ -256,7 +336,7 @@ Visitor mengirim pesan teks. Saat ini hanya mendukung text. Pesan langsung muncu
     "edited_at": null,
     "unsend_at": null,
     "sender": null,
-    "meta": null,
+    "meta": { "filename": "abc.png", "mime_type": "image/png", "size": 234567 },
     "created_at": 1748441234,
     "updated_at": 1748441234
   }
@@ -265,9 +345,11 @@ Visitor mengirim pesan teks. Saat ini hanya mendukung text. Pesan langsung muncu
 
 Field `message` mengikuti **MessageResource** schema yang sama dipakai dashboard agent. SDK boleh langsung render dari payload ini (single source of truth dengan event realtime).
 
+**Error 422** kalau `attachment_url` invalid / bukan milik session ini / file sudah ter-cleanup.
+
 ---
 
-### 4.6 `GET /widget-api/session/{sessionToken}/messages`
+### 4.7 `GET /widget-api/session/{sessionToken}/messages`
 
 Restore conversation history. Dipanggil saat SDK boot up dan menemukan `session_token` tersimpan (mis. setelah refresh page).
 
@@ -612,12 +694,12 @@ SDK harus ship kedua template dan switch berdasarkan response config — **tidak
 
 Fitur ini akan ditambahkan saat dibutuhkan — SDK boleh mock UI-nya sekarang:
 
-- Upload media (image/file) dari visitor
 - Typing indicator (visitor ↔ agent)
 - Read receipt dari visitor
 - Endpoint close/end session
 - Pagination untuk history > 200 messages
 - Reaction emoji dari visitor
+- Cleanup job untuk widget-uploads/ orphan (file di-upload tapi tidak pernah di-attach)
 
 ---
 
@@ -629,6 +711,7 @@ Fitur ini akan ditambahkan saat dibutuhkan — SDK boleh mock UI-nya sekarang:
 | Init session | `POST` | `/widget-api/session/{appId}` |
 | Get session status | `GET` | `/widget-api/session/{token}` |
 | Mark as seen | `POST` | `/widget-api/session/{token}/seen` |
+| Pre-upload attachment | `POST` | `/widget-api/session/{token}/uploads` |
 | Send message | `POST` | `/widget-api/session/{token}/messages` |
 | Get history | `GET` | `/widget-api/session/{token}/messages` |
 | Subscribe realtime — messages | WS | channel `widget-session.{token}`, event `.widget-message-received` |
@@ -644,3 +727,4 @@ Fitur ini akan ditambahkan saat dibutuhkan — SDK boleh mock UI-nya sekarang:
 | 0.2 | 2026-05-28 | `GET /config` sekarang mengembalikan block `realtime: { driver, key, host, port, scheme }` — SDK tidak perlu hardcode Reverb credential |
 | 0.3 | 2026-05-28 | Tambah `GET /session/{token}` untuk status + agent + unread_count, dan `POST /session/{token}/seen` untuk mark as read |
 | 0.4 | 2026-05-28 | Tambah event realtime `widget-conversation-status-changed` — broadcast saat agent accept/resolve. SDK tidak perlu polling status |
+| 0.5 | 2026-05-28 | Tambah `POST /session/{token}/uploads` (pre-upload, return signed URL valid 6 jam). `POST /messages` sekarang menerima `attachment_url` opsional (text-only, attachment-only, atau attachment+caption) |

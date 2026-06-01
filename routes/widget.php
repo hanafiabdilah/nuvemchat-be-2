@@ -16,6 +16,9 @@ Route::prefix('widget-api')->group(function () {
     Route::post('/session/{sessionToken}/seen', [WidgetController::class, 'markSeen'])
         ->name('widget.session.seen');
 
+    Route::post('/session/{sessionToken}/uploads', [WidgetController::class, 'upload'])
+        ->name('widget.session.upload');
+
     Route::post('/session/{sessionToken}/messages', [WidgetController::class, 'sendMessage'])
         ->name('widget.session.send-message');
 

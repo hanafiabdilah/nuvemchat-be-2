@@ -17,6 +17,7 @@ use App\Models\LiveChatSession;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -98,26 +99,102 @@ class WidgetController extends Controller
     }
 
     /**
+     * Pre-upload an attachment from the visitor. Returns a (temporary) URL
+     * the SDK can use both for local preview and to attach to a subsequent
+     * sendMessage() call.
+     *
+     * Files are stored at widget-uploads/{session_token}/{uuid}.{ext}. The
+     * session_token in the path is what lets sendMessage() verify ownership
+     * later — visitors can only attach files they themselves uploaded.
+     */
+    public function upload(Request $request, string $sessionToken)
+    {
+        $request->validate([
+            'file' => [
+                'required',
+                'file',
+                'max:51200', // 50 MB (covers image/audio/document/short video)
+                'mimes:jpeg,jpg,png,gif,webp,ogg,mp3,wav,m4a,opus,mp4,mov,webm,pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv',
+            ],
+        ]);
+
+        $session = $this->resolveSession($sessionToken);
+
+        $file = $request->file('file');
+        $ext = $file->getClientOriginalExtension();
+        $messageType = $this->inferMessageTypeFromMime($file->getClientMimeType(), $ext);
+
+        $path = sprintf(
+            'widget-uploads/%s/%s.%s',
+            $session->session_token,
+            (string) Str::uuid(),
+            $ext,
+        );
+
+        Storage::disk('local')->put($path, file_get_contents($file->getRealPath()));
+
+        $expiresAt = Carbon::now()->addHours(6);
+
+        return response()->json([
+            'url' => Storage::disk('local')->temporaryUrl($path, $expiresAt),
+            'message_type' => $messageType->value,
+            'filename' => $file->getClientOriginalName(),
+            'mime_type' => $file->getClientMimeType(),
+            'size' => $file->getSize(),
+            'expires_at' => $expiresAt->toIso8601String(),
+        ]);
+    }
+
+    /**
      * Visitor sends a message from the widget.
      * Stored as an Incoming message and broadcast to the agent dashboard.
+     *
+     * Body shape:
+     *   { "message": "..." }                              → text
+     *   { "attachment_url": "..." }                       → media (no caption)
+     *   { "message": "...", "attachment_url": "..." }     → media with caption
      */
     public function sendMessage(Request $request, string $sessionToken)
     {
         $data = $request->validate([
-            'message' => ['required', 'string'],
+            'message' => ['nullable', 'string', 'required_without:attachment_url'],
+            'attachment_url' => ['nullable', 'string', 'required_without:message'],
         ]);
 
         $session = $this->resolveSession($sessionToken);
+
+        $attachmentPath = null;
+        $messageType = MessageType::Text;
+        $meta = null;
+
+        if (!empty($data['attachment_url'])) {
+            $attachmentPath = $this->resolveAttachmentPath($data['attachment_url'], $session->session_token);
+
+            if (!$attachmentPath) {
+                throw ValidationException::withMessages([
+                    'attachment_url' => 'Invalid or expired attachment URL.',
+                ]);
+            }
+
+            $messageType = $this->inferMessageTypeFromPath($attachmentPath);
+            $meta = [
+                'filename' => basename($attachmentPath),
+                'mime_type' => Storage::disk('local')->mimeType($attachmentPath) ?: null,
+                'size' => Storage::disk('local')->size($attachmentPath),
+            ];
+        }
 
         $now = Carbon::now();
 
         $message = $session->conversation->messages()->create([
             'external_id' => (string) Str::uuid(),
             'sender_type' => SenderType::Incoming,
-            'message_type' => MessageType::Text,
-            'body' => $data['message'],
+            'message_type' => $messageType,
+            'body' => $data['message'] ?? null,
+            'attachment' => $attachmentPath,
             'sent_at' => $now,
             'delivery_at' => $now,
+            'meta' => $meta,
         ]);
 
         $session->update(['last_seen_at' => $now]);
@@ -128,6 +205,43 @@ class WidgetController extends Controller
         return response()->json([
             'message' => (new MessageResource($message))->resolve(),
         ]);
+    }
+
+    /**
+     * Extract the storage path from an attachment URL and verify ownership.
+     * Returns null if the URL doesn't belong to this session OR the file is
+     * gone. Looks for "widget-uploads/{session_token}/..." anywhere in the
+     * URL path component — tolerant to /storage/ prefix or any host.
+     */
+    private function resolveAttachmentPath(string $url, string $sessionToken): ?string
+    {
+        $urlPath = parse_url($url, PHP_URL_PATH);
+        if (!$urlPath) return null;
+
+        $marker = "widget-uploads/{$sessionToken}/";
+        $pos = strpos($urlPath, $marker);
+        if ($pos === false) return null;
+
+        $storagePath = ltrim(substr($urlPath, $pos), '/');
+
+        if (!Storage::disk('local')->exists($storagePath)) return null;
+
+        return $storagePath;
+    }
+
+    private function inferMessageTypeFromMime(string $mime, string $ext): MessageType
+    {
+        if (str_starts_with($mime, 'image/')) return MessageType::Image;
+        if (str_starts_with($mime, 'audio/')) return MessageType::Audio;
+        if (str_starts_with($mime, 'video/')) return MessageType::Video;
+
+        return MessageType::Document;
+    }
+
+    private function inferMessageTypeFromPath(string $path): MessageType
+    {
+        $mime = Storage::disk('local')->mimeType($path) ?: '';
+        return $this->inferMessageTypeFromMime($mime, pathinfo($path, PATHINFO_EXTENSION));
     }
 
     /**
