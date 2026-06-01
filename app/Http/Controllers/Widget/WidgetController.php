@@ -131,6 +131,68 @@ class WidgetController extends Controller
     }
 
     /**
+     * Return the current session + conversation status. Lightweight: used
+     * by the SDK on reconnect / polling fallback to know whether the
+     * conversation is still open, who is handling it, and how many agent
+     * replies are unread.
+     */
+    public function status(Request $request, string $sessionToken)
+    {
+        $session = $this->resolveSession($sessionToken);
+        $conversation = $session->conversation()->with('agent:id,name')->first();
+
+        $lastSeenAt = $session->last_seen_at;
+        $unreadCount = $conversation->messages()
+            ->where('sender_type', SenderType::Outgoing)
+            ->when($lastSeenAt, fn($q) => $q->where('created_at', '>', $lastSeenAt))
+            ->count();
+
+        $lastMessage = $conversation->messages()
+            ->latest('created_at')
+            ->latest('id')
+            ->first();
+
+        return response()->json([
+            'session' => [
+                'token' => $session->session_token,
+                'last_seen_at' => $lastSeenAt?->toIso8601String(),
+            ],
+            'conversation' => [
+                'id' => $conversation->id,
+                'status' => $conversation->status,
+                'last_message_at' => $conversation->last_message_at?->toIso8601String(),
+                'agent' => $conversation->agent ? [
+                    'id' => $conversation->agent->id,
+                    'name' => $conversation->agent->name,
+                ] : null,
+                'last_message' => $lastMessage ? [
+                    'id' => $lastMessage->id,
+                    'sender_type' => $lastMessage->sender_type,
+                    'message_type' => $lastMessage->message_type,
+                    'body' => $lastMessage->body,
+                    'sent_at' => $lastMessage->sent_at,
+                ] : null,
+            ],
+            'unread_count' => $unreadCount,
+        ]);
+    }
+
+    /**
+     * Mark the conversation as seen by the visitor up to "now". Updates
+     * last_seen_at so subsequent /status calls return a correct unread_count.
+     */
+    public function markSeen(Request $request, string $sessionToken)
+    {
+        $session = $this->resolveSession($sessionToken);
+
+        $session->update(['last_seen_at' => Carbon::now()]);
+
+        return response()->json([
+            'last_seen_at' => $session->last_seen_at->toIso8601String(),
+        ]);
+    }
+
+    /**
      * Visitor fetches conversation history (for reconnect / page refresh).
      */
     public function history(Request $request, string $sessionToken)

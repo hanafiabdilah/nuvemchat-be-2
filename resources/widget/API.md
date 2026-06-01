@@ -160,7 +160,69 @@ SDK **harus** menyimpan `session_token` ke `localStorage` dengan key seperti `nu
 
 ---
 
-### 4.3 `POST /widget-api/session/{sessionToken}/messages`
+### 4.3 `GET /widget-api/session/{sessionToken}`
+
+Lightweight status check untuk conversation aktif. Dipanggil saat reconnect, atau sebagai polling fallback kalau WebSocket disconnect.
+
+**Response 200**
+
+```json
+{
+  "session": {
+    "token": "550e8400-e29b-41d4-a716-446655440000",
+    "last_seen_at": "2026-05-28T10:30:00+00:00"
+  },
+  "conversation": {
+    "id": 123,
+    "status": "active",
+    "last_message_at": "2026-05-28T10:32:11+00:00",
+    "agent": {
+      "id": 3,
+      "name": "Agen Sari"
+    },
+    "last_message": {
+      "id": 99,
+      "sender_type": "outgoing",
+      "message_type": "text",
+      "body": "Tunggu sebentar ya...",
+      "sent_at": 1748441531
+    }
+  },
+  "unread_count": 2
+}
+```
+
+| Field | Type | Catatan |
+|---|---|---|
+| `conversation.status` | `"pending"` \| `"active"` \| `"resolved"` | `pending` = belum di-accept agent. `active` = sedang ditangani. `resolved` = ditutup |
+| `conversation.agent` | object \| null | Agent yang menangani. `null` kalau belum di-accept |
+| `conversation.last_message` | object \| null | Preview pesan terakhir (untuk notifikasi badge) |
+| `unread_count` | integer | Jumlah pesan outgoing yang lebih baru dari `last_seen_at`. Pakai untuk badge unread |
+
+SDK gunakan untuk:
+- Decide apakah tampilkan badge "Agent X is helping you"
+- Display unread count di chat bubble (sebelum widget dibuka)
+- Tahu kalau conversation sudah `resolved` → tampilkan "End of conversation" CTA
+
+---
+
+### 4.4 `POST /widget-api/session/{sessionToken}/seen`
+
+Tandai conversation sebagai sudah dibaca oleh visitor (update `last_seen_at` ke sekarang). Panggil saat user buka widget atau scroll ke pesan terbaru.
+
+**Request body**: kosong / `{}`
+
+**Response 200**
+
+```json
+{ "last_seen_at": "2026-05-28T10:35:00+00:00" }
+```
+
+Setelah ini, response `/status` berikutnya akan punya `unread_count: 0` (sampai ada pesan outgoing baru).
+
+---
+
+### 4.5 `POST /widget-api/session/{sessionToken}/messages`
 
 Visitor mengirim pesan teks. Saat ini hanya mendukung text. Pesan langsung muncul di dashboard agent + memicu flow otomatis (kalau connection ter-attach ke flow).
 
@@ -205,7 +267,7 @@ Field `message` mengikuti **MessageResource** schema yang sama dipakai dashboard
 
 ---
 
-### 4.4 `GET /widget-api/session/{sessionToken}/messages`
+### 4.6 `GET /widget-api/session/{sessionToken}/messages`
 
 Restore conversation history. Dipanggil saat SDK boot up dan menemukan `session_token` tersimpan (mis. setelah refresh page).
 
@@ -515,6 +577,8 @@ Fitur ini akan ditambahkan saat dibutuhkan — SDK boleh mock UI-nya sekarang:
 |---|---|---|
 | Get widget config | `GET` | `/widget-api/config/{appId}` |
 | Init session | `POST` | `/widget-api/session/{appId}` |
+| Get session status | `GET` | `/widget-api/session/{token}` |
+| Mark as seen | `POST` | `/widget-api/session/{token}/seen` |
 | Send message | `POST` | `/widget-api/session/{token}/messages` |
 | Get history | `GET` | `/widget-api/session/{token}/messages` |
 | Subscribe realtime | WS | channel `widget-session.{token}`, event `.widget-message-received` |
@@ -527,3 +591,4 @@ Fitur ini akan ditambahkan saat dibutuhkan — SDK boleh mock UI-nya sekarang:
 |---|---|---|
 | 0.1 | 2026-05-28 | Initial release: text messaging, public broadcast channel, session-based auth |
 | 0.2 | 2026-05-28 | `GET /config` sekarang mengembalikan block `realtime: { driver, key, host, port, scheme }` — SDK tidak perlu hardcode Reverb credential |
+| 0.3 | 2026-05-28 | Tambah `GET /session/{token}` untuk status + agent + unread_count, dan `POST /session/{token}/seen` untuk mark as read |
