@@ -103,6 +103,52 @@ class WhatsAppTokenValidator
     }
 
     /**
+     * Mark Inactive every WhatsApp Official connection whose stored fb_user_id
+     * matches the app-scoped user id from a Meta deauth signed_request. This is
+     * the reliable, exact mapping (the ASID stored at connect == the ASID Meta
+     * sends here). Returns the connections that were deauthorized.
+     */
+    public function deauthorizeByFacebookUserId(string $facebookUserId): Collection
+    {
+        $connections = Connection::where('channel', Channel::WhatsappOfficial)
+            ->where('credentials->fb_user_id', $facebookUserId)
+            ->get();
+
+        $deauthorized = collect();
+
+        foreach ($connections as $connection) {
+            $connection->update(['status' => Status::Inactive]);
+            broadcast(new ConnectionUpdated($connection->fresh()));
+            $deauthorized->push($connection);
+
+            Log::info('WhatsApp connection deauthorized via fb_user_id match', [
+                'connection_id' => $connection->id,
+                'fb_user_id' => $facebookUserId,
+            ]);
+        }
+
+        return $deauthorized;
+    }
+
+    /**
+     * Delete conversations + messages and wipe credentials for every WhatsApp
+     * Official connection whose stored fb_user_id matches the app-scoped user id
+     * from a Meta data-deletion signed_request. This is the exact mapping that
+     * makes data deletion actually delete (vs. the token-revocation fallback,
+     * which never fires for SYSTEM_USER tokens that stay valid after removal).
+     *
+     * @return array{connections: int, conversations: int, messages: int, connection_ids: array<int>}
+     */
+    public function deleteDataByFacebookUserId(string $facebookUserId): array
+    {
+        $connections = Connection::where('channel', Channel::WhatsappOfficial)
+            ->where('credentials->fb_user_id', $facebookUserId)
+            ->get();
+
+        return $this->deleteConnectionsData($connections);
+    }
+
+    /**
      * Same as deauthorizeRevoked but also deletes conversations + messages for
      * any connection whose token Meta reports as revoked. Returns counters
      * suitable for logging in a Meta data-deletion audit row.
@@ -113,8 +159,25 @@ class WhatsAppTokenValidator
     {
         $connections = Connection::where('channel', Channel::WhatsappOfficial)
             ->whereNotNull('credentials')
-            ->get();
+            ->get()
+            ->filter(function (Connection $connection) {
+                $token = $connection->credentials['access_token'] ?? null;
+                return $token && $this->isExplicitlyInvalid($token);
+            });
 
+        return $this->deleteConnectionsData($connections);
+    }
+
+    /**
+     * Delete conversations + messages and wipe credentials for the given
+     * connections. Keeps the connection rows as historical records. Returns
+     * counters suitable for a Meta data-deletion audit row.
+     *
+     * @param  \Illuminate\Support\Collection<int, Connection>  $connections
+     * @return array{connections: int, conversations: int, messages: int, connection_ids: array<int>}
+     */
+    private function deleteConnectionsData(Collection $connections): array
+    {
         $stats = [
             'connections' => 0,
             'conversations' => 0,
@@ -123,15 +186,6 @@ class WhatsAppTokenValidator
         ];
 
         foreach ($connections as $connection) {
-            $token = $connection->credentials['access_token'] ?? null;
-            if (!$token) {
-                continue;
-            }
-
-            if (!$this->isExplicitlyInvalid($token)) {
-                continue;
-            }
-
             $conversations = Conversation::where('connection_id', $connection->id)->get();
 
             foreach ($conversations as $conversation) {
@@ -155,7 +209,7 @@ class WhatsAppTokenValidator
             $stats['connections']++;
             $stats['connection_ids'][] = $connection->id;
 
-            Log::info('WhatsApp connection data deleted via token validation', [
+            Log::info('WhatsApp connection data deleted', [
                 'connection_id' => $connection->id,
                 'conversations_deleted' => $conversations->count(),
             ]);

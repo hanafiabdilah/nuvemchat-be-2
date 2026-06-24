@@ -417,16 +417,21 @@ class ConnectionController extends Controller
             ], 400);
         }
 
-        // Resolve connection_id, waba_id, phone_number_id from either POST body or GET state.
+        // Resolve connection_id, waba_id, phone_number_id, fb_user_id from either POST body or GET state.
         $connectionId = $request->input('connection_id');
         $wabaId = $request->input('waba_id');
         $phoneNumberId = $request->input('phone_number_id');
+        // fb_user_id is the app-scoped user id (ASID) returned by FB.login. It is
+        // the SAME id Meta sends in the data-deletion/deauth signed_request, so we
+        // persist it to reliably match deletion requests back to this connection.
+        $fbUserId = $request->input('fb_user_id');
 
         if (!$connectionId && $state = $request->input('state')) {
             $stateData = json_decode(base64_decode($state), true) ?: [];
             $connectionId = $stateData['connection_id'] ?? null;
             $wabaId = $wabaId ?: ($stateData['waba_id'] ?? null);
             $phoneNumberId = $phoneNumberId ?: ($stateData['phone_number_id'] ?? null);
+            $fbUserId = $fbUserId ?: ($stateData['fb_user_id'] ?? null);
         }
 
         if (!$connectionId) {
@@ -465,7 +470,7 @@ class ConnectionController extends Controller
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
-            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId);
+            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId, $fbUserId);
 
         } catch (\Throwable $th) {
             Log::error('Error processing Facebook callback', [
@@ -479,7 +484,7 @@ class ConnectionController extends Controller
         }
     }
 
-    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null)
+    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null, ?string $fbUserId = null)
     {
         try {
             // Always call /me/businesses up front. This single call:
@@ -598,6 +603,9 @@ class ConnectionController extends Controller
                 'verified_name' => $verifiedName,
                 'quality_rating' => $qualityRating,
                 'pin' => $pin,
+                // App-scoped user id from FB.login — used to match Meta
+                // deauth/data-deletion signed_requests back to this connection.
+                'fb_user_id' => $fbUserId ?: ($connection->credentials['fb_user_id'] ?? null),
                 'token_type' => 'SYSTEM_USER',
                 'token_expires_at' => null,
             ]);
@@ -803,15 +811,21 @@ class ConnectionController extends Controller
                 return response()->json(['error' => 'Invalid signed_request'], 400);
             }
 
-            // We cannot map signed_request user_id -> a specific connection
-            // (Embedded Signup tokens are SYSTEM_USER tokens with no resolvable
-            // ASID — see handleWhatsAppCallback). Instead, ask Meta which of
-            // our stored tokens are now invalid and deauthorize those.
-            Log::info('Facebook deauthorization: validating stored WhatsApp tokens', [
+            // Primary: match on the app-scoped user id (ASID) stored at connect.
+            // Fallback (legacy connections without it): ask Meta which stored
+            // tokens are now invalid and deauthorize those.
+            Log::info('Facebook deauthorization: matching connections by fb_user_id', [
                 'facebook_user_id' => $data['user_id'],
             ]);
 
-            $deauthorized = $this->whatsAppTokenValidator->deauthorizeRevoked();
+            $deauthorized = $this->whatsAppTokenValidator->deauthorizeByFacebookUserId($data['user_id']);
+
+            if ($deauthorized->isEmpty()) {
+                Log::info('Facebook deauthorization: no fb_user_id match, falling back to token validation', [
+                    'facebook_user_id' => $data['user_id'],
+                ]);
+                $deauthorized = $this->whatsAppTokenValidator->deauthorizeRevoked();
+            }
 
             Log::info('Facebook deauthorization processed', [
                 'facebook_user_id' => $data['user_id'],
@@ -857,15 +871,24 @@ class ConnectionController extends Controller
             $confirmationCode = hash('sha256', $facebookUserId . time() . uniqid());
             $statusUrl = route('oauth.facebook.deletion-status', ['code' => $confirmationCode]);
 
-            Log::info('Facebook data deletion: validating stored WhatsApp tokens', [
+            Log::info('Facebook data deletion: matching connections by fb_user_id', [
                 'facebook_user_id' => $facebookUserId,
                 'confirmation_code' => $confirmationCode,
             ]);
 
-            // Same rationale as facebookDeauthorize: cannot map signed_request
-            // user_id to a specific connection. Ask Meta which stored tokens
-            // are now invalid and delete the data backing those connections.
-            $stats = $this->whatsAppTokenValidator->deleteRevokedData();
+            // Primary: exact match on the app-scoped user id (ASID) we stored at
+            // connect time — this is the same id Meta sends here, so it deletes
+            // the right connection's data deterministically.
+            $stats = $this->whatsAppTokenValidator->deleteDataByFacebookUserId($facebookUserId);
+
+            // Fallback (legacy connections with no stored fb_user_id): ask Meta
+            // which stored tokens are now invalid and delete those.
+            if ($stats['connections'] === 0) {
+                Log::info('Facebook data deletion: no fb_user_id match, falling back to token validation', [
+                    'facebook_user_id' => $facebookUserId,
+                ]);
+                $stats = $this->whatsAppTokenValidator->deleteRevokedData();
+            }
 
             DB::table('facebook_deletion_logs')->insert([
                 'confirmation_code' => $confirmationCode,

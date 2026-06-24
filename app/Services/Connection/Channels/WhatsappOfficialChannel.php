@@ -34,6 +34,7 @@ class WhatsappOfficialChannel implements ChannelInterface
             'verified_name' => ['nullable', 'string'],
             'quality_rating' => ['nullable', 'string'],
             'pin' => ['nullable', 'string'],
+            'fb_user_id' => ['nullable', 'string'],
             'token_type' => ['nullable', 'string'],
             'token_expires_at' => ['nullable', 'string'],
         ])->validate();
@@ -77,6 +78,10 @@ class WhatsappOfficialChannel implements ChannelInterface
                     'verified_name' => $phoneInfo['verified_name'] ?? $data['verified_name'] ?? null,
                     'quality_rating' => $phoneInfo['quality_rating'] ?? $data['quality_rating'] ?? null,
                     'pin' => $data['pin'] ?? null,
+                    // App-scoped user id (ASID) from FB.login. Matches the user_id
+                    // Meta sends in deauth/data-deletion signed_requests so we can
+                    // reliably delete the right connection's data on request.
+                    'fb_user_id' => $data['fb_user_id'] ?? null,
                     'token_type' => $data['token_type'] ?? null,
                     'token_expires_at' => $data['token_expires_at'] ?? null,
                 ],
