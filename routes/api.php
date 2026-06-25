@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionContro
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
 use App\Http\Controllers\Api\Admin\PermissionController as AdminPermissionController;
 use App\Http\Controllers\Api\Admin\RoleController as AdminRoleController;
+use App\Http\Controllers\Api\Admin\StatisticsController as AdminStatisticsController;
 use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\AuthController;
@@ -184,6 +185,8 @@ Route::prefix('admin')->group(function () {
         Route::get('/auth/me', [AdminAuthController::class, 'me']);
         Route::post('/auth/logout', [AdminAuthController::class, 'logout']);
         Route::get('/stats', [AdminStatsController::class, 'index']);
+        Route::get('/statistics', [AdminStatisticsController::class, 'index'])
+            ->middleware('permission:bo.statistics.view');
         Route::put('/account', [AdminAccountController::class, 'updateProfile']);
         Route::put('/account/password', [AdminAccountController::class, 'updatePassword']);
 

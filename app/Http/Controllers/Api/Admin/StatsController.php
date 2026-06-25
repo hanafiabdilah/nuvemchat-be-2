@@ -8,11 +8,13 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Support\GrowthStats;
 
 class StatsController extends Controller
 {
     /**
-     * Platform-wide aggregate counts for the Back Office dashboard.
+     * Platform-wide totals + 12-month cumulative growth for the dashboard.
+     * Available to any Back Office admin (the dashboard is the landing page).
      */
     public function index()
     {
@@ -21,8 +23,14 @@ class StatsController extends Controller
                 'customers' => Tenant::count(),
                 'users' => User::whereNotNull('tenant_id')->count(),
                 'connections' => Connection::count(),
-                'contacts' => Contact::count(),
                 'conversations' => Conversation::count(),
+                'contacts' => Contact::count(),
+                'growth' => [
+                    'customers' => GrowthStats::cumulative(fn () => Tenant::query()),
+                    'users' => GrowthStats::cumulative(fn () => User::whereNotNull('tenant_id')),
+                    'connections' => GrowthStats::cumulative(fn () => Connection::query()),
+                    'conversations' => GrowthStats::cumulative(fn () => Conversation::query()),
+                ],
             ],
         ]);
     }
