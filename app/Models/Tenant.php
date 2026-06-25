@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 
 class Tenant extends Model
 {
@@ -33,6 +34,15 @@ class Tenant extends Model
     public function contacts()
     {
         return $this->hasMany(Contact::class);
+    }
+
+    /**
+     * All conversations belonging to this tenant, reached through its
+     * connections (conversations have no direct tenant_id).
+     */
+    public function conversations(): HasManyThrough
+    {
+        return $this->hasManyThrough(Conversation::class, Connection::class);
     }
 
     public function quickMessages()
