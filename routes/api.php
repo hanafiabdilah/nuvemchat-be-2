@@ -10,11 +10,13 @@ use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
+use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionController;
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
 use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
+use App\Http\Controllers\Api\ImpersonationController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\FlowController;
@@ -31,6 +33,9 @@ use App\Http\Middleware\V1\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
+
+// Public: tenant app exchanges a one-time Back Office code for a session.
+Route::post('/impersonate/redeem', [ImpersonationController::class, 'redeem']);
 
 Route::middleware('auth:sanctum')->group(function(){
     Route::post('/uploads', [UploadController::class, 'store']);
@@ -173,6 +178,9 @@ Route::prefix('admin')->group(function () {
         Route::get('/auth/me', [AdminAuthController::class, 'me']);
         Route::post('/auth/logout', [AdminAuthController::class, 'logout']);
 
+        // Impersonation — mint a one-time handoff code for a tenant user
+        Route::post('/impersonate', [ImpersonationController::class, 'start']);
+
         // Platform-wide aggregate stats for the dashboard
         Route::get('/stats', [AdminStatsController::class, 'index']);
 
@@ -182,5 +190,8 @@ Route::prefix('admin')->group(function () {
 
         // Users (tenant users) — platform-wide
         Route::get('/users', [AdminUserController::class, 'index']);
+
+        // Connections — platform-wide channel health
+        Route::get('/connections', [AdminConnectionController::class, 'index']);
     });
 });
