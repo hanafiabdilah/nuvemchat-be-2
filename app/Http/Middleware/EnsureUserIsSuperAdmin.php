@@ -18,7 +18,13 @@ class EnsureUserIsSuperAdmin
     {
         $user = $request->user();
 
-        if (! $user || ! is_null($user->tenant_id) || ! $user->hasRole('super-admin')) {
+        // A Back Office admin: not tenant-scoped, and holds at least one
+        // platform role (super-admin or any custom platform role).
+        $isPlatformAdmin = $user
+            && is_null($user->tenant_id)
+            && $user->roles()->where('is_platform', true)->exists();
+
+        if (! $isPlatformAdmin) {
             return response()->json([
                 'message' => 'Forbidden. Back Office access only.',
             ], 403);

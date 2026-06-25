@@ -31,7 +31,10 @@ class AuthController extends Controller
             ], 401);
         }
 
-        if (! is_null($user->tenant_id) || ! $user->hasRole('super-admin')) {
+        $isPlatformAdmin = is_null($user->tenant_id)
+            && $user->roles()->where('is_platform', true)->exists();
+
+        if (! $isPlatformAdmin) {
             return response()->json([
                 'message' => 'This account is not allowed to access the Back Office.',
             ], 403);

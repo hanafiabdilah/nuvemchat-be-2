@@ -13,7 +13,8 @@ class PermissionController extends Controller
      */
     public function index()
     {
-        $permissions = Permission::orderBy('name')->get();
+        // Exclude platform (Back Office) permissions from the tenant UI.
+        $permissions = Permission::where('is_platform', false)->orderBy('name')->get();
 
         return response()->json([
             'data' => $permissions,

@@ -32,7 +32,8 @@ class DatabaseSeeder extends Seeder
             $user->assignRole('owner');
         }
 
-        // Create the first-time Back Office (platform) admin
+        // Platform RBAC (Back Office roles & permissions) then the first admin
+        $this->call(PlatformRbacSeeder::class);
         $this->call(AdminSeeder::class);
     }
 }

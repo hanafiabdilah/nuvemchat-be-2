@@ -9,9 +9,13 @@ use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentT
 use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
+use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
+use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionController;
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
+use App\Http\Controllers\Api\Admin\PermissionController as AdminPermissionController;
+use App\Http\Controllers\Api\Admin\RoleController as AdminRoleController;
 use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\AuthController;
@@ -175,23 +179,46 @@ Route::prefix('admin')->group(function () {
     Route::post('/auth/login', [AdminAuthController::class, 'login']);
 
     Route::middleware(['auth:sanctum', 'super-admin'])->group(function () {
+        // Available to any Back Office admin
         Route::get('/auth/me', [AdminAuthController::class, 'me']);
         Route::post('/auth/logout', [AdminAuthController::class, 'logout']);
-
-        // Impersonation — mint a one-time handoff code for a tenant user
-        Route::post('/impersonate', [ImpersonationController::class, 'start']);
-
-        // Platform-wide aggregate stats for the dashboard
         Route::get('/stats', [AdminStatsController::class, 'index']);
+        Route::put('/account', [AdminAccountController::class, 'updateProfile']);
+        Route::put('/account/password', [AdminAccountController::class, 'updatePassword']);
+
+        // Impersonation
+        Route::post('/impersonate', [ImpersonationController::class, 'start'])
+            ->middleware('permission:bo.impersonate');
 
         // Customers (tenants) — platform-wide, not tenant-scoped
-        Route::get('/customers', [AdminCustomerController::class, 'index']);
-        Route::get('/customers/{tenant}', [AdminCustomerController::class, 'show']);
+        Route::middleware('permission:bo.customers.view')->group(function () {
+            Route::get('/customers', [AdminCustomerController::class, 'index']);
+            Route::get('/customers/{tenant}', [AdminCustomerController::class, 'show']);
+        });
 
         // Users (tenant users) — platform-wide
-        Route::get('/users', [AdminUserController::class, 'index']);
+        Route::get('/users', [AdminUserController::class, 'index'])
+            ->middleware('permission:bo.users.view');
 
         // Connections — platform-wide channel health
-        Route::get('/connections', [AdminConnectionController::class, 'index']);
+        Route::get('/connections', [AdminConnectionController::class, 'index'])
+            ->middleware('permission:bo.connections.view');
+
+        // Admins management
+        Route::middleware('permission:bo.admins.manage')->group(function () {
+            Route::get('/admins', [AdminAdminController::class, 'index']);
+            Route::post('/admins', [AdminAdminController::class, 'store']);
+            Route::put('/admins/{admin}/role', [AdminAdminController::class, 'updateRole']);
+            Route::delete('/admins/{admin}', [AdminAdminController::class, 'destroy']);
+        });
+
+        // Roles & permissions management
+        Route::middleware('permission:bo.roles.manage')->group(function () {
+            Route::get('/permissions', [AdminPermissionController::class, 'index']);
+            Route::get('/roles', [AdminRoleController::class, 'index']);
+            Route::post('/roles', [AdminRoleController::class, 'store']);
+            Route::put('/roles/{role}', [AdminRoleController::class, 'update']);
+            Route::delete('/roles/{role}', [AdminRoleController::class, 'destroy']);
+        });
     });
 });

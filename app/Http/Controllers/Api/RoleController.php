@@ -14,9 +14,12 @@ class RoleController extends Controller
      */
     public function index()
     {
-        $roles = Role::with(['permissions' => function ($query) {
-            $query->orderBy('name');
-        }])->orderBy('created_at', 'DESC')->get();
+        // Exclude platform (Back Office) roles — same guard, but must not
+        // surface in the tenant UI.
+        $roles = Role::where('is_platform', false)
+            ->with(['permissions' => function ($query) {
+                $query->orderBy('name');
+            }])->orderBy('created_at', 'DESC')->get();
 
         return response()->json([
             'data' => $roles,
