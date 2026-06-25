@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionControll
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
 use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
+use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
@@ -178,5 +179,8 @@ Route::prefix('admin')->group(function () {
         // Customers (tenants) — platform-wide, not tenant-scoped
         Route::get('/customers', [AdminCustomerController::class, 'index']);
         Route::get('/customers/{tenant}', [AdminCustomerController::class, 'show']);
+
+        // Users (tenant users) — platform-wide
+        Route::get('/users', [AdminUserController::class, 'index']);
     });
 });
