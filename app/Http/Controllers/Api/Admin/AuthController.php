@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
+use App\Models\AuditLog;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -42,6 +43,8 @@ class AuthController extends Controller
 
         // Token gets the `admin` ability so it can't be reused on tenant routes.
         $token = $user->createToken('admin_token', ['admin'])->plainTextToken;
+
+        AuditLog::record('auth.login', 'Signed in to the Back Office', actor: $user);
 
         $user->load('roles', 'permissions');
 

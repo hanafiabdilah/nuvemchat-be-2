@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProvider
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
+use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionController;
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
@@ -203,6 +204,10 @@ Route::prefix('admin')->group(function () {
         // Connections — platform-wide channel health
         Route::get('/connections', [AdminConnectionController::class, 'index'])
             ->middleware('permission:bo.connections.view');
+
+        // Audit log
+        Route::get('/audit-logs', [AdminAuditLogController::class, 'index'])
+            ->middleware('permission:bo.audit.view');
 
         // Admins management
         Route::middleware('permission:bo.admins.manage')->group(function () {

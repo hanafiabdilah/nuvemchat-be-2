@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
+use App\Models\AuditLog;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -45,6 +46,12 @@ class ImpersonationController extends Controller
             'target_user_id' => $target->id,
             'tenant_id' => $target->tenant_id,
         ]);
+
+        AuditLog::record(
+            'impersonate.start',
+            "Started impersonating {$target->name} ({$target->email})",
+            ['target_user_id' => $target->id, 'tenant_id' => $target->tenant_id],
+        );
 
         return response()->json([
             'code' => $code,

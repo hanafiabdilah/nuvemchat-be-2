@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
+use App\Models\AuditLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
@@ -25,6 +26,8 @@ class AccountController extends Controller
 
         $user->update($data);
         $user->load('roles', 'permissions');
+
+        AuditLog::record('account.profile', 'Updated own profile');
 
         return $user->toResource(UserResource::class);
     }
@@ -48,6 +51,8 @@ class AccountController extends Controller
         }
 
         $user->update(['password' => $data['password']]);
+
+        AuditLog::record('account.password', 'Changed own password');
 
         return response()->json(['message' => 'Password updated successfully.']);
     }

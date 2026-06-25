@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Admin\AdminResource;
+use App\Models\AuditLog;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -48,6 +49,11 @@ class AdminController extends Controller
         $admin->syncRoles([$data['role']]);
         $admin->load('roles');
 
+        AuditLog::record('admin.create', "Created admin {$admin->name} ({$admin->email})", [
+            'admin_id' => $admin->id,
+            'role' => $data['role'],
+        ]);
+
         return (new AdminResource($admin))->response()->setStatusCode(201);
     }
 
@@ -72,6 +78,11 @@ class AdminController extends Controller
 
         $admin->syncRoles([$data['role']]);
         $admin->load('roles');
+
+        AuditLog::record('admin.role_update', "Changed {$admin->name}'s role to {$data['role']}", [
+            'admin_id' => $admin->id,
+            'role' => $data['role'],
+        ]);
 
         return new AdminResource($admin);
     }
@@ -100,8 +111,12 @@ class AdminController extends Controller
             ], 422);
         }
 
+        $name = $admin->name;
+        $email = $admin->email;
         $admin->tokens()->delete();
         $admin->delete();
+
+        AuditLog::record('admin.delete', "Deleted admin {$name} ({$email})");
 
         return response()->json(['message' => 'Admin deleted successfully.']);
     }

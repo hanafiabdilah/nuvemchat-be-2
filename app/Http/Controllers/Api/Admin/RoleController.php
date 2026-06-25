@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Spatie\Permission\Models\Permission;
@@ -48,6 +49,11 @@ class RoleController extends Controller
         ]);
         $role->syncPermissions($this->platformPermissions($data['permissions'] ?? []));
 
+        AuditLog::record('role.create', "Created role {$role->name}", [
+            'role' => $role->name,
+            'permissions' => $data['permissions'] ?? [],
+        ]);
+
         return response()->json(['data' => $this->present($role)], 201);
     }
 
@@ -69,6 +75,11 @@ class RoleController extends Controller
         $role->update(['name' => $data['name']]);
         $role->syncPermissions($this->platformPermissions($data['permissions'] ?? []));
 
+        AuditLog::record('role.update', "Updated role {$role->name}", [
+            'role' => $role->name,
+            'permissions' => $data['permissions'] ?? [],
+        ]);
+
         return response()->json(['data' => $this->present($role)]);
     }
 
@@ -86,7 +97,10 @@ class RoleController extends Controller
             ], 422);
         }
 
+        $name = $role->name;
         $role->delete();
+
+        AuditLog::record('role.delete', "Deleted role {$name}");
 
         return response()->json(['message' => 'Role deleted successfully.']);
     }
