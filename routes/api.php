@@ -11,6 +11,7 @@ use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProvider
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
+use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
@@ -170,6 +171,9 @@ Route::prefix('admin')->group(function () {
     Route::middleware(['auth:sanctum', 'super-admin'])->group(function () {
         Route::get('/auth/me', [AdminAuthController::class, 'me']);
         Route::post('/auth/logout', [AdminAuthController::class, 'logout']);
+
+        // Platform-wide aggregate stats for the dashboard
+        Route::get('/stats', [AdminStatsController::class, 'index']);
 
         // Customers (tenants) — platform-wide, not tenant-scoped
         Route::get('/customers', [AdminCustomerController::class, 'index']);
