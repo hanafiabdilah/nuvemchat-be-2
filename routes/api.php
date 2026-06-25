@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentT
 use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
+use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
@@ -152,4 +153,21 @@ Route::middleware('auth:sanctum')->group(function(){
 
 Route::prefix('/v1')->middleware(Auth::class)->group(function(){
     Route::post('send-message', [SendMessageController::class, 'handle']);
+});
+
+/*
+|--------------------------------------------------------------------------
+| Back Office (Platform Admin) API
+|--------------------------------------------------------------------------
+| Separate, isolated admin surface for managing every tenant/customer.
+| Login is public; everything else requires a Sanctum token belonging to a
+| `super-admin` user with no tenant scope (see EnsureUserIsSuperAdmin).
+*/
+Route::prefix('admin')->group(function () {
+    Route::post('/auth/login', [AdminAuthController::class, 'login']);
+
+    Route::middleware(['auth:sanctum', 'super-admin'])->group(function () {
+        Route::get('/auth/me', [AdminAuthController::class, 'me']);
+        Route::post('/auth/logout', [AdminAuthController::class, 'logout']);
+    });
 });

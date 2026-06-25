@@ -31,5 +31,8 @@ class DatabaseSeeder extends Seeder
         if (!$user->hasRole('owner')) {
             $user->assignRole('owner');
         }
+
+        // Create the first-time Back Office (platform) admin
+        $this->call(AdminSeeder::class);
     }
 }
