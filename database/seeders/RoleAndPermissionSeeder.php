@@ -67,6 +67,10 @@ class RoleAndPermissionSeeder extends Seeder
             // Statistics
             'statistics.tenant.view',
             'statistics.agents.view',
+
+            // Billing (tenant-side subscription management)
+            'billing.view',
+            'billing.manage',
         ];
 
         foreach ($permissions as $permission) {

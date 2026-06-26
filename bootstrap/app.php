@@ -45,6 +45,8 @@ return Application::configure(basePath: dirname(__DIR__))
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,
             'role_or_permission' => \Spatie\Permission\Middleware\RoleOrPermissionMiddleware::class,
             'super-admin' => \App\Http\Middleware\EnsureUserIsSuperAdmin::class,
+            'subscription.active' => \App\Http\Middleware\EnsureSubscriptionActive::class,
+            'feature' => \App\Http\Middleware\EnsureFeatureEnabled::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

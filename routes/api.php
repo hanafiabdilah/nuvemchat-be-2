@@ -12,6 +12,8 @@ use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionControll
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
+use App\Http\Controllers\Api\Admin\AdminPlanController;
+use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionController;
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
@@ -21,6 +23,7 @@ use App\Http\Controllers\Api\Admin\StatisticsController as AdminStatisticsContro
 use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\Billing\BillingController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ImpersonationController;
 use App\Http\Controllers\Api\ContactController;
@@ -43,11 +46,24 @@ Route::post('/auth/login', [AuthController::class, 'login']);
 // Public: tenant app exchanges a one-time Back Office code for a session.
 Route::post('/impersonate/redeem', [ImpersonationController::class, 'redeem']);
 
-Route::middleware('auth:sanctum')->group(function(){
+Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     Route::post('/uploads', [UploadController::class, 'store']);
 
     Route::get('/user', [UserController::class, 'index']);
     Route::put('/user', [UserController::class, 'update']);
+
+    // Billing (tenant-side). Exempt from the subscription.active gate so a
+    // suspended tenant can still load the page and pay (see EnsureSubscriptionActive).
+    Route::prefix('billing')->name('billing.')->group(function () {
+        Route::get('/config', [BillingController::class, 'config'])->name('config');
+        Route::get('/subscription', [BillingController::class, 'subscription'])->middleware('permission:billing.view')->name('subscription');
+        Route::get('/invoices', [BillingController::class, 'invoices'])->middleware('permission:billing.view')->name('invoices');
+        Route::get('/invoices/{invoice}/status', [BillingController::class, 'invoiceStatus'])->middleware('permission:billing.view')->name('invoice-status');
+        Route::post('/subscribe', [BillingController::class, 'subscribe'])->middleware('permission:billing.manage')->name('subscribe');
+        Route::post('/pix/refresh', [BillingController::class, 'refreshPix'])->middleware('permission:billing.manage')->name('pix-refresh');
+        Route::post('/cancel', [BillingController::class, 'cancel'])->middleware('permission:billing.manage')->name('cancel');
+    });
+    Route::get('/plans', [BillingController::class, 'plans'])->middleware('permission:billing.view')->name('plans.index');
 
     Route::get('/messages', [MessageController::class, 'index']);
 
@@ -111,23 +127,27 @@ Route::middleware('auth:sanctum')->group(function(){
     Route::put('/roles/{id}', [RoleController::class, 'update'])->middleware('permission:roles.update');
     Route::delete('/roles/{id}', [RoleController::class, 'destroy'])->middleware('permission:roles.delete');
 
-    // Flow routes - protected by permissions
-    Route::get('/flows', [FlowController::class, 'index'])->middleware('permission:flows.view');
-    Route::post('/flows', [FlowController::class, 'store'])->middleware('permission:flows.create');
-    Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
-    Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
-    Route::delete('/flows/{id}', [FlowController::class, 'destroy'])->middleware('permission:flows.delete');
-    Route::post('/flows/{id}/save', [FlowController::class, 'saveNodesAndEdges'])->middleware('permission:flows.update');
+    // Flow routes - protected by permissions + the `flow` plan feature
+    Route::middleware('feature:flow')->group(function () {
+        Route::get('/flows', [FlowController::class, 'index'])->middleware('permission:flows.view');
+        Route::post('/flows', [FlowController::class, 'store'])->middleware('permission:flows.create');
+        Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
+        Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
+        Route::delete('/flows/{id}', [FlowController::class, 'destroy'])->middleware('permission:flows.delete');
+        Route::post('/flows/{id}/save', [FlowController::class, 'saveNodesAndEdges'])->middleware('permission:flows.update');
+    });
 
     // Permission list (read-only) - permissions are managed via seeders/migrations only
     Route::get('/permissions', [PermissionController::class, 'index']);
 
-    // Statistics
-    Route::get('/statistics/tenant', [StatisticsController::class, 'tenant'])->middleware('permission:statistics.tenant.view');
-    Route::get('/statistics/agents', [StatisticsController::class, 'agents'])->middleware('permission:statistics.agents.view');
+    // Statistics - gated by the `statistics` plan feature
+    Route::middleware('feature:statistics')->group(function () {
+        Route::get('/statistics/tenant', [StatisticsController::class, 'tenant'])->middleware('permission:statistics.tenant.view');
+        Route::get('/statistics/agents', [StatisticsController::class, 'agents'])->middleware('permission:statistics.agents.view');
+    });
 
-    // AI Agent Hub routes - protected by permissions
-    Route::prefix('ai-hub')->group(function () {
+    // AI Agent Hub routes - protected by permissions + the `ai_agent_hub` feature
+    Route::prefix('ai-hub')->middleware('feature:ai_agent_hub')->group(function () {
         Route::post('/provision', [AiHubProvisionController::class, 'store'])->middleware('permission:ai-agents.create');
         Route::get('/models', [AiHubModelController::class, 'index'])->middleware('permission:ai-agents.view');
 
@@ -218,6 +238,22 @@ Route::prefix('admin')->group(function () {
             Route::post('/admins', [AdminAdminController::class, 'store']);
             Route::put('/admins/{admin}/role', [AdminAdminController::class, 'updateRole']);
             Route::delete('/admins/{admin}', [AdminAdminController::class, 'destroy']);
+        });
+
+        // Billing — plan catalogue management
+        Route::middleware('permission:bo.plans.manage')->group(function () {
+            Route::get('/plans', [AdminPlanController::class, 'index']);
+            Route::post('/plans', [AdminPlanController::class, 'store']);
+            Route::put('/plans/{plan}', [AdminPlanController::class, 'update']);
+            Route::delete('/plans/{plan}', [AdminPlanController::class, 'destroy']);
+        });
+
+        // Billing — subscriptions + manual (comp) assignment
+        Route::middleware('permission:bo.subscriptions.manage')->group(function () {
+            Route::get('/subscriptions', [AdminSubscriptionController::class, 'index']);
+            Route::get('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'show']);
+            Route::post('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'assign']);
+            Route::delete('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'cancel']);
         });
 
         // Roles & permissions management

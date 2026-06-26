@@ -51,7 +51,17 @@ class ConnectionController extends Controller
             'flow_id' => ['nullable', 'exists:flows,id'],
         ]);
 
-        $connection = $request->user()->tenant->connections()->create($validated);
+        $tenant = $request->user()->tenant;
+
+        if (! app(\App\Services\Billing\SubscriptionGate::class)->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
+            return response()->json([
+                'message' => 'You have reached the maximum number of connections for your plan.',
+                'code' => 'quota_exceeded',
+                'quota' => 'max_connections',
+            ], 422);
+        }
+
+        $connection = $tenant->connections()->create($validated);
 
         return response()->json([
             'message' => 'Connection created successfully',

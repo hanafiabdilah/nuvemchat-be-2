@@ -9,11 +9,30 @@ class Tenant extends Model
 {
     protected $fillable = [
         'user_id',
+        'current_subscription_id',
     ];
 
     public function user()
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function subscriptions()
+    {
+        return $this->hasMany(Subscription::class);
+    }
+
+    /**
+     * The tenant's current subscription (denormalised pointer for O(1) lookup).
+     */
+    public function currentSubscription()
+    {
+        return $this->belongsTo(Subscription::class, 'current_subscription_id');
+    }
+
+    public function invoices()
+    {
+        return $this->hasMany(Invoice::class);
     }
 
     public function users()

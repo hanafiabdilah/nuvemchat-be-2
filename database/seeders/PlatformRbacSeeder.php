@@ -22,6 +22,8 @@ class PlatformRbacSeeder extends Seeder
         'bo.audit.view',
         'bo.admins.manage',
         'bo.roles.manage',
+        'bo.plans.manage',
+        'bo.subscriptions.manage',
     ];
 
     public function run(): void

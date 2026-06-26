@@ -28,7 +28,17 @@ class AgentController extends Controller
             'roles.*' => ['exists:roles,name'],
         ]);
 
-        $user = request()->user()->tenant->users()->create([
+        $tenant = request()->user()->tenant;
+
+        if (! app(\App\Services\Billing\SubscriptionGate::class)->canConsume($tenant, 'max_agents', $tenant->users()->count())) {
+            return response()->json([
+                'message' => 'You have reached the maximum number of agents for your plan.',
+                'code' => 'quota_exceeded',
+                'quota' => 'max_agents',
+            ], 422);
+        }
+
+        $user = $tenant->users()->create([
             'name' => $request->name,
             'email' => $request->email,
             'password' => bcrypt($request->password),

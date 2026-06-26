@@ -28,3 +28,22 @@ Schedule::command('whatsapp:validate-tokens')
     ->onFailure(function () {
         logger()->error('WhatsApp token validation failed');
     });
+
+// --- Billing -------------------------------------------------------------
+
+// Generate fresh Pix charges a few days before period end (pix isn't auto-debited).
+Schedule::command('billing:pix-generate --days-before=3')
+    ->dailyAt('08:00')
+    ->timezone('America/Sao_Paulo')
+    ->onFailure(fn () => logger()->error('Pix renewal charge generation failed'));
+
+// Advance overdue subscriptions: past_due → grace → suspended; expire stale pix.
+Schedule::command('billing:process-overdue')
+    ->hourly()
+    ->onFailure(fn () => logger()->error('Overdue subscription processing failed'));
+
+// Safety net for payments whose webhook was missed.
+Schedule::command('billing:reconcile')
+    ->dailyAt('03:00')
+    ->timezone('America/Sao_Paulo')
+    ->onFailure(fn () => logger()->error('Billing reconciliation failed'));

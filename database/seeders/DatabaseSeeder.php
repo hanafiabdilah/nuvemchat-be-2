@@ -35,5 +35,8 @@ class DatabaseSeeder extends Seeder
         // Platform RBAC (Back Office roles & permissions) then the first admin
         $this->call(PlatformRbacSeeder::class);
         $this->call(AdminSeeder::class);
+
+        // Billing plans + comp backfill for existing tenants
+        $this->call(PlanSeeder::class);
     }
 }
