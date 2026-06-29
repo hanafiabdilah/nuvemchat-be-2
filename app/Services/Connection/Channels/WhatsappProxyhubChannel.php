@@ -173,11 +173,15 @@ class WhatsappProxyhubChannel implements ChannelInterface
             throw new ConnectionException($statusJson['message'] ?? 'Failed to connect to ProxyHub', $status->status() ?: 500);
         }
 
-        // ProxyHub wraps instance responses as { success, data: { connected: bool } }.
-        $connected = $statusJson['data']['connected'] ?? $statusJson['connected'] ?? false;
+        // ProxyHub wraps instance responses as
+        // { success, data: { connected: bool, loggedIn: bool, jid } }.
+        // The instance is only usable when it's BOTH connected to WhatsApp AND
+        // logged in (paired) — connected alone can mean "waiting for QR scan".
+        $data = $statusJson['data'] ?? $statusJson;
+        $isActive = ($data['connected'] ?? false) === true && ($data['loggedIn'] ?? false) === true;
 
         $connection->update([
-            'status' => $connected === true ? Status::Active : Status::Inactive,
+            'status' => $isActive ? Status::Active : Status::Inactive,
         ]);
 
         return $connection;
