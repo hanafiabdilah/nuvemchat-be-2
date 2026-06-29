@@ -63,7 +63,7 @@ class BillingService
             ),
             'payer_email' => $opts['payer_email'],
             'card_token_id' => $opts['card_token_id'] ?? null,
-            'back_url' => config('services.mercadopago.back_url'),
+            'back_url' => \App\Services\Billing\MercadoPago\MercadoPagoConfig::backUrl(),
             'status' => 'authorized',
             'external_reference' => $this->externalReference($tenant, $subscription),
         ];

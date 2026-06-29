@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\Setting;
+use App\Services\Billing\MercadoPago\MercadoPagoConfig;
 use App\Services\Connection\Proxy\ProxyhubConfig;
 use Illuminate\Http\Request;
 
@@ -17,6 +18,8 @@ class AdminSettingsController extends Controller
     public function show()
     {
         $token = ProxyhubConfig::integratorToken();
+        $mpAccess = MercadoPagoConfig::accessToken();
+        $mpSecret = MercadoPagoConfig::webhookSecret();
 
         return response()->json([
             'data' => [
@@ -24,6 +27,15 @@ class AdminSettingsController extends Controller
                     'base_url' => ProxyhubConfig::baseUrl(),
                     'integrator_token_set' => ! empty($token),
                     'integrator_token_preview' => $this->mask($token),
+                ],
+                'mercadopago' => [
+                    // Public key is meant to be exposed (frontend Bricks).
+                    'public_key' => MercadoPagoConfig::publicKey(),
+                    'back_url' => MercadoPagoConfig::backUrl(),
+                    'access_token_set' => ! empty($mpAccess),
+                    'access_token_preview' => $this->mask($mpAccess),
+                    'webhook_secret_set' => ! empty($mpSecret),
+                    'webhook_secret_preview' => $this->mask($mpSecret),
                 ],
             ],
         ]);
@@ -36,19 +48,42 @@ class AdminSettingsController extends Controller
     public function update(Request $request)
     {
         $validated = $request->validate([
-            'proxyhub' => ['required', 'array'],
-            'proxyhub.base_url' => ['required', 'url', 'max:255'],
+            'proxyhub' => ['sometimes', 'array'],
+            'proxyhub.base_url' => ['required_with:proxyhub', 'url', 'max:255'],
             'proxyhub.integrator_token' => ['nullable', 'string', 'max:255'],
+
+            'mercadopago' => ['sometimes', 'array'],
+            'mercadopago.public_key' => ['nullable', 'string', 'max:255'],
+            'mercadopago.back_url' => ['nullable', 'url', 'max:255'],
+            'mercadopago.access_token' => ['nullable', 'string', 'max:512'],
+            'mercadopago.webhook_secret' => ['nullable', 'string', 'max:255'],
         ]);
 
-        Setting::set(ProxyhubConfig::KEY_BASE_URL, rtrim($validated['proxyhub']['base_url'], '/'));
+        if ($request->has('proxyhub')) {
+            Setting::set(ProxyhubConfig::KEY_BASE_URL, rtrim($validated['proxyhub']['base_url'], '/'));
 
-        $token = $validated['proxyhub']['integrator_token'] ?? null;
-        if (! empty($token)) {
-            Setting::set(ProxyhubConfig::KEY_INTEGRATOR_TOKEN, $token);
+            if (! empty($validated['proxyhub']['integrator_token'])) {
+                Setting::set(ProxyhubConfig::KEY_INTEGRATOR_TOKEN, $validated['proxyhub']['integrator_token']);
+            }
         }
 
-        AuditLog::record('settings.update', 'Updated platform settings (proxyhub)');
+        if ($request->has('mercadopago')) {
+            $mp = $validated['mercadopago'];
+
+            // Public values: stored as-is (not secret).
+            Setting::set(MercadoPagoConfig::KEY_PUBLIC_KEY, $mp['public_key'] ?? null);
+            Setting::set(MercadoPagoConfig::KEY_BACK_URL, $mp['back_url'] ?? null);
+
+            // Secrets: only replaced when a new value is supplied.
+            if (! empty($mp['access_token'])) {
+                Setting::set(MercadoPagoConfig::KEY_ACCESS_TOKEN, $mp['access_token']);
+            }
+            if (! empty($mp['webhook_secret'])) {
+                Setting::set(MercadoPagoConfig::KEY_WEBHOOK_SECRET, $mp['webhook_secret']);
+            }
+        }
+
+        AuditLog::record('settings.update', 'Updated platform settings');
 
         return $this->show();
     }

@@ -17,8 +17,8 @@ class MercadoPagoClient
         protected ?string $accessToken = null,
         protected ?string $baseUrl = null,
     ) {
-        $this->accessToken ??= config('services.mercadopago.access_token');
-        $this->baseUrl ??= rtrim(config('services.mercadopago.base_url'), '/');
+        $this->accessToken ??= MercadoPagoConfig::accessToken();
+        $this->baseUrl ??= rtrim(MercadoPagoConfig::baseUrl(), '/');
     }
 
     protected function http(?string $idempotencyKey = null): PendingRequest

@@ -62,14 +62,10 @@ return [
     ],
 
     'mercadopago' => [
-        'access_token' => env('MERCADOPAGO_ACCESS_TOKEN'),
-        'public_key' => env('MERCADOPAGO_PUBLIC_KEY'), // exposed to frontend Bricks
-        'webhook_secret' => env('MERCADOPAGO_WEBHOOK_SECRET'),
-        'base_url' => env('MERCADOPAGO_BASE_URL', 'https://api.mercadopago.com'),
-        'back_url' => env('MERCADOPAGO_BACK_URL'),
-        // Grace period (days) before a past_due subscription is suspended.
+        // Credentials (access_token, public_key, webhook_secret, back_url) live in
+        // the `settings` table (DB-only) — see App\Services\Billing\MercadoPago\MercadoPagoConfig.
+        // Only operational toggles stay here.
         'grace_days' => (int) env('BILLING_GRACE_DAYS', 3),
-        // Master switch for enforcement middleware (rollout safety).
         'enforce' => (bool) env('BILLING_ENFORCE', false),
     ],
 

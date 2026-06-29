@@ -18,7 +18,7 @@ class WebhookSignatureVerifier
     public function __construct(
         protected ?string $secret = null,
     ) {
-        $this->secret ??= config('services.mercadopago.webhook_secret');
+        $this->secret ??= MercadoPagoConfig::webhookSecret();
     }
 
     public function verify(Request $request): bool

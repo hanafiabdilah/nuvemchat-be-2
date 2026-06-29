@@ -25,7 +25,7 @@ class BillingController extends Controller
     public function config()
     {
         return response()->json([
-            'public_key' => config('services.mercadopago.public_key'),
+            'public_key' => \App\Services\Billing\MercadoPago\MercadoPagoConfig::publicKey(),
         ]);
     }
 
