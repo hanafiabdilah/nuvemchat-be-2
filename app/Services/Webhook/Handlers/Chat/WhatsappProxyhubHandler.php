@@ -16,7 +16,9 @@ use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Inbound webhook handler for the WhatsApp ProxyHub channel.
@@ -138,6 +140,10 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             return;
         }
 
+        if (in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Audio, MessageType::Document, MessageType::Sticker], true)) {
+            $this->handleMediaMessage($message, $event, $messageType);
+        }
+
         broadcast(new MessageReceived($message));
         broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
@@ -208,6 +214,9 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
         });
 
         if ($message) {
+            if (in_array($message->message_type, [MessageType::Image, MessageType::Video, MessageType::Audio, MessageType::Document, MessageType::Sticker], true)) {
+                $this->handleMediaMessage($message, $event, $message->message_type);
+            }
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation));
         }
@@ -327,5 +336,117 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
         $user = explode('.', $user)[0];  // strip any agent suffix
 
         return $user !== '' ? $user : null;
+    }
+
+    // --- Media -------------------------------------------------------------
+
+    /**
+     * Download the encrypted WhatsApp media from the CDN URL in the webhook and
+     * decrypt it locally (HKDF-SHA256 + AES-256-CBC) — the standard WhatsApp
+     * media scheme. Everything needed is in the payload, so this doesn't depend
+     * on ProxyHub's (undocumented) download-media response shape.
+     */
+    private function handleMediaMessage(Message $message, array $event, MessageType $type): void
+    {
+        $node = $this->getMediaNode($event, $type);
+        $url = $node['URL'] ?? null;
+        $mediaKeyB64 = $node['mediaKey'] ?? null;
+        $mimetype = $node['mimetype'] ?? null;
+
+        if (! $node || ! $url || ! $mediaKeyB64 || ! $mimetype) {
+            Log::warning('WhatsappProxyhubHandler: missing media data', ['message_id' => $message->id]);
+            $message->update(['error' => 'Missing media data']);
+            return;
+        }
+
+        try {
+            $enc = Http::timeout(120)->get($url);
+            if ($enc->failed()) {
+                $message->update(['error' => 'Failed to download media']);
+                return;
+            }
+
+            $plain = $this->decryptWhatsappMedia($enc->body(), base64_decode($mediaKeyB64), $type);
+            if ($plain === null) {
+                $message->update(['error' => 'Failed to decrypt media']);
+                return;
+            }
+
+            $path = 'media/' . $message->id . '_' . uniqid() . '.' . $this->extensionFromMime($mimetype);
+            Storage::disk('local')->put($path, $plain);
+            $message->update(['attachment' => $path]);
+
+            Log::info('WhatsappProxyhubHandler: media downloaded', ['message_id' => $message->id, 'path' => $path]);
+        } catch (\Throwable $e) {
+            Log::error('WhatsappProxyhubHandler: media handling failed', ['message_id' => $message->id, 'error' => $e->getMessage()]);
+            $message->update(['error' => $e->getMessage()]);
+        }
+    }
+
+    private function getMediaNode(array $event, MessageType $type): ?array
+    {
+        $m = $event['Message'] ?? [];
+
+        return match ($type) {
+            MessageType::Image => $m['imageMessage'] ?? null,
+            MessageType::Video => $m['videoMessage'] ?? null,
+            MessageType::Audio => $m['audioMessage'] ?? null,
+            MessageType::Sticker => $m['stickerMessage'] ?? null,
+            MessageType::Document => $m['documentMessage']
+                ?? $m['documentWithCaptionMessage']['message']['documentMessage']
+                ?? null,
+            default => null,
+        };
+    }
+
+    /**
+     * @return string|null decrypted bytes, or null on failure
+     */
+    private function decryptWhatsappMedia(string $encrypted, string $mediaKey, MessageType $type): ?string
+    {
+        $info = match ($type) {
+            MessageType::Image, MessageType::Sticker => 'WhatsApp Image Keys',
+            MessageType::Video => 'WhatsApp Video Keys',
+            MessageType::Audio => 'WhatsApp Audio Keys',
+            MessageType::Document => 'WhatsApp Document Keys',
+            default => null,
+        };
+
+        if ($info === null || strlen($mediaKey) === 0 || strlen($encrypted) <= 10) {
+            return null;
+        }
+
+        // HKDF-SHA256 expand to 112 bytes: iv(16) + cipherKey(32) + macKey(32) + ref(32).
+        $expanded = hash_hkdf('sha256', $mediaKey, 112, $info);
+        $iv = substr($expanded, 0, 16);
+        $cipherKey = substr($expanded, 16, 32);
+
+        // The file is ciphertext + 10-byte truncated HMAC.
+        $ciphertext = substr($encrypted, 0, -10);
+
+        $plain = openssl_decrypt($ciphertext, 'aes-256-cbc', $cipherKey, OPENSSL_RAW_DATA, $iv);
+
+        return $plain === false ? null : $plain;
+    }
+
+    private function extensionFromMime(string $mime): string
+    {
+        $map = [
+            'image/jpeg' => 'jpg',
+            'image/png' => 'png',
+            'image/gif' => 'gif',
+            'image/webp' => 'webp',
+            'video/mp4' => 'mp4',
+            'video/3gpp' => '3gp',
+            'audio/ogg' => 'ogg',
+            'audio/mpeg' => 'mp3',
+            'audio/mp4' => 'm4a',
+            'audio/amr' => 'amr',
+            'application/pdf' => 'pdf',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+        ];
+
+        return $map[explode(';', $mime)[0]] ?? 'bin';
     }
 }
