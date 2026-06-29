@@ -24,6 +24,7 @@ class PlatformRbacSeeder extends Seeder
         'bo.roles.manage',
         'bo.plans.manage',
         'bo.subscriptions.manage',
+        'bo.settings.manage',
     ];
 
     public function run(): void

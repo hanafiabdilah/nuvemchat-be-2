@@ -53,10 +53,8 @@ return [
         'managed_token' => env('WAPI_MANAGED_TOKEN'),
     ],
 
-    'proxyhub' => [
-        'base_url' => env('PROXYHUB_BASE_URL', 'https://whats-api.ipbr.pro'),
-        'integrator_token' => env('PROXYHUB_INTEGRATOR_TOKEN'),
-    ],
+    // ProxyHub credentials live in the `settings` table (DB-only), managed by
+    // super-admin in the Back Office. See App\Services\Connection\Proxy\ProxyhubConfig.
 
     'ai_agent_hub' => [
         'base_url' => env('AI_AGENT_HUB_BASE_URL', 'https://api-ia.ipbr.pro/v1'),

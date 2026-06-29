@@ -6,6 +6,7 @@ use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
+use App\Services\Connection\Proxy\ProxyhubConfig;
 use App\Services\Connection\Proxy\ProxyValidator;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -28,12 +29,12 @@ class WhatsappProxyhubChannel implements ChannelInterface
 
     private function base(): string
     {
-        return rtrim(config('services.proxyhub.base_url'), '/');
+        return ProxyhubConfig::baseUrl();
     }
 
     private function integratorToken(): string
     {
-        return (string) config('services.proxyhub.integrator_token');
+        return (string) ProxyhubConfig::integratorToken();
     }
 
     public function connect(Connection $connection, array $data)

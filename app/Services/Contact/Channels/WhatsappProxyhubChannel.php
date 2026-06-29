@@ -14,7 +14,7 @@ class WhatsappProxyhubChannel implements ContactChannelInterface
 {
     private function base(): string
     {
-        return rtrim(config("services.proxyhub.base_url"), "/");
+        return \App\Services\Connection\Proxy\ProxyhubConfig::baseUrl();
     }
     public function addContact(Connection $connection, array $data): Contact
     {

@@ -18,7 +18,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 {
     private function base(): string
     {
-        return rtrim(config("services.proxyhub.base_url"), "/");
+        return \App\Services\Connection\Proxy\ProxyhubConfig::baseUrl();
     }
     public function getMessageId(array $payload): string
     {

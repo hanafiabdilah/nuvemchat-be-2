@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
+use App\Http\Controllers\Api\Admin\AdminSettingsController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionController;
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
@@ -238,6 +239,12 @@ Route::prefix('admin')->group(function () {
             Route::post('/admins', [AdminAdminController::class, 'store']);
             Route::put('/admins/{admin}/role', [AdminAdminController::class, 'updateRole']);
             Route::delete('/admins/{admin}', [AdminAdminController::class, 'destroy']);
+        });
+
+        // Platform settings (ProxyHub credentials, etc.)
+        Route::middleware('permission:bo.settings.manage')->group(function () {
+            Route::get('/settings', [AdminSettingsController::class, 'show']);
+            Route::put('/settings', [AdminSettingsController::class, 'update']);
         });
 
         // Billing — plan catalogue management

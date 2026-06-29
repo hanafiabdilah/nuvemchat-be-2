@@ -12,7 +12,7 @@ class WhatsappProxyhubHandler implements SendMessageHandlerInterface
 {
     private function base(): string
     {
-        return rtrim(config("services.proxyhub.base_url"), "/");
+        return \App\Services\Connection\Proxy\ProxyhubConfig::baseUrl();
     }
     public function handleSendMessage(Connection $connection, array $data): array
     {
