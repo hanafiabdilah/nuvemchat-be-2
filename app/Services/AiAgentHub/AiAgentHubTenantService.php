@@ -805,7 +805,7 @@ class AiAgentHubTenantService
     {
         return match ($channel) {
             Channel::Instagram => 'instagram',
-            Channel::WhatsappOfficial, Channel::WhatsappWApi => 'whatsapp',
+            Channel::WhatsappOfficial, Channel::WhatsappWApi, Channel::WhatsappProxyhub => 'whatsapp',
             Channel::Telegram => 'telegram',
             Channel::LiveChatWidget => 'live_chat_widget',
         };

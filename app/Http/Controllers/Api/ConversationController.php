@@ -90,8 +90,8 @@ class ConversationController extends Controller
             $externalId = $lastConversation->external_id;
         } else {
             // No previous conversation - handle based on channel
-            if ($connection->channel === Channel::WhatsappWApi) {
-                // For W-API, use contact's external_id (phone number)
+            if (in_array($connection->channel, [Channel::WhatsappWApi, Channel::WhatsappProxyhub], true)) {
+                // For W-API / ProxyHub, use contact's external_id (phone number)
                 $externalId = $contact->external_id;
             } else {
                 // For other channels, we need a previous conversation

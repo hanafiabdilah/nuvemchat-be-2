@@ -113,6 +113,11 @@ class ConnectionService
             (new WhatsappWApiChannel())->deleteManagedInstance($connection);
         }
 
+        // ProxyHub instances are always managed — delete the instance on ProxyHub.
+        if ($connection->channel === Channel::WhatsappProxyhub) {
+            (new \App\Services\Connection\Channels\WhatsappProxyhubChannel())->deleteManagedInstance($connection);
+        }
+
         // Delete the connection
         $connection->delete();
     }
