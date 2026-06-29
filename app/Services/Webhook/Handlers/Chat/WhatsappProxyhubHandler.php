@@ -34,16 +34,22 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
 {
     public function handle(Connection $connection, array $payload)
     {
+        // ProxyHub wraps each whatsmeow event as:
+        //   { event: {...}, instanceName, type: "Message"|"Receipt"|"Presence"|..., userID }
+        // The top-level `type` is the authoritative discriminator.
+        $type = $payload['type'] ?? null;
         $event = $payload['event'] ?? $payload['data'] ?? $payload;
 
         if (! is_array($event)) {
-            Log::warning('WhatsappProxyhubHandler: event is not an object', ['type' => gettype($event)]);
+            Log::warning('WhatsappProxyhubHandler: event is not an object', ['value_type' => gettype($event)]);
             return;
         }
 
-        // Message event: has Info + Message.
-        if (isset($event['Info']) && is_array($event['Info'])) {
-            $info = $event['Info'];
+        $isMessage = $type === 'Message' || (isset($event['Info']) && array_key_exists('Message', $event));
+        $isReceipt = $type === 'Receipt' || isset($event['MessageIDs']);
+
+        if ($isMessage) {
+            $info = $event['Info'] ?? [];
 
             if ($info['IsGroup'] ?? false) {
                 Log::info('WhatsappProxyhubHandler: skipping group message');
@@ -59,16 +65,16 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             return;
         }
 
-        // Receipt event: delivery/read receipts.
-        if (isset($event['MessageIDs']) || (isset($event['Type']) && isset($event['MessageSource']))) {
+        if ($isReceipt) {
             $this->handleReceipt($connection, $event);
             return;
         }
 
-        // Connection / presence / unknown events — status is handled by polling,
-        // so just log the shape to capture new event types as they appear.
-        Log::info('WhatsappProxyhubHandler: unhandled event shape', [
+        // Presence / connection / unknown events — connection status is handled by
+        // polling status-instance, so just log to capture new event types.
+        Log::info('WhatsappProxyhubHandler: unhandled event', [
             'connection_id' => $connection->id,
+            'type' => $type,
             'keys' => array_keys($event),
         ]);
     }
