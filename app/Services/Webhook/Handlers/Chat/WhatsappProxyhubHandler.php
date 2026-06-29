@@ -315,7 +315,16 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
     {
         $info = $event['Info'] ?? [];
 
-        // Prefer the phone JID (SenderAlt) over the LID (Sender/Chat).
+        // The conversation partner depends on direction:
+        //  - incoming (IsFromMe=false): the sender  → phone is in SenderAlt
+        //  - outgoing (IsFromMe=true):  the recipient → phone is in RecipientAlt
+        // Keying by the real phone (not the @lid) keeps both directions in the
+        // same conversation and lets the send handler reach the right number.
+        if ($info['IsFromMe'] ?? false) {
+            return $this->extractPhone($info['RecipientAlt'] ?? null)
+                ?? $this->extractPhone($info['Chat'] ?? null);
+        }
+
         return $this->extractPhone($info['SenderAlt'] ?? null)
             ?? $this->extractPhone($info['Sender'] ?? null)
             ?? $this->extractPhone($info['Chat'] ?? null);
