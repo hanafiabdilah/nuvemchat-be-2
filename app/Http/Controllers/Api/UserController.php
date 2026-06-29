@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
+use App\Services\Billing\SubscriptionGate;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -14,9 +15,15 @@ class UserController extends Controller
     public function index (Request $request) {
         $user = $request->user();
         $user->load(['roles', 'permissions']);
+        $tenant = $user->tenant;
+        $data = $user->toResource(UserResource::class)->resolve($request);
+
+        if ($tenant !== null) {
+            $data['entitlements'] = app(SubscriptionGate::class)->entitlements($tenant);
+        }
 
         return response()->json([
-            'data' => $user->toResource(UserResource::class),
+            'data' => $data,
         ]);
     }
 

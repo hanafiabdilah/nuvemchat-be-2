@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Billing\Feature;
 use App\Enums\Connection\Channel;
 use App\Events\ConnectionUpdated;
 use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
+use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\ConnectionService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -52,8 +54,31 @@ class ConnectionController extends Controller
         ]);
 
         $tenant = $request->user()->tenant;
+        $gate = app(SubscriptionGate::class);
 
-        if (! app(\App\Services\Billing\SubscriptionGate::class)->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
+        if ($validated['channel'] === Channel::WhatsappProxyhub->value) {
+            if (! $gate->feature($tenant, Feature::WhatsappApi->value)) {
+                return response()->json([
+                    'message' => 'This feature (whatsapp_api) is not included in your current plan.',
+                    'code' => 'feature_not_in_plan',
+                    'feature' => Feature::WhatsappApi->value,
+                ], 403);
+            }
+
+            $instancesCount = $tenant->connections()
+                ->where('channel', Channel::WhatsappProxyhub->value)
+                ->count();
+
+            if (! $gate->canConsume($tenant, 'max_instances', $instancesCount)) {
+                return response()->json([
+                    'message' => 'You have reached the maximum number of connections for your plan.',
+                    'code' => 'quota_exceeded',
+                    'quota' => 'max_instances',
+                ], 422);
+            }
+        }
+
+        if (! $gate->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
             return response()->json([
                 'message' => 'You have reached the maximum number of connections for your plan.',
                 'code' => 'quota_exceeded',
