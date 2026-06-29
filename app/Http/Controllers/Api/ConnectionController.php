@@ -118,6 +118,20 @@ class ConnectionController extends Controller
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
+        // Dedicated/custom proxy is a paid add-on gated by the `proxy` feature.
+        if ($connection->channel === Channel::WhatsappProxyhub->value) {
+            $proxyMode = $request->input('proxy_mode', $connection->credentials['proxy_mode'] ?? 'shared');
+
+            if (in_array($proxyMode, ['dedicated', 'custom'], true)
+                && ! app(SubscriptionGate::class)->feature($request->user()->tenant, Feature::Proxy->value)) {
+                return response()->json([
+                    'message' => 'This feature (proxy) is not included in your current plan.',
+                    'code' => 'feature_not_in_plan',
+                    'feature' => Feature::Proxy->value,
+                ], 403);
+            }
+        }
+
         try {
             $this->connectionService->connect($connection, $request->all());
 
