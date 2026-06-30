@@ -141,10 +141,16 @@ class ConnectionController extends Controller
             ], 200);
         } catch(ValidationException $th) {
             throw $th;
-        } catch(ConnectionException $th){
-            return response()->json([
-                'message' => $th->getMessage(),
-            ], $th->getHttpStatusCode());
+        } catch (ConnectionException $th) {
+            $status = $th->getHttpStatusCode();
+            $message = $th->getMessage();
+            if (in_array($status, [401, 419], true)) {
+                // Never forward an upstream/provider auth failure as 401 — the SPA logs
+                // the user out on any 401. Surface it as a gateway error instead.
+                $status = 502;
+                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+            }
+            return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to run connection',
@@ -167,10 +173,16 @@ class ConnectionController extends Controller
             ], 200);
         } catch(ValidationException $th) {
             throw $th;
-        } catch(ConnectionException $th){
-            return response()->json([
-                'message' => $th->getMessage(),
-            ], $th->getHttpStatusCode());
+        } catch (ConnectionException $th) {
+            $status = $th->getHttpStatusCode();
+            $message = $th->getMessage();
+            if (in_array($status, [401, 419], true)) {
+                // Never forward an upstream/provider auth failure as 401 — the SPA logs
+                // the user out on any 401. Surface it as a gateway error instead.
+                $status = 502;
+                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+            }
+            return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             Log::error('Failed to migrate connection', [
                 'connection_id' => $connection->id,
@@ -196,10 +208,16 @@ class ConnectionController extends Controller
                 'message' => 'Status checked successfully',
                 'data' => $connection->toResource(ConnectionResource::class),
             ], 200);
-        } catch(ConnectionException $th){
-            return response()->json([
-                'message' => $th->getMessage(),
-            ], $th->getHttpStatusCode());
+        } catch (ConnectionException $th) {
+            $status = $th->getHttpStatusCode();
+            $message = $th->getMessage();
+            if (in_array($status, [401, 419], true)) {
+                // Never forward an upstream/provider auth failure as 401 — the SPA logs
+                // the user out on any 401. Surface it as a gateway error instead.
+                $status = 502;
+                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+            }
+            return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to check connection',
