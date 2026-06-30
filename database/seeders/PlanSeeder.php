@@ -68,6 +68,7 @@ class PlanSeeder extends Seeder
                 'payment_method' => PaymentMethod::Manual,
                 'billing_cycle' => $business?->billing_cycle?->value,
                 'price_cents' => 0,
+                'quantity' => 1,
                 'quotas_snapshot' => $business?->quotas,
                 'features_snapshot' => $business?->features,
                 'current_period_start' => now(),
