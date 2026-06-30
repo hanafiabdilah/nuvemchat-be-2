@@ -71,6 +71,10 @@ class RoleAndPermissionSeeder extends Seeder
             // Billing (tenant-side subscription management)
             'billing.view',
             'billing.manage',
+
+            // Service hours (business hours that gate AI → human handoff)
+            'service-hours.view',
+            'service-hours.update',
         ];
 
         foreach ($permissions as $permission) {

@@ -10,6 +10,11 @@ class Tenant extends Model
     protected $fillable = [
         'user_id',
         'current_subscription_id',
+        'service_hours',
+    ];
+
+    protected $casts = [
+        'service_hours' => 'array',
     ];
 
     public function user()

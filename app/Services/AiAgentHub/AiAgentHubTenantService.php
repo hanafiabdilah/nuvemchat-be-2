@@ -32,7 +32,7 @@ class AiAgentHubTenantService
 
     public function __construct()
     {
-        $this->baseUrl = rtrim(config('services.ai_agent_hub.base_url'), '/');
+        $this->baseUrl = AiAgentHubConfig::baseUrl();
     }
 
     /* ------------------------------------------------------------------

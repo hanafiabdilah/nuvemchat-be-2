@@ -396,6 +396,7 @@ class ConversationController extends Controller
 
         $conversation->user_id = Auth::id();
         $conversation->status = Status::Active;
+        $conversation->needs_human = false;
         $conversation->save();
 
         broadcast(new ConversationUpdated($conversation));

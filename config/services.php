@@ -35,31 +35,21 @@ return [
         ],
     ],
 
-    'instagram' => [
-        'client_id' => env('INSTAGRAM_CLIENT_ID'),
-        'client_secret' => env('INSTAGRAM_CLIENT_SECRET'),
-        'redirect_uri' => env('INSTAGRAM_REDIRECT_URI'),
-        'webhook_verify_token' => env('INSTAGRAM_WEBHOOK_VERIFY_TOKEN'),
-    ],
+    // Instagram (Meta) credentials live in the `settings` table (DB-only),
+    // managed by super-admin in the Back Office → Integrations.
+    // See App\Services\Connection\Meta\InstagramConfig.
 
-    'facebook' => [
-        'app_id' => env('FACEBOOK_APP_ID'),
-        'app_secret' => env('FACEBOOK_APP_SECRET'),
-        'webhook_verify_token' => env('FACEBOOK_WEBHOOK_VERIFY_TOKEN'),
-        'config_id' => env('FACEBOOK_CONFIG_ID'), // WhatsApp Business Config ID for embedded signup
-    ],
+    // Facebook (Meta) credentials for WhatsApp Cloud API & Messenger live in the
+    // `settings` table (DB-only). See App\Services\Connection\Meta\FacebookConfig.
 
-    'wapi' => [
-        'managed_token' => env('WAPI_MANAGED_TOKEN'),
-    ],
+    // W-API integrator (managed) token lives in the `settings` table (DB-only).
+    // See App\Services\Connection\WApi\WApiConfig.
 
     // ProxyHub credentials live in the `settings` table (DB-only), managed by
     // super-admin in the Back Office. See App\Services\Connection\Proxy\ProxyhubConfig.
 
-    'ai_agent_hub' => [
-        'base_url' => env('AI_AGENT_HUB_BASE_URL', 'https://api-ia.ipbr.pro/v1'),
-        'admin_token' => env('AI_AGENT_HUB_ADMIN_TOKEN'),
-    ],
+    // AI Agent Hub credentials live in the `settings` table (DB-only).
+    // See App\Services\AiAgentHub\AiAgentHubConfig.
 
     'mercadopago' => [
         // Credentials (access_token, public_key, webhook_secret, back_url) live in

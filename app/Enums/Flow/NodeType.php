@@ -54,6 +54,11 @@ enum NodeType: string
                 'ai_hub_agent_id' => null, // FK to ai_hub_agents.id
                 'welcoming_message' => '', // optional: static greeting sent on first turn instead of calling AI
                 'store_summary_to_variable' => '', // optional: variable key in flow state to store the run summary
+                // Service-hours behaviour (gates AI vs human queue):
+                //   always_ai           = AI always handles; handoff just moves to the next node
+                //   handoff_in_hours    = AI handles, then hands a human the chat within service hours
+                //   human_only_in_hours = within service hours skip AI entirely → human queue; AI otherwise
+                'service_hours_behavior' => 'always_ai',
             ],
         };
     }

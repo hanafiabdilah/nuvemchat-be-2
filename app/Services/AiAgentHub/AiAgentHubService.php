@@ -28,8 +28,8 @@ class AiAgentHubService
 
     public function __construct()
     {
-        $this->baseUrl = rtrim(config('services.ai_agent_hub.base_url'), '/');
-        $this->adminToken = config('services.ai_agent_hub.admin_token');
+        $this->baseUrl = AiAgentHubConfig::baseUrl();
+        $this->adminToken = AiAgentHubConfig::adminToken();
     }
 
     /**

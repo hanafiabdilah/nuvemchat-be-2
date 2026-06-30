@@ -8,6 +8,8 @@ use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\ConnectionService;
+use App\Services\Connection\Meta\FacebookConfig;
+use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\WhatsAppTokenValidator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -66,10 +68,10 @@ class ConnectionController extends Controller
 
             // Exchange code for access token (Instagram Business API)
             $response = Http::asForm()->post('https://api.instagram.com/oauth/access_token', [
-                'client_id' => config('services.instagram.client_id'),
-                'client_secret' => config('services.instagram.client_secret'),
+                'client_id' => InstagramConfig::clientId(),
+                'client_secret' => InstagramConfig::clientSecret(),
                 'grant_type' => 'authorization_code',
-                'redirect_uri' => config('services.instagram.redirect_uri'),
+                'redirect_uri' => InstagramConfig::redirectUri(),
                 'code' => $code,
             ]);
 
@@ -92,7 +94,7 @@ class ConnectionController extends Controller
             // Exchange short-lived token for long-lived token (60 days)
             $longLivedTokenResponse = Http::get('https://graph.instagram.com/access_token', [
                 'grant_type' => 'ig_exchange_token',
-                'client_secret' => config('services.instagram.client_secret'),
+                'client_secret' => InstagramConfig::clientSecret(),
                 'access_token' => $shortLivedToken,
             ]);
 
@@ -445,12 +447,12 @@ class ConnectionController extends Controller
             $connection = Connection::findOrFail($connectionId);
 
             $tokenRequestData = [
-                'client_id' => config('services.facebook.app_id'),
-                'client_secret' => config('services.facebook.app_secret'),
+                'client_id' => FacebookConfig::appId(),
+                'client_secret' => FacebookConfig::appSecret(),
                 'code' => $code,
             ];
 
-            $redirectUri = config('services.facebook.redirect_uri');
+            $redirectUri = FacebookConfig::redirectUri();
             if (!empty($redirectUri)) {
                 $tokenRequestData['redirect_uri'] = $redirectUri;
             }
@@ -883,7 +885,7 @@ class ConnectionController extends Controller
     {
         return $this->verifyAndDecodeSignedRequest(
             $signedRequest,
-            (string) config('services.instagram.client_secret'),
+            (string) InstagramConfig::clientSecret(),
             'instagram'
         );
     }
@@ -896,7 +898,7 @@ class ConnectionController extends Controller
     {
         return $this->verifyAndDecodeSignedRequest(
             $signedRequest,
-            (string) config('services.facebook.app_secret'),
+            (string) FacebookConfig::appSecret(),
             'facebook'
         );
     }
