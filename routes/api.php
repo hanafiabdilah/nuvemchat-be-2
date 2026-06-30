@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AgentController;
+use App\Http\Controllers\Api\ServiceHoursController;
 use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
 use App\Http\Controllers\Api\AiHub\AgentKnowledgeController as AiHubAgentKnowledgeController;
 use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileController;
@@ -107,6 +108,10 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     Route::post('/connections/{id}/disconnect', [ConnectionController::class, 'disconnect'])->middleware('permission:connections.disconnect');
     Route::delete('/connections/{id}', [ConnectionController::class, 'destroy'])->middleware('permission:connections.delete');
     Route::put('/connections/{id}/automated-messages', [ConnectionController::class, 'updateAutomatedMessages'])->middleware('permission:connections.update-automated-messages');
+
+    // Service hours (business hours that gate AI → human handoff)
+    Route::get('/service-hours', [ServiceHoursController::class, 'show'])->middleware('permission:service-hours.view');
+    Route::put('/service-hours', [ServiceHoursController::class, 'update'])->middleware('permission:service-hours.update');
 
     // Tag routes - protected by permissions
     Route::post('/tags', [TagController::class, 'store'])->middleware('permission:tags.create');

@@ -13,11 +13,16 @@ class Conversation extends Model
         'connection_id',
         'user_id', // agent
         'status',
+        'needs_human',
+        'handoff_reason',
+        'handoff_at',
         'last_message_at',
     ];
 
     protected $casts = [
         'status' => Status::class,
+        'needs_human' => 'boolean',
+        'handoff_at' => 'datetime',
         'last_message_at' => 'datetime',
     ];
 

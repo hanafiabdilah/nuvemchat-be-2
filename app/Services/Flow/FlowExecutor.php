@@ -6,13 +6,17 @@ use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
 use App\Enums\Message\SenderType;
+use App\Events\ConversationHandoff;
+use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Models\AiHubAgent;
 use App\Models\Conversation;
 use App\Models\FlowNode;
 use App\Models\FlowState;
 use App\Models\Message;
+use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\BusinessHours;
 use App\Services\Message\MessageService;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -386,13 +390,18 @@ class FlowExecutor
             return null;
         }
 
-        $source = $parts[0]; // 'variable', 'contact', 'conversation'
+        $source = $parts[0]; // 'variable', 'contact', 'conversation', 'service_hours'
         $key = $parts[1];
 
         return match($source) {
             'variable' => $flowState->state_data[$key] ?? null,
             'contact' => $conversation->contact->{$key} ?? null,
             'conversation' => $conversation->{$key} ?? null,
+            // "service_hours.is_open" → "true"/"false" so a Condition node can
+            // branch on whether the tenant is currently within service hours.
+            'service_hours' => $key === 'is_open'
+                ? (BusinessHours::isOpen($conversation->connection->tenant) ? 'true' : 'false')
+                : null,
             default => null,
         };
     }
@@ -620,6 +629,119 @@ class FlowExecutor
     }
 
     /**
+     * Resolve the AIAgent node's service-hours behaviour (a 3-way mode):
+     *   - always_ai           : AI always handles; handoff just moves to next node
+     *   - handoff_in_hours    : AI handles, then hands a human the chat (in hours)
+     *   - human_only_in_hours : within hours skip AI entirely → human; AI otherwise
+     *
+     * Falls back to the legacy `human_handoff_enabled` boolean for flows saved
+     * before the mode field existed.
+     */
+    protected function handoffMode(array $data): string
+    {
+        $mode = $data['service_hours_behavior'] ?? null;
+
+        if (in_array($mode, ['always_ai', 'handoff_in_hours', 'human_only_in_hours'], true)) {
+            return $mode;
+        }
+
+        return ! empty($data['human_handoff_enabled']) ? 'handoff_in_hours' : 'always_ai';
+    }
+
+    /**
+     * Route an AIAgent-node handoff. Unless the node is in `always_ai` mode, the
+     * conversation is handed to the unassigned human queue — but only within the
+     * tenant's service hours. Outside those hours fall back to the flow's next
+     * node; for an AI-initiated request the AI keeps handling and sends the away
+     * message.
+     *
+     * @param bool $aiCanContinue true only for the hub's intentional handoff
+     *        request. Failure paths (no agent / error / max turns) cannot stay
+     *        with the AI and always fall through to the next node.
+     */
+    protected function routeHandoff(FlowState $flowState, FlowNode $node, string $reason, bool $aiCanContinue): void
+    {
+        if ($this->handoffMode($node->data ?? []) === 'always_ai') {
+            $this->moveToNextNode($flowState, $node);
+            return;
+        }
+
+        $conversation = $flowState->conversation;
+        $tenant = $conversation->connection->tenant;
+
+        if (BusinessHours::isOpen($tenant)) {
+            $this->transferToHuman($flowState, $reason);
+            return;
+        }
+
+        // Outside service hours: no human available.
+        if ($aiCanContinue) {
+            $this->sendAwayMessageOnce($flowState, $tenant);
+            return; // stay on this AIAgent node, keep handling with the AI
+        }
+
+        $this->moveToNextNode($flowState, $node);
+    }
+
+    /**
+     * Hand the conversation to a human: flag it, drop it back into the
+     * unassigned Pending queue, stop the AI, and notify every agent in realtime.
+     */
+    protected function transferToHuman(FlowState $flowState, string $reason): void
+    {
+        $conversation = $flowState->conversation;
+
+        $conversation->forceFill([
+            'needs_human' => true,
+            'handoff_reason' => $reason,
+            'handoff_at' => now(),
+            'user_id' => null,                 // unassigned — any agent can pick it up
+            'status' => ConversationStatus::Pending,
+        ])->save();
+
+        // Stop the AI so it no longer auto-replies; flow state is preserved.
+        $this->stopFlow($conversation);
+
+        $fresh = $conversation->fresh();
+
+        broadcast(new ConversationHandoff($fresh, $reason));
+        broadcast(new ConversationUpdated($fresh));
+
+        Log::info('FlowExecutor: Conversation handed off to human queue', [
+            'conversation_id' => $conversation->id,
+            'reason' => $reason,
+        ]);
+    }
+
+    /**
+     * Send the tenant's configured away message at most once per flow run.
+     */
+    protected function sendAwayMessageOnce(FlowState $flowState, Tenant $tenant): void
+    {
+        $stateData = $flowState->state_data ?? [];
+
+        if (! empty($stateData['_away_message_sent'])) {
+            return;
+        }
+
+        $awayMessage = BusinessHours::awayMessage($tenant);
+
+        if ($awayMessage) {
+            $message = $this->messageService->sendMessage($flowState->conversation, [
+                'message' => $awayMessage,
+            ]);
+
+            if ($message) {
+                $message->update(['sent_by_flow_id' => $flowState->flow_id]);
+                broadcast(new MessageReceived($message));
+            }
+        }
+
+        $stateData['_away_message_sent'] = true;
+        $flowState->update(['state_data' => $stateData]);
+    }
+
+    /**
      * Resume a flow after receiving user input
      */
     public function resumeFlow(Conversation $conversation, string $userInput): void
@@ -795,6 +917,19 @@ class FlowExecutor
     protected function executeAIAgentNode(FlowState $flowState, FlowNode $node): void
     {
         $data = $node->data ?? [];
+
+        // Mode "AI only outside service hours": within service hours this node
+        // must not run the AI at all — hand straight to the human queue and stop.
+        if ($this->handoffMode($data) === 'human_only_in_hours'
+            && BusinessHours::isOpen($flowState->conversation->connection->tenant)) {
+            Log::info('FlowExecutor: AIAgent skipped — within service hours, routing to human', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+            ]);
+            $this->transferToHuman($flowState, 'service_hours');
+            return;
+        }
+
         $stateData = $flowState->state_data ?? [];
         $turnsKey = "_ai_turns_{$node->id}";
         $lastProcessedKey = "_ai_last_processed_message_id_{$node->id}";
@@ -933,7 +1068,7 @@ class FlowExecutor
 
             $stateData[$reasonKey] = 'max_turns_exceeded';
             $flowState->update(['state_data' => $stateData]);
-            $this->moveToNextNode($flowState, $node);
+            $this->routeHandoff($flowState, $node, 'max_turns_exceeded', false);
             return;
         }
 
@@ -948,7 +1083,7 @@ class FlowExecutor
 
             $stateData[$reasonKey] = 'agent_missing';
             $flowState->update(['state_data' => $stateData]);
-            $this->moveToNextNode($flowState, $node);
+            $this->routeHandoff($flowState, $node, 'agent_missing', false);
             return;
         }
 
@@ -1001,14 +1136,14 @@ class FlowExecutor
                 $stateData[$turnsKey] = $turns + 1;
                 $flowState->update(['state_data' => $stateData]);
 
-                Log::info('FlowExecutor: AIAgent handoff signaled by hub, moving to next node', [
+                Log::info('FlowExecutor: AIAgent handoff signaled by hub', [
                     'node_id' => $node->id,
                     'run_id' => $run->id,
                     'reason' => $reason,
                     'handoff_details' => $details,
                 ]);
 
-                $this->moveToNextNode($flowState, $node);
+                $this->routeHandoff($flowState, $node, $reason, true);
                 return;
             }
 
@@ -1031,7 +1166,7 @@ class FlowExecutor
 
             $stateData[$reasonKey] = 'error';
             $flowState->update(['state_data' => $stateData]);
-            $this->moveToNextNode($flowState, $node);
+            $this->routeHandoff($flowState, $node, 'error', false);
         }
     }
 
