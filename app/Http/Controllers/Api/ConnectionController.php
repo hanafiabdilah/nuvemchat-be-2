@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
 use App\Services\Connection\ConnectionService;
+use App\Services\Connection\Meta\InstagramConfig;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -279,8 +280,8 @@ class ConnectionController extends Controller
             'timestamp' => time(),
         ]));
 
-        $clientId = config('services.instagram.client_id');
-        $redirectUri = config('services.instagram.redirect_uri'); // Tidak di-encode
+        $clientId = InstagramConfig::clientId();
+        $redirectUri = InstagramConfig::redirectUri(); // Tidak di-encode
         $scope = urlencode('instagram_business_basic,instagram_business_manage_messages'); // Di-encode
 
         Log::info('Generating Instagram OAuth URL', [

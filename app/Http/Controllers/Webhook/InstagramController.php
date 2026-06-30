@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Webhook;
 use App\Enums\Connection\Channel;
 use App\Http\Controllers\Controller;
 use App\Models\Connection;
+use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Webhook\ChatService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -23,7 +24,7 @@ class InstagramController extends Controller
         $verifyToken = $request->query('hub_verify_token');
         $mode = $request->query('hub_mode');
 
-        if($verifyToken !== config('services.instagram.webhook_verify_token')) {
+        if($verifyToken !== InstagramConfig::webhookVerifyToken()) {
             return response('Invalid verification token', 403);
         }
 

@@ -7,6 +7,7 @@ use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
+use App\Services\Connection\WApi\WApiConfig;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -111,7 +112,7 @@ class WhatsappWApiChannel implements ChannelInterface
         Log::info('Creating Whatsapp WApi managed instance', ['connection' => $connection, 'payload' => $payload]);
 
         $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . config('services.wapi.managed_token'),
+            'Authorization' => 'Bearer ' . WApiConfig::managedToken(),
         ])->post('https://api.w-api.app/v1/integrator/create-instance', $payload);
 
         $responseJson = $response->json();
@@ -292,7 +293,7 @@ class WhatsappWApiChannel implements ChannelInterface
 
         try {
             $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . config('services.wapi.managed_token'),
+                'Authorization' => 'Bearer ' . WApiConfig::managedToken(),
             ])->delete('https://api.w-api.app/v1/integrator/delete-instance?instanceId=' . $connection->credentials['instance_id']);
 
             Log::info('Whatsapp WApi managed instance delete response', [

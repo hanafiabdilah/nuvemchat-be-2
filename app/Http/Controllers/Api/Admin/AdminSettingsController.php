@@ -5,8 +5,12 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\Setting;
+use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Services\Billing\MercadoPago\MercadoPagoConfig;
+use App\Services\Connection\Meta\FacebookConfig;
+use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ProxyhubConfig;
+use App\Services\Connection\WApi\WApiConfig;
 use Illuminate\Http\Request;
 
 class AdminSettingsController extends Controller
@@ -20,6 +24,13 @@ class AdminSettingsController extends Controller
         $token = ProxyhubConfig::integratorToken();
         $mpAccess = MercadoPagoConfig::accessToken();
         $mpSecret = MercadoPagoConfig::webhookSecret();
+
+        $igSecret = InstagramConfig::clientSecret();
+        $igVerify = InstagramConfig::webhookVerifyToken();
+        $fbSecret = FacebookConfig::appSecret();
+        $fbVerify = FacebookConfig::webhookVerifyToken();
+        $wapiToken = WApiConfig::managedToken();
+        $aiToken = AiAgentHubConfig::adminToken();
 
         return response()->json([
             'data' => [
@@ -36,6 +47,32 @@ class AdminSettingsController extends Controller
                     'access_token_preview' => $this->mask($mpAccess),
                     'webhook_secret_set' => ! empty($mpSecret),
                     'webhook_secret_preview' => $this->mask($mpSecret),
+                ],
+                'instagram' => [
+                    'client_id' => InstagramConfig::clientId(),
+                    'redirect_uri' => InstagramConfig::redirectUri(),
+                    'client_secret_set' => ! empty($igSecret),
+                    'client_secret_preview' => $this->mask($igSecret),
+                    'webhook_verify_token_set' => ! empty($igVerify),
+                    'webhook_verify_token_preview' => $this->mask($igVerify),
+                ],
+                'facebook' => [
+                    'app_id' => FacebookConfig::appId(),
+                    'config_id' => FacebookConfig::configId(),
+                    'redirect_uri' => FacebookConfig::redirectUri(),
+                    'app_secret_set' => ! empty($fbSecret),
+                    'app_secret_preview' => $this->mask($fbSecret),
+                    'webhook_verify_token_set' => ! empty($fbVerify),
+                    'webhook_verify_token_preview' => $this->mask($fbVerify),
+                ],
+                'wapi' => [
+                    'managed_token_set' => ! empty($wapiToken),
+                    'managed_token_preview' => $this->mask($wapiToken),
+                ],
+                'ai_agent_hub' => [
+                    'base_url' => AiAgentHubConfig::baseUrl(),
+                    'admin_token_set' => ! empty($aiToken),
+                    'admin_token_preview' => $this->mask($aiToken),
                 ],
             ],
         ]);
@@ -57,6 +94,26 @@ class AdminSettingsController extends Controller
             'mercadopago.back_url' => ['nullable', 'url', 'max:255'],
             'mercadopago.access_token' => ['nullable', 'string', 'max:512'],
             'mercadopago.webhook_secret' => ['nullable', 'string', 'max:255'],
+
+            'instagram' => ['sometimes', 'array'],
+            'instagram.client_id' => ['nullable', 'string', 'max:255'],
+            'instagram.redirect_uri' => ['nullable', 'url', 'max:255'],
+            'instagram.client_secret' => ['nullable', 'string', 'max:512'],
+            'instagram.webhook_verify_token' => ['nullable', 'string', 'max:255'],
+
+            'facebook' => ['sometimes', 'array'],
+            'facebook.app_id' => ['nullable', 'string', 'max:255'],
+            'facebook.config_id' => ['nullable', 'string', 'max:255'],
+            'facebook.redirect_uri' => ['nullable', 'url', 'max:255'],
+            'facebook.app_secret' => ['nullable', 'string', 'max:512'],
+            'facebook.webhook_verify_token' => ['nullable', 'string', 'max:255'],
+
+            'wapi' => ['sometimes', 'array'],
+            'wapi.managed_token' => ['nullable', 'string', 'max:1024'],
+
+            'ai_agent_hub' => ['sometimes', 'array'],
+            'ai_agent_hub.base_url' => ['nullable', 'url', 'max:255'],
+            'ai_agent_hub.admin_token' => ['nullable', 'string', 'max:512'],
         ]);
 
         if ($request->has('proxyhub')) {
@@ -80,6 +137,58 @@ class AdminSettingsController extends Controller
             }
             if (! empty($mp['webhook_secret'])) {
                 Setting::set(MercadoPagoConfig::KEY_WEBHOOK_SECRET, $mp['webhook_secret']);
+            }
+        }
+
+        if ($request->has('instagram')) {
+            $ig = $validated['instagram'];
+
+            // Public values: stored as-is.
+            Setting::set(InstagramConfig::KEY_CLIENT_ID, $ig['client_id'] ?? null);
+            Setting::set(InstagramConfig::KEY_REDIRECT_URI, $ig['redirect_uri'] ?? null);
+
+            // Secrets: only replaced when a new value is supplied.
+            if (! empty($ig['client_secret'])) {
+                Setting::set(InstagramConfig::KEY_CLIENT_SECRET, $ig['client_secret']);
+            }
+            if (! empty($ig['webhook_verify_token'])) {
+                Setting::set(InstagramConfig::KEY_WEBHOOK_VERIFY_TOKEN, $ig['webhook_verify_token']);
+            }
+        }
+
+        if ($request->has('facebook')) {
+            $fb = $validated['facebook'];
+
+            // Public values: stored as-is.
+            Setting::set(FacebookConfig::KEY_APP_ID, $fb['app_id'] ?? null);
+            Setting::set(FacebookConfig::KEY_CONFIG_ID, $fb['config_id'] ?? null);
+            Setting::set(FacebookConfig::KEY_REDIRECT_URI, $fb['redirect_uri'] ?? null);
+
+            // Secrets: only replaced when a new value is supplied.
+            if (! empty($fb['app_secret'])) {
+                Setting::set(FacebookConfig::KEY_APP_SECRET, $fb['app_secret']);
+            }
+            if (! empty($fb['webhook_verify_token'])) {
+                Setting::set(FacebookConfig::KEY_WEBHOOK_VERIFY_TOKEN, $fb['webhook_verify_token']);
+            }
+        }
+
+        if ($request->has('wapi')) {
+            // Secret: only replaced when a new value is supplied.
+            if (! empty($validated['wapi']['managed_token'])) {
+                Setting::set(WApiConfig::KEY_MANAGED_TOKEN, $validated['wapi']['managed_token']);
+            }
+        }
+
+        if ($request->has('ai_agent_hub')) {
+            $ai = $validated['ai_agent_hub'];
+
+            // Base URL: stored as-is (falls back to the default when empty).
+            Setting::set(AiAgentHubConfig::KEY_BASE_URL, $ai['base_url'] ?? null);
+
+            // Secret: only replaced when a new value is supplied.
+            if (! empty($ai['admin_token'])) {
+                Setting::set(AiAgentHubConfig::KEY_ADMIN_TOKEN, $ai['admin_token']);
             }
         }
 
