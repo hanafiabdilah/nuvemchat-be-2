@@ -44,6 +44,32 @@ class ConnectionController extends Controller
         ]);
     }
 
+    public function metrics(Request $request)
+    {
+        $tenant = $request->user()->tenant;
+
+        $instanceIds = $tenant->connections()
+            ->where('channel', Channel::WhatsappProxyhub->value)
+            ->get()
+            ->map(function (Connection $connection) {
+                return $connection->credentials['instance_id'] ?? null;
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        $metrics = app(\App\Services\Connection\Proxy\ProxyhubMetricsService::class)
+            ->todayForInstances($instanceIds);
+
+        return response()->json([
+            'data' => [
+                'sentToday' => $metrics['sentToday'],
+                'receivedToday' => $metrics['receivedToday'],
+            ],
+        ]);
+    }
+
     public function store(Request $request)
     {
         $validated = $request->validate([

@@ -104,6 +104,7 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     });
 
     Route::get('/connections', [ConnectionController::class, 'index']);
+    Route::get('/connections/metrics', [ConnectionController::class, 'metrics']);
 
     // Connection routes - protected by permissions
     Route::post('/connections', [ConnectionController::class, 'store'])->middleware('permission:connections.create');
