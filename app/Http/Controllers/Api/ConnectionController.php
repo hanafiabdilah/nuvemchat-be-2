@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Billing\Feature;
 use App\Enums\Connection\Channel;
 use App\Events\ConnectionUpdated;
 use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
+use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\InstagramConfig;
 use Illuminate\Http\Request;
@@ -43,6 +45,32 @@ class ConnectionController extends Controller
         ]);
     }
 
+    public function metrics(Request $request)
+    {
+        $tenant = $request->user()->tenant;
+
+        $instanceIds = $tenant->connections()
+            ->where('channel', Channel::WhatsappProxyhub->value)
+            ->get()
+            ->map(function (Connection $connection) {
+                return $connection->credentials['instance_id'] ?? null;
+            })
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        $metrics = app(\App\Services\Connection\Proxy\ProxyhubMetricsService::class)
+            ->todayForInstances($instanceIds);
+
+        return response()->json([
+            'data' => [
+                'sentToday' => $metrics['sentToday'],
+                'receivedToday' => $metrics['receivedToday'],
+            ],
+        ]);
+    }
+
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -53,8 +81,31 @@ class ConnectionController extends Controller
         ]);
 
         $tenant = $request->user()->tenant;
+        $gate = app(SubscriptionGate::class);
 
-        if (! app(\App\Services\Billing\SubscriptionGate::class)->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
+        if ($validated['channel'] === Channel::WhatsappProxyhub->value) {
+            if (! $gate->feature($tenant, Feature::WhatsappApi->value)) {
+                return response()->json([
+                    'message' => 'This feature (whatsapp_api) is not included in your current plan.',
+                    'code' => 'feature_not_in_plan',
+                    'feature' => Feature::WhatsappApi->value,
+                ], 403);
+            }
+
+            $instancesCount = $tenant->connections()
+                ->where('channel', Channel::WhatsappProxyhub->value)
+                ->count();
+
+            if (! $gate->canConsume($tenant, 'max_instances', $instancesCount)) {
+                return response()->json([
+                    'message' => 'You have reached the maximum number of connections for your plan.',
+                    'code' => 'quota_exceeded',
+                    'quota' => 'max_instances',
+                ], 422);
+            }
+        }
+
+        if (! $gate->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
             return response()->json([
                 'message' => 'You have reached the maximum number of connections for your plan.',
                 'code' => 'quota_exceeded',
@@ -94,6 +145,20 @@ class ConnectionController extends Controller
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
+        // Dedicated/custom proxy is a paid add-on gated by the `proxy` feature.
+        if ($connection->channel === Channel::WhatsappProxyhub->value) {
+            $proxyMode = $request->input('proxy_mode', $connection->credentials['proxy_mode'] ?? 'shared');
+
+            if (in_array($proxyMode, ['dedicated', 'custom'], true)
+                && ! app(SubscriptionGate::class)->feature($request->user()->tenant, Feature::Proxy->value)) {
+                return response()->json([
+                    'message' => 'This feature (proxy) is not included in your current plan.',
+                    'code' => 'feature_not_in_plan',
+                    'feature' => Feature::Proxy->value,
+                ], 403);
+            }
+        }
+
         try {
             $this->connectionService->connect($connection, $request->all());
 
@@ -103,10 +168,16 @@ class ConnectionController extends Controller
             ], 200);
         } catch(ValidationException $th) {
             throw $th;
-        } catch(ConnectionException $th){
-            return response()->json([
-                'message' => $th->getMessage(),
-            ], $th->getHttpStatusCode());
+        } catch (ConnectionException $th) {
+            $status = $th->getHttpStatusCode();
+            $message = $th->getMessage();
+            if (in_array($status, [401, 419], true)) {
+                // Never forward an upstream/provider auth failure as 401 — the SPA logs
+                // the user out on any 401. Surface it as a gateway error instead.
+                $status = 502;
+                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+            }
+            return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to run connection',
@@ -129,10 +200,16 @@ class ConnectionController extends Controller
             ], 200);
         } catch(ValidationException $th) {
             throw $th;
-        } catch(ConnectionException $th){
-            return response()->json([
-                'message' => $th->getMessage(),
-            ], $th->getHttpStatusCode());
+        } catch (ConnectionException $th) {
+            $status = $th->getHttpStatusCode();
+            $message = $th->getMessage();
+            if (in_array($status, [401, 419], true)) {
+                // Never forward an upstream/provider auth failure as 401 — the SPA logs
+                // the user out on any 401. Surface it as a gateway error instead.
+                $status = 502;
+                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+            }
+            return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             Log::error('Failed to migrate connection', [
                 'connection_id' => $connection->id,
@@ -158,10 +235,16 @@ class ConnectionController extends Controller
                 'message' => 'Status checked successfully',
                 'data' => $connection->toResource(ConnectionResource::class),
             ], 200);
-        } catch(ConnectionException $th){
-            return response()->json([
-                'message' => $th->getMessage(),
-            ], $th->getHttpStatusCode());
+        } catch (ConnectionException $th) {
+            $status = $th->getHttpStatusCode();
+            $message = $th->getMessage();
+            if (in_array($status, [401, 419], true)) {
+                // Never forward an upstream/provider auth failure as 401 — the SPA logs
+                // the user out on any 401. Surface it as a gateway error instead.
+                $status = 502;
+                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+            }
+            return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to check connection',

@@ -26,3 +26,8 @@ yarn-error.log
 /.nova
 /.vscode
 /.zed
+
+# Local-only test scaffolding (não versionar — só pra rodar/testar no Windows local)
+/server.php
+/setup-test.php
+/check-*.php

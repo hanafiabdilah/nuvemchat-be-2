@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\Billing\Feature;
 use App\Http\Controllers\Api\AgentController;
 use App\Http\Controllers\Api\ServiceHoursController;
 use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
@@ -67,35 +68,44 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     });
     Route::get('/plans', [BillingController::class, 'plans'])->middleware('permission:billing.view')->name('plans.index');
 
-    Route::get('/messages', [MessageController::class, 'index']);
+    Route::middleware('feature:' . Feature::Chat->value)->group(function () {
+        Route::get('/messages', [MessageController::class, 'index']);
 
-    Route::get('/conversations', [ConversationController::class, 'index']);
-    Route::post('/conversations', [ConversationController::class, 'store']);
-    Route::get('/conversations/{id}', [ConversationController::class, 'show']);
-    // Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
-    Route::post('/conversations/{id}/send-message', [ConversationController::class, 'sendMessage']);
-    Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
-    Route::post('/conversations/{id}/send-audio', [ConversationController::class, 'sendAudio']);
-    Route::post('/conversations/{id}/send-video', [ConversationController::class, 'sendVideo']);
-    Route::post('/conversations/{id}/send-document', [ConversationController::class, 'sendDocument']);
-    Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
-    Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
-    Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
-    Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
-    Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
-    Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);
+        Route::get('/conversations', [ConversationController::class, 'index']);
+        Route::post('/conversations', [ConversationController::class, 'store']);
+        Route::get('/conversations/{id}', [ConversationController::class, 'show']);
+        // Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
+        Route::post('/conversations/{id}/send-message', [ConversationController::class, 'sendMessage']);
+        Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
+        Route::post('/conversations/{id}/send-audio', [ConversationController::class, 'sendAudio']);
+        Route::post('/conversations/{id}/send-video', [ConversationController::class, 'sendVideo']);
+        Route::post('/conversations/{id}/send-document', [ConversationController::class, 'sendDocument']);
+        Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
+        Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
+        Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
+        Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
+        Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
+        Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);
+
+        Route::get('/tags', [TagController::class, 'index']);
+
+        Route::get('/quick-messages', [QuickMessageController::class, 'index']);
+        Route::post('/quick-messages', [QuickMessageController::class, 'store']);
+        Route::put('/quick-messages/{quick_message}', [QuickMessageController::class, 'update']);
+        Route::delete('/quick-messages/{quick_message}', [QuickMessageController::class, 'destroy']);
+
+        Route::get('/contacts', [ContactController::class, 'index']);
+        Route::post('/contacts', [ContactController::class, 'store']);
+        Route::put('/contacts/{id}', [ContactController::class, 'update'])->middleware('permission:contacts.update');
+
+        // Tag routes - protected by permissions
+        Route::post('/tags', [TagController::class, 'store'])->middleware('permission:tags.create');
+        Route::put('/tags/{id}', [TagController::class, 'update'])->middleware('permission:tags.update');
+        Route::delete('/tags/{id}', [TagController::class, 'destroy'])->middleware('permission:tags.delete');
+    });
 
     Route::get('/connections', [ConnectionController::class, 'index']);
-    Route::get('/tags', [TagController::class, 'index']);
-
-    Route::get('/quick-messages', [QuickMessageController::class, 'index']);
-    Route::post('/quick-messages', [QuickMessageController::class, 'store']);
-    Route::put('/quick-messages/{quick_message}', [QuickMessageController::class, 'update']);
-    Route::delete('/quick-messages/{quick_message}', [QuickMessageController::class, 'destroy']);
-
-    Route::get('/contacts', [ContactController::class, 'index']);
-    Route::post('/contacts', [ContactController::class, 'store']);
-    Route::put('/contacts/{id}', [ContactController::class, 'update'])->middleware('permission:contacts.update');
+    Route::get('/connections/metrics', [ConnectionController::class, 'metrics']);
 
     // Connection routes - protected by permissions
     Route::post('/connections', [ConnectionController::class, 'store'])->middleware('permission:connections.create');
@@ -112,11 +122,6 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     // Service hours (business hours that gate AI → human handoff)
     Route::get('/service-hours', [ServiceHoursController::class, 'show'])->middleware('permission:service-hours.view');
     Route::put('/service-hours', [ServiceHoursController::class, 'update'])->middleware('permission:service-hours.update');
-
-    // Tag routes - protected by permissions
-    Route::post('/tags', [TagController::class, 'store'])->middleware('permission:tags.create');
-    Route::put('/tags/{id}', [TagController::class, 'update'])->middleware('permission:tags.update');
-    Route::delete('/tags/{id}', [TagController::class, 'destroy'])->middleware('permission:tags.delete');
 
     // Agent routes - protected by permissions
     Route::get('/agents', [AgentController::class, 'index'])->middleware('permission:agents.view');
