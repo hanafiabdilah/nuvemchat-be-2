@@ -61,6 +61,14 @@ class MercadoPagoClient
             ->json();
     }
 
+    public function updatePreapproval(string $id, array $payload): array
+    {
+        return $this->http()
+            ->put("/preapproval/{$id}", $payload)
+            ->throw()
+            ->json();
+    }
+
     /**
      * Create a one-off Pix payment. Returns the QR / copy-paste in
      * point_of_interaction.transaction_data.

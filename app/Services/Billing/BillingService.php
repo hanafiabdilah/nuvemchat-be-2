@@ -34,10 +34,14 @@ class BillingService
     /**
      * Subscribe a tenant to a plan via card (recurring) or pix.
      *
-     * @param  array{card_token_id?:string, payer_email:string}  $opts
+     * @param  array{card_token_id?:string, payer_email:string, quantity?:int}  $opts
      */
     public function subscribe(Tenant $tenant, Plan $plan, PaymentMethod $method, array $opts): Subscription
     {
+        $opts['quantity'] = $plan->quantity_enabled
+            ? max(1, (int) ($opts['quantity'] ?? 1))
+            : 1;
+
         return match ($method) {
             PaymentMethod::Card => $this->subscribeWithCard($tenant, $plan, $opts),
             PaymentMethod::Pix => $this->subscribeWithPix($tenant, $plan, $opts),
@@ -50,14 +54,14 @@ class BillingService
      */
     protected function subscribeWithCard(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card);
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $opts['quantity'] ?? 1);
 
         $payload = [
             'reason' => $plan->name,
             'auto_recurring' => array_merge(
                 $plan->billing_cycle->toMercadoPagoFrequency(),
                 [
-                    'transaction_amount' => $this->toAmount($plan->price_cents),
+                    'transaction_amount' => $this->toAmount($subscription->price_cents),
                     'currency_id' => $plan->currency,
                 ],
             ),
@@ -91,7 +95,7 @@ class BillingService
      */
     protected function subscribeWithPix(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Pix);
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Pix, $opts['quantity'] ?? 1);
         $subscription->status = SubscriptionStatus::PastDue; // becomes active once the pix is paid
         $subscription->save();
 
@@ -234,6 +238,7 @@ class BillingService
                 'payment_method' => PaymentMethod::Manual,
                 'billing_cycle' => $plan?->billing_cycle?->value,
                 'price_cents' => 0,
+                'quantity' => 1,
                 'quotas_snapshot' => $plan?->quotas,
                 'features_snapshot' => $plan?->features,
                 'current_period_start' => now(),
@@ -296,6 +301,51 @@ class BillingService
         $this->fireUpdated($subscription);
     }
 
+    public function changeQuantity(Subscription $subscription, int $newQuantity): Subscription
+    {
+        $newQuantity = max(1, $newQuantity);
+        $subscription->loadMissing('plan');
+        $plan = $subscription->plan;
+
+        if (! $plan?->quantity_enabled) {
+            throw new \InvalidArgumentException('Subscription plan does not support quantity changes.');
+        }
+
+        $total = $plan->price_cents * $newQuantity;
+
+        if ($subscription->payment_method === PaymentMethod::Card && $subscription->mp_preapproval_id) {
+            try {
+                $this->mp->updatePreapproval($subscription->mp_preapproval_id, [
+                    'auto_recurring' => [
+                        'transaction_amount' => $this->toAmount($total),
+                        'currency_id' => $plan->currency,
+                    ],
+                ]);
+            } catch (\Throwable $e) {
+                Log::error('Failed to update MercadoPago preapproval amount', [
+                    'subscription_id' => $subscription->id,
+                    'mp_preapproval_id' => $subscription->mp_preapproval_id,
+                    'error' => $e->getMessage(),
+                ]);
+
+                throw new \RuntimeException('Failed to update MercadoPago preapproval amount.', 0, $e);
+            }
+        }
+
+        $subscription->update([
+            'price_cents' => $total,
+            'quantity' => $newQuantity,
+            'quotas_snapshot' => array_merge($subscription->quotas_snapshot ?? [], [
+                'max_instances' => $newQuantity,
+            ]),
+        ]);
+
+        $this->gate->forget($subscription->tenant);
+        $this->fireUpdated($subscription);
+
+        return $subscription;
+    }
+
     // --- internals -------------------------------------------------------
 
     protected function onInvoicePaid(Subscription $subscription, Invoice $invoice): void
@@ -314,9 +364,16 @@ class BillingService
         $this->fireUpdated($subscription);
     }
 
-    protected function createPendingSubscription(Tenant $tenant, Plan $plan, PaymentMethod $method): Subscription
+    protected function createPendingSubscription(Tenant $tenant, Plan $plan, PaymentMethod $method, int $quantity = 1): Subscription
     {
-        return DB::transaction(function () use ($tenant, $plan, $method) {
+        $quantity = $plan->quantity_enabled ? max(1, $quantity) : 1;
+        $quotas = $plan->quotas;
+
+        if ($plan->quantity_enabled) {
+            $quotas = array_merge($plan->quotas ?? [], ['max_instances' => $quantity]);
+        }
+
+        return DB::transaction(function () use ($tenant, $plan, $method, $quantity, $quotas) {
             $this->supersedeCurrent($tenant);
 
             $subscription = Subscription::create([
@@ -325,8 +382,9 @@ class BillingService
                 'status' => SubscriptionStatus::Trialing,
                 'payment_method' => $method,
                 'billing_cycle' => $plan->billing_cycle->value,
-                'price_cents' => $plan->price_cents,
-                'quotas_snapshot' => $plan->quotas,
+                'price_cents' => $plan->price_cents * $quantity,
+                'quantity' => $quantity,
+                'quotas_snapshot' => $quotas,
                 'features_snapshot' => $plan->features,
                 'current_period_start' => now(),
                 'trial_ends_at' => $plan->trial_days > 0 ? now()->addDays($plan->trial_days) : null,
