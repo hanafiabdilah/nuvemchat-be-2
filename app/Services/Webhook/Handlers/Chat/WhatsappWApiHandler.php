@@ -371,7 +371,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             $conversation = Conversation::where('external_id', $conversationId)
                 ->where('contact_id', $contact->id)
                 ->where('connection_id', $connection->id)
-                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
+                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending, ConversationStatus::AiHandling])
                 ->first();
 
             if (!$conversation) {
@@ -587,7 +587,7 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             // Cari conversation yang masih aktif saja (bukan yang sudah resolved)
             $conversation = Conversation::where('connection_id', $connection->id)
                 ->where('external_id', $conversationId)
-                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
+                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending, ConversationStatus::AiHandling])
                 ->first();
 
             // Jika conversation belum ada, buat conversation baru beserta contact

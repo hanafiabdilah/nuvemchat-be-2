@@ -106,7 +106,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             $conversation = Conversation::where('external_id', $phone)
                 ->where('contact_id', $contact->id)
                 ->where('connection_id', $connection->id)
-                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
+                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending, ConversationStatus::AiHandling])
                 ->first();
 
             if (! $conversation) {
@@ -188,7 +188,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
         $message = DB::transaction(function () use ($connection, $event, $messageId, $phone) {
             $conversation = Conversation::where('connection_id', $connection->id)
                 ->where('external_id', $phone)
-                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
+                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending, ConversationStatus::AiHandling])
                 ->first();
 
             if (! $conversation) {

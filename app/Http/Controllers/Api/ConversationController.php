@@ -63,10 +63,10 @@ class ConversationController extends Controller
             ], 403);
         }
 
-        // Check if active/pending conversation already exists
+        // Check if an open conversation (active / pending / AI-handling) already exists
         $existingConversation = Conversation::where('contact_id', $contact->id)
             ->where('connection_id', $connection->id)
-            ->whereIn('status', [Status::Active, Status::Pending])
+            ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
             ->first();
 
         if ($existingConversation) {
@@ -388,16 +388,25 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if($conversation->status !== Status::Pending){
+        // An agent can pick up a conversation from the unassigned Pending queue
+        // or take it over from the AI while it is being handled.
+        if(!in_array($conversation->status, [Status::Pending, Status::AiHandling], true)){
             return response()->json([
                 'message' => 'Conversation is not pending',
             ], 400);
         }
 
+        $wasAiHandling = $conversation->status === Status::AiHandling;
+
         $conversation->user_id = Auth::id();
         $conversation->status = Status::Active;
         $conversation->needs_human = false;
         $conversation->save();
+
+        // Taking over from the AI: stop the running flow so it no longer auto-replies.
+        if ($wasAiHandling) {
+            (new \App\Services\Flow\FlowExecutor())->stopFlow($conversation);
+        }
 
         broadcast(new ConversationUpdated($conversation));
 

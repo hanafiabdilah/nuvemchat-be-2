@@ -100,11 +100,11 @@ class FlowExecutor
      */
     protected function executeFromNode(FlowState $flowState, FlowNode $node): void
     {
-        // Check if conversation is still Pending before executing
+        // Check if conversation is still flow-eligible (Pending or AI-handling) before executing
         $conversation = $flowState->conversation->fresh();
 
-        if ($conversation->status !== ConversationStatus::Pending) {
-            Log::info('FlowExecutor: Flow stopped, conversation is no longer pending (flow state preserved)', [
+        if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            Log::info('FlowExecutor: Flow stopped, conversation is no longer flow-eligible (flow state preserved)', [
                 'conversation_id' => $conversation->id,
                 'status' => $conversation->status->value,
                 'flow_state_id' => $flowState->id,
@@ -662,6 +662,8 @@ class FlowExecutor
     protected function routeHandoff(FlowState $flowState, FlowNode $node, string $reason, bool $aiCanContinue): void
     {
         if ($this->handoffMode($node->data ?? []) === 'always_ai') {
+            // AI is done with this node; release it from the AI tab before advancing.
+            $this->releaseAiHandling($flowState->conversation);
             $this->moveToNextNode($flowState, $node);
             return;
         }
@@ -680,7 +682,50 @@ class FlowExecutor
             return; // stay on this AIAgent node, keep handling with the AI
         }
 
+        // AI cannot continue and no human is available — advance the flow.
+        $this->releaseAiHandling($flowState->conversation);
         $this->moveToNextNode($flowState, $node);
+    }
+
+    /**
+     * Mark the conversation as being handled by the AI. Only flips a conversation
+     * that is still in the unassigned Pending queue — never clobbers Active (a
+     * human already took over) or Resolved. Broadcasts so the dashboard moves the
+     * conversation into the "AI" tab in realtime.
+     */
+    protected function markAiHandling(Conversation $conversation): void
+    {
+        if ($conversation->status !== ConversationStatus::Pending) {
+            return;
+        }
+
+        $conversation->forceFill(['status' => ConversationStatus::AiHandling])->save();
+
+        broadcast(new ConversationUpdated($conversation->fresh()));
+
+        Log::info('FlowExecutor: Conversation now handled by AI', [
+            'conversation_id' => $conversation->id,
+        ]);
+    }
+
+    /**
+     * The AI is done handling (handed off to the flow's next node / flow ended).
+     * Drop the conversation back into the Pending queue so it is no longer shown
+     * as AI-handled. No-op unless it is currently AI-handling.
+     */
+    protected function releaseAiHandling(Conversation $conversation): void
+    {
+        if ($conversation->status !== ConversationStatus::AiHandling) {
+            return;
+        }
+
+        $conversation->forceFill(['status' => ConversationStatus::Pending])->save();
+
+        broadcast(new ConversationUpdated($conversation->fresh()));
+
+        Log::info('FlowExecutor: AI released conversation back to Pending', [
+            'conversation_id' => $conversation->id,
+        ]);
     }
 
     /**
@@ -746,9 +791,9 @@ class FlowExecutor
      */
     public function resumeFlow(Conversation $conversation, string $userInput): void
     {
-        // Only resume flow for Pending conversations
-        if ($conversation->status !== ConversationStatus::Pending) {
-            Log::info('FlowExecutor: Cannot resume flow, conversation is not pending', [
+        // Only resume flow for flow-eligible conversations (Pending queue or active AI turn)
+        if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            Log::info('FlowExecutor: Cannot resume flow, conversation is not flow-eligible', [
                 'conversation_id' => $conversation->id,
                 'status' => $conversation->status->value,
             ]);
@@ -929,6 +974,9 @@ class FlowExecutor
             $this->transferToHuman($flowState, 'service_hours');
             return;
         }
+
+        // From here the AI owns the conversation — surface it in the "AI" tab.
+        $this->markAiHandling($flowState->conversation);
 
         $stateData = $flowState->state_data ?? [];
         $turnsKey = "_ai_turns_{$node->id}";
