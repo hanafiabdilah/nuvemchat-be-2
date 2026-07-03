@@ -31,7 +31,12 @@ class ConversationController extends Controller
 
         $conversations = Conversation::with('contact')->whereHas('connection', function($q){
             $q->where('tenant_id', Auth::user()->tenant_id);
-        })->where('updated_at', '>', $since)->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
+        })
+            // Skip conversations with no message yet (e.g. a Live Chat Widget session
+            // that was opened but the visitor never typed) — they would otherwise show
+            // as empty rows with a null "1970" date in the list.
+            ->whereHas('messages')
+            ->where('updated_at', '>', $since)->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
 
         return response()->json([
             'data' => ConversationResource::collection($conversations),

@@ -91,7 +91,10 @@ class WidgetController extends Controller
             ]);
         });
 
-        broadcast(new ConversationUpdated($session->conversation->load('contact')));
+        // Do NOT broadcast the conversation here: at session-open it still has no
+        // message, so pushing it would surface an empty row (with a null "1970"
+        // date) in the agent dashboard. The dashboard first sees the conversation
+        // when the visitor sends their first message (see sendMessage()).
 
         return response()->json([
             'session_token' => $session->session_token,
