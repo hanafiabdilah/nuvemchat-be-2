@@ -84,6 +84,73 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         }
     }
 
+    /**
+     * Send a pre-approved WhatsApp message template. This is the sanctioned way
+     * to open (or re-open) a conversation outside the 24-hour customer service
+     * window. `components` is passed through to the Cloud API for variable /
+     * header / button substitution.
+     */
+    public function handleSendTemplate(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'template_name' => 'required|string',
+            'language' => 'required|string',
+            'components' => 'nullable|array',
+        ])->validate();
+
+        $connection = $conversation->connection;
+
+        $template = array_filter([
+            'name' => $data['template_name'],
+            'language' => ['code' => $data['language']],
+            'components' => $data['components'] ?? null,
+        ], fn ($v) => $v !== null);
+
+        try {
+            $response = GraphApi::retry(fn () => Http::withToken($connection->credentials['access_token'])
+                ->post(self::GRAPH_BASE . '/' . $connection->credentials['phone_number_id'] . '/messages', [
+                    'messaging_product' => 'whatsapp',
+                    'recipient_type' => 'individual',
+                    'to' => $conversation->external_id,
+                    'type' => 'template',
+                    'template' => $template,
+                ]));
+
+            $responseArray = $response->json();
+
+            if (!$response->successful()) {
+                Log::error('WhatsappOfficialHandler: Failed to send template', [
+                    'response_status' => $response->status(),
+                    'response_body' => $responseArray,
+                    'conversation_id' => $conversation->id,
+                    'connection_id' => $connection->id,
+                ]);
+
+                throw new Exception($responseArray['error']['message'] ?? 'Failed to send WhatsApp template');
+            }
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Template,
+                'body' => $data['template_name'],
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'delivery_at' => $this->getMessageSentAt($responseArray),
+                'meta' => array_merge($responseArray, ['template' => $template]),
+            ]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('WhatsappOfficialHandler: Failed to send template', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send WhatsApp template: ' . $th->getMessage());
+        }
+    }
+
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [

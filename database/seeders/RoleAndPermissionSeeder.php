@@ -75,6 +75,12 @@ class RoleAndPermissionSeeder extends Seeder
             // Service hours (business hours that gate AI → human handoff)
             'service-hours.view',
             'service-hours.update',
+
+            // WhatsApp message templates (Cloud API)
+            'templates.view',
+            'templates.create',
+            'templates.delete',
+            'templates.send',
         ];
 
         foreach ($permissions as $permission) {

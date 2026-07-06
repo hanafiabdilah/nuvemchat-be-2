@@ -4,6 +4,7 @@ namespace App\Services\Message;
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Handlers\WhatsappOfficialHandler;
 
 class MessageService
 {
@@ -11,6 +12,22 @@ class MessageService
     {
         $handler = MessageFactory::make($conversation->connection->channel, $data);
         return $handler->handleSendMessage($conversation, $data);
+    }
+
+    /**
+     * Send a WhatsApp message template. Templates are a WhatsApp Official (Cloud
+     * API) concept only, so this rejects any other channel rather than adding a
+     * no-op to every handler.
+     */
+    public function sendTemplate(Conversation $conversation, array $data): ?Message
+    {
+        $handler = MessageFactory::make($conversation->connection->channel, $data);
+
+        if (!$handler instanceof WhatsappOfficialHandler) {
+            throw new \RuntimeException('Message templates are only supported on WhatsApp Official connections');
+        }
+
+        return $handler->handleSendTemplate($conversation, $data);
     }
 
     public function sendImage(Conversation $conversation, array $data): ?Message

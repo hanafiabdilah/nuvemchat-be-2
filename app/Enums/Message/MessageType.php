@@ -11,5 +11,6 @@ enum MessageType: string
     case Document = 'document';
     case Sticker = 'sticker';
     case Location = 'location';
+    case Template = 'template';
     case Unsupported = 'unsupported';
 }

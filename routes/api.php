@@ -33,6 +33,7 @@ use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\MessageTemplateController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\QuickMessageController;
 use App\Http\Controllers\Api\RoleController;
@@ -103,6 +104,13 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
         Route::post('/tags', [TagController::class, 'store'])->middleware('permission:tags.create');
         Route::put('/tags/{id}', [TagController::class, 'update'])->middleware('permission:tags.update');
         Route::delete('/tags/{id}', [TagController::class, 'destroy'])->middleware('permission:tags.delete');
+
+        // WhatsApp message templates (Cloud API). CRUD is proxied to Meta; send
+        // supports re-engaging outside the 24h window (existing conv or new number).
+        Route::get('/templates', [MessageTemplateController::class, 'index'])->middleware('permission:templates.view');
+        Route::post('/templates', [MessageTemplateController::class, 'store'])->middleware('permission:templates.create');
+        Route::delete('/templates/{name}', [MessageTemplateController::class, 'destroy'])->middleware('permission:templates.delete');
+        Route::post('/templates/send', [MessageTemplateController::class, 'send'])->middleware('permission:templates.send');
     });
 
     Route::get('/connections', [ConnectionController::class, 'index']);
