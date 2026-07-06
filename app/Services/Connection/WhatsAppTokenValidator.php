@@ -8,6 +8,7 @@ use App\Events\ConnectionUpdated;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Connection\Meta\GraphApi;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -39,10 +40,10 @@ class WhatsAppTokenValidator
      */
     public function isExplicitlyInvalid(string $accessToken): bool
     {
-        $response = Http::get('https://graph.facebook.com/v25.0/me', [
+        $response = GraphApi::retry(fn () => Http::get('https://graph.facebook.com/v25.0/me', [
             'access_token' => $accessToken,
             'fields' => 'id',
-        ]);
+        ]));
 
         if ($response->successful()) {
             return false;

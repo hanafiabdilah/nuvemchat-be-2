@@ -6,6 +6,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Connection\Meta\GraphApi;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -37,7 +38,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         try {
-            $response = Http::withToken($connection->credentials['access_token'])
+            $response = GraphApi::retry(fn () => Http::withToken($connection->credentials['access_token'])
                 ->post(self::GRAPH_BASE . '/' . $connection->credentials['phone_number_id'] . '/messages', [
                     'messaging_product' => 'whatsapp',
                     'recipient_type' => 'individual',
@@ -46,7 +47,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
                     'text' => [
                         'body' => $data['message'],
                     ],
-                ]);
+                ]));
 
             $responseArray = $response->json();
 
@@ -296,14 +297,14 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
             fn($v) => $v !== null && $v !== '',
         );
 
-        $response = Http::withToken($connection->credentials['access_token'])
+        $response = GraphApi::retry(fn () => Http::withToken($connection->credentials['access_token'])
             ->post(self::GRAPH_BASE . '/' . $connection->credentials['phone_number_id'] . '/messages', [
                 'messaging_product' => 'whatsapp',
                 'recipient_type' => 'individual',
                 'to' => $conversation->external_id,
                 'type' => $mediaType,
                 $mediaType => $mediaPayload,
-            ]);
+            ]));
 
         $responseArray = $response->json();
 

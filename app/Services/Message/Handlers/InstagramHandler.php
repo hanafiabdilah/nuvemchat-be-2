@@ -6,6 +6,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Connection\Meta\GraphApi;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -35,7 +36,7 @@ class InstagramHandler implements MessageHandlerInterface
     ): Message {
         $connection = $conversation->connection;
 
-        $response = Http::withToken($connection->credentials['access_token'])
+        $response = GraphApi::retry(fn () => Http::withToken($connection->credentials['access_token'])
             ->post('https://graph.instagram.com/v25.0/me/messages', [
                 'recipient' => [
                     'id' => $conversation->external_id,
@@ -49,7 +50,7 @@ class InstagramHandler implements MessageHandlerInterface
                         ],
                     ],
                 ],
-            ]);
+            ]));
 
         $responseArray = $response->json();
 
@@ -86,7 +87,7 @@ class InstagramHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         try {
-            $response = Http::withToken($connection->credentials['access_token'])
+            $response = GraphApi::retry(fn () => Http::withToken($connection->credentials['access_token'])
                 ->post('https://graph.instagram.com/v25.0/me/messages', [
                     'recipient' => [
                         'id' => $conversation->external_id,
@@ -94,7 +95,7 @@ class InstagramHandler implements MessageHandlerInterface
                     'message' => [
                         'text' => $data['message'],
                     ],
-                ]);
+                ]));
 
             $responseArray = $response->json();
 
