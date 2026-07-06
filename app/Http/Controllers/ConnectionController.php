@@ -548,7 +548,11 @@ class ConnectionController extends Controller
             $alreadyRegistered = ($platformType === 'CLOUD_API')
                 && ($codeVerificationStatus === 'VERIFIED');
 
-            $pin = $connection->credentials['pin'] ?? null;
+            // Credentials may be null here — e.g. re-authorizing a connection
+            // that was wiped by a Meta data-deletion callback. Normalize to an
+            // array so array-offset reads below don't warn on null.
+            $existingCredentials = $connection->credentials ?? [];
+            $pin = $existingCredentials['pin'] ?? null;
 
             if ($alreadyRegistered) {
                 Log::info('Phone number already registered on Cloud API; skipping /register', [
@@ -589,7 +593,7 @@ class ConnectionController extends Controller
                 'pin' => $pin,
                 // App-scoped user id from FB.login — used to match Meta
                 // deauth/data-deletion signed_requests back to this connection.
-                'fb_user_id' => $fbUserId ?: ($connection->credentials['fb_user_id'] ?? null),
+                'fb_user_id' => $fbUserId ?: ($existingCredentials['fb_user_id'] ?? null),
                 'token_type' => 'SYSTEM_USER',
                 'token_expires_at' => null,
             ]);
