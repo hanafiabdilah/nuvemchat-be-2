@@ -18,8 +18,6 @@ use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\BusinessHours;
 use App\Services\Message\MessageService;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class FlowExecutor
@@ -1220,8 +1218,10 @@ class FlowExecutor
 
     /**
      * Send a message dispatched by `message_type`.
-     * Downloads `attachment_url` into a temporary UploadedFile so the
-     * existing channel handlers (image/audio/video/document) can consume it.
+     * Passes `attachment_url` straight through to the channel handlers as a
+     * `media_url`, so media is sent by URL (fast-path) without a
+     * download/re-upload round trip. Handlers fall back to downloading the URL
+     * only when the channel rejects it or needs transcoding.
      */
     protected function sendByMessageType(Conversation $conversation, array $nodeData, ?FlowState $flowState = null): ?Message
     {
@@ -1242,117 +1242,25 @@ class FlowExecutor
             ]));
         }
 
-        $tempPath = null;
-        try {
-            $uploadedFile = $this->downloadAsUploadedFile($attachmentUrl, $tempPath);
-
-            if (!$uploadedFile) {
-                Log::warning('FlowExecutor: Falling back to text after failing to download attachment', [
-                    'attachment_url' => $attachmentUrl,
-                    'message_type' => $messageType,
-                ]);
-
-                return $send($this->messageService->sendMessage($conversation, [
-                    'message' => $body,
-                ]));
-            }
-
-            return $send(match ($messageType) {
-                'image' => $this->messageService->sendImage($conversation, [
-                    'image' => $uploadedFile,
-                    'message' => $body,
-                ]),
-                'audio' => $this->messageService->sendAudio($conversation, [
-                    'audio' => $uploadedFile,
-                ]),
-                'video' => $this->messageService->sendVideo($conversation, [
-                    'video' => $uploadedFile,
-                    'message' => $body,
-                ]),
-                'document' => $this->messageService->sendDocument($conversation, [
-                    'document' => $uploadedFile,
-                    'message' => $body,
-                ]),
-                default => $this->messageService->sendMessage($conversation, [
-                    'message' => $body,
-                ]),
-            });
-        } finally {
-            if ($tempPath && file_exists($tempPath)) {
-                @unlink($tempPath);
-            }
-        }
-    }
-
-    /**
-     * Download a URL to a temp file and wrap it in an UploadedFile (test mode).
-     * Returns null on failure. $tempPath is filled with the temp file path
-     * so the caller can clean it up.
-     */
-    protected function downloadAsUploadedFile(string $url, ?string &$tempPath = null): ?UploadedFile
-    {
-        try {
-            $response = Http::timeout(30)->get($url);
-
-            if (!$response->successful()) {
-                Log::warning('FlowExecutor: Attachment download returned non-success', [
-                    'url' => $url,
-                    'status' => $response->status(),
-                ]);
-                return null;
-            }
-
-            $contentType = $response->header('Content-Type') ?: 'application/octet-stream';
-            $mime = trim(explode(';', $contentType)[0]);
-
-            $pathFromUrl = parse_url($url, PHP_URL_PATH) ?: '';
-            $filename = $pathFromUrl ? basename($pathFromUrl) : '';
-            if ($filename === '' || !str_contains($filename, '.')) {
-                $ext = $this->extensionFromMime($mime);
-                $base = $filename !== '' ? $filename : 'attachment';
-                $filename = $base . ($ext ? ".{$ext}" : '');
-            }
-
-            $tempPath = tempnam(sys_get_temp_dir(), 'flow_');
-            file_put_contents($tempPath, $response->body());
-
-            return new UploadedFile($tempPath, $filename, $mime, null, true);
-        } catch (\Throwable $th) {
-            Log::error('FlowExecutor: Failed to download attachment', [
-                'url' => $url,
-                'error' => $th->getMessage(),
-            ]);
-            return null;
-        }
-    }
-
-    /**
-     * Guess a file extension from a MIME type for common attachment formats.
-     */
-    protected function extensionFromMime(string $mime): ?string
-    {
-        return match ($mime) {
-            'image/jpeg', 'image/jpg' => 'jpg',
-            'image/png' => 'png',
-            'image/webp' => 'webp',
-            'image/gif' => 'gif',
-            'audio/mpeg', 'audio/mp3' => 'mp3',
-            'audio/ogg', 'audio/opus' => 'ogg',
-            'audio/wav', 'audio/x-wav' => 'wav',
-            'audio/mp4', 'audio/x-m4a' => 'm4a',
-            'video/mp4' => 'mp4',
-            'video/webm' => 'webm',
-            'video/quicktime' => 'mov',
-            'application/pdf' => 'pdf',
-            'application/msword' => 'doc',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
-            'application/vnd.ms-excel' => 'xls',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
-            'application/vnd.ms-powerpoint' => 'ppt',
-            'application/vnd.openxmlformats-officedocument.presentationml.presentation' => 'pptx',
-            'text/plain' => 'txt',
-            'text/csv' => 'csv',
-            default => null,
-        };
+        return $send(match ($messageType) {
+            'image' => $this->messageService->sendImage($conversation, [
+                'media_url' => $attachmentUrl,
+                'message' => $body,
+            ]),
+            'audio' => $this->messageService->sendAudio($conversation, [
+                'media_url' => $attachmentUrl,
+            ]),
+            'video' => $this->messageService->sendVideo($conversation, [
+                'media_url' => $attachmentUrl,
+                'message' => $body,
+            ]),
+            'document' => $this->messageService->sendDocument($conversation, [
+                'media_url' => $attachmentUrl,
+                'message' => $body,
+            ]),
+            default => $this->messageService->sendMessage($conversation, [
+                'message' => $body,
+            ]),
+        });
     }
 }

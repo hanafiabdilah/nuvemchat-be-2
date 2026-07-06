@@ -8,6 +8,7 @@ use App\Events\Widget\WidgetMessageReceived;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\MessageHandlerInterface;
+use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Log;
@@ -66,7 +67,8 @@ class LiveChatWidgetHandler implements MessageHandlerInterface
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         return $this->handleSendMedia($conversation, $data, MessageType::Image, [
-            'image' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
+            'image' => 'required_without:media_url|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
+            'media_url' => 'required_without:image|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ], 'image');
@@ -75,7 +77,8 @@ class LiveChatWidgetHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         return $this->handleSendMedia($conversation, $data, MessageType::Audio, [
-            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            'audio' => 'required_without:media_url|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            'media_url' => 'required_without:audio|url',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ], 'audio');
     }
@@ -83,7 +86,8 @@ class LiveChatWidgetHandler implements MessageHandlerInterface
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         return $this->handleSendMedia($conversation, $data, MessageType::Video, [
-            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'video' => 'required_without:media_url|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'media_url' => 'required_without:video|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ], 'video');
@@ -92,7 +96,8 @@ class LiveChatWidgetHandler implements MessageHandlerInterface
     public function handleSendDocument(Conversation $conversation, array $data): ?Message
     {
         return $this->handleSendMedia($conversation, $data, MessageType::Document, [
-            'document' => 'required|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'document' => 'required_without:media_url|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'media_url' => 'required_without:document|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ], 'document');
@@ -104,6 +109,32 @@ class LiveChatWidgetHandler implements MessageHandlerInterface
 
         try {
             $now = Carbon::now();
+
+            // URL fast-path: store the external URL as the attachment; the widget
+            // fetches it directly, so no bytes are downloaded or persisted.
+            $media = OutboundMedia::fromData($data, $fileKey);
+            if ($media && $media->isUrl()) {
+                $message = $conversation->messages()->create([
+                    'external_id' => (string) Str::uuid(),
+                    'sender_type' => SenderType::Outgoing,
+                    'message_type' => $type,
+                    'body' => $data['message'] ?? null,
+                    'replied_message_id' => $data['replied_message_id'] ?? null,
+                    'sent_at' => $now,
+                    'delivery_at' => $now,
+                    'attachment' => $media->url,
+                    'meta' => [
+                        'filename' => $media->filename,
+                        'mime_type' => $media->mimeType,
+                        'size' => null,
+                    ],
+                ]);
+
+                broadcast(new WidgetMessageReceived($message->fresh()));
+
+                return $message;
+            }
+
             $file = $data[$fileKey];
 
             $message = $conversation->messages()->create([

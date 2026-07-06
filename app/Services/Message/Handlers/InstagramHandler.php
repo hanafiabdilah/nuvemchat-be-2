@@ -7,6 +7,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\MessageHandlerInterface;
+use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Http;
@@ -18,6 +19,57 @@ class InstagramHandler implements MessageHandlerInterface
     public function getMessageId(array $payload): string
     {
         return $payload['message_id'] ?? $payload['mid'] ?? uniqid('ig_', true);
+    }
+
+    /**
+     * URL fast-path: reference the caller's URL directly as the attachment
+     * payload (Instagram fetches it), storing the URL as the attachment without
+     * hosting or persisting any bytes.
+     */
+    private function sendAttachmentByUrl(
+        Conversation $conversation,
+        string $url,
+        string $igType,
+        MessageType $messageTypeEnum,
+        array $extraMeta = [],
+    ): Message {
+        $connection = $conversation->connection;
+
+        $response = Http::withToken($connection->credentials['access_token'])
+            ->post('https://graph.instagram.com/v25.0/me/messages', [
+                'recipient' => [
+                    'id' => $conversation->external_id,
+                ],
+                'message' => [
+                    'attachment' => [
+                        'type' => $igType,
+                        'payload' => [
+                            'url' => $url,
+                            'is_reusable' => true,
+                        ],
+                    ],
+                ],
+            ]);
+
+        $responseArray = $response->json();
+
+        if (!$response->successful()) {
+            throw new Exception($responseArray['error']['message'] ?? "Failed to send Instagram {$igType}");
+        }
+
+        $message = $conversation->messages()->create([
+            'external_id' => $this->getMessageId($responseArray),
+            'sender_type' => SenderType::Outgoing,
+            'message_type' => $messageTypeEnum,
+            'body' => null,
+            'sent_at' => $this->getMessageSentAt($responseArray),
+            'delivery_at' => $this->getMessageSentAt($responseArray),
+            'meta' => array_merge($responseArray, $extraMeta),
+        ]);
+
+        $message->update(['attachment' => $url]);
+
+        return $message;
     }
 
     public function getMessageSentAt(array $payload): Carbon
@@ -84,11 +136,29 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'image' => 'required|image|mimes:jpeg,png,jpg|max:8192',
+            'image' => 'required_without:media_url|image|mimes:jpeg,png,jpg|max:8192',
+            'media_url' => 'required_without:image|url',
         ])->validate();
 
         $connection = $conversation->connection;
         $tempPublicPath = null;
+
+        $media = OutboundMedia::fromData($data, 'image');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendAttachmentByUrl($conversation, $media->url, 'image', MessageType::Image);
+            } catch (\Throwable $th) {
+                Log::warning('InstagramHandler: URL image send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send Instagram image by URL and download fallback failed');
+                }
+                $data['image'] = $file;
+            }
+        }
 
         try {
             // Store image temporarily in public directory
@@ -178,12 +248,30 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required|file|mimes:aac,m4a,wav,mp4,mp3,ogg,opus,webm|max:25600',
+            'audio' => 'required_without:media_url|file|mimes:aac,m4a,wav,mp4,mp3,ogg,opus,webm|max:25600',
+            'media_url' => 'required_without:audio|url',
         ])->validate();
 
         $connection = $conversation->connection;
         $tempPublicPath = null;
         $convertedFilePath = null;
+
+        $media = OutboundMedia::fromData($data, 'audio');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendAttachmentByUrl($conversation, $media->url, 'audio', MessageType::Audio);
+            } catch (\Throwable $th) {
+                Log::warning('InstagramHandler: URL audio send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send Instagram audio by URL and download fallback failed');
+                }
+                $data['audio'] = $file;
+            }
+        }
 
         try {
             $audioContent = file_get_contents($data['audio']->getRealPath());
@@ -382,11 +470,29 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'video' => 'required|file|mimes:mp4,ogg,avi,mov,webm|max:25600',
+            'video' => 'required_without:media_url|file|mimes:mp4,ogg,avi,mov,webm|max:25600',
+            'media_url' => 'required_without:video|url',
         ])->validate();
 
         $connection = $conversation->connection;
         $tempPublicPath = null;
+
+        $media = OutboundMedia::fromData($data, 'video');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendAttachmentByUrl($conversation, $media->url, 'video', MessageType::Video);
+            } catch (\Throwable $th) {
+                Log::warning('InstagramHandler: URL video send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send Instagram video by URL and download fallback failed');
+                }
+                $data['video'] = $file;
+            }
+        }
 
         try {
             // Store video temporarily in public directory
@@ -476,11 +582,35 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleSendDocument(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'document' => 'required|file|mimes:pdf|max:25600',
+            'document' => 'required_without:media_url|file|mimes:pdf|max:25600',
+            'media_url' => 'required_without:document|url',
         ])->validate();
 
         $connection = $conversation->connection;
         $tempPublicPath = null;
+
+        $media = OutboundMedia::fromData($data, 'document');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendAttachmentByUrl(
+                    $conversation,
+                    $media->url,
+                    'file',
+                    MessageType::Document,
+                    ['filename' => $media->filename],
+                );
+            } catch (\Throwable $th) {
+                Log::warning('InstagramHandler: URL document send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send Instagram document by URL and download fallback failed');
+                }
+                $data['document'] = $file;
+            }
+        }
 
         try {
             // Store document temporarily in public directory
