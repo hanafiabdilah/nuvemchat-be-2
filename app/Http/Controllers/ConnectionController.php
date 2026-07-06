@@ -240,6 +240,32 @@ class ConnectionController extends Controller
 
             $instagramUserId = $data['user_id'];
 
+            // Idempotency: Meta retries the same signed_request (same user_id +
+            // issued_at) on failure/timeout. If we already processed it, return
+            // the original confirmation without wiping data again.
+            $issuedAt = $data['issued_at'] ?? null;
+            $dedupeKey = $issuedAt !== null
+                ? hash('sha256', $instagramUserId . '|' . $issuedAt)
+                : null;
+
+            if ($dedupeKey !== null) {
+                $existing = DB::table('instagram_deletion_logs')
+                    ->where('dedupe_key', $dedupeKey)
+                    ->first();
+
+                if ($existing) {
+                    Log::info('Instagram data deletion: duplicate callback ignored', [
+                        'instagram_user_id' => $instagramUserId,
+                        'confirmation_code' => $existing->confirmation_code,
+                    ]);
+
+                    return response()->json([
+                        'url' => route('instagram.deletion-status', ['code' => $existing->confirmation_code]),
+                        'confirmation_code' => $existing->confirmation_code,
+                    ]);
+                }
+            }
+
             // Generate confirmation code
             $confirmationCode = hash('sha256', $instagramUserId . time() . uniqid());
             $statusUrl = route('instagram.deletion-status', ['code' => $confirmationCode]);
@@ -304,6 +330,7 @@ class ConnectionController extends Controller
             DB::table('instagram_deletion_logs')->insert([
                 'confirmation_code' => $confirmationCode,
                 'instagram_user_id' => $instagramUserId,
+                'dedupe_key' => $dedupeKey,
                 'status' => 'completed',
                 'connections_deleted' => $connectionsAffected,
                 'conversations_deleted' => $conversationsDeleted,
@@ -778,6 +805,33 @@ class ConnectionController extends Controller
             }
 
             $facebookUserId = $data['user_id'];
+
+            // Idempotency: Meta retries the same signed_request (same user_id +
+            // issued_at) on failure/timeout. If we already processed it, return
+            // the original confirmation without wiping data again.
+            $issuedAt = $data['issued_at'] ?? null;
+            $dedupeKey = $issuedAt !== null
+                ? hash('sha256', $facebookUserId . '|' . $issuedAt)
+                : null;
+
+            if ($dedupeKey !== null) {
+                $existing = DB::table('facebook_deletion_logs')
+                    ->where('dedupe_key', $dedupeKey)
+                    ->first();
+
+                if ($existing) {
+                    Log::info('Facebook data deletion: duplicate callback ignored', [
+                        'facebook_user_id' => $facebookUserId,
+                        'confirmation_code' => $existing->confirmation_code,
+                    ]);
+
+                    return response()->json([
+                        'url' => route('oauth.facebook.deletion-status', ['code' => $existing->confirmation_code]),
+                        'confirmation_code' => $existing->confirmation_code,
+                    ]);
+                }
+            }
+
             $confirmationCode = hash('sha256', $facebookUserId . time() . uniqid());
             $statusUrl = route('oauth.facebook.deletion-status', ['code' => $confirmationCode]);
 
@@ -803,6 +857,7 @@ class ConnectionController extends Controller
             DB::table('facebook_deletion_logs')->insert([
                 'confirmation_code' => $confirmationCode,
                 'facebook_user_id' => $facebookUserId,
+                'dedupe_key' => $dedupeKey,
                 'status' => 'completed',
                 'connections_deleted' => $stats['connections'],
                 'conversations_deleted' => $stats['conversations'],
