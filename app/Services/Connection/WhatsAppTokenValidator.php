@@ -66,6 +66,19 @@ class WhatsAppTokenValidator
     }
 
     /**
+     * Number of connections the revoked-token scan would probe (one Graph API
+     * call each). Callers use this to decide whether to run the scan inline or
+     * push it to a queue to avoid timing out a synchronous webhook request.
+     */
+    public function revocationScanCandidateCount(): int
+    {
+        return Connection::where('channel', Channel::WhatsappOfficial)
+            ->where('status', Status::Active)
+            ->whereNotNull('credentials')
+            ->count();
+    }
+
+    /**
      * Walk every active WhatsApp Official connection, ask Meta whether its
      * stored token is still valid, and mark Inactive any whose token Meta
      * reports as revoked. Returns the connections that were deauthorized.
