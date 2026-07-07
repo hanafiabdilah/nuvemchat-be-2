@@ -123,6 +123,8 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect'])->middleware('permission:connections.connect');
     Route::post('/connections/{id}/migrate', [ConnectionController::class, 'migrate'])->middleware('permission:connections.connect');
     Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
+    Route::get('/connections/{id}/business-profile', [ConnectionController::class, 'businessProfile']);
+    Route::put('/connections/{id}/business-profile', [ConnectionController::class, 'updateBusinessProfile'])->middleware('permission:connections.update');
     Route::put('/connections/{id}', [ConnectionController::class, 'update'])->middleware('permission:connections.update');
     Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus'])->middleware('permission:connections.check-status');
     Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey'])->middleware('permission:connections.generate-api-key');
