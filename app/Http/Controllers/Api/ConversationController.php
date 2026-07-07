@@ -182,9 +182,47 @@ class ConversationController extends Controller
         $conversation->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->update(['read_at' => now()]);
         broadcast(new ConversationUpdated($conversation));
 
+        // Best-effort: reflect the read receipt to the customer on WhatsApp
+        // Cloud API (blue ticks). No-op for other channels; never fatal.
+        try {
+            (new MessageService())->markAsRead($conversation);
+        } catch (\Throwable $th) {
+            Log::warning('Failed to send WhatsApp read receipt', [
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
         return response()->json([
             'message' => 'Conversation marked as read',
         ]);
+    }
+
+    /**
+     * Emit a typing indicator to the customer (WhatsApp Cloud API). Called by
+     * the composer while an agent is typing. Best-effort and no-op for channels
+     * without native typing support.
+     */
+    public function typing(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        try {
+            (new MessageService())->markAsRead($conversation, typing: true);
+        } catch (\Throwable $th) {
+            Log::warning('Failed to send WhatsApp typing indicator', [
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
+        return response()->json(['message' => 'ok']);
     }
 
     public function sendMessage(Request $request, int $id)

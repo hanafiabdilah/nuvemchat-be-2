@@ -30,6 +30,22 @@ class MessageService
         return $handler->handleSendTemplate($conversation, $data);
     }
 
+    /**
+     * Mark the latest inbound message as read (and optionally emit a typing
+     * indicator) on the channel. Only WhatsApp Official supports Cloud read
+     * receipts / typing; other channels are a silent no-op.
+     */
+    public function markAsRead(Conversation $conversation, bool $typing = false): bool
+    {
+        $handler = MessageFactory::make($conversation->connection->channel, []);
+
+        if (!$handler instanceof WhatsappOfficialHandler) {
+            return false;
+        }
+
+        return $handler->handleMarkAsRead($conversation, $typing);
+    }
+
     public function sendImage(Conversation $conversation, array $data): ?Message
     {
         $handler = MessageFactory::make($conversation->connection->channel, $data);

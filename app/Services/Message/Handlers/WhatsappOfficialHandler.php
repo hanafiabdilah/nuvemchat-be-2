@@ -233,6 +233,67 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         );
     }
 
+    /**
+     * Mark the conversation's latest inbound message as read on WhatsApp Cloud
+     * API (blue ticks for the customer). When $typing is true, also emit a
+     * typing indicator — Cloud API bundles both into one call keyed by the
+     * message id. Best-effort: returns false (never throws) so a read/typing
+     * ping never breaks the caller.
+     */
+    public function handleMarkAsRead(Conversation $conversation, bool $typing = false): bool
+    {
+        $connection = $conversation->connection;
+        $token = $connection->credentials['access_token'] ?? null;
+        $phoneNumberId = $connection->credentials['phone_number_id'] ?? null;
+
+        if (!$token || !$phoneNumberId) {
+            return false;
+        }
+
+        $lastInbound = $conversation->messages()
+            ->where('sender_type', SenderType::Incoming)
+            ->whereNotNull('external_id')
+            ->latest('id')
+            ->first();
+
+        if (!$lastInbound) {
+            return false;
+        }
+
+        $payload = [
+            'messaging_product' => 'whatsapp',
+            'status' => 'read',
+            'message_id' => $lastInbound->external_id,
+        ];
+
+        if ($typing) {
+            $payload['typing_indicator'] = ['type' => 'text'];
+        }
+
+        try {
+            $response = GraphApi::retry(fn () => Http::withToken($token)
+                ->post(self::GRAPH_BASE . '/' . $phoneNumberId . '/messages', $payload));
+
+            if (!$response->successful()) {
+                Log::warning('WhatsappOfficialHandler: mark-as-read/typing failed', [
+                    'conversation_id' => $conversation->id,
+                    'typing' => $typing,
+                    'status' => $response->status(),
+                    'body' => $response->json(),
+                ]);
+                return false;
+            }
+
+            return true;
+        } catch (\Throwable $th) {
+            Log::warning('WhatsappOfficialHandler: mark-as-read/typing error', [
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+            return false;
+        }
+    }
+
     public function handleEditMessage(Message $message, array $data): ?Message
     {
         throw new Exception('Message editing not supported for WhatsApp Official API');
