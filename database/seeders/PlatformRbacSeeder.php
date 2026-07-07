@@ -20,6 +20,7 @@ class PlatformRbacSeeder extends Seeder
         'bo.statistics.view',
         'bo.impersonate',
         'bo.audit.view',
+        'bo.logs.view',
         'bo.admins.manage',
         'bo.roles.manage',
         'bo.plans.manage',

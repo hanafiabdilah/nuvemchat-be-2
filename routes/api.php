@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionControll
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
+use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
 use App\Http\Controllers\Api\Admin\AdminSettingsController;
@@ -255,6 +256,12 @@ Route::prefix('admin')->group(function () {
         // Audit log
         Route::get('/audit-logs', [AdminAuditLogController::class, 'index'])
             ->middleware('permission:bo.audit.view');
+
+        // Backend server logs (storage/logs)
+        Route::middleware('permission:bo.logs.view')->group(function () {
+            Route::get('/logs', [AdminLogViewerController::class, 'index']);
+            Route::get('/logs/download', [AdminLogViewerController::class, 'download']);
+        });
 
         // Admins management
         Route::middleware('permission:bo.admins.manage')->group(function () {
