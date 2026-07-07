@@ -4,6 +4,7 @@ namespace App\Services\Message\Handlers;
 
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
@@ -159,12 +160,11 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
             'message' => 'nullable|string',
         ])->validate();
 
-        return $this->sendMediaByLink(
+        return $this->sendMedia(
             $conversation,
             OutboundMedia::fromData($data, 'image'),
             'image',
             MessageType::Image,
-            'images',
             ['caption' => $data['message'] ?? null],
             $data['message'] ?? null,
         );
@@ -177,12 +177,11 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
             'media_url' => 'required_without:audio|url',
         ])->validate();
 
-        return $this->sendMediaByLink(
+        return $this->sendMedia(
             $conversation,
             OutboundMedia::fromData($data, 'audio'),
             'audio',
             MessageType::Audio,
-            'audios',
             [],
             null,
         );
@@ -196,12 +195,11 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
             'message' => 'nullable|string',
         ])->validate();
 
-        return $this->sendMediaByLink(
+        return $this->sendMedia(
             $conversation,
             OutboundMedia::fromData($data, 'video'),
             'video',
             MessageType::Video,
-            'videos',
             ['caption' => $data['message'] ?? null],
             $data['message'] ?? null,
         );
@@ -218,12 +216,11 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         $media = OutboundMedia::fromData($data, 'document');
         $filename = $media?->filename ?? 'document';
 
-        return $this->sendMediaByLink(
+        return $this->sendMedia(
             $conversation,
             $media,
             'document',
             MessageType::Document,
-            'documents',
             [
                 'caption' => $data['message'] ?? null,
                 'filename' => $filename,
@@ -305,20 +302,20 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     }
 
     /**
-     * Send a media message with Cloud API `link`.
+     * Send a media message on WhatsApp Cloud API.
      *
-     * URL fast-path: reference the caller's URL directly (Meta fetches it), store
-     * the URL as the attachment, no bytes hosted/persisted. If Meta rejects the
-     * URL, fall back once to downloading it and hosting the bytes.
-     * File path: host the uploaded bytes on the public disk to get a reachable
-     * link, then persist the bytes locally as the canonical attachment.
+     * URL fast-path: reference the caller's URL directly via `link` (Meta fetches
+     * it), store the URL as the attachment, no bytes uploaded/persisted. If Meta
+     * rejects the URL, fall back once to downloading the bytes.
+     * File path: upload the bytes to the Cloud API media endpoint and send by
+     * media `id` (no public-URL exposure), then persist the bytes locally as the
+     * canonical attachment.
      */
-    private function sendMediaByLink(
+    private function sendMedia(
         Conversation $conversation,
         ?OutboundMedia $media,
         string $mediaType,
         MessageType $messageTypeEnum,
-        string $publicSubdir,
         array $extraMediaFields,
         ?string $body,
         array $extraMeta = [],
@@ -332,9 +329,9 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         // URL fast-path
         if ($media->isUrl()) {
             try {
-                return $this->postMediaLink(
+                return $this->postMedia(
                     $conversation,
-                    $media->url,
+                    ['link' => $media->url],
                     $mediaType,
                     $messageTypeEnum,
                     $extraMediaFields,
@@ -343,7 +340,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
                     externalAttachment: $media->url,
                 );
             } catch (\Throwable $th) {
-                Log::warning('WhatsappOfficialHandler: URL media send failed, falling back to download', [
+                Log::warning('WhatsappOfficialHandler: URL media send failed, falling back to upload', [
                     'media_type' => $mediaType,
                     'error' => $th->getMessage(),
                     'conversation_id' => $conversation->id,
@@ -357,23 +354,20 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
             }
         }
 
-        // File path
+        // File path: native upload → send by media id.
         $uploadedFile = $media->file;
-        $tempPublicPath = null;
 
         try {
             $content = file_get_contents($uploadedFile->getRealPath());
             $extension = $uploadedFile->getClientOriginalExtension() ?: $media->extension;
+            $mimeType = $uploadedFile->getMimeType() ?: ($media->mimeType ?? 'application/octet-stream');
+            $filename = $uploadedFile->getClientOriginalName() ?: ('file.' . $extension);
 
-            $tempFileName = 'temp_' . uniqid() . '.' . $extension;
-            $tempPublicPath = $publicSubdir . '/' . $tempFileName;
-            Storage::disk('public')->put($tempPublicPath, $content);
+            $mediaId = $this->uploadMedia($connection, $content, $mimeType, $filename);
 
-            $publicUrl = url('storage/' . $tempPublicPath);
-
-            $message = $this->postMediaLink(
+            $message = $this->postMedia(
                 $conversation,
-                $publicUrl,
+                ['id' => $mediaId],
                 $mediaType,
                 $messageTypeEnum,
                 $extraMediaFields,
@@ -388,10 +382,6 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
 
             return $message;
         } catch (\Throwable $th) {
-            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
-                Storage::disk('public')->delete($tempPublicPath);
-            }
-
             Log::error('WhatsappOfficialHandler: Failed to send media', [
                 'media_type' => $mediaType,
                 'error' => $th->getMessage(),
@@ -404,13 +394,41 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     }
 
     /**
-     * POST a media `link` to the Cloud API and create the outgoing Message row.
-     * Does not persist any bytes locally; when $externalAttachment is given it is
-     * stored as the Message attachment (URL fast-path).
+     * Upload raw media bytes to the Cloud API media endpoint and return the
+     * media id, so a message can reference it with {id} instead of exposing the
+     * file at a public URL.
      */
-    private function postMediaLink(
+    private function uploadMedia(Connection $connection, string $content, string $mimeType, string $filename): string
+    {
+        $response = GraphApi::retry(fn () => Http::withToken($connection->credentials['access_token'])
+            ->attach('file', $content, $filename, ['Content-Type' => $mimeType])
+            ->post(self::GRAPH_BASE . '/' . $connection->credentials['phone_number_id'] . '/media', [
+                'messaging_product' => 'whatsapp',
+                'type' => $mimeType,
+            ]));
+
+        $json = $response->json();
+
+        if (!$response->successful() || empty($json['id'])) {
+            Log::error('WhatsappOfficialHandler: media upload failed', [
+                'status' => $response->status(),
+                'body' => $json,
+            ]);
+
+            throw new Exception($json['error']['message'] ?? 'Failed to upload media to WhatsApp');
+        }
+
+        return $json['id'];
+    }
+
+    /**
+     * POST a media message (referenced by `link` or `id`) to the Cloud API and
+     * create the outgoing Message row. Does not persist any bytes locally; when
+     * $externalAttachment is given it is stored as the Message attachment.
+     */
+    private function postMedia(
         Conversation $conversation,
-        string $link,
+        array $mediaRef,
         string $mediaType,
         MessageType $messageTypeEnum,
         array $extraMediaFields,
@@ -421,7 +439,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         $connection = $conversation->connection;
 
         $mediaPayload = array_filter(
-            array_merge(['link' => $link], $extraMediaFields),
+            array_merge($mediaRef, $extraMediaFields),
             fn($v) => $v !== null && $v !== '',
         );
 
