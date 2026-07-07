@@ -152,6 +152,120 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         }
     }
 
+    /**
+     * Send an interactive message (reply buttons or a list menu). The customer's
+     * tap comes back inbound as an `interactive` message whose selected title is
+     * stored as the reply body.
+     */
+    public function handleSendInteractive(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'interactive_type' => 'required|in:button,list',
+            'body' => 'required|string|max:1024',
+            'header' => 'nullable|string|max:60',
+            'footer' => 'nullable|string|max:60',
+            'buttons' => 'required_if:interactive_type,button|array|min:1|max:3',
+            'buttons.*.id' => 'nullable|string',
+            'buttons.*.title' => 'required_with:buttons|string|max:20',
+            'button_label' => 'required_if:interactive_type,list|string|max:20',
+            'sections' => 'required_if:interactive_type,list|array|min:1|max:10',
+            'sections.*.title' => 'nullable|string|max:24',
+            'sections.*.rows' => 'required|array|min:1',
+            'sections.*.rows.*.id' => 'nullable|string',
+            'sections.*.rows.*.title' => 'required|string|max:24',
+            'sections.*.rows.*.description' => 'nullable|string|max:72',
+        ])->validate();
+
+        $connection = $conversation->connection;
+        $interactive = $this->buildInteractivePayload($data);
+
+        try {
+            $response = GraphApi::retry(fn () => Http::withToken($connection->credentials['access_token'])
+                ->post(self::GRAPH_BASE . '/' . $connection->credentials['phone_number_id'] . '/messages', [
+                    'messaging_product' => 'whatsapp',
+                    'recipient_type' => 'individual',
+                    'to' => $conversation->external_id,
+                    'type' => 'interactive',
+                    'interactive' => $interactive,
+                ]));
+
+            $responseArray = $response->json();
+
+            if (!$response->successful()) {
+                Log::error('WhatsappOfficialHandler: Failed to send interactive', [
+                    'response_status' => $response->status(),
+                    'response_body' => $responseArray,
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                throw new Exception($responseArray['error']['message'] ?? 'Failed to send WhatsApp interactive message');
+            }
+
+            return $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Interactive,
+                'body' => $data['body'],
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'delivery_at' => $this->getMessageSentAt($responseArray),
+                'meta' => array_merge($responseArray, ['interactive' => $interactive]),
+            ]);
+        } catch (\Throwable $th) {
+            Log::error('WhatsappOfficialHandler: Failed to send interactive', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send WhatsApp interactive message: ' . $th->getMessage());
+        }
+    }
+
+    /**
+     * Translate the flat request payload into the Cloud API `interactive` object.
+     */
+    private function buildInteractivePayload(array $data): array
+    {
+        $interactive = [
+            'type' => $data['interactive_type'],
+            'body' => ['text' => $data['body']],
+        ];
+
+        if (!empty($data['header'])) {
+            $interactive['header'] = ['type' => 'text', 'text' => $data['header']];
+        }
+
+        if (!empty($data['footer'])) {
+            $interactive['footer'] = ['text' => $data['footer']];
+        }
+
+        if ($data['interactive_type'] === 'button') {
+            $interactive['action'] = [
+                'buttons' => array_map(fn ($button, $i) => [
+                    'type' => 'reply',
+                    'reply' => [
+                        'id' => $button['id'] ?? ('btn_' . ($i + 1)),
+                        'title' => $button['title'],
+                    ],
+                ], $data['buttons'], array_keys($data['buttons'])),
+            ];
+        } else {
+            $interactive['action'] = [
+                'button' => $data['button_label'],
+                'sections' => array_map(fn ($section, $si) => array_filter([
+                    'title' => $section['title'] ?? null,
+                    'rows' => array_map(fn ($row, $ri) => array_filter([
+                        'id' => $row['id'] ?? ('row_' . ($si + 1) . '_' . ($ri + 1)),
+                        'title' => $row['title'],
+                        'description' => $row['description'] ?? null,
+                    ], fn ($v) => $v !== null && $v !== ''), $section['rows'], array_keys($section['rows'])),
+                ], fn ($v) => $v !== null && $v !== ''), $data['sections'], array_keys($data['sections'])),
+            ];
+        }
+
+        return $interactive;
+    }
+
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [

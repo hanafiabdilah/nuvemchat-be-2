@@ -30,6 +30,17 @@ class MessageService
         return $handler->handleSendTemplate($conversation, $data);
     }
 
+    public function sendInteractive(Conversation $conversation, array $data): ?Message
+    {
+        $handler = MessageFactory::make($conversation->connection->channel, $data);
+
+        if (!$handler instanceof WhatsappOfficialHandler) {
+            throw new \RuntimeException('Interactive messages are only supported on WhatsApp Official connections');
+        }
+
+        return $handler->handleSendInteractive($conversation, $data);
+    }
+
     /**
      * Mark the latest inbound message as read (and optionally emit a typing
      * indicator) on the channel. Only WhatsApp Official supports Cloud read

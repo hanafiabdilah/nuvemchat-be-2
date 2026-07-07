@@ -146,11 +146,32 @@ class MessageResource extends JsonResource
 
         return match($channel) {
             Channel::WhatsappWApi, Channel::WhatsappProxyhub => $this->getWhatsappWApiMeta(),
-            Channel::WhatsappOfficial => null, // TODO: implement when needed
+            Channel::WhatsappOfficial => $this->getWhatsappOfficialMeta(),
             Channel::Instagram => null,        // TODO: implement when needed
             Channel::Telegram => null,         // TODO: implement when needed
             default => null,
         };
+    }
+
+    /**
+     * Get processed meta for WhatsApp Official (Cloud API) messages.
+     * Surfaces the interactive structure so the UI can render buttons/lists
+     * (outbound) and read which option the customer selected (inbound).
+     */
+    private function getWhatsappOfficialMeta(): ?array
+    {
+        if ($this->message_type !== MessageType::Interactive) {
+            return null;
+        }
+
+        // Outbound: the sent payload is stored under meta.interactive.
+        $outbound = $this->meta['interactive'] ?? null;
+        // Inbound: the customer's reply lives in the raw webhook entry.
+        $inboundReply = $this->meta['changes'][0]['value']['messages'][0]['interactive'] ?? null;
+
+        $interactive = $outbound ?? $inboundReply;
+
+        return $interactive ? ['interactive' => $interactive] : null;
     }
 
     /**

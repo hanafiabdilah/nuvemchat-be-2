@@ -82,6 +82,7 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
         Route::post('/conversations/{id}/send-audio', [ConversationController::class, 'sendAudio']);
         Route::post('/conversations/{id}/send-video', [ConversationController::class, 'sendVideo']);
         Route::post('/conversations/{id}/send-document', [ConversationController::class, 'sendDocument']);
+        Route::post('/conversations/{id}/send-interactive', [ConversationController::class, 'sendInteractive']);
         Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
         Route::post('/conversations/{id}/typing', [ConversationController::class, 'typing']);
         Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);

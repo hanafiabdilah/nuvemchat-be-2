@@ -49,6 +49,11 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             MessageType::Video => $messages['video']['caption'] ?? null,
             MessageType::Document => $messages['document']['caption'] ?? $messages['document']['filename'] ?? null,
             MessageType::Audio => null,
+            // When a customer taps a reply button / list row, store the chosen
+            // title as the body so agents (and the flow engine) read the choice.
+            MessageType::Interactive => $messages['interactive']['button_reply']['title']
+                ?? $messages['interactive']['list_reply']['title']
+                ?? null,
             default => null,
         };
     }
@@ -62,6 +67,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             'document' => MessageType::Document,
             'audio' => MessageType::Audio,
             'voice' => MessageType::Audio,
+            'interactive' => MessageType::Interactive,
             'sticker' => MessageType::Unsupported,
             'location' => MessageType::Unsupported,
             'contacts' => MessageType::Unsupported,
