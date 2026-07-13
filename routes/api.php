@@ -157,6 +157,8 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     Route::middleware('feature:flow')->group(function () {
         Route::get('/flows', [FlowController::class, 'index'])->middleware('permission:flows.view');
         Route::post('/flows', [FlowController::class, 'store'])->middleware('permission:flows.create');
+        Route::post('/flows/import', [FlowController::class, 'import'])->middleware('permission:flows.create');
+        Route::get('/flows/{id}/export', [FlowController::class, 'export'])->middleware('permission:flows.view');
         Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
         Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
         Route::delete('/flows/{id}', [FlowController::class, 'destroy'])->middleware('permission:flows.delete');
