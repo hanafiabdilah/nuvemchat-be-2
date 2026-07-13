@@ -116,14 +116,14 @@ class FlowController extends Controller
         $validated = $request->validate([
             'nodes' => ['required', 'array'],
             'nodes.*.id' => ['nullable', 'string'], // Frontend ID (might not be database ID yet)
-            'nodes.*.type' => ['required', 'string', Rule::in(['start', 'message', 'response', 'status', 'tagging', 'condition', 'action', 'ai_agent'])],
+            'nodes.*.type' => ['required', 'string', Rule::in(['start', 'message', 'response', 'status', 'tagging', 'condition', 'action', 'ai_agent', 'http_request'])],
             'nodes.*.data' => ['nullable'],
             'nodes.*.position_x' => ['required', 'numeric'],
             'nodes.*.position_y' => ['required', 'numeric'],
             'edges' => ['required', 'array'],
             'edges.*.source_node_id' => ['required', 'string'], // Frontend node ID
             'edges.*.target_node_id' => ['required', 'string'], // Frontend node ID
-            'edges.*.condition_value' => ['nullable', 'string', Rule::in(['true', 'false'])], // For condition nodes
+            'edges.*.condition_value' => ['nullable', 'string', Rule::in(['true', 'false', 'success', 'error'])], // condition (true/false) & http_request (success/error) branches
         ]);
 
         // Validate each node's data based on its type
@@ -310,6 +310,20 @@ class FlowController extends Controller
                 ],
                 'welcoming_message' => ['required', 'string', 'max:4000'],
                 'store_summary_to_variable' => ['nullable', 'string', 'alpha_dash'],
+            ],
+            'http_request' => [
+                'method' => ['required', 'string', Rule::in(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])],
+                // nullable so an in-progress node doesn't break auto-save; the
+                // executor takes the error branch when the URL is empty at runtime.
+                'url' => ['nullable', 'string', 'max:2000'],
+                'headers' => ['nullable', 'array'],
+                'headers.*.key' => ['nullable', 'string', 'max:255'],
+                'headers.*.value' => ['nullable', 'string', 'max:2000'],
+                'body' => ['nullable', 'string'],
+                'timeout' => ['nullable', 'integer', 'min:1', 'max:120'],
+                'response_mappings' => ['nullable', 'array'],
+                'response_mappings.*.path' => ['nullable', 'string', 'max:255'],
+                'response_mappings.*.variable' => ['nullable', 'string', 'max:255'],
             ],
             default => [],
         };

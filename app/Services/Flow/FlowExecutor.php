@@ -18,6 +18,7 @@ use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\BusinessHours;
 use App\Services\Message\MessageService;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class FlowExecutor
@@ -142,6 +143,10 @@ class FlowExecutor
 
             case NodeType::AIAgent:
                 $this->executeAIAgentNode($flowState, $node);
+                break;
+
+            case NodeType::HttpRequest:
+                $this->executeHttpNode($flowState, $node);
                 break;
 
             default:
@@ -303,6 +308,201 @@ class FlowExecutor
             // Continue flow even on error
             $this->moveToNextNode($flowState, $node);
         }
+    }
+
+    /**
+     * Execute an HTTP Request node.
+     *
+     * Interpolates {{variable}} tokens (from flow state) into the URL, header
+     * values and body, fires the request, stores mapped response fields into
+     * flow state, then branches to the "success" edge (2xx) or "error" edge
+     * (non-2xx / timeout / exception). A missing branch edge ends this path
+     * gracefully rather than failing the whole flow.
+     */
+    protected function executeHttpNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $stateData = $flowState->state_data ?? [];
+
+        $method = strtoupper($data['method'] ?? 'GET');
+        $url = trim($this->interpolateVariables((string) ($data['url'] ?? ''), $stateData));
+
+        if ($url === '') {
+            Log::warning('FlowExecutor: HTTP node has no URL, taking error branch', [
+                'node_id' => $node->id,
+            ]);
+            $this->moveToNextNodeByBranch($flowState, $node, 'error');
+            return;
+        }
+
+        try {
+            // Build interpolated headers from the list of { key, value } rows.
+            $headers = [];
+            foreach ((array) ($data['headers'] ?? []) as $header) {
+                $key = trim((string) ($header['key'] ?? ''));
+                if ($key === '') {
+                    continue;
+                }
+                $headers[$key] = $this->interpolateVariables((string) ($header['value'] ?? ''), $stateData);
+            }
+
+            $timeout = (int) ($data['timeout'] ?? 15);
+            if ($timeout <= 0) {
+                $timeout = 15;
+            }
+
+            $request = Http::withHeaders($headers)
+                ->timeout($timeout)
+                ->connectTimeout(min($timeout, 10));
+
+            // Prepare the body for write verbs. If it parses as JSON we send it
+            // as a JSON payload; otherwise it goes out as a raw string.
+            $jsonBody = null;
+
+            if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+                $rawBody = $this->interpolateVariables((string) ($data['body'] ?? ''), $stateData);
+
+                if (trim($rawBody) !== '') {
+                    $decoded = json_decode($rawBody, true);
+
+                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                        $jsonBody = $decoded;
+                    } else {
+                        $request = $request->withBody($rawBody, $headers['Content-Type'] ?? 'text/plain');
+                    }
+                }
+            }
+
+            $response = match ($method) {
+                'POST' => $jsonBody !== null ? $request->post($url, $jsonBody) : $request->post($url),
+                'PUT' => $jsonBody !== null ? $request->put($url, $jsonBody) : $request->put($url),
+                'PATCH' => $jsonBody !== null ? $request->patch($url, $jsonBody) : $request->patch($url),
+                'DELETE' => $jsonBody !== null ? $request->delete($url, $jsonBody) : $request->delete($url),
+                default => $request->get($url),
+            };
+
+            // Re-read state in case a mapping key overlaps with something set
+            // earlier in this run, then store mapped response fields.
+            $stateData = $flowState->fresh()->state_data ?? $stateData;
+
+            $json = null;
+            try {
+                $json = $response->json();
+            } catch (\Throwable $e) {
+                $json = null; // response wasn't JSON — only http_status/raw_body usable
+            }
+
+            foreach ((array) ($data['response_mappings'] ?? []) as $mapping) {
+                $variable = trim((string) ($mapping['variable'] ?? ''));
+                if ($variable === '') {
+                    continue;
+                }
+
+                $path = trim((string) ($mapping['path'] ?? ''));
+
+                $value = match ($path) {
+                    'http_status' => $response->status(),
+                    'raw_body', '' => $response->body(),
+                    default => is_array($json) ? data_get($json, $path) : null,
+                };
+
+                // Flatten arrays/objects so single-depth Condition lookups still work.
+                if (is_array($value)) {
+                    $value = json_encode($value);
+                }
+
+                $stateData[$variable] = $value;
+            }
+
+            $flowState->update(['state_data' => $stateData]);
+
+            $branch = $response->successful() ? 'success' : 'error';
+
+            Log::info('FlowExecutor: HTTP node executed', [
+                'node_id' => $node->id,
+                'method' => $method,
+                'status' => $response->status(),
+                'branch' => $branch,
+            ]);
+
+            $this->moveToNextNodeByBranch($flowState, $node, $branch);
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing HTTP node, taking error branch', [
+                'node_id' => $node->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            $this->moveToNextNodeByBranch($flowState, $node, 'error');
+        }
+    }
+
+    /**
+     * Replace {{key}} / {{nested.key}} tokens in a template with values from the
+     * flow state. Unknown tokens resolve to an empty string; arrays are JSON
+     * encoded. This is the flow engine's only string-interpolation mechanism.
+     */
+    protected function interpolateVariables(string $template, array $stateData): string
+    {
+        if ($template === '' || !str_contains($template, '{{')) {
+            return $template;
+        }
+
+        return preg_replace_callback('/\{\{\s*([\w.]+)\s*\}\}/', function ($matches) use ($stateData) {
+            $value = data_get($stateData, $matches[1]);
+
+            if (is_array($value)) {
+                return json_encode($value);
+            }
+
+            return $value === null ? '' : (string) $value;
+        }, $template);
+    }
+
+    /**
+     * Move to the next node along a named branch edge (e.g. 'success'/'error'
+     * for an HTTP node), matched against the edge's condition_value. A missing
+     * branch edge ends this path quietly — an unwired branch is a valid design.
+     */
+    protected function moveToNextNodeByBranch(FlowState $flowState, FlowNode $currentNode, string $branch): void
+    {
+        $edge = $currentNode->outgoingEdges()
+            ->where('condition_value', $branch)
+            ->first();
+
+        if (!$edge) {
+            Log::info('FlowExecutor: No edge for branch, flow path ends (flow state preserved)', [
+                'node_id' => $currentNode->id,
+                'branch' => $branch,
+                'flow_state_id' => $flowState->id,
+            ]);
+            return;
+        }
+
+        $nextNode = FlowNode::find($edge->target_node_id);
+
+        if (!$nextNode) {
+            $flowState->update([
+                'status' => FlowStateStatus::Failed,
+                'completed_at' => now(),
+            ]);
+
+            Log::error('FlowExecutor: Next node not found for branch (flow state preserved)', [
+                'edge_id' => $edge->id,
+                'target_node_id' => $edge->target_node_id,
+                'flow_state_id' => $flowState->id,
+            ]);
+            return;
+        }
+
+        $flowState->update(['current_node_id' => $nextNode->id]);
+
+        Log::info('FlowExecutor: Moved to next node via branch', [
+            'branch' => $branch,
+            'next_node_id' => $nextNode->id,
+            'next_node_type' => $nextNode->type->value,
+        ]);
+
+        $this->executeFromNode($flowState, $nextNode);
     }
 
     /**
