@@ -505,6 +505,46 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        $this->applyAccept($conversation);
+
+        return response()->json([
+            'message' => 'Conversation accepted',
+        ]);
+    }
+
+    public function resolve(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $this->applyResolve($conversation);
+
+        return response()->json([
+            'message' => 'Conversation resolved',
+        ]);
+    }
+
+    /**
+     * Accept semantics (assumes the conversation is Pending or AiHandling):
+     * assign to the current agent, mark Active, clear the human flag, stop any
+     * running flow when taking over from the AI, then broadcast + send the
+     * connection's accept message. Shared by accept() and bulkUpdateStatus().
+     */
+    protected function applyAccept(Conversation $conversation): void
+    {
         $wasAiHandling = $conversation->status === Status::AiHandling;
 
         $conversation->user_id = Auth::id();
@@ -541,30 +581,15 @@ class ConversationController extends Controller
                 ]);
             }
         }
-
-        return response()->json([
-            'message' => 'Conversation accepted',
-        ]);
     }
 
-    public function resolve(int $id)
+    /**
+     * Resolve semantics (assumes the conversation is Active and the caller is
+     * authorised): send the connection's closing message, mark Resolved, then
+     * broadcast. Shared by resolve() and bulkUpdateStatus().
+     */
+    protected function applyResolve(Conversation $conversation): void
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
-
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
-            return response()->json([
-                'message' => 'Unauthorized',
-            ], 403);
-        }
-
-        if($conversation->status !== Status::Active){
-            return response()->json([
-                'message' => 'Conversation is not active',
-            ], 400);
-        }
-
         // Send closing message before resolving
         $automatedMessageService = new AutomatedMessageService();
         $closingMessage = $automatedMessageService->getClosingMessage($conversation->connection, Auth::user());
@@ -593,9 +618,74 @@ class ConversationController extends Controller
             broadcast(new MessageReceived($closingMsg));
             broadcast(new ConversationUpdated($closingMsg->conversation));
         }
+    }
+
+    /**
+     * Bulk status update: apply accept semantics (→ Active) or resolve semantics
+     * (→ Resolved) to many conversations at once, scoped to the tenant. Each
+     * conversation is skipped (not failed) when it isn't eligible for the
+     * requested transition, so a mixed selection updates only what it can.
+     */
+    public function bulkUpdateStatus(Request $request)
+    {
+        $validated = $request->validate([
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['integer'],
+            'status' => ['required', 'string', Rule::in([Status::Active->value, Status::Resolved->value])],
+        ]);
+
+        $target = Status::from($validated['status']);
+        $isOwner = Auth::user()->hasRole('owner');
+
+        $conversations = Conversation::with('connection')
+            ->whereHas('connection', function ($q) {
+                $q->where('tenant_id', Auth::user()->tenant_id);
+            })
+            ->whereIn('id', $validated['ids'])
+            ->get();
+
+        $updated = 0;
+        $skipped = 0;
+
+        foreach ($conversations as $conversation) {
+            try {
+                if ($target === Status::Active) {
+                    // Accept: only from the Pending queue or from the AI.
+                    if (!in_array($conversation->status, [Status::Pending, Status::AiHandling], true)) {
+                        $skipped++;
+                        continue;
+                    }
+
+                    $this->applyAccept($conversation);
+                    $updated++;
+                } else { // Status::Resolved
+                    // Resolve: only Active, and only own conversations unless owner.
+                    if ($conversation->status !== Status::Active
+                        || (!$isOwner && $conversation->user_id !== Auth::id())) {
+                        $skipped++;
+                        continue;
+                    }
+
+                    $this->applyResolve($conversation);
+                    $updated++;
+                }
+            } catch (\Throwable $th) {
+                $skipped++;
+                Log::error('ConversationController: Bulk status update failed for conversation', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
+        }
+
+        // Ids that were not found or belong to another tenant are also skipped.
+        $skipped += count($validated['ids']) - $conversations->count();
 
         return response()->json([
-            'message' => 'Conversation resolved',
+            'message' => 'Conversations updated',
+            'updated' => $updated,
+            'skipped' => $skipped,
+            'status' => $target->value,
         ]);
     }
 

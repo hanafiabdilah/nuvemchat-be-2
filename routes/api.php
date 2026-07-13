@@ -87,6 +87,7 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
         Route::post('/conversations/{id}/send-interactive', [ConversationController::class, 'sendInteractive']);
         Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
         Route::post('/conversations/{id}/typing', [ConversationController::class, 'typing']);
+        Route::post('/conversations/bulk-status', [ConversationController::class, 'bulkUpdateStatus']);
         Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
         Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
         Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
