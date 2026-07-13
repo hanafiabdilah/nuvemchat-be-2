@@ -325,7 +325,7 @@ class FlowExecutor
         $stateData = $flowState->state_data ?? [];
 
         $method = strtoupper($data['method'] ?? 'GET');
-        $url = trim($this->interpolateVariables((string) ($data['url'] ?? ''), $stateData));
+        $url = trim($this->interpolateVariables((string) ($data['url'] ?? ''), $flowState));
 
         if ($url === '') {
             Log::warning('FlowExecutor: HTTP node has no URL, taking error branch', [
@@ -343,7 +343,7 @@ class FlowExecutor
                 if ($key === '') {
                     continue;
                 }
-                $headers[$key] = $this->interpolateVariables((string) ($header['value'] ?? ''), $stateData);
+                $headers[$key] = $this->interpolateVariables((string) ($header['value'] ?? ''), $flowState);
             }
 
             $timeout = (int) ($data['timeout'] ?? 15);
@@ -360,7 +360,7 @@ class FlowExecutor
             $jsonBody = null;
 
             if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
-                $rawBody = $this->interpolateVariables((string) ($data['body'] ?? ''), $stateData);
+                $rawBody = $this->interpolateVariables((string) ($data['body'] ?? ''), $flowState);
 
                 if (trim($rawBody) !== '') {
                     $decoded = json_decode($rawBody, true);
@@ -437,18 +437,25 @@ class FlowExecutor
     }
 
     /**
-     * Replace {{key}} / {{nested.key}} tokens in a template with values from the
-     * flow state. Unknown tokens resolve to an empty string; arrays are JSON
-     * encoded. This is the flow engine's only string-interpolation mechanism.
+     * Replace {{token}} placeholders in a template with values resolved from the
+     * flow context. This is the flow engine's only string-interpolation
+     * mechanism — used for HTTP node url/headers/body and for the text of
+     * Message/Response nodes sent to the conversation.
+     *
+     * Supported tokens (unknown tokens resolve to an empty string):
+     *   {{judul}}              → flow state variable "judul" (bare = variable.*)
+     *   {{variable.judul}}     → same as above, explicit
+     *   {{contact.name}}       → the contact's field
+     *   {{conversation.status}}→ the conversation's field
      */
-    protected function interpolateVariables(string $template, array $stateData): string
+    protected function interpolateVariables(string $template, FlowState $flowState): string
     {
         if ($template === '' || !str_contains($template, '{{')) {
             return $template;
         }
 
-        return preg_replace_callback('/\{\{\s*([\w.]+)\s*\}\}/', function ($matches) use ($stateData) {
-            $value = data_get($stateData, $matches[1]);
+        return preg_replace_callback('/\{\{\s*([\w.]+)\s*\}\}/', function ($matches) use ($flowState) {
+            $value = $this->resolveTemplateToken($flowState, $matches[1]);
 
             if (is_array($value)) {
                 return json_encode($value);
@@ -456,6 +463,21 @@ class FlowExecutor
 
             return $value === null ? '' : (string) $value;
         }, $template);
+    }
+
+    /**
+     * Resolve a single {{token}} to its value. A bare key (no dot) is treated as
+     * a flow-state variable; a dotted key delegates to getFieldValue() so
+     * contact.*, conversation.* and variable.* all work the same in templates
+     * as they do in Condition nodes.
+     */
+    protected function resolveTemplateToken(FlowState $flowState, string $key)
+    {
+        if (!str_contains($key, '.')) {
+            return $flowState->state_data[$key] ?? null;
+        }
+
+        return $this->getFieldValue($flowState, $key);
     }
 
     /**
@@ -516,7 +538,7 @@ class FlowExecutor
 
             $field = $data['field'] ?? '';
             $operator = $data['operator'] ?? 'equals';
-            $expectedValue = $data['value'] ?? '';
+            $expectedValue = $this->interpolateVariables((string) ($data['value'] ?? ''), $flowState);
 
             Log::info('FlowExecutor: Evaluating condition', [
                 'node_id' => $node->id,
@@ -970,6 +992,8 @@ class FlowExecutor
         $awayMessage = BusinessHours::awayMessage($tenant);
 
         if ($awayMessage) {
+            $awayMessage = $this->interpolateVariables($awayMessage, $flowState);
+
             $message = $this->messageService->sendMessage($flowState->conversation, [
                 'message' => $awayMessage,
             ]);
@@ -1081,7 +1105,10 @@ class FlowExecutor
         $conversation = $flowState->conversation;
         $variableKey = $data['variable_key'] ?? null;
         $validationType = $data['validation'] ?? 'any';
-        $errorMessage = $data['error_message'] ?? 'Input tidak valid. Silakan coba lagi.';
+        $errorMessage = $this->interpolateVariables(
+            (string) ($data['error_message'] ?? 'Input tidak valid. Silakan coba lagi.'),
+            $flowState
+        );
 
         Log::info('FlowExecutor: Processing Response node input', [
             'node_id' => $node->id,
@@ -1240,6 +1267,7 @@ class FlowExecutor
     protected function sendAIAgentWelcome(FlowState $flowState, FlowNode $node, string $welcomingMessage, int $triggeringMessageId): void
     {
         $conversation = $flowState->conversation;
+        $welcomingMessage = $this->interpolateVariables($welcomingMessage, $flowState);
 
         try {
             $message = $this->messageService->sendMessage($conversation, [
@@ -1428,6 +1456,16 @@ class FlowExecutor
         $messageType = $nodeData['message_type'] ?? 'text';
         $body = $nodeData['body'] ?? '';
         $attachmentUrl = $nodeData['attachment_url'] ?? null;
+
+        // Substitute {{variable}} placeholders with values stored in the flow
+        // (Response inputs, HTTP response mappings, contact/conversation fields)
+        // before the text/media is sent to the conversation.
+        if ($flowState) {
+            $body = $this->interpolateVariables((string) $body, $flowState);
+            if ($attachmentUrl) {
+                $attachmentUrl = $this->interpolateVariables((string) $attachmentUrl, $flowState);
+            }
+        }
 
         $send = function (?Message $message) use ($flowState): ?Message {
             if ($message && $flowState) {

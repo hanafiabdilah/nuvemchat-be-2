@@ -160,6 +160,38 @@ class ConversationController extends Controller
         ]);
     }
 
+    /**
+     * Return the {{variable}} tokens available for a conversation, so the chat
+     * composer can live-resolve them. Includes the flow's collected variables
+     * (state_data, internal underscore-prefixed keys excluded) plus a few
+     * contact/conversation fields, keyed to match the flow template convention
+     * (bare key = flow variable; contact.*, conversation.*).
+     */
+    public function variables(int $id)
+    {
+        $conversation = Conversation::with('contact')->whereHas('connection', function ($q) {
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        // Latest flow run for this conversation (state is preserved after it ends).
+        $flowState = $conversation->flowState()->latest('id')->first();
+
+        $variables = collect($flowState?->state_data ?? [])
+            ->reject(fn ($value, $key) => str_starts_with((string) $key, '_'))
+            ->map(fn ($value) => is_array($value) ? json_encode($value) : $value)
+            ->all();
+
+        $variables['contact.name'] = $conversation->contact?->name;
+        $variables['contact.username'] = $conversation->contact?->username;
+        $variables['contact.phone'] = $conversation->contact?->external_id;
+        $variables['conversation.status'] = $conversation->status?->value;
+
+        // Drop null-valued fields so the composer only offers resolvable tokens.
+        $variables = collect($variables)->reject(fn ($value) => $value === null)->all();
+
+        return response()->json(['data' => $variables]);
+    }
+
     public function messages(int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){

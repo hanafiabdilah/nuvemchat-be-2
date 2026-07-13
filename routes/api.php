@@ -77,6 +77,7 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
         Route::get('/conversations', [ConversationController::class, 'index']);
         Route::post('/conversations', [ConversationController::class, 'store']);
         Route::get('/conversations/{id}', [ConversationController::class, 'show']);
+        Route::get('/conversations/{id}/variables', [ConversationController::class, 'variables']);
         // Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
         Route::post('/conversations/{id}/send-message', [ConversationController::class, 'sendMessage']);
         Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
