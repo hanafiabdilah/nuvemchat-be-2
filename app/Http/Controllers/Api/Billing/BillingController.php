@@ -42,7 +42,7 @@ class BillingController extends Controller
         $subscription = $this->tenant($request)->currentSubscription?->loadMissing('plan');
 
         return response()->json([
-            'data' => $subscription ? new SubscriptionResource($subscription) : null,
+            'data' => $subscription ? (new SubscriptionResource($subscription))->withUsage() : null,
         ]);
     }
 
