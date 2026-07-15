@@ -340,7 +340,15 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
-        $contactExternalId = $this->getContactExternalId($payload);
+        // Key the contact by chat.id (the conversation identity) — NOT sender.id.
+        // For LID chats WhatsApp assigns the remote party a @lid (e.g. 6713201655861@lid)
+        // that stays identical across outgoing (fromMe) and incoming webhooks, while
+        // sender.id carries the phone number only on incoming. Keying by sender.id would
+        // split the outgoing "@lid" contact from the incoming "phone" contact into two
+        // conversations. chat.id is also what the send handler dials (conversation.external_id),
+        // so it is the single stable key. The phone (sender.id) and pushName then enrich
+        // the same contact as username/name via Contact::createFromExternalData.
+        $contactExternalId = $conversationId;
         $contactName = $this->getContactName($payload);
         $contactUsername = $this->getContactUsername($payload);
 
