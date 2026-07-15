@@ -19,6 +19,8 @@ class UserResource extends JsonResource
             'name' => $this->name,
             'email' => $this->email,
             'tenant_id' => $this->tenant_id,
+            'whatsapp_number' => $this->whatsapp_number,
+            'whatsapp_verified' => $this->whatsapp_verified_at !== null,
             'roles' => $this->whenLoaded('roles', function() {
                 return $this->roles->pluck('name');
             }),

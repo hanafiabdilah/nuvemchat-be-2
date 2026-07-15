@@ -3,6 +3,7 @@
 namespace App\Services\Notification;
 
 use App\Enums\Notification\NotificationType;
+use App\Models\WhatsappMessageLog;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -47,7 +48,15 @@ class NotificationService
             return;
         }
 
-        $provider->send($to, $this->render($type, $vars));
+        $message = $this->render($type, $vars);
+
+        try {
+            $provider->send($to, $message);
+            WhatsappMessageLog::record($provider->key(), $to, 'notification:' . $type->value, $message, WhatsappMessageLog::STATUS_SENT);
+        } catch (\Throwable $th) {
+            WhatsappMessageLog::record($provider->key(), $to, 'notification:' . $type->value, $message, WhatsappMessageLog::STATUS_FAILED, $th->getMessage());
+            throw $th;
+        }
     }
 
     /**
@@ -57,7 +66,8 @@ class NotificationService
      */
     public function render(NotificationType $type, array $vars = []): string
     {
-        $message = $type->defaultTemplate();
+        // Use the admin-configured template when present, else the default.
+        $message = NotificationConfig::template($type);
 
         foreach ($vars as $key => $value) {
             $message = str_replace('{{' . $key . '}}', (string) $value, $message);

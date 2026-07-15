@@ -16,6 +16,7 @@ class NotificationConfig
     public const KEY_ENABLED = 'notifications.enabled';
     public const KEY_PROVIDER = 'notifications.provider';
     public const KEY_EVENTS = 'notifications.events';
+    public const KEY_TEMPLATES = 'notifications.templates';
 
     // Pingly — the platform's own public API (X-API-Key auth, /send-message with
     // { to, message }). This is NOT the raw w-api.app endpoint.
@@ -105,5 +106,28 @@ class NotificationConfig
     public static function eventEnabled(NotificationType $type): bool
     {
         return (bool) (self::eventsMap()[$type->value] ?? true);
+    }
+
+    /**
+     * Per-event custom message templates, e.g. ['whatsapp_otp' => 'Your code is {{code}}'].
+     *
+     * @return array<string, string>
+     */
+    public static function templatesMap(): array
+    {
+        $raw = Setting::get(self::KEY_TEMPLATES);
+
+        return is_string($raw) ? (json_decode($raw, true) ?: []) : [];
+    }
+
+    /**
+     * The effective message body for an event: the admin override if set and non-empty,
+     * otherwise the hardcoded default. Both use the {{placeholder}} convention.
+     */
+    public static function template(NotificationType $type): string
+    {
+        $custom = self::templatesMap()[$type->value] ?? null;
+
+        return is_string($custom) && trim($custom) !== '' ? $custom : $type->defaultTemplate();
     }
 }

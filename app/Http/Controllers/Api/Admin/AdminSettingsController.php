@@ -101,9 +101,11 @@ class AdminSettingsController extends Controller
                         'token_set' => ! empty($notifProxyToken),
                         'token_preview' => $this->mask($notifProxyToken),
                     ],
-                    // Event catalog + current per-event toggles for the UI.
+                    // Event catalog (label + default template + placeholders + required),
+                    // current per-event toggles, and per-event message overrides.
                     'event_types' => NotificationType::catalog(),
                     'events' => NotificationConfig::eventsMap(),
+                    'templates' => NotificationConfig::templatesMap(),
                 ],
             ],
         ]);
@@ -162,6 +164,8 @@ class AdminSettingsController extends Controller
             'notifications.proxybr.token' => ['nullable', 'string', 'max:1024'],
             'notifications.events' => ['sometimes', 'array'],
             'notifications.events.*' => ['boolean'],
+            'notifications.templates' => ['sometimes', 'array'],
+            'notifications.templates.*' => ['nullable', 'string', 'max:2000'],
         ]);
 
         if ($request->has('proxyhub')) {
@@ -272,6 +276,15 @@ class AdminSettingsController extends Controller
                     Setting::set(NotificationConfig::KEY_PROXYBR_TOKEN, $n['proxybr']['token']);
                 }
             }
+            if (array_key_exists('templates', $n)) {
+                // Store only non-empty overrides; blank falls back to the enum default.
+                $templates = array_filter(
+                    $n['templates'],
+                    fn ($v) => is_string($v) && trim($v) !== '',
+                );
+                Setting::set(NotificationConfig::KEY_TEMPLATES, json_encode($templates));
+            }
+
             if (array_key_exists('events', $n)) {
                 Setting::set(NotificationConfig::KEY_EVENTS, json_encode($n['events']));
             }

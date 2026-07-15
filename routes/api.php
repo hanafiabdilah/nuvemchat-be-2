@@ -26,7 +26,10 @@ use App\Http\Controllers\Api\Admin\RoleController as AdminRoleController;
 use App\Http\Controllers\Api\Admin\StatisticsController as AdminStatisticsController;
 use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
+use App\Http\Controllers\Api\Admin\WhatsappLogController as AdminWhatsappLogController;
+use App\Http\Controllers\Api\Admin\OtpController as AdminOtpController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\OtpController;
 use App\Http\Controllers\Api\Billing\BillingController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ImpersonationController;
@@ -51,6 +54,14 @@ Route::post('/auth/register', [AuthController::class, 'register']);
 
 // Public: tenant app exchanges a one-time Back Office code for a session.
 Route::post('/impersonate/redeem', [ImpersonationController::class, 'redeem']);
+
+// WhatsApp number verification (post-registration). Authenticated but intentionally
+// outside the subscription.active gate so a brand-new tenant can verify before paying.
+Route::middleware('auth:sanctum')->prefix('auth/otp')->group(function () {
+    Route::get('/status', [OtpController::class, 'status']);
+    Route::post('/send', [OtpController::class, 'send']);
+    Route::post('/verify', [OtpController::class, 'verify']);
+});
 
 Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     Route::post('/uploads', [UploadController::class, 'store']);
@@ -276,10 +287,14 @@ Route::prefix('admin')->group(function () {
             Route::delete('/admins/{admin}', [AdminAdminController::class, 'destroy']);
         });
 
-        // Platform settings (ProxyHub credentials, etc.)
+        // Platform settings (ProxyHub credentials, etc.) + WhatsApp delivery audit.
         Route::middleware('permission:bo.settings.manage')->group(function () {
             Route::get('/settings', [AdminSettingsController::class, 'show']);
             Route::put('/settings', [AdminSettingsController::class, 'update']);
+
+            // WhatsApp message logs + issued OTPs (monitoring).
+            Route::get('/whatsapp-logs', [AdminWhatsappLogController::class, 'index']);
+            Route::get('/otps', [AdminOtpController::class, 'index']);
         });
 
         // Billing — plan catalogue management
