@@ -43,7 +43,7 @@ class PinglyNotificationProvider implements NotificationProvider
             ->withHeaders([
                 'X-API-Key' => NotificationConfig::pinglyApiKey(),
             ])->post(NotificationConfig::pinglyBaseUrl() . '/send-message', [
-                'to' => $to,
+                'phone' => $to,
                 'message' => $message,
             ]);
 
