@@ -11,6 +11,7 @@ class Contact extends Model
     protected $fillable = [
         'tenant_id',
         'external_id',
+        'lid',
         'channel',
         'name',
         'name_locked',
