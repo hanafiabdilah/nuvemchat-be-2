@@ -29,6 +29,15 @@ Schedule::command('whatsapp:validate-tokens')
         logger()->error('WhatsApp token validation failed');
     });
 
+// Poll active email inboxes for new IMAP UIDs. Each connection keeps its own
+// cursor in connections.last_seen_uid, so this does not rescan the mailbox.
+Schedule::command('email:fetch')
+    ->everyMinute()
+    ->withoutOverlapping()
+    ->onFailure(function () {
+        logger()->error('Email inbox fetch failed');
+    });
+
 // --- Billing -------------------------------------------------------------
 
 // Generate fresh Pix charges a few days before period end (pix isn't auto-debited).
