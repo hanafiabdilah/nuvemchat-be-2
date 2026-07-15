@@ -224,6 +224,173 @@ class BillingService
     }
 
     /**
+     * Record a recurring auto-debit charge on a card subscription (MercadoPago
+     * `subscription_authorized_payment`). This is what actually renews a card plan each
+     * cycle: it creates a paid invoice for the next period and advances current_period_end.
+     *
+     * @param  array  $authorizedPayment  { preapproval_id, status, payment: { id, status } }
+     */
+    public function recordRecurringPayment(array $authorizedPayment, bool $force = false): void
+    {
+        $preapprovalId = $authorizedPayment['preapproval_id'] ?? null;
+        $payment = $authorizedPayment['payment'] ?? [];
+        $paymentId = isset($payment['id']) ? (string) $payment['id'] : null;
+        // The nested payment carries the real charge status; fall back to the envelope.
+        $status = $payment['status'] ?? ($authorizedPayment['status'] ?? null);
+
+        if (! $preapprovalId) {
+            return;
+        }
+
+        $subscription = Subscription::where('mp_preapproval_id', $preapprovalId)->first();
+        if (! $subscription) {
+            Log::warning('MercadoPago recurring charge with no matching subscription', ['preapproval_id' => $preapprovalId]);
+            return;
+        }
+
+        // Only approved charges renew. Rejected/failed cycles are left for the preapproval
+        // status webhook + billing:process-overdue to grace/suspend.
+        if (! in_array($status, ['approved', 'processed'], true)) {
+            return;
+        }
+
+        // Idempotency (exact): this payment already produced an invoice.
+        if ($paymentId && Invoice::where('mp_payment_id', $paymentId)->exists()) {
+            return;
+        }
+
+        DB::transaction(function () use ($subscription, $paymentId, $force) {
+            $subscription = Subscription::lockForUpdate()->find($subscription->id);
+
+            // Webhook path: skip the initial authorization charge (subscribeWithCard already
+            // covered the first period) and any charge while the period is still comfortably
+            // active — a genuine renewal fires at/after the boundary. The reconcile path
+            // passes $force=true because it already dedups per-payment (see syncCardSubscription).
+            if (! $force && $subscription->current_period_end && $subscription->current_period_end->gt(now()->addHours(12))) {
+                return;
+            }
+
+            $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
+                ? $subscription->current_period_end
+                : now();
+            $periodEnd = $this->nextPeriodEnd($subscription, $periodStart);
+
+            Invoice::create([
+                'tenant_id' => $subscription->tenant_id,
+                'subscription_id' => $subscription->id,
+                'status' => InvoiceStatus::Paid,
+                'payment_method' => PaymentMethod::Card,
+                'amount_cents' => $subscription->price_cents,
+                'currency' => $subscription->plan?->currency ?? 'BRL',
+                'period_start' => $periodStart,
+                'period_end' => $periodEnd,
+                'paid_at' => now(),
+                'mp_payment_id' => $paymentId,
+                'mp_preapproval_id' => $subscription->mp_preapproval_id,
+            ]);
+
+            $this->activate($subscription, $periodEnd);
+            $this->fireUpdated($subscription);
+        });
+    }
+
+    /**
+     * Pull model for card subscriptions: reconcile a subscription straight from
+     * MercadoPago without waiting for a webhook. Syncs the preapproval status, then
+     * lists the subscription's charges and applies any new approved ones. Safe to run
+     * repeatedly (idempotent). Returns a small summary for command/CLI output.
+     *
+     * This is the manual counterpart to the subscription_authorized_payment webhook —
+     * use it when webhooks can't be configured (e.g. shared MercadoPago credentials).
+     *
+     * @return array{skipped?:bool, preapproval_status?:string|null, applied:int, linked:int}
+     */
+    public function syncCardSubscription(Subscription $subscription): array
+    {
+        if ($subscription->payment_method !== PaymentMethod::Card || ! $subscription->mp_preapproval_id) {
+            return ['skipped' => true, 'applied' => 0, 'linked' => 0];
+        }
+
+        $preapprovalStatus = null;
+
+        // 1) Sync the preapproval status (authorized / paused / cancelled).
+        try {
+            $preapproval = $this->mp->getPreapproval($subscription->mp_preapproval_id);
+            $preapprovalStatus = $preapproval['status'] ?? null;
+            $this->reconcilePreapproval($preapproval);
+        } catch (\Throwable $e) {
+            Log::warning('syncCardSubscription: preapproval fetch failed', [
+                'subscription_id' => $subscription->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // 2) List this subscription's charges and apply new approved ones. Charges carry
+        //    the preapproval's external_reference (tenant:X:sub:Y).
+        $applied = 0;
+        $linked = 0;
+
+        try {
+            $ref = $this->externalReference($subscription->tenant, $subscription);
+            $result = $this->mp->searchPayments([
+                'external_reference' => $ref,
+                'sort' => 'date_created',
+                'criteria' => 'asc',
+            ]);
+
+            foreach (($result['results'] ?? []) as $payment) {
+                $paymentId = isset($payment['id']) ? (string) $payment['id'] : null;
+                $status = $payment['status'] ?? null;
+
+                if (! $paymentId || $status !== 'approved') {
+                    continue;
+                }
+
+                // Already linked to an invoice → nothing to do.
+                if (Invoice::where('mp_payment_id', $paymentId)->exists()) {
+                    continue;
+                }
+
+                // Backfill the initial charge: the first paid invoice was recorded at
+                // subscribe time without a payment id. Link it instead of extending —
+                // this is what stops the first charge from being counted as a renewal.
+                $unlinked = $subscription->invoices()
+                    ->where('status', InvoiceStatus::Paid->value)
+                    ->whereNull('mp_payment_id')
+                    ->orderBy('period_start')
+                    ->first();
+
+                if ($unlinked) {
+                    $unlinked->update(['mp_payment_id' => $paymentId]);
+                    $linked++;
+                    continue;
+                }
+
+                // A genuinely new approved charge → extend the period (force past the
+                // webhook-only guard; dedup above already handled the initial charge).
+                $this->recordRecurringPayment([
+                    'preapproval_id' => $subscription->mp_preapproval_id,
+                    'status' => $status,
+                    'payment' => ['id' => $paymentId, 'status' => $status],
+                ], force: true);
+
+                $applied++;
+            }
+        } catch (\Throwable $e) {
+            Log::warning('syncCardSubscription: payment search failed', [
+                'subscription_id' => $subscription->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return [
+            'preapproval_status' => $preapprovalStatus,
+            'applied' => $applied,
+            'linked' => $linked,
+        ];
+    }
+
+    /**
      * Super-admin manual / comp grant — bypasses MercadoPago entirely.
      */
     public function grantManual(Tenant $tenant, ?Plan $plan, ?CarbonInterface $endsAt, User $admin, ?string $note = null): Subscription

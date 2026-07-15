@@ -85,4 +85,24 @@ class MercadoPagoClient
     {
         return $this->http()->get("/v1/payments/{$id}")->throw()->json();
     }
+
+    /**
+     * Fetch a recurring subscription charge. The `subscription_authorized_payment`
+     * webhook's data.id references this resource, which links the preapproval to the
+     * actual payment: { id, preapproval_id, status, transaction_amount, payment{id,status} }.
+     */
+    public function getAuthorizedPayment(string $id): array
+    {
+        return $this->http()->get("/authorized_payments/{$id}")->throw()->json();
+    }
+
+    /**
+     * Search payments (pull model). Used to reconcile card subscriptions without relying
+     * on webhooks — e.g. filter by external_reference to list a subscription's charges.
+     * Returns { results: [...payments], paging }.
+     */
+    public function searchPayments(array $query): array
+    {
+        return $this->http()->get('/v1/payments/search', $query)->throw()->json();
+    }
 }
