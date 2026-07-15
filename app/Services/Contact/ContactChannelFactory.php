@@ -21,6 +21,7 @@ class ContactChannelFactory
             Channel::Instagram => new InstagramChannel(),
             Channel::Telegram => new TelegramChannel(),
             Channel::LiveChatWidget => new LiveChatWidgetChannel(),
+            Channel::Email => throw new \InvalidArgumentException('Email channel not supported for this operation yet'),
         };
     }
 }

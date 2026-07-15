@@ -21,6 +21,7 @@ class SendMessageFactory
             Channel::WhatsappProxyhub => new WhatsappProxyhubHandler(),
             Channel::Instagram => new InstagramHandler(),
             Channel::Telegram => new TelegramHandler(),
+            Channel::Email => throw new InvalidArgumentException("Email channel not supported for this operation yet"),
             default => throw new InvalidArgumentException("Unsupported channel: " . $channel->value),
         };
     }

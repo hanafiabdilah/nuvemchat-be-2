@@ -10,4 +10,5 @@ enum Channel: string
     case WhatsappProxyhub = 'whatsapp_proxyhub';
     case Telegram = 'telegram';
     case LiveChatWidget = 'live_chat_widget';
+    case Email = 'email';
 }
