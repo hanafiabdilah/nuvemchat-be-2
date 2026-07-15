@@ -39,17 +39,22 @@ class WApiNotificationProvider implements NotificationProvider
         $endpoint = NotificationConfig::wapiBaseUrl()
             . '/message/send-text?instanceId=' . NotificationConfig::wapiInstanceId();
 
-        $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . NotificationConfig::wapiToken(),
-        ])->post($endpoint, [
-            'phone' => $to,
-            'message' => $message,
-        ]);
+        $response = Http::asJson()
+            ->acceptJson()
+            ->connectTimeout(10)
+            ->timeout(20)
+            ->withHeaders([
+                'Authorization' => 'Bearer ' . NotificationConfig::wapiToken(),
+            ])->post($endpoint, [
+                'phone' => $to,
+                'message' => $message,
+            ]);
 
         if ($response->failed()) {
             Log::error('WApiNotificationProvider: send failed', [
                 'to' => $to,
                 'status' => $response->status(),
+                'body' => $response->body(),
             ]);
             throw new RuntimeException('W-API notification send failed with status ' . $response->status());
         }

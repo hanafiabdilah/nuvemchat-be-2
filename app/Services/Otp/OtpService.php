@@ -3,12 +3,10 @@
 namespace App\Services\Otp;
 
 use App\Enums\Notification\NotificationType;
+use App\Jobs\SendWhatsappMessageJob;
 use App\Models\Otp;
 use App\Models\User;
-use App\Models\WhatsappMessageLog;
 use App\Services\Notification\NotificationConfig;
-use App\Services\Notification\NotificationProviderFactory;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -25,10 +23,6 @@ class OtpService
     private const TTL_MINUTES = 10;
     private const RESEND_COOLDOWN_SECONDS = 60;
     private const MAX_ATTEMPTS = 5;
-
-    public function __construct(
-        protected NotificationProviderFactory $factory,
-    ) {}
 
     /**
      * Normalize a phone number to bare digits (E.164 without the leading +),
@@ -137,31 +131,20 @@ class OtpService
     }
 
     /**
-     * Deliver the OTP over the configured WhatsApp provider and log the attempt.
-     * Best-effort: never throws, so a delivery failure doesn't block registration.
+     * Queue delivery of the OTP off the request path. Dispatched after the response
+     * is sent so a slow/unreachable provider can never block registration or resend —
+     * the previous inline HTTP call with no timeout was what caused those requests to
+     * hang and surface as a "connection timeout" on the client. The job records the
+     * attempt (sent/failed) to whatsapp_message_logs either way.
      */
     private function dispatch(Otp $otp, User $user): void
     {
-        $provider = $this->factory->make();
-        $message = $this->render($otp->code);
-
-        if (! $provider->isConfigured()) {
-            Log::warning('OtpService: WhatsApp provider not configured; code stored but not sent', [
-                'provider' => $provider->key(),
-                'otp_id' => $otp->id,
-            ]);
-            WhatsappMessageLog::record($provider->key(), $otp->whatsapp_number, 'otp', $message, WhatsappMessageLog::STATUS_FAILED, 'provider not configured', $user->id);
-
-            return;
-        }
-
-        try {
-            $provider->send($otp->whatsapp_number, $message);
-            WhatsappMessageLog::record($provider->key(), $otp->whatsapp_number, 'otp', $message, WhatsappMessageLog::STATUS_SENT, null, $user->id);
-        } catch (\Throwable $th) {
-            Log::error('OtpService: failed to send OTP', ['otp_id' => $otp->id, 'error' => $th->getMessage()]);
-            WhatsappMessageLog::record($provider->key(), $otp->whatsapp_number, 'otp', $message, WhatsappMessageLog::STATUS_FAILED, $th->getMessage(), $user->id);
-        }
+        SendWhatsappMessageJob::dispatchAfterResponse(
+            $otp->whatsapp_number,
+            $this->render($otp->code),
+            'otp',
+            $user->id,
+        );
     }
 
     private function render(string $code): string

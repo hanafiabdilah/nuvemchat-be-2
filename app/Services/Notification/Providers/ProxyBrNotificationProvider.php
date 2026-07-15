@@ -40,17 +40,22 @@ class ProxyBrNotificationProvider implements NotificationProvider
         $endpoint = NotificationConfig::proxybrBaseUrl()
             . '/v1/message/send-text?instanceId=' . NotificationConfig::proxybrInstanceId();
 
-        $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . NotificationConfig::proxybrToken(),
-        ])->post($endpoint, [
-            'phone' => $to,
-            'message' => $message,
-        ]);
+        $response = Http::asJson()
+            ->acceptJson()
+            ->connectTimeout(10)
+            ->timeout(20)
+            ->withHeaders([
+                'Authorization' => 'Bearer ' . NotificationConfig::proxybrToken(),
+            ])->post($endpoint, [
+                'phone' => $to,
+                'message' => $message,
+            ]);
 
         if ($response->failed()) {
             Log::error('ProxyBrNotificationProvider: send failed', [
                 'to' => $to,
                 'status' => $response->status(),
+                'body' => $response->body(),
             ]);
             throw new RuntimeException('ProxyBR notification send failed with status ' . $response->status());
         }

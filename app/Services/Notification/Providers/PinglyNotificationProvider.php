@@ -36,17 +36,22 @@ class PinglyNotificationProvider implements NotificationProvider
             throw new RuntimeException('Pingly notification provider is not configured.');
         }
 
-        $response = Http::withHeaders([
-            'X-API-Key' => NotificationConfig::pinglyApiKey(),
-        ])->post(NotificationConfig::pinglyBaseUrl() . '/send-message', [
-            'to' => $to,
-            'message' => $message,
-        ]);
+        $response = Http::asJson()
+            ->acceptJson()
+            ->connectTimeout(10)
+            ->timeout(20)
+            ->withHeaders([
+                'X-API-Key' => NotificationConfig::pinglyApiKey(),
+            ])->post(NotificationConfig::pinglyBaseUrl() . '/send-message', [
+                'to' => $to,
+                'message' => $message,
+            ]);
 
         if ($response->failed()) {
             Log::error('PinglyNotificationProvider: send failed', [
                 'to' => $to,
                 'status' => $response->status(),
+                'body' => $response->body(),
             ]);
             throw new RuntimeException('Pingly notification send failed with status ' . $response->status());
         }
