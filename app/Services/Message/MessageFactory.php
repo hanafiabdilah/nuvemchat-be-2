@@ -22,6 +22,7 @@ class MessageFactory
             Channel::WhatsappWApi => new WhatsappWApiHandler(),
             Channel::WhatsappProxyhub => new WhatsappProxyhubHandler(),
             Channel::LiveChatWidget => new LiveChatWidgetHandler(),
+            Channel::Email => throw new InvalidArgumentException("Email channel not supported for this operation yet"),
             default => throw new InvalidArgumentException("Unsupported channel: " . $channel->value),
         };
     }

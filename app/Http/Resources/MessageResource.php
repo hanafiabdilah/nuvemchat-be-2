@@ -149,6 +149,7 @@ class MessageResource extends JsonResource
             Channel::WhatsappOfficial => $this->getWhatsappOfficialMeta(),
             Channel::Instagram => null,        // TODO: implement when needed
             Channel::Telegram => null,         // TODO: implement when needed
+            Channel::Email => null,            // TODO: implement when needed
             default => null,
         };
     }
