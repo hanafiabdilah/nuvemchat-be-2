@@ -63,7 +63,7 @@ Route::middleware('auth:sanctum')->prefix('auth/otp')->group(function () {
     Route::post('/verify', [OtpController::class, 'verify']);
 });
 
-Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
+Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])->group(function(){
     Route::post('/uploads', [UploadController::class, 'store']);
 
     Route::get('/user', [UserController::class, 'index']);

@@ -47,6 +47,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'super-admin' => \App\Http\Middleware\EnsureUserIsSuperAdmin::class,
             'subscription.active' => \App\Http\Middleware\EnsureSubscriptionActive::class,
             'feature' => \App\Http\Middleware\EnsureFeatureEnabled::class,
+            'whatsapp.verified' => \App\Http\Middleware\EnsureWhatsAppVerified::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
