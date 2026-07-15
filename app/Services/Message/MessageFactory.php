@@ -3,6 +3,7 @@
 namespace App\Services\Message;
 
 use App\Enums\Connection\Channel;
+use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\Handlers\InstagramHandler;
 use App\Services\Message\Handlers\LiveChatWidgetHandler;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
@@ -22,7 +23,7 @@ class MessageFactory
             Channel::WhatsappWApi => new WhatsappWApiHandler(),
             Channel::WhatsappProxyhub => new WhatsappProxyhubHandler(),
             Channel::LiveChatWidget => new LiveChatWidgetHandler(),
-            Channel::Email => throw new InvalidArgumentException("Email channel not supported for this operation yet"),
+            Channel::Email => new EmailHandler(),
             default => throw new InvalidArgumentException("Unsupported channel: " . $channel->value),
         };
     }

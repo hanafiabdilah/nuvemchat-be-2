@@ -8,6 +8,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
+use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConversationResource;
 use App\Http\Resources\MessageResource;
@@ -324,6 +325,16 @@ class ConversationController extends Controller
             ]);
         } catch(ValidationException $th){
             throw $th;
+        } catch (ConnectionException $th) {
+            $status = $th->getHttpStatusCode();
+
+            if (in_array($status, [401, 419], true)) {
+                $status = 502;
+            }
+
+            return response()->json([
+                'message' => $th->getMessage(),
+            ], $status);
         } catch (\Throwable $th) {
             return response()->json([
                 'message' => 'Failed to send message',
