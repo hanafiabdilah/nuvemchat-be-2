@@ -55,9 +55,11 @@ class WebklexEmailInboxClient implements EmailInboxClient
             to: $this->addressList($message->getTo()),
             cc: $this->addressList($message->getCc()),
             inReplyTo: $this->normalizeMessageId($this->firstString($message->getInReplyTo())),
+            // getReferences() devolve null quando o header nao existe - o que e o caso
+            // do primeiro e-mail de qualquer thread.
             references: array_values(array_filter(array_map(
                 fn ($reference) => $this->normalizeMessageId((string) $reference),
-                $message->getReferences()->toArray()
+                $message->getReferences()?->toArray() ?? []
             ))),
             textBody: $message->getTextBody(),
             htmlBody: $message->getHTMLBody(),

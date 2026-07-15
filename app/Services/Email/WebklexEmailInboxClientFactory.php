@@ -2,9 +2,11 @@
 
 namespace App\Services\Email;
 
+use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use Illuminate\Support\Facades\Crypt;
 use Webklex\PHPIMAP\ClientManager;
+use Webklex\PHPIMAP\Folder;
 
 class WebklexEmailInboxClientFactory implements EmailInboxClientFactory
 {
@@ -38,7 +40,14 @@ class WebklexEmailInboxClientFactory implements EmailInboxClientFactory
         ]))->account('email');
 
         $client->connect();
-        $folder = $client->openFolder('INBOX', true);
+
+        // getFolder() devolve o objeto Folder; openFolder() apenas seleciona a pasta
+        // e devolve a resposta crua do IMAP (array).
+        $folder = $client->getFolder('INBOX');
+
+        if (! $folder instanceof Folder) {
+            throw new ConnectionException('Nao foi possivel abrir a caixa INBOX.', 502);
+        }
 
         return new WebklexEmailInboxClient($client, $folder);
     }
