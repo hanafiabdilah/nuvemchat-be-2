@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionControll
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
+use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
 use App\Http\Controllers\Api\Admin\AdminSettingsController;
@@ -25,7 +26,10 @@ use App\Http\Controllers\Api\Admin\RoleController as AdminRoleController;
 use App\Http\Controllers\Api\Admin\StatisticsController as AdminStatisticsController;
 use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
+use App\Http\Controllers\Api\Admin\WhatsappLogController as AdminWhatsappLogController;
+use App\Http\Controllers\Api\Admin\OtpController as AdminOtpController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\OtpController;
 use App\Http\Controllers\Api\Billing\BillingController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ImpersonationController;
@@ -33,6 +37,7 @@ use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\MessageController;
+use App\Http\Controllers\Api\MessageTemplateController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\QuickMessageController;
 use App\Http\Controllers\Api\RoleController;
@@ -45,11 +50,20 @@ use App\Http\Middleware\V1\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
+Route::post('/auth/register', [AuthController::class, 'register']);
 
 // Public: tenant app exchanges a one-time Back Office code for a session.
 Route::post('/impersonate/redeem', [ImpersonationController::class, 'redeem']);
 
-Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
+// WhatsApp number verification (post-registration). Authenticated but intentionally
+// outside the subscription.active gate so a brand-new tenant can verify before paying.
+Route::middleware('auth:sanctum')->prefix('auth/otp')->group(function () {
+    Route::get('/status', [OtpController::class, 'status']);
+    Route::post('/send', [OtpController::class, 'send']);
+    Route::post('/verify', [OtpController::class, 'verify']);
+});
+
+Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])->group(function(){
     Route::post('/uploads', [UploadController::class, 'store']);
 
     Route::get('/user', [UserController::class, 'index']);
@@ -75,13 +89,17 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
         Route::get('/conversations', [ConversationController::class, 'index']);
         Route::post('/conversations', [ConversationController::class, 'store']);
         Route::get('/conversations/{id}', [ConversationController::class, 'show']);
+        Route::get('/conversations/{id}/variables', [ConversationController::class, 'variables']);
         // Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
         Route::post('/conversations/{id}/send-message', [ConversationController::class, 'sendMessage']);
         Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
         Route::post('/conversations/{id}/send-audio', [ConversationController::class, 'sendAudio']);
         Route::post('/conversations/{id}/send-video', [ConversationController::class, 'sendVideo']);
         Route::post('/conversations/{id}/send-document', [ConversationController::class, 'sendDocument']);
+        Route::post('/conversations/{id}/send-interactive', [ConversationController::class, 'sendInteractive']);
         Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
+        Route::post('/conversations/{id}/typing', [ConversationController::class, 'typing']);
+        Route::post('/conversations/bulk-status', [ConversationController::class, 'bulkUpdateStatus']);
         Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
         Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
         Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
@@ -103,6 +121,13 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
         Route::post('/tags', [TagController::class, 'store'])->middleware('permission:tags.create');
         Route::put('/tags/{id}', [TagController::class, 'update'])->middleware('permission:tags.update');
         Route::delete('/tags/{id}', [TagController::class, 'destroy'])->middleware('permission:tags.delete');
+
+        // WhatsApp message templates (Cloud API). CRUD is proxied to Meta; send
+        // supports re-engaging outside the 24h window (existing conv or new number).
+        Route::get('/templates', [MessageTemplateController::class, 'index'])->middleware('permission:templates.view');
+        Route::post('/templates', [MessageTemplateController::class, 'store'])->middleware('permission:templates.create');
+        Route::delete('/templates/{name}', [MessageTemplateController::class, 'destroy'])->middleware('permission:templates.delete');
+        Route::post('/templates/send', [MessageTemplateController::class, 'send'])->middleware('permission:templates.send');
     });
 
     Route::get('/connections', [ConnectionController::class, 'index']);
@@ -113,6 +138,8 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect'])->middleware('permission:connections.connect');
     Route::post('/connections/{id}/migrate', [ConnectionController::class, 'migrate'])->middleware('permission:connections.connect');
     Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
+    Route::get('/connections/{id}/business-profile', [ConnectionController::class, 'businessProfile']);
+    Route::put('/connections/{id}/business-profile', [ConnectionController::class, 'updateBusinessProfile'])->middleware('permission:connections.update');
     Route::put('/connections/{id}', [ConnectionController::class, 'update'])->middleware('permission:connections.update');
     Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus'])->middleware('permission:connections.check-status');
     Route::post('/connections/{id}/generate-api-key', [ConnectionController::class, 'generateApiKey'])->middleware('permission:connections.generate-api-key');
@@ -143,6 +170,8 @@ Route::middleware(['auth:sanctum', 'subscription.active'])->group(function(){
     Route::middleware('feature:flow')->group(function () {
         Route::get('/flows', [FlowController::class, 'index'])->middleware('permission:flows.view');
         Route::post('/flows', [FlowController::class, 'store'])->middleware('permission:flows.create');
+        Route::post('/flows/import', [FlowController::class, 'import'])->middleware('permission:flows.create');
+        Route::get('/flows/{id}/export', [FlowController::class, 'export'])->middleware('permission:flows.view');
         Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
         Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
         Route::delete('/flows/{id}', [FlowController::class, 'destroy'])->middleware('permission:flows.delete');
@@ -244,6 +273,12 @@ Route::prefix('admin')->group(function () {
         Route::get('/audit-logs', [AdminAuditLogController::class, 'index'])
             ->middleware('permission:bo.audit.view');
 
+        // Backend server logs (storage/logs)
+        Route::middleware('permission:bo.logs.view')->group(function () {
+            Route::get('/logs', [AdminLogViewerController::class, 'index']);
+            Route::get('/logs/download', [AdminLogViewerController::class, 'download']);
+        });
+
         // Admins management
         Route::middleware('permission:bo.admins.manage')->group(function () {
             Route::get('/admins', [AdminAdminController::class, 'index']);
@@ -252,10 +287,14 @@ Route::prefix('admin')->group(function () {
             Route::delete('/admins/{admin}', [AdminAdminController::class, 'destroy']);
         });
 
-        // Platform settings (ProxyHub credentials, etc.)
+        // Platform settings (ProxyHub credentials, etc.) + WhatsApp delivery audit.
         Route::middleware('permission:bo.settings.manage')->group(function () {
             Route::get('/settings', [AdminSettingsController::class, 'show']);
             Route::put('/settings', [AdminSettingsController::class, 'update']);
+
+            // WhatsApp message logs + issued OTPs (monitoring).
+            Route::get('/whatsapp-logs', [AdminWhatsappLogController::class, 'index']);
+            Route::get('/otps', [AdminOtpController::class, 'index']);
         });
 
         // Billing — plan catalogue management

@@ -146,7 +146,7 @@ class TelegramHandler implements ChatHandlerInterface
             $conversation = Conversation::where('external_id', $conversationId)
                 ->where('contact_id', $contact->id)
                 ->where('connection_id', $connection->id)
-                ->whereIn('status', [Status::Active, Status::Pending])
+                ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
             if (!$conversation) {

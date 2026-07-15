@@ -12,6 +12,7 @@ enum NodeType: string
     case Status = 'status';
     case Action = 'action';
     case AIAgent = 'ai_agent';
+    case HttpRequest = 'http_request';
 
     public function data(): array
     {
@@ -59,6 +60,17 @@ enum NodeType: string
                 //   handoff_in_hours    = AI handles, then hands a human the chat within service hours
                 //   human_only_in_hours = within service hours skip AI entirely → human queue; AI otherwise
                 'service_hours_behavior' => 'always_ai',
+            ],
+            self::HttpRequest => [
+                'method' => 'GET', // GET, POST, PUT, PATCH, DELETE
+                'url' => '', // supports {{variable}} interpolation from flow state
+                'headers' => [], // list of { key, value } — values support {{variable}}
+                'body' => null, // raw string / JSON (POST/PUT/PATCH/DELETE); supports {{variable}}
+                'timeout' => 15, // seconds
+                // Map parts of the JSON response into flow variables:
+                //   [{ 'path' => 'data.user.name', 'variable' => 'name' }]
+                //   special paths: "http_status" (status code), "raw_body" (whole body)
+                'response_mappings' => [],
             ],
         };
     }

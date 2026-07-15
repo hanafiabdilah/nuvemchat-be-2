@@ -31,7 +31,12 @@ class ConversationController extends Controller
 
         $conversations = Conversation::with('contact')->whereHas('connection', function($q){
             $q->where('tenant_id', Auth::user()->tenant_id);
-        })->where('updated_at', '>', $since)->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
+        })
+            // Skip conversations with no message yet (e.g. a Live Chat Widget session
+            // that was opened but the visitor never typed) — they would otherwise show
+            // as empty rows with a null "1970" date in the list.
+            ->whereHas('messages')
+            ->where('updated_at', '>', $since)->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
 
         return response()->json([
             'data' => ConversationResource::collection($conversations),
@@ -63,10 +68,10 @@ class ConversationController extends Controller
             ], 403);
         }
 
-        // Check if active/pending conversation already exists
+        // Check if an open conversation (active / pending / AI-handling) already exists
         $existingConversation = Conversation::where('contact_id', $contact->id)
             ->where('connection_id', $connection->id)
-            ->whereIn('status', [Status::Active, Status::Pending])
+            ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
             ->first();
 
         if ($existingConversation) {
@@ -155,6 +160,38 @@ class ConversationController extends Controller
         ]);
     }
 
+    /**
+     * Return the {{variable}} tokens available for a conversation, so the chat
+     * composer can live-resolve them. Includes the flow's collected variables
+     * (state_data, internal underscore-prefixed keys excluded) plus a few
+     * contact/conversation fields, keyed to match the flow template convention
+     * (bare key = flow variable; contact.*, conversation.*).
+     */
+    public function variables(int $id)
+    {
+        $conversation = Conversation::with('contact')->whereHas('connection', function ($q) {
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        // Latest flow run for this conversation (state is preserved after it ends).
+        $flowState = $conversation->flowState()->latest('id')->first();
+
+        $variables = collect($flowState?->state_data ?? [])
+            ->reject(fn ($value, $key) => str_starts_with((string) $key, '_'))
+            ->map(fn ($value) => is_array($value) ? json_encode($value) : $value)
+            ->all();
+
+        $variables['contact.name'] = $conversation->contact?->name;
+        $variables['contact.username'] = $conversation->contact?->username;
+        $variables['contact.phone'] = $conversation->contact?->external_id;
+        $variables['conversation.status'] = $conversation->status?->value;
+
+        // Drop null-valued fields so the composer only offers resolvable tokens.
+        $variables = collect($variables)->reject(fn ($value) => $value === null)->all();
+
+        return response()->json(['data' => $variables]);
+    }
+
     public function messages(int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){
@@ -168,6 +205,40 @@ class ConversationController extends Controller
         return MessageResource::collection($messages)->response();
     }
 
+    public function sendInteractive(Request $request, int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        if($conversation->status !== Status::Active){
+            return response()->json(['message' => 'Conversation is not active'], 400);
+        }
+
+        try {
+            $message = (new MessageService())->sendInteractive($conversation, $request->all());
+
+            $message?->update(['sent_by_user_id' => Auth::id()]);
+
+            broadcast(new ConversationUpdated($conversation));
+            broadcast(new MessageReceived($message));
+
+            return response()->json([
+                'data' => new MessageResource($message),
+            ]);
+        } catch(ValidationException $th){
+            throw $th;
+        } catch (\Throwable $th) {
+            return response()->json([
+                'message' => 'Failed to send interactive message: ' . $th->getMessage(),
+            ], 500);
+        }
+    }
+
     public function read(int $id)
     {
         $conversation = Conversation::whereHas('connection', function($q){
@@ -177,9 +248,47 @@ class ConversationController extends Controller
         $conversation->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->update(['read_at' => now()]);
         broadcast(new ConversationUpdated($conversation));
 
+        // Best-effort: reflect the read receipt to the customer on WhatsApp
+        // Cloud API (blue ticks). No-op for other channels; never fatal.
+        try {
+            (new MessageService())->markAsRead($conversation);
+        } catch (\Throwable $th) {
+            Log::warning('Failed to send WhatsApp read receipt', [
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
         return response()->json([
             'message' => 'Conversation marked as read',
         ]);
+    }
+
+    /**
+     * Emit a typing indicator to the customer (WhatsApp Cloud API). Called by
+     * the composer while an agent is typing. Best-effort and no-op for channels
+     * without native typing support.
+     */
+    public function typing(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        try {
+            (new MessageService())->markAsRead($conversation, typing: true);
+        } catch (\Throwable $th) {
+            Log::warning('Failed to send WhatsApp typing indicator', [
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
+        return response()->json(['message' => 'ok']);
     }
 
     public function sendMessage(Request $request, int $id)
@@ -388,16 +497,65 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if($conversation->status !== Status::Pending){
+        // An agent can pick up a conversation from the unassigned Pending queue
+        // or take it over from the AI while it is being handled.
+        if(!in_array($conversation->status, [Status::Pending, Status::AiHandling], true)){
             return response()->json([
                 'message' => 'Conversation is not pending',
             ], 400);
         }
 
+        $this->applyAccept($conversation);
+
+        return response()->json([
+            'message' => 'Conversation accepted',
+        ]);
+    }
+
+    public function resolve(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $this->applyResolve($conversation);
+
+        return response()->json([
+            'message' => 'Conversation resolved',
+        ]);
+    }
+
+    /**
+     * Accept semantics (assumes the conversation is Pending or AiHandling):
+     * assign to the current agent, mark Active, clear the human flag, stop any
+     * running flow when taking over from the AI, then broadcast + send the
+     * connection's accept message. Shared by accept() and bulkUpdateStatus().
+     */
+    protected function applyAccept(Conversation $conversation): void
+    {
+        $wasAiHandling = $conversation->status === Status::AiHandling;
+
         $conversation->user_id = Auth::id();
         $conversation->status = Status::Active;
         $conversation->needs_human = false;
         $conversation->save();
+
+        // Taking over from the AI: stop the running flow so it no longer auto-replies.
+        if ($wasAiHandling) {
+            (new \App\Services\Flow\FlowExecutor())->stopFlow($conversation);
+        }
 
         broadcast(new ConversationUpdated($conversation));
 
@@ -423,30 +581,15 @@ class ConversationController extends Controller
                 ]);
             }
         }
-
-        return response()->json([
-            'message' => 'Conversation accepted',
-        ]);
     }
 
-    public function resolve(int $id)
+    /**
+     * Resolve semantics (assumes the conversation is Active and the caller is
+     * authorised): send the connection's closing message, mark Resolved, then
+     * broadcast. Shared by resolve() and bulkUpdateStatus().
+     */
+    protected function applyResolve(Conversation $conversation): void
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
-
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
-            return response()->json([
-                'message' => 'Unauthorized',
-            ], 403);
-        }
-
-        if($conversation->status !== Status::Active){
-            return response()->json([
-                'message' => 'Conversation is not active',
-            ], 400);
-        }
-
         // Send closing message before resolving
         $automatedMessageService = new AutomatedMessageService();
         $closingMessage = $automatedMessageService->getClosingMessage($conversation->connection, Auth::user());
@@ -475,9 +618,74 @@ class ConversationController extends Controller
             broadcast(new MessageReceived($closingMsg));
             broadcast(new ConversationUpdated($closingMsg->conversation));
         }
+    }
+
+    /**
+     * Bulk status update: apply accept semantics (→ Active) or resolve semantics
+     * (→ Resolved) to many conversations at once, scoped to the tenant. Each
+     * conversation is skipped (not failed) when it isn't eligible for the
+     * requested transition, so a mixed selection updates only what it can.
+     */
+    public function bulkUpdateStatus(Request $request)
+    {
+        $validated = $request->validate([
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['integer'],
+            'status' => ['required', 'string', Rule::in([Status::Active->value, Status::Resolved->value])],
+        ]);
+
+        $target = Status::from($validated['status']);
+        $isOwner = Auth::user()->hasRole('owner');
+
+        $conversations = Conversation::with('connection')
+            ->whereHas('connection', function ($q) {
+                $q->where('tenant_id', Auth::user()->tenant_id);
+            })
+            ->whereIn('id', $validated['ids'])
+            ->get();
+
+        $updated = 0;
+        $skipped = 0;
+
+        foreach ($conversations as $conversation) {
+            try {
+                if ($target === Status::Active) {
+                    // Accept: only from the Pending queue or from the AI.
+                    if (!in_array($conversation->status, [Status::Pending, Status::AiHandling], true)) {
+                        $skipped++;
+                        continue;
+                    }
+
+                    $this->applyAccept($conversation);
+                    $updated++;
+                } else { // Status::Resolved
+                    // Resolve: only Active, and only own conversations unless owner.
+                    if ($conversation->status !== Status::Active
+                        || (!$isOwner && $conversation->user_id !== Auth::id())) {
+                        $skipped++;
+                        continue;
+                    }
+
+                    $this->applyResolve($conversation);
+                    $updated++;
+                }
+            } catch (\Throwable $th) {
+                $skipped++;
+                Log::error('ConversationController: Bulk status update failed for conversation', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
+        }
+
+        // Ids that were not found or belong to another tenant are also skipped.
+        $skipped += count($validated['ids']) - $conversations->count();
 
         return response()->json([
-            'message' => 'Conversation resolved',
+            'message' => 'Conversations updated',
+            'updated' => $updated,
+            'skipped' => $skipped,
+            'status' => $target->value,
         ]);
     }
 

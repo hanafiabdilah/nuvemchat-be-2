@@ -70,6 +70,9 @@ class MercadoPagoWebhookController extends Controller
         match ($type) {
             'payment' => $this->billing->applyPaymentUpdate($this->mp->getPayment($dataId)),
             'subscription_preapproval', 'preapproval' => $this->billing->reconcilePreapproval($this->mp->getPreapproval($dataId)),
+            // Recurring auto-debit charge on a card subscription (renewals): extend the
+            // period + record a paid invoice.
+            'subscription_authorized_payment', 'authorized_payment' => $this->billing->recordRecurringPayment($this->mp->getAuthorizedPayment($dataId)),
             default => null, // ignore unrelated topics (merchant_order, etc.)
         };
     }

@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Connection;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Webhook\ChatService;
+use App\Services\Webhook\MetaSignatureVerifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
@@ -33,6 +34,10 @@ class InstagramController extends Controller
 
     public function handle(Request $request)
     {
+        if (!MetaSignatureVerifier::verify($request, InstagramConfig::clientSecret(), 'instagram')) {
+            return response()->json(['message' => 'Invalid signature'], 401);
+        }
+
         Log::info('Instagram webhook received', $request->all());
 
         $object = $request->input('object');

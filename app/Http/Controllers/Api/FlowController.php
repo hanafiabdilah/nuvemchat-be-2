@@ -17,6 +17,16 @@ use Illuminate\Validation\ValidationException;
 
 class FlowController extends Controller
 {
+    /** Allowed node types (frontend must stay in sync). */
+    private const NODE_TYPES = ['start', 'message', 'response', 'status', 'tagging', 'condition', 'action', 'ai_agent', 'http_request'];
+
+    /** Allowed edge branch values: condition (true/false) + http_request (success/error). */
+    private const BRANCH_VALUES = ['true', 'false', 'success', 'error'];
+
+    /** Portable export envelope identifiers. */
+    private const EXPORT_FORMAT = 'nuvemchat.flow';
+    private const EXPORT_VERSION = 1;
+
     /**
      * Display a listing of flows.
      */
@@ -116,14 +126,14 @@ class FlowController extends Controller
         $validated = $request->validate([
             'nodes' => ['required', 'array'],
             'nodes.*.id' => ['nullable', 'string'], // Frontend ID (might not be database ID yet)
-            'nodes.*.type' => ['required', 'string', Rule::in(['start', 'message', 'response', 'status', 'tagging', 'condition', 'action', 'ai_agent'])],
+            'nodes.*.type' => ['required', 'string', Rule::in(self::NODE_TYPES)],
             'nodes.*.data' => ['nullable'],
             'nodes.*.position_x' => ['required', 'numeric'],
             'nodes.*.position_y' => ['required', 'numeric'],
             'edges' => ['required', 'array'],
             'edges.*.source_node_id' => ['required', 'string'], // Frontend node ID
             'edges.*.target_node_id' => ['required', 'string'], // Frontend node ID
-            'edges.*.condition_value' => ['nullable', 'string', Rule::in(['true', 'false'])], // For condition nodes
+            'edges.*.condition_value' => ['nullable', 'string', Rule::in(self::BRANCH_VALUES)], // condition (true/false) & http_request (success/error) branches
         ]);
 
         // Validate each node's data based on its type
@@ -227,6 +237,139 @@ class FlowController extends Controller
     }
 
     /**
+     * Export a flow as a portable, self-contained JSON envelope. Node database
+     * ids are replaced with local "key" strings and edges reference those keys,
+     * so the flow re-imports cleanly with fresh ids.
+     */
+    public function export(int $id): JsonResponse
+    {
+        $flow = Flow::with('nodes')->where('tenant_id', auth()->user()->tenant_id)->findOrFail($id);
+
+        $nodeIds = $flow->nodes->pluck('id');
+        $edges = FlowEdge::whereIn('source_node_id', $nodeIds)
+            ->whereIn('target_node_id', $nodeIds)
+            ->get();
+
+        return response()->json([
+            'format' => self::EXPORT_FORMAT,
+            'version' => self::EXPORT_VERSION,
+            'flow' => [
+                'name' => $flow->name,
+                'nodes' => $flow->nodes->map(fn (FlowNode $node) => [
+                    'key' => (string) $node->id,
+                    'type' => $node->type->value,
+                    'data' => $node->data,
+                    'position_x' => $node->position_x,
+                    'position_y' => $node->position_y,
+                ])->values(),
+                'edges' => $edges->map(fn (FlowEdge $edge) => [
+                    'source_key' => (string) $edge->source_node_id,
+                    'target_key' => (string) $edge->target_node_id,
+                    'condition_value' => $edge->condition_value,
+                ])->values(),
+            ],
+        ]);
+    }
+
+    /**
+     * Import a flow from an export envelope, creating a brand-new flow (with
+     * fresh ids) for the current tenant. Node data is validated with the same
+     * per-type rules as saving, so tenant-specific references (tags, AI agents)
+     * must resolve for this tenant.
+     */
+    public function import(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'format' => ['required', 'string', Rule::in([self::EXPORT_FORMAT])],
+            'version' => ['required', 'integer', 'max:' . self::EXPORT_VERSION],
+            'name' => ['nullable', 'string', 'max:255'], // optional name override
+            'flow' => ['required', 'array'],
+            'flow.name' => ['required', 'string', 'max:255'],
+            'flow.nodes' => ['required', 'array', 'min:1'],
+            'flow.nodes.*.key' => ['required', 'string'],
+            'flow.nodes.*.type' => ['required', 'string', Rule::in(self::NODE_TYPES)],
+            'flow.nodes.*.data' => ['nullable'],
+            'flow.nodes.*.position_x' => ['required', 'numeric'],
+            'flow.nodes.*.position_y' => ['required', 'numeric'],
+            'flow.edges' => ['present', 'array'],
+            'flow.edges.*.source_key' => ['required', 'string'],
+            'flow.edges.*.target_key' => ['required', 'string'],
+            'flow.edges.*.condition_value' => ['nullable', 'string', Rule::in(self::BRANCH_VALUES)],
+        ], [
+            'format.in' => 'This file is not a valid Nuvemchat flow export.',
+            'version.max' => 'This flow export was created by a newer version and cannot be imported.',
+        ]);
+
+        $nodes = $validated['flow']['nodes'];
+        $edges = $validated['flow']['edges'];
+
+        // Per-type data validation — same rules as saving a flow.
+        $this->validateNodesData($nodes);
+
+        // Structural integrity: unique keys, exactly one start, edges resolve.
+        $keys = array_map(fn ($node) => $node['key'], $nodes);
+        if (count($keys) !== count(array_unique($keys))) {
+            throw ValidationException::withMessages(['flow.nodes' => ['Duplicate node keys in the flow export.']]);
+        }
+
+        if (collect($nodes)->where('type', 'start')->count() !== 1) {
+            throw ValidationException::withMessages(['flow.nodes' => ['A flow must contain exactly one start node.']]);
+        }
+
+        $keySet = array_flip($keys);
+        foreach ($edges as $edge) {
+            if (!isset($keySet[$edge['source_key']]) || !isset($keySet[$edge['target_key']])) {
+                throw ValidationException::withMessages(['flow.edges' => ['An edge references a node that is not in the flow.']]);
+            }
+        }
+
+        $name = $validated['name'] ?? $validated['flow']['name'];
+
+        $flow = DB::transaction(function () use ($nodes, $edges, $name) {
+            $flow = Flow::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'name' => $name,
+            ]);
+
+            // Map export keys → freshly created node ids.
+            $keyToId = [];
+            foreach ($nodes as $node) {
+                $created = $flow->nodes()->create([
+                    'type' => $node['type'],
+                    'data' => $node['data'] ?? null,
+                    'position_x' => $node['position_x'],
+                    'position_y' => $node['position_y'],
+                ]);
+                $keyToId[$node['key']] = $created->id;
+            }
+
+            foreach ($edges as $edge) {
+                FlowEdge::create([
+                    'source_node_id' => $keyToId[$edge['source_key']],
+                    'target_node_id' => $keyToId[$edge['target_key']],
+                    'condition_value' => $edge['condition_value'] ?? null,
+                ]);
+            }
+
+            $flow->update(['last_updated_at' => now()]);
+
+            return $flow;
+        });
+
+        $flow->load('nodes');
+        $newNodeIds = $flow->nodes->pluck('id');
+        $newEdges = FlowEdge::whereIn('source_node_id', $newNodeIds)
+            ->whereIn('target_node_id', $newNodeIds)
+            ->get();
+        $flow->setRelation('edges', $newEdges);
+
+        return response()->json([
+            'message' => 'Flow imported successfully',
+            'data' => new FlowResource($flow),
+        ], 201);
+    }
+
+    /**
      * Validate nodes data based on their type.
      */
     private function validateNodesData(array $nodes): void
@@ -310,6 +453,20 @@ class FlowController extends Controller
                 ],
                 'welcoming_message' => ['required', 'string', 'max:4000'],
                 'store_summary_to_variable' => ['nullable', 'string', 'alpha_dash'],
+            ],
+            'http_request' => [
+                'method' => ['required', 'string', Rule::in(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])],
+                // nullable so an in-progress node doesn't break auto-save; the
+                // executor takes the error branch when the URL is empty at runtime.
+                'url' => ['nullable', 'string', 'max:2000'],
+                'headers' => ['nullable', 'array'],
+                'headers.*.key' => ['nullable', 'string', 'max:255'],
+                'headers.*.value' => ['nullable', 'string', 'max:2000'],
+                'body' => ['nullable', 'string'],
+                'timeout' => ['nullable', 'integer', 'min:1', 'max:120'],
+                'response_mappings' => ['nullable', 'array'],
+                'response_mappings.*.path' => ['nullable', 'string', 'max:255'],
+                'response_mappings.*.variable' => ['nullable', 'string', 'max:255'],
             ],
             default => [],
         };

@@ -340,15 +340,23 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
-        $contactExternalId = $this->getContactExternalId($payload);
+        // WhatsApp may address the same person by a phone number and/or a @lid (Linked
+        // Identity). An incoming message reveals BOTH at once: sender.id is the phone and
+        // sender.senderLid (equal to chat.id here) is the @lid. We resolve a single
+        // canonical contact from this pair and record the link, so a later outgoing send —
+        // which knows only the @lid — still finds the same contact. See resolveContact().
+        $senderId = $this->getContactUsername($payload);             // sender.id
+        $contactPhone = $this->isLid($senderId) ? null : $senderId;  // numeric phone, if any
+        $contactLid = $this->extractLid($payload['sender']['senderLid'] ?? null)
+            ?? $this->extractLid($conversationId);
         $contactName = $this->getContactName($payload);
-        $contactUsername = $this->getContactUsername($payload);
 
-        if (!$conversationId || !$messageId || !$contactExternalId || !$contactName){
+        if (!$conversationId || !$messageId || (!$contactPhone && !$contactLid) || !$contactName){
             Log::warning('WhatsappWApiHandler: Missing required data in payload', [
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
-                'contact_external_id' => $contactExternalId,
+                'contact_phone' => $contactPhone,
+                'contact_lid' => $contactLid,
                 'contact_name' => $contactName,
             ]);
 
@@ -364,14 +372,19 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         $isNewConversation = false;
         $conversationForWelcome = null;
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, &$isNewConversation, &$conversationForWelcome) {
-            $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
-            if($contact->wasRecentlyCreated || !$contact->photo_profile) $this->savePhotoProfile($contact, $connection, $payload);
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactPhone, $contactLid, $contactName, &$isNewConversation, &$conversationForWelcome) {
+            $contact = $this->resolveContact($connection, $contactPhone, $contactLid, $contactName, $payload);
 
-            $conversation = Conversation::where('external_id', $conversationId)
-                ->where('contact_id', $contact->id)
+            // Identify the open conversation by contact + connection, NOT by the external_id
+            // string. WhatsApp may address the same chat by a phone number or a @lid, so the
+            // reply's chat.id can differ from the external_id stored when the conversation was
+            // created — e.g. a conversation started from the app (keyed by the contact's
+            // phone) whose reply then arrives under a @lid. A contact has at most one open
+            // conversation per connection, so this is the reliable key; matching on
+            // external_id would miss it and spawn a duplicate conversation.
+            $conversation = Conversation::where('contact_id', $contact->id)
                 ->where('connection_id', $connection->id)
-                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
+                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending, ConversationStatus::AiHandling])
                 ->first();
 
             if (!$conversation) {
@@ -383,6 +396,9 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 ]);
                 $isNewConversation = true;
                 $conversationForWelcome = $conversation;
+            } elseif ($conversation->external_id !== $conversationId) {
+                // Keep the send address aligned with the address WhatsApp is actively using.
+                $conversation->update(['external_id' => $conversationId]);
             }
 
             if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
@@ -558,7 +574,6 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
         // Untuk outgoing message, contact adalah penerima (chat.id), bukan sender
         $recipientId = $conversationId; // chat.id adalah ID penerima untuk personal chat
-        $recipientName = $recipientId; // Fallback ke ID jika nama tidak tersedia di delivery payload
 
         if (!$conversationId || !$messageId){
             Log::warning('WhatsappWApiHandler: Missing required data in payload', [
@@ -583,14 +598,24 @@ class WhatsappWApiHandler implements ChatHandlerInterface
             return;
         }
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $recipientId, $recipientName) {
-            // Cari conversation yang masih aktif saja (bukan yang sudah resolved)
+        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $recipientId) {
+            // Resolve the recipient contact first. Delivery hanya membawa chat.id — bila itu
+            // sebuah @lid, resolveContact mencari contact yang sudah tertaut ke @lid tersebut
+            // (via alias lid) supaya tidak dobel dengan contact bernomor telepon; kalau belum
+            // ada, dibuat placeholder yang nanti diperkaya saat balasan masuk.
+            $recipientPhone = $this->isLid($recipientId) ? null : $recipientId;
+            $recipientLid = $this->extractLid($recipientId);
+            $contact = $this->resolveContact($connection, $recipientPhone, $recipientLid, null, null);
+
+            // Cari open conversation berdasarkan contact + connection (bukan external_id),
+            // supaya pesan keluar via WhatsApp Web menempel ke conversation yang sama walau
+            // WhatsApp memakai alamat (@lid vs telepon) yang berbeda dari external_id tersimpan.
             $conversation = Conversation::where('connection_id', $connection->id)
-                ->where('external_id', $conversationId)
-                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending])
+                ->where('contact_id', $contact->id)
+                ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending, ConversationStatus::AiHandling])
                 ->first();
 
-            // Jika conversation belum ada, buat conversation baru beserta contact
+            // Jika conversation belum ada, buat conversation baru
             if(!$conversation){
                 Log::info('WhatsappWApiHandler: Creating new conversation for delivery receipt', [
                     'conversation_id' => $conversationId,
@@ -598,20 +623,18 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                     'recipient_id' => $recipientId,
                 ]);
 
-                // Buat contact untuk penerima (recipient)
-                $contact = Contact::createFromExternalData($connection, $recipientId, $recipientName, null);
-
                 // Note: Photo profile di delivery payload adalah foto sender (diri sendiri),
                 // bukan foto recipient. Jadi kita skip savePhotoProfile di sini.
                 // Photo akan diupdate ketika ada incoming message dari contact ini.
 
-                // Buat conversation baru
                 $conversation = Conversation::create([
                     'contact_id'    => $contact->id,
                     'connection_id' => $connection->id,
                     'external_id'   => $conversationId,
                     'status'        => ConversationStatus::Pending,
                 ]);
+            } elseif ($conversation->external_id !== $conversationId) {
+                $conversation->update(['external_id' => $conversationId]);
             }
 
             // Lookup replied message if exists
@@ -828,6 +851,104 @@ class WhatsappWApiHandler implements ChatHandlerInterface
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * A WhatsApp identity is a "@lid" (Linked Identity) when it ends with @lid.
+     */
+    private function isLid(?string $id): bool
+    {
+        return $id !== null && str_ends_with($id, '@lid');
+    }
+
+    /**
+     * Return the value only when it is a @lid, otherwise null.
+     */
+    private function extractLid(?string $id): ?string
+    {
+        return $this->isLid($id) ? $id : null;
+    }
+
+    /**
+     * Resolve the single canonical contact for a WhatsApp identity that may be known by a
+     * phone number, a @lid, or (on an incoming message) both. The contact is keyed by the
+     * phone number when available and stores the @lid as an alias, so that:
+     *   - an incoming message (phone + @lid) links the two,
+     *   - a later outgoing send (which only carries the @lid) still resolves to the same
+     *     contact instead of spawning a duplicate.
+     * If a phone-keyed and a @lid-keyed contact already exist separately (the duplicate we
+     * are fixing), they are merged into one.
+     */
+    private function resolveContact(Connection $connection, ?string $phone, ?string $lid, ?string $name, ?array $payload): Contact
+    {
+        $tenantId = $connection->tenant_id;
+
+        $byPhone = $phone
+            ? Contact::where('tenant_id', $tenantId)->where('external_id', $phone)->first()
+            : null;
+
+        $byLid = $lid
+            ? Contact::where('tenant_id', $tenantId)
+                ->where(fn($q) => $q->where('lid', $lid)->orWhere('external_id', $lid))
+                ->first()
+            : null;
+
+        // Both identities already exist as separate rows → fold the @lid one into the
+        // phone one so a single canonical contact remains.
+        if ($byPhone && $byLid && $byPhone->id !== $byLid->id) {
+            $this->mergeContact($byLid, $byPhone);
+            $byLid = $byPhone;
+        }
+
+        $contact = $byPhone ?? $byLid;
+
+        if (!$contact) {
+            $contact = new Contact([
+                'tenant_id'   => $tenantId,
+                'external_id' => $phone ?? $lid,   // prefer the phone as the canonical id
+                'channel'     => $connection->channel,
+                'name'        => $name ?? $phone ?? $lid,
+                'username'    => $phone,
+            ]);
+        }
+
+        // Upgrade a @lid-keyed contact to its phone number once we learn it.
+        if ($phone && $contact->external_id !== $phone && $this->isLid($contact->external_id)) {
+            $contact->external_id = $phone;
+        }
+        if ($lid && $contact->lid !== $lid) $contact->lid = $lid;
+        if ($phone && !$contact->username) $contact->username = $phone;
+        // Enrich the display name (respecting an admin name lock and ignoring placeholders).
+        if ($name && !$contact->name_locked && $contact->name !== $name && $name !== $phone && $name !== $lid) {
+            $contact->name = $name;
+        }
+
+        if (!$contact->exists || $contact->isDirty()) $contact->save();
+
+        if ($payload && ($contact->wasRecentlyCreated || !$contact->photo_profile)) {
+            $this->savePhotoProfile($contact, $connection, $payload);
+        }
+
+        return $contact;
+    }
+
+    /**
+     * Fold a duplicate contact into the canonical one: move its conversations across,
+     * carry over a profile photo / @lid if the target lacks one, then delete the duplicate.
+     */
+    private function mergeContact(Contact $from, Contact $into): void
+    {
+        Conversation::where('contact_id', $from->id)->update(['contact_id' => $into->id]);
+
+        if (!$into->photo_profile && $from->photo_profile) {
+            $into->photo_profile = $from->photo_profile;
+        }
+        if (!$into->lid && $from->lid) {
+            $into->lid = $from->lid;
+        }
+        if ($into->isDirty()) $into->save();
+
+        $from->delete();
     }
 
     private function savePhotoProfile(Contact $contact, Connection $connection, array $payload)

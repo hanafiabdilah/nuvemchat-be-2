@@ -2,11 +2,24 @@
 
 namespace App\Http\Resources\Billing;
 
+use App\Models\AiHubRun;
+use App\Models\Connection;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 class SubscriptionResource extends JsonResource
 {
+    /** Whether to attach current resource usage counts (opt-in; avoids N+1 in listings). */
+    protected bool $withUsage = false;
+
+    public function withUsage(bool $value = true): static
+    {
+        $this->withUsage = $value;
+
+        return $this;
+    }
+
     public function toArray(Request $request): array
     {
         $entitlements = $this->entitlements();
@@ -22,6 +35,7 @@ class SubscriptionResource extends JsonResource
             'is_usable' => $this->isUsable(),
             'quotas' => $entitlements['quotas'],
             'features' => $entitlements['features'],
+            $this->mergeWhen($this->withUsage, fn () => ['usage' => $this->currentUsage()]),
             'current_period_start' => $this->current_period_start,
             'current_period_end' => $this->current_period_end,
             'trial_ends_at' => $this->trial_ends_at,
@@ -36,6 +50,24 @@ class SubscriptionResource extends JsonResource
                 ] : null,
             ]),
             'created_at' => $this->created_at,
+        ];
+    }
+
+    /**
+     * Live usage for quota'd resources, mirroring what SubscriptionGate enforces.
+     * AI runs are counted within the current billing period.
+     */
+    protected function currentUsage(): array
+    {
+        $tenantId = $this->tenant_id;
+
+        return [
+            'connections' => Connection::where('tenant_id', $tenantId)->count(),
+            'agents' => User::where('tenant_id', $tenantId)->count(),
+            'ai_runs' => AiHubRun::where('tenant_id', $tenantId)
+                ->when($this->current_period_start, fn ($q) => $q->where('created_at', '>=', $this->current_period_start))
+                ->when($this->current_period_end, fn ($q) => $q->where('created_at', '<=', $this->current_period_end))
+                ->count(),
         ];
     }
 }

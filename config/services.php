@@ -59,4 +59,10 @@ return [
         'enforce' => (bool) env('BILLING_ENFORCE', false),
     ],
 
+    'whatsapp' => [
+        // Enforce the WhatsApp-number verification gate (EnsureWhatsAppVerified) on the
+        // tenant API. On by default; set WHATSAPP_VERIFY_ENFORCE=false to disable.
+        'verify_enforce' => (bool) env('WHATSAPP_VERIFY_ENFORCE', true),
+    ],
+
 ];

@@ -18,7 +18,6 @@ use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\BusinessHours;
 use App\Services\Message\MessageService;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -100,11 +99,11 @@ class FlowExecutor
      */
     protected function executeFromNode(FlowState $flowState, FlowNode $node): void
     {
-        // Check if conversation is still Pending before executing
+        // Check if conversation is still flow-eligible (Pending or AI-handling) before executing
         $conversation = $flowState->conversation->fresh();
 
-        if ($conversation->status !== ConversationStatus::Pending) {
-            Log::info('FlowExecutor: Flow stopped, conversation is no longer pending (flow state preserved)', [
+        if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            Log::info('FlowExecutor: Flow stopped, conversation is no longer flow-eligible (flow state preserved)', [
                 'conversation_id' => $conversation->id,
                 'status' => $conversation->status->value,
                 'flow_state_id' => $flowState->id,
@@ -144,6 +143,10 @@ class FlowExecutor
 
             case NodeType::AIAgent:
                 $this->executeAIAgentNode($flowState, $node);
+                break;
+
+            case NodeType::HttpRequest:
+                $this->executeHttpNode($flowState, $node);
                 break;
 
             default:
@@ -308,6 +311,223 @@ class FlowExecutor
     }
 
     /**
+     * Execute an HTTP Request node.
+     *
+     * Interpolates {{variable}} tokens (from flow state) into the URL, header
+     * values and body, fires the request, stores mapped response fields into
+     * flow state, then branches to the "success" edge (2xx) or "error" edge
+     * (non-2xx / timeout / exception). A missing branch edge ends this path
+     * gracefully rather than failing the whole flow.
+     */
+    protected function executeHttpNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $stateData = $flowState->state_data ?? [];
+
+        $method = strtoupper($data['method'] ?? 'GET');
+        $url = trim($this->interpolateVariables((string) ($data['url'] ?? ''), $flowState));
+
+        if ($url === '') {
+            Log::warning('FlowExecutor: HTTP node has no URL, taking error branch', [
+                'node_id' => $node->id,
+            ]);
+            $this->moveToNextNodeByBranch($flowState, $node, 'error');
+            return;
+        }
+
+        try {
+            // Build interpolated headers from the list of { key, value } rows.
+            $headers = [];
+            foreach ((array) ($data['headers'] ?? []) as $header) {
+                $key = trim((string) ($header['key'] ?? ''));
+                if ($key === '') {
+                    continue;
+                }
+                $headers[$key] = $this->interpolateVariables((string) ($header['value'] ?? ''), $flowState);
+            }
+
+            $timeout = (int) ($data['timeout'] ?? 15);
+            if ($timeout <= 0) {
+                $timeout = 15;
+            }
+
+            $request = Http::withHeaders($headers)
+                ->timeout($timeout)
+                ->connectTimeout(min($timeout, 10));
+
+            // Prepare the body for write verbs. If it parses as JSON we send it
+            // as a JSON payload; otherwise it goes out as a raw string.
+            $jsonBody = null;
+
+            if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+                $rawBody = $this->interpolateVariables((string) ($data['body'] ?? ''), $flowState);
+
+                if (trim($rawBody) !== '') {
+                    $decoded = json_decode($rawBody, true);
+
+                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                        $jsonBody = $decoded;
+                    } else {
+                        $request = $request->withBody($rawBody, $headers['Content-Type'] ?? 'text/plain');
+                    }
+                }
+            }
+
+            $response = match ($method) {
+                'POST' => $jsonBody !== null ? $request->post($url, $jsonBody) : $request->post($url),
+                'PUT' => $jsonBody !== null ? $request->put($url, $jsonBody) : $request->put($url),
+                'PATCH' => $jsonBody !== null ? $request->patch($url, $jsonBody) : $request->patch($url),
+                'DELETE' => $jsonBody !== null ? $request->delete($url, $jsonBody) : $request->delete($url),
+                default => $request->get($url),
+            };
+
+            // Re-read state in case a mapping key overlaps with something set
+            // earlier in this run, then store mapped response fields.
+            $stateData = $flowState->fresh()->state_data ?? $stateData;
+
+            $json = null;
+            try {
+                $json = $response->json();
+            } catch (\Throwable $e) {
+                $json = null; // response wasn't JSON — only http_status/raw_body usable
+            }
+
+            foreach ((array) ($data['response_mappings'] ?? []) as $mapping) {
+                $variable = trim((string) ($mapping['variable'] ?? ''));
+                if ($variable === '') {
+                    continue;
+                }
+
+                $path = trim((string) ($mapping['path'] ?? ''));
+
+                $value = match ($path) {
+                    'http_status' => $response->status(),
+                    'raw_body', '' => $response->body(),
+                    default => is_array($json) ? data_get($json, $path) : null,
+                };
+
+                // Flatten arrays/objects so single-depth Condition lookups still work.
+                if (is_array($value)) {
+                    $value = json_encode($value);
+                }
+
+                $stateData[$variable] = $value;
+            }
+
+            $flowState->update(['state_data' => $stateData]);
+
+            $branch = $response->successful() ? 'success' : 'error';
+
+            Log::info('FlowExecutor: HTTP node executed', [
+                'node_id' => $node->id,
+                'method' => $method,
+                'status' => $response->status(),
+                'branch' => $branch,
+            ]);
+
+            $this->moveToNextNodeByBranch($flowState, $node, $branch);
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing HTTP node, taking error branch', [
+                'node_id' => $node->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            $this->moveToNextNodeByBranch($flowState, $node, 'error');
+        }
+    }
+
+    /**
+     * Replace {{token}} placeholders in a template with values resolved from the
+     * flow context. This is the flow engine's only string-interpolation
+     * mechanism — used for HTTP node url/headers/body and for the text of
+     * Message/Response nodes sent to the conversation.
+     *
+     * Supported tokens (unknown tokens resolve to an empty string):
+     *   {{judul}}              → flow state variable "judul" (bare = variable.*)
+     *   {{variable.judul}}     → same as above, explicit
+     *   {{contact.name}}       → the contact's field
+     *   {{conversation.status}}→ the conversation's field
+     */
+    protected function interpolateVariables(string $template, FlowState $flowState): string
+    {
+        if ($template === '' || !str_contains($template, '{{')) {
+            return $template;
+        }
+
+        return preg_replace_callback('/\{\{\s*([\w.]+)\s*\}\}/', function ($matches) use ($flowState) {
+            $value = $this->resolveTemplateToken($flowState, $matches[1]);
+
+            if (is_array($value)) {
+                return json_encode($value);
+            }
+
+            return $value === null ? '' : (string) $value;
+        }, $template);
+    }
+
+    /**
+     * Resolve a single {{token}} to its value. A bare key (no dot) is treated as
+     * a flow-state variable; a dotted key delegates to getFieldValue() so
+     * contact.*, conversation.* and variable.* all work the same in templates
+     * as they do in Condition nodes.
+     */
+    protected function resolveTemplateToken(FlowState $flowState, string $key)
+    {
+        if (!str_contains($key, '.')) {
+            return $flowState->state_data[$key] ?? null;
+        }
+
+        return $this->getFieldValue($flowState, $key);
+    }
+
+    /**
+     * Move to the next node along a named branch edge (e.g. 'success'/'error'
+     * for an HTTP node), matched against the edge's condition_value. A missing
+     * branch edge ends this path quietly — an unwired branch is a valid design.
+     */
+    protected function moveToNextNodeByBranch(FlowState $flowState, FlowNode $currentNode, string $branch): void
+    {
+        $edge = $currentNode->outgoingEdges()
+            ->where('condition_value', $branch)
+            ->first();
+
+        if (!$edge) {
+            Log::info('FlowExecutor: No edge for branch, flow path ends (flow state preserved)', [
+                'node_id' => $currentNode->id,
+                'branch' => $branch,
+                'flow_state_id' => $flowState->id,
+            ]);
+            return;
+        }
+
+        $nextNode = FlowNode::find($edge->target_node_id);
+
+        if (!$nextNode) {
+            $flowState->update([
+                'status' => FlowStateStatus::Failed,
+                'completed_at' => now(),
+            ]);
+
+            Log::error('FlowExecutor: Next node not found for branch (flow state preserved)', [
+                'edge_id' => $edge->id,
+                'target_node_id' => $edge->target_node_id,
+                'flow_state_id' => $flowState->id,
+            ]);
+            return;
+        }
+
+        $flowState->update(['current_node_id' => $nextNode->id]);
+
+        Log::info('FlowExecutor: Moved to next node via branch', [
+            'branch' => $branch,
+            'next_node_id' => $nextNode->id,
+            'next_node_type' => $nextNode->type->value,
+        ]);
+
+        $this->executeFromNode($flowState, $nextNode);
+    }
+
+    /**
      * Execute a condition node - evaluate condition and branch to TRUE or FALSE path
      */
     protected function executeConditionNode(FlowState $flowState, FlowNode $node): void
@@ -318,7 +538,7 @@ class FlowExecutor
 
             $field = $data['field'] ?? '';
             $operator = $data['operator'] ?? 'equals';
-            $expectedValue = $data['value'] ?? '';
+            $expectedValue = $this->interpolateVariables((string) ($data['value'] ?? ''), $flowState);
 
             Log::info('FlowExecutor: Evaluating condition', [
                 'node_id' => $node->id,
@@ -662,6 +882,8 @@ class FlowExecutor
     protected function routeHandoff(FlowState $flowState, FlowNode $node, string $reason, bool $aiCanContinue): void
     {
         if ($this->handoffMode($node->data ?? []) === 'always_ai') {
+            // AI is done with this node; release it from the AI tab before advancing.
+            $this->releaseAiHandling($flowState->conversation);
             $this->moveToNextNode($flowState, $node);
             return;
         }
@@ -680,7 +902,50 @@ class FlowExecutor
             return; // stay on this AIAgent node, keep handling with the AI
         }
 
+        // AI cannot continue and no human is available — advance the flow.
+        $this->releaseAiHandling($flowState->conversation);
         $this->moveToNextNode($flowState, $node);
+    }
+
+    /**
+     * Mark the conversation as being handled by the AI. Only flips a conversation
+     * that is still in the unassigned Pending queue — never clobbers Active (a
+     * human already took over) or Resolved. Broadcasts so the dashboard moves the
+     * conversation into the "AI" tab in realtime.
+     */
+    protected function markAiHandling(Conversation $conversation): void
+    {
+        if ($conversation->status !== ConversationStatus::Pending) {
+            return;
+        }
+
+        $conversation->forceFill(['status' => ConversationStatus::AiHandling])->save();
+
+        broadcast(new ConversationUpdated($conversation->fresh()));
+
+        Log::info('FlowExecutor: Conversation now handled by AI', [
+            'conversation_id' => $conversation->id,
+        ]);
+    }
+
+    /**
+     * The AI is done handling (handed off to the flow's next node / flow ended).
+     * Drop the conversation back into the Pending queue so it is no longer shown
+     * as AI-handled. No-op unless it is currently AI-handling.
+     */
+    protected function releaseAiHandling(Conversation $conversation): void
+    {
+        if ($conversation->status !== ConversationStatus::AiHandling) {
+            return;
+        }
+
+        $conversation->forceFill(['status' => ConversationStatus::Pending])->save();
+
+        broadcast(new ConversationUpdated($conversation->fresh()));
+
+        Log::info('FlowExecutor: AI released conversation back to Pending', [
+            'conversation_id' => $conversation->id,
+        ]);
     }
 
     /**
@@ -727,6 +992,8 @@ class FlowExecutor
         $awayMessage = BusinessHours::awayMessage($tenant);
 
         if ($awayMessage) {
+            $awayMessage = $this->interpolateVariables($awayMessage, $flowState);
+
             $message = $this->messageService->sendMessage($flowState->conversation, [
                 'message' => $awayMessage,
             ]);
@@ -746,9 +1013,9 @@ class FlowExecutor
      */
     public function resumeFlow(Conversation $conversation, string $userInput): void
     {
-        // Only resume flow for Pending conversations
-        if ($conversation->status !== ConversationStatus::Pending) {
-            Log::info('FlowExecutor: Cannot resume flow, conversation is not pending', [
+        // Only resume flow for flow-eligible conversations (Pending queue or active AI turn)
+        if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            Log::info('FlowExecutor: Cannot resume flow, conversation is not flow-eligible', [
                 'conversation_id' => $conversation->id,
                 'status' => $conversation->status->value,
             ]);
@@ -838,7 +1105,10 @@ class FlowExecutor
         $conversation = $flowState->conversation;
         $variableKey = $data['variable_key'] ?? null;
         $validationType = $data['validation'] ?? 'any';
-        $errorMessage = $data['error_message'] ?? 'Input tidak valid. Silakan coba lagi.';
+        $errorMessage = $this->interpolateVariables(
+            (string) ($data['error_message'] ?? 'Input tidak valid. Silakan coba lagi.'),
+            $flowState
+        );
 
         Log::info('FlowExecutor: Processing Response node input', [
             'node_id' => $node->id,
@@ -930,6 +1200,9 @@ class FlowExecutor
             return;
         }
 
+        // From here the AI owns the conversation — surface it in the "AI" tab.
+        $this->markAiHandling($flowState->conversation);
+
         $stateData = $flowState->state_data ?? [];
         $turnsKey = "_ai_turns_{$node->id}";
         $lastProcessedKey = "_ai_last_processed_message_id_{$node->id}";
@@ -994,6 +1267,7 @@ class FlowExecutor
     protected function sendAIAgentWelcome(FlowState $flowState, FlowNode $node, string $welcomingMessage, int $triggeringMessageId): void
     {
         $conversation = $flowState->conversation;
+        $welcomingMessage = $this->interpolateVariables($welcomingMessage, $flowState);
 
         try {
             $message = $this->messageService->sendMessage($conversation, [
@@ -1172,14 +1446,26 @@ class FlowExecutor
 
     /**
      * Send a message dispatched by `message_type`.
-     * Downloads `attachment_url` into a temporary UploadedFile so the
-     * existing channel handlers (image/audio/video/document) can consume it.
+     * Passes `attachment_url` straight through to the channel handlers as a
+     * `media_url`, so media is sent by URL (fast-path) without a
+     * download/re-upload round trip. Handlers fall back to downloading the URL
+     * only when the channel rejects it or needs transcoding.
      */
     protected function sendByMessageType(Conversation $conversation, array $nodeData, ?FlowState $flowState = null): ?Message
     {
         $messageType = $nodeData['message_type'] ?? 'text';
         $body = $nodeData['body'] ?? '';
         $attachmentUrl = $nodeData['attachment_url'] ?? null;
+
+        // Substitute {{variable}} placeholders with values stored in the flow
+        // (Response inputs, HTTP response mappings, contact/conversation fields)
+        // before the text/media is sent to the conversation.
+        if ($flowState) {
+            $body = $this->interpolateVariables((string) $body, $flowState);
+            if ($attachmentUrl) {
+                $attachmentUrl = $this->interpolateVariables((string) $attachmentUrl, $flowState);
+            }
+        }
 
         $send = function (?Message $message) use ($flowState): ?Message {
             if ($message && $flowState) {
@@ -1194,117 +1480,25 @@ class FlowExecutor
             ]));
         }
 
-        $tempPath = null;
-        try {
-            $uploadedFile = $this->downloadAsUploadedFile($attachmentUrl, $tempPath);
-
-            if (!$uploadedFile) {
-                Log::warning('FlowExecutor: Falling back to text after failing to download attachment', [
-                    'attachment_url' => $attachmentUrl,
-                    'message_type' => $messageType,
-                ]);
-
-                return $send($this->messageService->sendMessage($conversation, [
-                    'message' => $body,
-                ]));
-            }
-
-            return $send(match ($messageType) {
-                'image' => $this->messageService->sendImage($conversation, [
-                    'image' => $uploadedFile,
-                    'message' => $body,
-                ]),
-                'audio' => $this->messageService->sendAudio($conversation, [
-                    'audio' => $uploadedFile,
-                ]),
-                'video' => $this->messageService->sendVideo($conversation, [
-                    'video' => $uploadedFile,
-                    'message' => $body,
-                ]),
-                'document' => $this->messageService->sendDocument($conversation, [
-                    'document' => $uploadedFile,
-                    'message' => $body,
-                ]),
-                default => $this->messageService->sendMessage($conversation, [
-                    'message' => $body,
-                ]),
-            });
-        } finally {
-            if ($tempPath && file_exists($tempPath)) {
-                @unlink($tempPath);
-            }
-        }
-    }
-
-    /**
-     * Download a URL to a temp file and wrap it in an UploadedFile (test mode).
-     * Returns null on failure. $tempPath is filled with the temp file path
-     * so the caller can clean it up.
-     */
-    protected function downloadAsUploadedFile(string $url, ?string &$tempPath = null): ?UploadedFile
-    {
-        try {
-            $response = Http::timeout(30)->get($url);
-
-            if (!$response->successful()) {
-                Log::warning('FlowExecutor: Attachment download returned non-success', [
-                    'url' => $url,
-                    'status' => $response->status(),
-                ]);
-                return null;
-            }
-
-            $contentType = $response->header('Content-Type') ?: 'application/octet-stream';
-            $mime = trim(explode(';', $contentType)[0]);
-
-            $pathFromUrl = parse_url($url, PHP_URL_PATH) ?: '';
-            $filename = $pathFromUrl ? basename($pathFromUrl) : '';
-            if ($filename === '' || !str_contains($filename, '.')) {
-                $ext = $this->extensionFromMime($mime);
-                $base = $filename !== '' ? $filename : 'attachment';
-                $filename = $base . ($ext ? ".{$ext}" : '');
-            }
-
-            $tempPath = tempnam(sys_get_temp_dir(), 'flow_');
-            file_put_contents($tempPath, $response->body());
-
-            return new UploadedFile($tempPath, $filename, $mime, null, true);
-        } catch (\Throwable $th) {
-            Log::error('FlowExecutor: Failed to download attachment', [
-                'url' => $url,
-                'error' => $th->getMessage(),
-            ]);
-            return null;
-        }
-    }
-
-    /**
-     * Guess a file extension from a MIME type for common attachment formats.
-     */
-    protected function extensionFromMime(string $mime): ?string
-    {
-        return match ($mime) {
-            'image/jpeg', 'image/jpg' => 'jpg',
-            'image/png' => 'png',
-            'image/webp' => 'webp',
-            'image/gif' => 'gif',
-            'audio/mpeg', 'audio/mp3' => 'mp3',
-            'audio/ogg', 'audio/opus' => 'ogg',
-            'audio/wav', 'audio/x-wav' => 'wav',
-            'audio/mp4', 'audio/x-m4a' => 'm4a',
-            'video/mp4' => 'mp4',
-            'video/webm' => 'webm',
-            'video/quicktime' => 'mov',
-            'application/pdf' => 'pdf',
-            'application/msword' => 'doc',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
-            'application/vnd.ms-excel' => 'xls',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
-            'application/vnd.ms-powerpoint' => 'ppt',
-            'application/vnd.openxmlformats-officedocument.presentationml.presentation' => 'pptx',
-            'text/plain' => 'txt',
-            'text/csv' => 'csv',
-            default => null,
-        };
+        return $send(match ($messageType) {
+            'image' => $this->messageService->sendImage($conversation, [
+                'media_url' => $attachmentUrl,
+                'message' => $body,
+            ]),
+            'audio' => $this->messageService->sendAudio($conversation, [
+                'media_url' => $attachmentUrl,
+            ]),
+            'video' => $this->messageService->sendVideo($conversation, [
+                'media_url' => $attachmentUrl,
+                'message' => $body,
+            ]),
+            'document' => $this->messageService->sendDocument($conversation, [
+                'media_url' => $attachmentUrl,
+                'message' => $body,
+            ]),
+            default => $this->messageService->sendMessage($conversation, [
+                'message' => $body,
+            ]),
+        });
     }
 }

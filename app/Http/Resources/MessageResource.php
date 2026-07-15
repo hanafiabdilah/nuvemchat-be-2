@@ -28,15 +28,15 @@ class MessageResource extends JsonResource
             'message_type' => $this->message_type,
             'body' => $this->body,
             'attachment_url' => $this->when(!$this->withoutAttachmentUrl, fn() =>
-                $this->attachment ? Storage::disk('local')->temporaryUrl($this->attachment, Carbon::now()->addMonths(6)) : null
+                self::resolveAttachmentUrl($this->attachment)
             ),
             'replied_message' => $this->when($this->repliedMessage, fn() => [
                 'id' => $this->repliedMessage->id,
                 'sender_type' => $this->repliedMessage->sender_type,
                 'message_type' => $this->repliedMessage->message_type,
                 'body' => $this->repliedMessage->body,
-                'attachment_url' => $this->repliedMessage->attachment && !$this->withoutAttachmentUrl
-                    ? Storage::disk('local')->temporaryUrl($this->repliedMessage->attachment, Carbon::now()->addMonths(6))
+                'attachment_url' => !$this->withoutAttachmentUrl
+                    ? self::resolveAttachmentUrl($this->repliedMessage->attachment)
                     : null,
             ]),
             'reactions' => $this->when($this->reactions, fn() =>
@@ -56,6 +56,24 @@ class MessageResource extends JsonResource
             'created_at' => $this->created_at->timestamp,
             'updated_at' => $this->updated_at->timestamp,
         ];
+    }
+
+    /**
+     * Resolve an attachment reference into a URL the frontend can render.
+     * External attachments (media sent by URL) are stored as absolute URLs and
+     * returned as-is; local storage paths get a signed temporary URL.
+     */
+    private static function resolveAttachmentUrl(?string $attachment): ?string
+    {
+        if (!$attachment) {
+            return null;
+        }
+
+        if (str_starts_with($attachment, 'http://') || str_starts_with($attachment, 'https://')) {
+            return $attachment;
+        }
+
+        return Storage::disk('local')->temporaryUrl($attachment, Carbon::now()->addMonths(6));
     }
 
     /**
@@ -128,11 +146,32 @@ class MessageResource extends JsonResource
 
         return match($channel) {
             Channel::WhatsappWApi, Channel::WhatsappProxyhub => $this->getWhatsappWApiMeta(),
-            Channel::WhatsappOfficial => null, // TODO: implement when needed
+            Channel::WhatsappOfficial => $this->getWhatsappOfficialMeta(),
             Channel::Instagram => null,        // TODO: implement when needed
             Channel::Telegram => null,         // TODO: implement when needed
             default => null,
         };
+    }
+
+    /**
+     * Get processed meta for WhatsApp Official (Cloud API) messages.
+     * Surfaces the interactive structure so the UI can render buttons/lists
+     * (outbound) and read which option the customer selected (inbound).
+     */
+    private function getWhatsappOfficialMeta(): ?array
+    {
+        if ($this->message_type !== MessageType::Interactive) {
+            return null;
+        }
+
+        // Outbound: the sent payload is stored under meta.interactive.
+        $outbound = $this->meta['interactive'] ?? null;
+        // Inbound: the customer's reply lives in the raw webhook entry.
+        $inboundReply = $this->meta['changes'][0]['value']['messages'][0]['interactive'] ?? null;
+
+        $interactive = $outbound ?? $inboundReply;
+
+        return $interactive ? ['interactive' => $interactive] : null;
     }
 
     /**

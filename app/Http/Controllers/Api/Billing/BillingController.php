@@ -11,7 +11,9 @@ use App\Http\Resources\Billing\SubscriptionResource;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Services\Billing\BillingService;
+use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 
 class BillingController extends Controller
@@ -42,7 +44,7 @@ class BillingController extends Controller
         $subscription = $this->tenant($request)->currentSubscription?->loadMissing('plan');
 
         return response()->json([
-            'data' => $subscription ? new SubscriptionResource($subscription) : null,
+            'data' => $subscription ? (new SubscriptionResource($subscription))->withUsage() : null,
         ]);
     }
 
@@ -72,16 +74,40 @@ class BillingController extends Controller
         $plan = Plan::active()->findOrFail($validated['plan_id']);
         $method = PaymentMethod::from($validated['method']);
 
-        $subscription = $this->billing->subscribe(
-            $this->tenant($request),
-            $plan,
-            $method,
-            [
-                'card_token_id' => $validated['card_token_id'] ?? null,
-                'payer_email' => $validated['payer_email'],
-                'quantity' => $validated['quantity'] ?? 1,
-            ],
-        );
+        try {
+            $subscription = $this->billing->subscribe(
+                $this->tenant($request),
+                $plan,
+                $method,
+                [
+                    'card_token_id' => $validated['card_token_id'] ?? null,
+                    'payer_email' => $validated['payer_email'],
+                    'quantity' => $validated['quantity'] ?? 1,
+                ],
+            );
+        } catch (RequestException $e) {
+            // MercadoPago rejected the request (bad payload, amount below minimum, card
+            // token from a different account, subscriptions not enabled, etc.). Surface
+            // the provider's reason instead of a blind 500 so it's actionable.
+            $body = $e->response?->json();
+            Log::error('Billing subscribe: MercadoPago rejected the request', [
+                'status' => $e->response?->status(),
+                'body' => $e->response?->body(),
+                'plan_id' => $plan->id,
+            ]);
+
+            return response()->json([
+                'message' => 'Não foi possível processar o pagamento no provedor: '
+                    . ($body['message'] ?? $body['error'] ?? 'erro desconhecido'),
+                'provider_error' => $body,
+            ], 422);
+        } catch (\Throwable $e) {
+            Log::error('Billing subscribe failed', ['error' => $e->getMessage(), 'plan_id' => $plan->id]);
+
+            return response()->json([
+                'message' => 'Falha ao processar a assinatura. Tente novamente.',
+            ], 500);
+        }
 
         return response()->json([
             'data' => new SubscriptionResource($subscription->loadMissing('plan')),

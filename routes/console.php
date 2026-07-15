@@ -37,12 +37,20 @@ Schedule::command('billing:pix-generate --days-before=3')
     ->timezone('America/Sao_Paulo')
     ->onFailure(fn () => logger()->error('Pix renewal charge generation failed'));
 
+// Card auto-renewal via pull (no webhook needed): poll MercadoPago for renewal charges
+// on subscriptions near/at their boundary and advance the paid period. Runs every 15 min
+// so a renewal is picked up quickly — and before process-overdue could suspend a payer.
+Schedule::command('billing:pull-cards')
+    ->everyFifteenMinutes()
+    ->onFailure(fn () => logger()->error('Card renewal pull failed'));
+
 // Advance overdue subscriptions: past_due → grace → suspended; expire stale pix.
+// Runs at :05 so the card pull above (:00/:15/:30/:45) has already extended payers.
 Schedule::command('billing:process-overdue')
-    ->hourly()
+    ->hourlyAt(5)
     ->onFailure(fn () => logger()->error('Overdue subscription processing failed'));
 
-// Safety net for payments whose webhook was missed.
+// Broad safety net: reconcile in-flight pix + all card subscriptions once a day.
 Schedule::command('billing:reconcile')
     ->dailyAt('03:00')
     ->timezone('America/Sao_Paulo')

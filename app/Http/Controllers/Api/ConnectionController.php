@@ -12,6 +12,7 @@ use App\Models\Connection;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\InstagramConfig;
+use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -119,6 +120,54 @@ class ConnectionController extends Controller
             'message' => 'Connection created successfully',
             'data' => $connection->toResource(ConnectionResource::class),
         ], 201);
+    }
+
+    /**
+     * Fetch the WhatsApp Cloud API business profile for this connection.
+     */
+    public function businessProfile(int $id, WhatsappBusinessProfileService $service)
+    {
+        $connection = $this->whatsappOfficialConnection($id);
+
+        return response()->json([
+            'data' => $service->get($connection),
+        ]);
+    }
+
+    /**
+     * Update the WhatsApp business profile's text fields.
+     */
+    public function updateBusinessProfile(int $id, Request $request, WhatsappBusinessProfileService $service)
+    {
+        $connection = $this->whatsappOfficialConnection($id);
+
+        $validated = $request->validate([
+            'about' => ['nullable', 'string', 'max:139'],
+            'description' => ['nullable', 'string', 'max:512'],
+            'address' => ['nullable', 'string', 'max:256'],
+            'email' => ['nullable', 'email', 'max:128'],
+            'vertical' => ['nullable', 'string', 'max:64'],
+            'websites' => ['nullable', 'array', 'max:2'],
+            'websites.*' => ['string', 'url', 'max:256'],
+        ]);
+
+        return response()->json([
+            'data' => $service->update($connection, $validated),
+        ]);
+    }
+
+    /**
+     * Resolve a tenant-scoped connection and assert it is WhatsApp Official.
+     */
+    private function whatsappOfficialConnection(int $id): Connection
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        if ($connection->channel !== Channel::WhatsappOfficial) {
+            abort(422, 'Business profile is only available for WhatsApp Official connections');
+        }
+
+        return $connection;
     }
 
     public function update(int $id, Request $request)

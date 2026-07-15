@@ -8,6 +8,7 @@ use App\Events\MessageReceived;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\MessageHandlerInterface;
+use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Http;
@@ -19,6 +20,60 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
     private function base(): string
     {
         return \App\Services\Connection\Proxy\ProxyhubConfig::baseUrl();
+    }
+
+    /**
+     * URL fast-path: the ProxyHub send-{type} endpoints accept a URL directly in
+     * the media field, so reference the caller's URL, store it as the attachment
+     * and skip hosting/persisting bytes. Throws on a non-success response so the
+     * caller can fall back to downloading the file.
+     */
+    private function sendMediaByUrl(
+        Conversation $conversation,
+        array $data,
+        string $fieldKey,
+        string $endpointType,
+        MessageType $messageTypeEnum,
+        string $url,
+        array $extraPayload = [],
+        array $extraMeta = [],
+        ?string $body = null,
+    ): Message {
+        $connection = $conversation->connection;
+        $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+        $payload = array_merge([
+            'phone' => $conversation->external_id,
+            $fieldKey => $url,
+        ], $extraPayload);
+
+        if ($repliedMessageExternalId) {
+            $payload['messageId'] = $repliedMessageExternalId;
+        }
+
+        $response = Http::withHeaders([
+            'Authorization' => 'Bearer ' . $connection->credentials['token'],
+        ])->post($this->base() . '/v1/message/send-' . $endpointType . '?instanceId=' . $connection->credentials['instance_id'], $payload);
+
+        if (!$response->successful()) {
+            throw new Exception("ProxyHub rejected {$endpointType} URL: " . $response->body());
+        }
+
+        $responseArray = $response->json();
+
+        $message = $conversation->messages()->create([
+            'external_id' => $this->getMessageId($responseArray) ?: uniqid('proxyhub_', true),
+            'sender_type' => SenderType::Outgoing,
+            'message_type' => $messageTypeEnum,
+            'body' => $body,
+            'replied_message_id' => $data['replied_message_id'] ?? null,
+            'sent_at' => $this->getMessageSentAt($responseArray),
+            'meta' => array_merge($responseArray, $extraMeta),
+        ]);
+
+        $message->update(['attachment' => $url]);
+
+        return $message;
     }
     public function getMessageId(array $payload): string
     {
@@ -111,12 +166,40 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'image' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
+            'image' => 'required_without:media_url|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
+            'media_url' => 'required_without:image|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
+
+        $media = OutboundMedia::fromData($data, 'image');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl(
+                    $conversation,
+                    $data,
+                    'image',
+                    'image',
+                    MessageType::Image,
+                    $media->url,
+                    ['caption' => $data['message'] ?? null],
+                    [],
+                    $data['message'] ?? null,
+                );
+            } catch (\Throwable $th) {
+                Log::warning('WhatsappProxyhubHandler: URL image send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send WhatsApp image by URL and download fallback failed');
+                }
+                $data['image'] = $file;
+            }
+        }
 
         try {
             // Get image content and encode to base64
@@ -184,11 +267,36 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            'audio' => 'required_without:media_url|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            'media_url' => 'required_without:audio|url',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
+
+        $media = OutboundMedia::fromData($data, 'audio');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl(
+                    $conversation,
+                    $data,
+                    'audio',
+                    'audio',
+                    MessageType::Audio,
+                    $media->url,
+                );
+            } catch (\Throwable $th) {
+                Log::warning('WhatsappProxyhubHandler: URL audio send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send WhatsApp audio by URL and download fallback failed');
+                }
+                $data['audio'] = $file;
+            }
+        }
 
         try {
             $audioContent = file_get_contents($data['audio']->getRealPath());
@@ -298,13 +406,41 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'video' => 'required_without:media_url|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'media_url' => 'required_without:video|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
         $tempPublicPath = null;
+
+        $media = OutboundMedia::fromData($data, 'video');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl(
+                    $conversation,
+                    $data,
+                    'video',
+                    'video',
+                    MessageType::Video,
+                    $media->url,
+                    ['caption' => $data['message'] ?? null],
+                    [],
+                    $data['message'] ?? null,
+                );
+            } catch (\Throwable $th) {
+                Log::warning('WhatsappProxyhubHandler: URL video send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send WhatsApp video by URL and download fallback failed');
+                }
+                $data['video'] = $file;
+            }
+        }
 
         try {
             // Store video temporarily in public directory
@@ -388,13 +524,45 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
     public function handleSendDocument(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'document' => 'required|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'document' => 'required_without:media_url|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'media_url' => 'required_without:document|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
         $tempPublicPath = null;
+
+        $media = OutboundMedia::fromData($data, 'document');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl(
+                    $conversation,
+                    $data,
+                    'document',
+                    'document',
+                    MessageType::Document,
+                    $media->url,
+                    [
+                        'fileName' => $media->filename,
+                        'extension' => $media->extension,
+                        'caption' => $data['message'] ?? null,
+                    ],
+                    ['filename' => $media->filename],
+                    $data['message'] ?? null,
+                );
+            } catch (\Throwable $th) {
+                Log::warning('WhatsappProxyhubHandler: URL document send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send WhatsApp document by URL and download fallback failed');
+                }
+                $data['document'] = $file;
+            }
+        }
 
         try {
             // Store document temporarily in public directory

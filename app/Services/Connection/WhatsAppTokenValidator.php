@@ -8,6 +8,7 @@ use App\Events\ConnectionUpdated;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Connection\Meta\GraphApi;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -39,10 +40,10 @@ class WhatsAppTokenValidator
      */
     public function isExplicitlyInvalid(string $accessToken): bool
     {
-        $response = Http::get('https://graph.facebook.com/v25.0/me', [
+        $response = GraphApi::retry(fn () => Http::get('https://graph.facebook.com/v25.0/me', [
             'access_token' => $accessToken,
             'fields' => 'id',
-        ]);
+        ]));
 
         if ($response->successful()) {
             return false;
@@ -63,6 +64,19 @@ class WhatsAppTokenValidator
             'error' => $error,
         ]);
         return false;
+    }
+
+    /**
+     * Number of connections the revoked-token scan would probe (one Graph API
+     * call each). Callers use this to decide whether to run the scan inline or
+     * push it to a queue to avoid timing out a synchronous webhook request.
+     */
+    public function revocationScanCandidateCount(): int
+    {
+        return Connection::where('channel', Channel::WhatsappOfficial)
+            ->where('status', Status::Active)
+            ->whereNotNull('credentials')
+            ->count();
     }
 
     /**

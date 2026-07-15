@@ -9,6 +9,7 @@ use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ProxyhubConfig;
 use App\Services\Connection\WApi\WApiConfig;
+use App\Services\Notification\NotificationConfig;
 use Illuminate\Database\Seeder;
 
 class SettingSeeder extends Seeder
@@ -65,6 +66,21 @@ class SettingSeeder extends Seeder
         ];
         foreach ($envCredentials as $key => $value) {
             if (! empty($value) && Setting::get($key) === null) {
+                Setting::set($key, $value);
+            }
+        }
+
+        // Notification defaults (blueprint): disabled until a super-admin configures
+        // the provider in Back Office → Integrations → Notifications.
+        $notificationDefaults = [
+            NotificationConfig::KEY_ENABLED => '0',
+            NotificationConfig::KEY_PROVIDER => NotificationConfig::DEFAULT_PROVIDER,
+            NotificationConfig::KEY_PINGLY_BASE_URL => NotificationConfig::DEFAULT_PINGLY_BASE_URL,
+            NotificationConfig::KEY_WAPI_BASE_URL => NotificationConfig::DEFAULT_WAPI_BASE_URL,
+            NotificationConfig::KEY_PROXYBR_BASE_URL => ProxyhubConfig::DEFAULT_BASE_URL,
+        ];
+        foreach ($notificationDefaults as $key => $value) {
+            if (Setting::get($key) === null) {
                 Setting::set($key, $value);
             }
         }

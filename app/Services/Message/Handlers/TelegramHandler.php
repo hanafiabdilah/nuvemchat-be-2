@@ -7,6 +7,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\MessageHandlerInterface;
+use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Log;
@@ -18,6 +19,60 @@ class TelegramHandler implements MessageHandlerInterface
     public function getMessageId(array $payload): string
     {
         return $payload['message_id'];
+    }
+
+    /**
+     * URL fast-path: Telegram accepts an HTTP URL in place of an uploaded file,
+     * so pass the caller's URL directly and store it as the attachment without
+     * downloading/persisting bytes. Throws on failure so the caller can fall
+     * back to downloading the file (e.g. when Telegram cannot fetch the URL or
+     * the format is unsupported for voice).
+     */
+    private function sendMediaByUrl(
+        Conversation $conversation,
+        array $data,
+        string $field,
+        string $sdkMethod,
+        MessageType $messageTypeEnum,
+        string $url,
+        array $extraMeta = [],
+        ?string $body = null,
+    ): Message {
+        $connection = $conversation->connection;
+        $telegram = new Api($connection->credentials['token']);
+
+        $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+
+        $payload = [
+            'chat_id' => $conversation->external_id,
+            $field => $url,
+        ];
+
+        if ($body !== null) {
+            $payload['caption'] = $body;
+        }
+
+        if ($repliedMessageExternalId) {
+            $payload['reply_to_message_id'] = (int)$repliedMessageExternalId;
+        }
+
+        $response = $telegram->{$sdkMethod}($payload);
+        $responseArray = $response->toArray();
+
+        $message = $conversation->messages()->create([
+            'external_id' => $this->getMessageId($responseArray),
+            'sender_type' => SenderType::Outgoing,
+            'message_type' => $messageTypeEnum,
+            'body' => $body,
+            'replied_message_id' => $data['replied_message_id'] ?? null,
+            'sent_at' => $this->getMessageSentAt($responseArray),
+            'delivery_at' => $this->getMessageSentAt($responseArray),
+            'meta' => array_merge($responseArray, $extraMeta),
+        ]);
+
+        $message->update(['attachment' => $url]);
+
+        return $message;
     }
 
     public function getMessageSentAt(array $payload): Carbon
@@ -101,12 +156,30 @@ class TelegramHandler implements MessageHandlerInterface
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'image' => 'required|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
+            'image' => 'required_without:media_url|image|mimes:jpeg,png,jpg,gif,webp|max:10240',
+            'media_url' => 'required_without:image|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
+
+        $media = OutboundMedia::fromData($data, 'image');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl($conversation, $data, 'photo', 'sendPhoto', MessageType::Image, $media->url, [], $data['message'] ?? null);
+            } catch (\Throwable $th) {
+                Log::warning('TelegramHandler: URL image send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send Telegram image by URL and download fallback failed');
+                }
+                $data['image'] = $file;
+            }
+        }
 
         try {
             $telegram = new Api($connection->credentials['token']);
@@ -160,11 +233,29 @@ class TelegramHandler implements MessageHandlerInterface
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            'audio' => 'required_without:media_url|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            'media_url' => 'required_without:audio|url',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
+
+        $media = OutboundMedia::fromData($data, 'audio');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl($conversation, $data, 'voice', 'sendVoice', MessageType::Audio, $media->url);
+            } catch (\Throwable $th) {
+                Log::warning('TelegramHandler: URL audio send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send Telegram audio by URL and download fallback failed');
+                }
+                $data['audio'] = $file;
+            }
+        }
 
         try {
             $telegram = new Api($connection->credentials['token']);
@@ -217,12 +308,30 @@ class TelegramHandler implements MessageHandlerInterface
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'video' => 'required_without:media_url|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'media_url' => 'required_without:video|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
+
+        $media = OutboundMedia::fromData($data, 'video');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl($conversation, $data, 'video', 'sendVideo', MessageType::Video, $media->url, [], $data['message'] ?? null);
+            } catch (\Throwable $th) {
+                Log::warning('TelegramHandler: URL video send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send Telegram video by URL and download fallback failed');
+                }
+                $data['video'] = $file;
+            }
+        }
 
         try {
             $telegram = new Api($connection->credentials['token']);
@@ -276,12 +385,30 @@ class TelegramHandler implements MessageHandlerInterface
     public function handleSendDocument(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'document' => 'required|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'document' => 'required_without:media_url|file|mimes:pdf,doc,docx,xls,xlsx,ppt,pptx,txt,zip,rar,csv|max:102400',
+            'media_url' => 'required_without:document|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
+
+        $media = OutboundMedia::fromData($data, 'document');
+        if ($media && $media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl($conversation, $data, 'document', 'sendDocument', MessageType::Document, $media->url, ['filename' => $media->filename], $data['message'] ?? null);
+            } catch (\Throwable $th) {
+                Log::warning('TelegramHandler: URL document send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+                $file = $media->toUploadedFile();
+                if (!$file) {
+                    throw new Exception('Failed to send Telegram document by URL and download fallback failed');
+                }
+                $data['document'] = $file;
+            }
+        }
 
         try {
             $telegram = new Api($connection->credentials['token']);

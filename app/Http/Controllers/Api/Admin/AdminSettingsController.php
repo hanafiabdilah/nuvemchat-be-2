@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\Notification\NotificationType;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\Setting;
@@ -11,6 +12,8 @@ use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ProxyhubConfig;
 use App\Services\Connection\WApi\WApiConfig;
+use App\Services\Notification\NotificationConfig;
+use App\Services\Notification\NotificationProviderFactory;
 use Illuminate\Http\Request;
 
 class AdminSettingsController extends Controller
@@ -31,6 +34,9 @@ class AdminSettingsController extends Controller
         $fbVerify = FacebookConfig::webhookVerifyToken();
         $wapiToken = WApiConfig::managedToken();
         $aiToken = AiAgentHubConfig::adminToken();
+        $notifPinglyKey = NotificationConfig::pinglyApiKey();
+        $notifToken = NotificationConfig::wapiToken();
+        $notifProxyToken = NotificationConfig::proxybrToken();
 
         return response()->json([
             'data' => [
@@ -74,6 +80,33 @@ class AdminSettingsController extends Controller
                     'admin_token_set' => ! empty($aiToken),
                     'admin_token_preview' => $this->mask($aiToken),
                 ],
+                'notifications' => [
+                    'enabled' => NotificationConfig::enabled(),
+                    'provider' => NotificationConfig::provider(),
+                    'providers' => app(NotificationProviderFactory::class)->available(),
+                    'pingly' => [
+                        'base_url' => NotificationConfig::pinglyBaseUrl(),
+                        'api_key_set' => ! empty($notifPinglyKey),
+                        'api_key_preview' => $this->mask($notifPinglyKey),
+                    ],
+                    'wapi' => [
+                        'base_url' => NotificationConfig::wapiBaseUrl(),
+                        'instance_id' => NotificationConfig::wapiInstanceId(),
+                        'token_set' => ! empty($notifToken),
+                        'token_preview' => $this->mask($notifToken),
+                    ],
+                    'proxybr' => [
+                        'base_url' => NotificationConfig::proxybrBaseUrl(),
+                        'instance_id' => NotificationConfig::proxybrInstanceId(),
+                        'token_set' => ! empty($notifProxyToken),
+                        'token_preview' => $this->mask($notifProxyToken),
+                    ],
+                    // Event catalog (label + default template + placeholders + required),
+                    // current per-event toggles, and per-event message overrides.
+                    'event_types' => NotificationType::catalog(),
+                    'events' => NotificationConfig::eventsMap(),
+                    'templates' => NotificationConfig::templatesMap(),
+                ],
             ],
         ]);
     }
@@ -114,6 +147,25 @@ class AdminSettingsController extends Controller
             'ai_agent_hub' => ['sometimes', 'array'],
             'ai_agent_hub.base_url' => ['nullable', 'url', 'max:255'],
             'ai_agent_hub.admin_token' => ['nullable', 'string', 'max:512'],
+
+            'notifications' => ['sometimes', 'array'],
+            'notifications.enabled' => ['sometimes', 'boolean'],
+            'notifications.provider' => ['sometimes', 'string', 'max:50'],
+            'notifications.pingly' => ['sometimes', 'array'],
+            'notifications.pingly.base_url' => ['nullable', 'url', 'max:255'],
+            'notifications.pingly.api_key' => ['nullable', 'string', 'max:1024'],
+            'notifications.wapi' => ['sometimes', 'array'],
+            'notifications.wapi.base_url' => ['nullable', 'url', 'max:255'],
+            'notifications.wapi.instance_id' => ['nullable', 'string', 'max:255'],
+            'notifications.wapi.token' => ['nullable', 'string', 'max:1024'],
+            'notifications.proxybr' => ['sometimes', 'array'],
+            'notifications.proxybr.base_url' => ['nullable', 'url', 'max:255'],
+            'notifications.proxybr.instance_id' => ['nullable', 'string', 'max:255'],
+            'notifications.proxybr.token' => ['nullable', 'string', 'max:1024'],
+            'notifications.events' => ['sometimes', 'array'],
+            'notifications.events.*' => ['boolean'],
+            'notifications.templates' => ['sometimes', 'array'],
+            'notifications.templates.*' => ['nullable', 'string', 'max:2000'],
         ]);
 
         if ($request->has('proxyhub')) {
@@ -189,6 +241,52 @@ class AdminSettingsController extends Controller
             // Secret: only replaced when a new value is supplied.
             if (! empty($ai['admin_token'])) {
                 Setting::set(AiAgentHubConfig::KEY_ADMIN_TOKEN, $ai['admin_token']);
+            }
+        }
+
+        if ($request->has('notifications')) {
+            $n = $validated['notifications'];
+
+            if (array_key_exists('enabled', $n)) {
+                Setting::set(NotificationConfig::KEY_ENABLED, $n['enabled'] ? '1' : '0');
+            }
+            if (! empty($n['provider'])) {
+                Setting::set(NotificationConfig::KEY_PROVIDER, $n['provider']);
+            }
+            if (isset($n['pingly'])) {
+                Setting::set(NotificationConfig::KEY_PINGLY_BASE_URL, $n['pingly']['base_url'] ?? null);
+                if (! empty($n['pingly']['api_key'])) {
+                    Setting::set(NotificationConfig::KEY_PINGLY_API_KEY, $n['pingly']['api_key']);
+                }
+            }
+            if (isset($n['wapi'])) {
+                // Public values: stored as-is.
+                Setting::set(NotificationConfig::KEY_WAPI_BASE_URL, $n['wapi']['base_url'] ?? null);
+                Setting::set(NotificationConfig::KEY_WAPI_INSTANCE_ID, $n['wapi']['instance_id'] ?? null);
+
+                // Secret: only replaced when a new value is supplied.
+                if (! empty($n['wapi']['token'])) {
+                    Setting::set(NotificationConfig::KEY_WAPI_TOKEN, $n['wapi']['token']);
+                }
+            }
+            if (isset($n['proxybr'])) {
+                Setting::set(NotificationConfig::KEY_PROXYBR_BASE_URL, $n['proxybr']['base_url'] ?? null);
+                Setting::set(NotificationConfig::KEY_PROXYBR_INSTANCE_ID, $n['proxybr']['instance_id'] ?? null);
+                if (! empty($n['proxybr']['token'])) {
+                    Setting::set(NotificationConfig::KEY_PROXYBR_TOKEN, $n['proxybr']['token']);
+                }
+            }
+            if (array_key_exists('templates', $n)) {
+                // Store only non-empty overrides; blank falls back to the enum default.
+                $templates = array_filter(
+                    $n['templates'],
+                    fn ($v) => is_string($v) && trim($v) !== '',
+                );
+                Setting::set(NotificationConfig::KEY_TEMPLATES, json_encode($templates));
+            }
+
+            if (array_key_exists('events', $n)) {
+                Setting::set(NotificationConfig::KEY_EVENTS, json_encode($n['events']));
             }
         }
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Enums\Connection\Status;
 use App\Events\ConnectionUpdated;
+use App\Jobs\DeauthorizeRevokedWhatsAppConnections;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -18,6 +19,13 @@ use Illuminate\Support\Facades\Log;
 
 class ConnectionController extends Controller
 {
+    /**
+     * Above this many connections, the revoked-token fallback scan is pushed to
+     * a queue instead of running inline, so the Meta deauth webhook returns fast
+     * (each connection costs one Graph API round-trip).
+     */
+    private const DEAUTH_SYNC_LIMIT = 100;
+
     public function __construct(
         protected ConnectionService $connectionService,
         protected WhatsAppTokenValidator $whatsAppTokenValidator,
@@ -240,6 +248,32 @@ class ConnectionController extends Controller
 
             $instagramUserId = $data['user_id'];
 
+            // Idempotency: Meta retries the same signed_request (same user_id +
+            // issued_at) on failure/timeout. If we already processed it, return
+            // the original confirmation without wiping data again.
+            $issuedAt = $data['issued_at'] ?? null;
+            $dedupeKey = $issuedAt !== null
+                ? hash('sha256', $instagramUserId . '|' . $issuedAt)
+                : null;
+
+            if ($dedupeKey !== null) {
+                $existing = DB::table('instagram_deletion_logs')
+                    ->where('dedupe_key', $dedupeKey)
+                    ->first();
+
+                if ($existing) {
+                    Log::info('Instagram data deletion: duplicate callback ignored', [
+                        'instagram_user_id' => $instagramUserId,
+                        'confirmation_code' => $existing->confirmation_code,
+                    ]);
+
+                    return response()->json([
+                        'url' => route('instagram.deletion-status', ['code' => $existing->confirmation_code]),
+                        'confirmation_code' => $existing->confirmation_code,
+                    ]);
+                }
+            }
+
             // Generate confirmation code
             $confirmationCode = hash('sha256', $instagramUserId . time() . uniqid());
             $statusUrl = route('instagram.deletion-status', ['code' => $confirmationCode]);
@@ -304,6 +338,7 @@ class ConnectionController extends Controller
             DB::table('instagram_deletion_logs')->insert([
                 'confirmation_code' => $confirmationCode,
                 'instagram_user_id' => $instagramUserId,
+                'dedupe_key' => $dedupeKey,
                 'status' => 'completed',
                 'connections_deleted' => $connectionsAffected,
                 'conversations_deleted' => $conversationsDeleted,
@@ -548,7 +583,11 @@ class ConnectionController extends Controller
             $alreadyRegistered = ($platformType === 'CLOUD_API')
                 && ($codeVerificationStatus === 'VERIFIED');
 
-            $pin = $connection->credentials['pin'] ?? null;
+            // Credentials may be null here — e.g. re-authorizing a connection
+            // that was wiped by a Meta data-deletion callback. Normalize to an
+            // array so array-offset reads below don't warn on null.
+            $existingCredentials = $connection->credentials ?? [];
+            $pin = $existingCredentials['pin'] ?? null;
 
             if ($alreadyRegistered) {
                 Log::info('Phone number already registered on Cloud API; skipping /register', [
@@ -589,7 +628,7 @@ class ConnectionController extends Controller
                 'pin' => $pin,
                 // App-scoped user id from FB.login — used to match Meta
                 // deauth/data-deletion signed_requests back to this connection.
-                'fb_user_id' => $fbUserId ?: ($connection->credentials['fb_user_id'] ?? null),
+                'fb_user_id' => $fbUserId ?: ($existingCredentials['fb_user_id'] ?? null),
                 'token_type' => 'SYSTEM_USER',
                 'token_expires_at' => null,
             ]);
@@ -727,6 +766,25 @@ class ConnectionController extends Controller
             $deauthorized = $this->whatsAppTokenValidator->deauthorizeByFacebookUserId($data['user_id']);
 
             if ($deauthorized->isEmpty()) {
+                // Fallback scan probes Meta once per connection. On large tenants
+                // that would blow the webhook's time budget, so push it to a queue
+                // and acknowledge Meta immediately.
+                $candidateCount = $this->whatsAppTokenValidator->revocationScanCandidateCount();
+
+                if ($candidateCount > self::DEAUTH_SYNC_LIMIT) {
+                    DeauthorizeRevokedWhatsAppConnections::dispatch();
+
+                    Log::info('Facebook deauthorization: large connection set, queued revoked-token scan', [
+                        'facebook_user_id' => $data['user_id'],
+                        'candidate_count' => $candidateCount,
+                    ]);
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Deauthorization queued for processing',
+                    ]);
+                }
+
                 Log::info('Facebook deauthorization: no fb_user_id match, falling back to token validation', [
                     'facebook_user_id' => $data['user_id'],
                 ]);
@@ -774,6 +832,33 @@ class ConnectionController extends Controller
             }
 
             $facebookUserId = $data['user_id'];
+
+            // Idempotency: Meta retries the same signed_request (same user_id +
+            // issued_at) on failure/timeout. If we already processed it, return
+            // the original confirmation without wiping data again.
+            $issuedAt = $data['issued_at'] ?? null;
+            $dedupeKey = $issuedAt !== null
+                ? hash('sha256', $facebookUserId . '|' . $issuedAt)
+                : null;
+
+            if ($dedupeKey !== null) {
+                $existing = DB::table('facebook_deletion_logs')
+                    ->where('dedupe_key', $dedupeKey)
+                    ->first();
+
+                if ($existing) {
+                    Log::info('Facebook data deletion: duplicate callback ignored', [
+                        'facebook_user_id' => $facebookUserId,
+                        'confirmation_code' => $existing->confirmation_code,
+                    ]);
+
+                    return response()->json([
+                        'url' => route('oauth.facebook.deletion-status', ['code' => $existing->confirmation_code]),
+                        'confirmation_code' => $existing->confirmation_code,
+                    ]);
+                }
+            }
+
             $confirmationCode = hash('sha256', $facebookUserId . time() . uniqid());
             $statusUrl = route('oauth.facebook.deletion-status', ['code' => $confirmationCode]);
 
@@ -799,6 +884,7 @@ class ConnectionController extends Controller
             DB::table('facebook_deletion_logs')->insert([
                 'confirmation_code' => $confirmationCode,
                 'facebook_user_id' => $facebookUserId,
+                'dedupe_key' => $dedupeKey,
                 'status' => 'completed',
                 'connections_deleted' => $stats['connections'],
                 'conversations_deleted' => $stats['conversations'],
