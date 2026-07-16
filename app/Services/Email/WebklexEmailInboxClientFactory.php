@@ -37,6 +37,18 @@ class WebklexEmailInboxClientFactory implements EmailInboxClientFactory
                 'fetch' => \Webklex\PHPIMAP\IMAP::FT_PEEK,
                 'fetch_order' => 'asc',
             ],
+            // O default da lib decodifica header/corpo com imap_utf8(), que vem da
+            // extensao ext-imap - e nos rodamos em modo PHP puro, sem ela. Sem isso
+            // o decode falha em silencio e assunto/remetente ficam no formato cru
+            // RFC 2047 (=?UTF-8?B?...?=), quebrando qualquer acento.
+            // 'mimeheader' usa mb_decode_mimeheader(), que e PHP puro.
+            'decoding' => [
+                'options' => [
+                    'header' => 'mimeheader',
+                    'message' => 'mimeheader',
+                    'attachment' => 'mimeheader',
+                ],
+            ],
         ]))->account('email');
 
         $client->connect();
