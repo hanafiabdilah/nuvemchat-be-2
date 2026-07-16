@@ -108,6 +108,69 @@ class EmailHandler implements MessageHandlerInterface
         throw new \RuntimeException('E-mail enviado nao pode ser editado/apagado');
     }
 
+    /**
+     * Send a brand-new e-mail (compose), not a reply: an explicit subject and
+     * body, no quoted original and no In-Reply-To/References threading headers.
+     * The conversation must already carry the recipient on its contact.
+     */
+    public function sendNewEmail(Conversation $conversation, string $subject, string $body): Message
+    {
+        $connection = $conversation->connection;
+        $credentials = $this->credentials($connection->credentials ?? []);
+        $password = $this->decryptPassword($credentials);
+        $recipient = $this->recipientEmail($conversation);
+
+        $newText = trim($body);
+        $subject = trim($subject);
+        if ($subject === '') {
+            $subject = '(no subject)';
+        }
+        $messageId = $this->generateMessageId($credentials['email']);
+
+        $email = (new Email())
+            ->from(new Address($credentials['email'], $connection->name ?: $credentials['email']))
+            ->to(new Address($recipient, $conversation->contact?->name ?: ''))
+            ->subject($subject)
+            ->text($newText);
+
+        $email->getHeaders()->addIdHeader('Message-ID', $messageId);
+
+        try {
+            (new Mailer(app(EmailSmtpTransportFactory::class)->make($credentials, $password)))->send($email);
+        } catch (TransportExceptionInterface $exception) {
+            $this->logSendFailure($conversation, $exception);
+
+            if ($this->isSmtpAuthenticationFailure($exception)) {
+                throw new ConnectionException('Falha na autenticacao SMTP: usuario ou senha invalidos.', 422, previous: $exception);
+            }
+
+            throw new ConnectionException('Falha ao enviar e-mail pelo servidor SMTP.', 502, previous: $exception);
+        } catch (\Throwable $exception) {
+            $this->logSendFailure($conversation, $exception);
+
+            throw new ConnectionException('Falha ao enviar e-mail pelo servidor SMTP.', 502, previous: $exception);
+        }
+
+        $message = $conversation->messages()->create([
+            'external_id' => $messageId,
+            'sender_type' => SenderType::Outgoing,
+            'message_type' => MessageType::Text,
+            'body' => $newText,
+            'sent_at' => now(),
+            'delivery_at' => now(),
+            'meta' => [
+                'email' => [
+                    'subject' => $subject,
+                    'from' => $credentials['email'],
+                    'to' => [$recipient],
+                    'message_id' => $messageId,
+                ],
+            ],
+        ]);
+
+        return $message->refresh();
+    }
+
     private function sendEmailReply(
         Conversation $conversation,
         array $data,

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Connection\Channel;
+use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
@@ -17,10 +18,12 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Tag;
 use App\Services\AutomatedMessageService;
+use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -148,6 +151,100 @@ class ConversationController extends Controller
                 'message' => 'Failed to create conversation or send message',
             ], 500);
         }
+    }
+
+    /**
+     * Compose and send a brand-new e-mail (no existing conversation). Creates
+     * (or reuses) the recipient contact, opens an Active conversation on the
+     * e-mail connection, sends via SMTP and stores the outgoing message. The
+     * e-mail inbox has no accept step, so the conversation starts Active.
+     */
+    public function composeEmail(Request $request)
+    {
+        $validated = $request->validate([
+            'connection_id' => ['required', 'integer'],
+            'to' => ['required', 'email'],
+            'subject' => ['nullable', 'string', 'max:255'],
+            'message' => ['required', 'string'],
+        ]);
+
+        $connection = Connection::where('id', $validated['connection_id'])
+            ->where('tenant_id', Auth::user()->tenant_id)
+            ->where('channel', Channel::Email)
+            ->firstOrFail();
+
+        if (!Auth::user()->hasRole('owner') && !$connection->users->contains(Auth::id())) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        if ($connection->status !== ConnectionStatus::Active) {
+            return response()->json(['message' => 'Connection is not active'], 400);
+        }
+
+        $recipient = strtolower(trim($validated['to']));
+        $subject = trim((string) ($validated['subject'] ?? ''));
+        if ($subject === '') {
+            $subject = '(no subject)';
+        }
+
+        $contact = Contact::createFromExternalData($connection, $recipient, $recipient);
+
+        // Thread key mirrors FetchEmails::conversationExternalId so a later reply
+        // on the same subject reuses this conversation.
+        $externalId = 'email:' . sha1($contact->id . '|' . $this->normalizeEmailSubject($subject));
+
+        $conversation = Conversation::create([
+            'contact_id' => $contact->id,
+            'connection_id' => $connection->id,
+            'external_id' => $externalId,
+            'status' => Status::Active,
+            'last_message_at' => now(),
+        ]);
+
+        try {
+            $message = (new EmailHandler())->sendNewEmail($conversation, $subject, $validated['message']);
+        } catch (\Throwable $th) {
+            // Roll back the empty conversation we just opened so a failed send
+            // doesn't leave a dangling thread.
+            $conversation->delete();
+
+            if ($th instanceof ValidationException) {
+                throw $th;
+            }
+            if ($th instanceof ConnectionException) {
+                $status = $th->getHttpStatusCode() ?: 502;
+                return response()->json(['message' => $th->getMessage()], $status);
+            }
+
+            Log::error('ConversationController: Failed to compose email', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            return response()->json(['message' => 'Failed to send email'], 500);
+        }
+
+        $message?->update(['sent_by_user_id' => Auth::id()]);
+
+        broadcast(new MessageReceived($message));
+        broadcast(new ConversationUpdated($conversation->load('contact')));
+
+        return response()->json([
+            'data' => new ConversationResource($conversation->load('contact')),
+            'sent_message' => new MessageResource($message),
+        ], 201);
+    }
+
+    private function normalizeEmailSubject(?string $subject): string
+    {
+        $subject = trim((string) $subject);
+
+        do {
+            $previous = $subject;
+            $subject = preg_replace('/^\s*(re|fw|fwd)\s*:\s*/i', '', $subject) ?? $subject;
+        } while ($subject !== $previous);
+
+        return Str::of($subject)->squish()->lower()->toString();
     }
 
     public function show(int $id)

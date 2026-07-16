@@ -88,6 +88,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
 
         Route::get('/conversations', [ConversationController::class, 'index']);
         Route::post('/conversations', [ConversationController::class, 'store']);
+        Route::post('/conversations/compose-email', [ConversationController::class, 'composeEmail']);
         Route::get('/conversations/{id}', [ConversationController::class, 'show']);
         Route::get('/conversations/{id}/variables', [ConversationController::class, 'variables']);
         // Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
