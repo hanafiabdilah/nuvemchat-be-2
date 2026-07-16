@@ -212,7 +212,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -276,7 +276,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -298,7 +298,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -348,7 +348,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -388,7 +388,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -428,7 +428,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -468,7 +468,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -529,7 +529,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -646,7 +646,6 @@ class ConversationController extends Controller
         ]);
 
         $target = Status::from($validated['status']);
-        $isOwner = Auth::user()->hasRole('owner');
 
         $conversations = Conversation::with('connection')
             ->whereHas('connection', function ($q) {
@@ -670,9 +669,10 @@ class ConversationController extends Controller
                     $this->applyAccept($conversation);
                     $updated++;
                 } else { // Status::Resolved
-                    // Resolve: only Active, and only own conversations unless owner.
+                    // Resolve: only Active, and only accessible conversations
+                    // (own, or any e-mail shared-inbox conversation) unless owner.
                     if ($conversation->status !== Status::Active
-                        || (!$isOwner && $conversation->user_id !== Auth::id())) {
+                        || !$conversation->isAccessibleBy(Auth::user())) {
                         $skipped++;
                         continue;
                     }
@@ -706,7 +706,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -740,7 +740,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -785,7 +785,7 @@ class ConversationController extends Controller
             $q->where('tenant_id', Auth::user()->tenant_id);
         })->findOrFail($id);
 
-        if(!Auth::user()->hasRole('owner') && $conversation->user_id !== Auth::id()){
+        if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);

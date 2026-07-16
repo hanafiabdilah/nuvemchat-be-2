@@ -187,11 +187,16 @@ class FetchEmails extends Command
             return $conversation;
         }
 
+        // E-mail is a shared inbox with no accept/assign step: create the
+        // conversation already Active so agents can reply immediately (the
+        // send guards require status Active). It stays unassigned (user_id
+        // null); access is granted to owner + connection members via
+        // Conversation::isAccessibleBy().
         return Conversation::create([
             'contact_id' => $contact->id,
             'connection_id' => $connection->id,
             'external_id' => $externalId,
-            'status' => ConversationStatus::Pending,
+            'status' => ConversationStatus::Active,
         ]);
     }
 
