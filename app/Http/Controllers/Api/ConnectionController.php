@@ -10,6 +10,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
@@ -208,6 +209,10 @@ class ConnectionController extends Controller
             }
         }
 
+        if ($connection->channel === Channel::Email) {
+            $request->validate(EmailChannel::rules());
+        }
+
         try {
             $this->connectionService->connect($connection, $request->all());
 
@@ -224,7 +229,7 @@ class ConnectionController extends Controller
                 // Never forward an upstream/provider auth failure as 401 — the SPA logs
                 // the user out on any 401. Surface it as a gateway error instead.
                 $status = 502;
-                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+                $message = 'Nao foi possivel conectar a instancia junto ao provedor. Verifique a configuracao da integracao.';
             }
             return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
@@ -256,7 +261,7 @@ class ConnectionController extends Controller
                 // Never forward an upstream/provider auth failure as 401 — the SPA logs
                 // the user out on any 401. Surface it as a gateway error instead.
                 $status = 502;
-                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+                $message = 'Nao foi possivel conectar a instancia junto ao provedor. Verifique a configuracao da integracao.';
             }
             return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
@@ -291,7 +296,7 @@ class ConnectionController extends Controller
                 // Never forward an upstream/provider auth failure as 401 — the SPA logs
                 // the user out on any 401. Surface it as a gateway error instead.
                 $status = 502;
-                $message = 'Não foi possível conectar a instância junto ao provedor. Verifique a configuração da integração.';
+                $message = 'Nao foi possivel conectar a instancia junto ao provedor. Verifique a configuracao da integracao.';
             }
             return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {

@@ -4,6 +4,7 @@ namespace App\Services\Connection;
 
 use App\Enums\Connection\Channel;
 use App\Services\Connection\Channels\InstagramChannel;
+use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\Channels\LiveChatWidgetChannel;
 use App\Services\Connection\Channels\TelegramChannel;
 use App\Services\Connection\Channels\WhatsappOfficialChannel;
@@ -22,6 +23,7 @@ class ChannelFactory
             Channel::WhatsappWApi => new WhatsappWApiChannel(),
             Channel::WhatsappProxyhub => new WhatsappProxyhubChannel(),
             Channel::LiveChatWidget => new LiveChatWidgetChannel(),
+            Channel::Email => new EmailChannel(),
             default => throw new \Exception("Channel not supported"),
         };
     }

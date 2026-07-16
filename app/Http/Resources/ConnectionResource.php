@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Enums\Connection\Channel;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -14,13 +15,19 @@ class ConnectionResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
+        $credentials = $this->credentials;
+
+        if ($this->channel === Channel::Email && is_array($credentials)) {
+            unset($credentials['password']);
+        }
+
         return [
             'id' => $this->id,
             'channel' => $this->channel,
             'name' => $this->name,
             'color' => $this->color,
             'status' => $this->status,
-            'credentials' => $this->credentials,
+            'credentials' => $credentials,
             'automated_messages' => [
                 'accept_message' => $this->accept_message,
                 'closing_message' => $this->closing_message,

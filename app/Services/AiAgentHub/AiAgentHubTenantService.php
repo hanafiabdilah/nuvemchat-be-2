@@ -808,6 +808,7 @@ class AiAgentHubTenantService
             Channel::WhatsappOfficial, Channel::WhatsappWApi, Channel::WhatsappProxyhub => 'whatsapp',
             Channel::Telegram => 'telegram',
             Channel::LiveChatWidget => 'live_chat_widget',
+            Channel::Email => throw new \InvalidArgumentException('Email channel not supported for this operation yet'),
         };
     }
 

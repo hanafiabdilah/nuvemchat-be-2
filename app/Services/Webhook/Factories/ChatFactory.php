@@ -20,6 +20,7 @@ class ChatFactory
             Channel::WhatsappWApi => new WhatsappWApiHandler(),
             Channel::WhatsappProxyhub => new WhatsappProxyhubHandler(),
             Channel::Instagram => new InstagramHandler(),
+            Channel::Email => throw new \InvalidArgumentException('Email channel not supported for this operation yet'),
             default => throw new \InvalidArgumentException('Unsupported channel type for chat handler.'),
         };
     }

@@ -16,6 +16,8 @@ class Connection extends Model
         'color',
         'status',
         'credentials',
+        'last_seen_uid',
+        'last_synced_at',
         'api_key',
         'accept_message',
         'closing_message',
@@ -25,6 +27,8 @@ class Connection extends Model
         'channel' => Channel::class,
         'status' => Status::class,
         'credentials' => 'array',
+        'last_seen_uid' => 'integer',
+        'last_synced_at' => 'datetime',
     ];
 
     /**
