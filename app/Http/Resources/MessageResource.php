@@ -158,7 +158,22 @@ class MessageResource extends JsonResource
     {
         $email = $this->meta['email'] ?? null;
 
-        return is_array($email) ? ['email' => $email] : null;
+        if (!is_array($email)) {
+            return null;
+        }
+
+        // Turn each attachment's private storage path into a signed, downloadable
+        // URL. Skipped for the conversation-list preview (withoutAttachmentUrl) to
+        // avoid signing URLs for rows the user never opens.
+        if (!$this->withoutAttachmentUrl && !empty($email['attachments']) && is_array($email['attachments'])) {
+            $email['attachments'] = array_map(function ($attachment) {
+                $path = $attachment['path'] ?? null;
+                $attachment['url'] = $path ? self::resolveAttachmentUrl($path) : null;
+                return $attachment;
+            }, $email['attachments']);
+        }
+
+        return ['email' => $email];
     }
 
     /**

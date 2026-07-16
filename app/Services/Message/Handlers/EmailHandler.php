@@ -38,8 +38,11 @@ class EmailHandler implements MessageHandlerInterface
 
     public function handleSendMessage(Conversation $conversation, array $data): ?Message
     {
+        // E-mail reply may carry text and/or multiple file attachments.
         validator($data, [
-            'message' => 'required|string',
+            'message' => ['required_without:attachments', 'nullable', 'string'],
+            'attachments' => ['nullable', 'array', 'max:20'],
+            'attachments.*' => ['file', 'max:25600'],
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
@@ -112,8 +115,10 @@ class EmailHandler implements MessageHandlerInterface
      * Send a brand-new e-mail (compose), not a reply: an explicit subject and
      * body, no quoted original and no In-Reply-To/References threading headers.
      * The conversation must already carry the recipient on its contact.
+     *
+     * @param array<int, UploadedFile> $attachments
      */
-    public function sendNewEmail(Conversation $conversation, string $subject, string $body): Message
+    public function sendNewEmail(Conversation $conversation, string $subject, string $body, array $attachments = []): Message
     {
         $connection = $conversation->connection;
         $credentials = $this->credentials($connection->credentials ?? []);
@@ -135,6 +140,9 @@ class EmailHandler implements MessageHandlerInterface
 
         $email->getHeaders()->addIdHeader('Message-ID', $messageId);
 
+        $files = array_values(array_filter($attachments, fn ($file) => $file instanceof UploadedFile));
+        $this->attachFilesToEmail($email, $files);
+
         try {
             (new Mailer(app(EmailSmtpTransportFactory::class)->make($credentials, $password)))->send($email);
         } catch (TransportExceptionInterface $exception) {
@@ -151,21 +159,27 @@ class EmailHandler implements MessageHandlerInterface
             throw new ConnectionException('Falha ao enviar e-mail pelo servidor SMTP.', 502, previous: $exception);
         }
 
+        $storedAttachments = $this->storeFiles($messageId, $files);
+
+        $emailMeta = [
+            'subject' => $subject,
+            'from' => $credentials['email'],
+            'to' => [$recipient],
+            'message_id' => $messageId,
+        ];
+        if ($storedAttachments !== []) {
+            $emailMeta['attachments'] = $storedAttachments;
+        }
+
         $message = $conversation->messages()->create([
             'external_id' => $messageId,
             'sender_type' => SenderType::Outgoing,
             'message_type' => MessageType::Text,
             'body' => $newText,
+            'attachment' => $storedAttachments[0]['path'] ?? null,
             'sent_at' => now(),
             'delivery_at' => now(),
-            'meta' => [
-                'email' => [
-                    'subject' => $subject,
-                    'from' => $credentials['email'],
-                    'to' => [$recipient],
-                    'message_id' => $messageId,
-                ],
-            ],
+            'meta' => ['email' => $emailMeta],
         ]);
 
         return $message->refresh();
@@ -206,14 +220,10 @@ class EmailHandler implements MessageHandlerInterface
             ));
         }
 
-        $uploadedFile = $attachmentField ? ($data[$attachmentField] ?? null) : null;
-        if ($uploadedFile instanceof UploadedFile) {
-            $email->attachFromPath(
-                $uploadedFile->getRealPath(),
-                $uploadedFile->getClientOriginalName(),
-                $uploadedFile->getMimeType() ?: null
-            );
-        }
+        // A single-field media upload (send-image/video/document/audio) plus any
+        // multi-file "attachments[]" are all attached to the same e-mail.
+        $files = $this->collectAttachments($data, $attachmentField);
+        $this->attachFilesToEmail($email, $files);
 
         try {
             (new Mailer(app(EmailSmtpTransportFactory::class)->make($credentials, $password)))->send($email);
@@ -231,29 +241,30 @@ class EmailHandler implements MessageHandlerInterface
             throw new ConnectionException('Falha ao enviar e-mail pelo servidor SMTP.', 502, previous: $exception);
         }
 
-        $storedAttachment = $uploadedFile instanceof UploadedFile
-            ? $this->storeAttachment($messageId, $uploadedFile)
-            : null;
+        $storedAttachments = $this->storeFiles($messageId, $files);
+
+        $emailMeta = [
+            'subject' => $subject,
+            'from' => $credentials['email'],
+            'to' => [$recipient],
+            'message_id' => $messageId,
+            'in_reply_to' => $originalMessageId,
+            'references' => $references,
+        ];
+        if ($storedAttachments !== []) {
+            $emailMeta['attachments'] = $storedAttachments;
+        }
 
         $message = $conversation->messages()->create([
             'external_id' => $messageId,
             'sender_type' => SenderType::Outgoing,
             'message_type' => $messageType,
             'body' => $newText,
-            'attachment' => $storedAttachment,
+            'attachment' => $storedAttachments[0]['path'] ?? null,
             'replied_message_id' => $original?->id,
             'sent_at' => now(),
             'delivery_at' => now(),
-            'meta' => [
-                'email' => [
-                    'subject' => $subject,
-                    'from' => $credentials['email'],
-                    'to' => [$recipient],
-                    'message_id' => $messageId,
-                    'in_reply_to' => $originalMessageId,
-                    'references' => $references,
-                ],
-            ],
+            'meta' => ['email' => $emailMeta],
         ]);
 
         return $message->refresh();
@@ -384,6 +395,64 @@ class EmailHandler implements MessageHandlerInterface
     private function cleanMessageId(string $messageId): string
     {
         return trim(trim($messageId), '<>');
+    }
+
+    /**
+     * Gather every uploaded file for this send: the optional single media field
+     * (send-image/video/document/audio) plus any "attachments[]" array.
+     *
+     * @return array<int, UploadedFile>
+     */
+    private function collectAttachments(array $data, ?string $attachmentField): array
+    {
+        $files = [];
+
+        if ($attachmentField && ($data[$attachmentField] ?? null) instanceof UploadedFile) {
+            $files[] = $data[$attachmentField];
+        }
+
+        foreach ((array) ($data['attachments'] ?? []) as $file) {
+            if ($file instanceof UploadedFile) {
+                $files[] = $file;
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * @param array<int, UploadedFile> $files
+     */
+    private function attachFilesToEmail(Email $email, array $files): void
+    {
+        foreach ($files as $file) {
+            $email->attachFromPath(
+                $file->getRealPath(),
+                $file->getClientOriginalName(),
+                $file->getMimeType() ?: null
+            );
+        }
+    }
+
+    /**
+     * Persist each uploaded file and return its metadata for meta.email.attachments.
+     *
+     * @param array<int, UploadedFile> $files
+     * @return array<int, array{name: string, content_type: ?string, path: string}>
+     */
+    private function storeFiles(string $messageId, array $files): array
+    {
+        $stored = [];
+
+        foreach ($files as $file) {
+            $stored[] = [
+                'name' => $file->getClientOriginalName(),
+                'content_type' => $file->getClientMimeType(),
+                'path' => $this->storeAttachment($messageId, $file),
+            ];
+        }
+
+        return $stored;
     }
 
     private function storeAttachment(string $messageId, UploadedFile $file): string

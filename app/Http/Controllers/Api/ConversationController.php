@@ -165,7 +165,9 @@ class ConversationController extends Controller
             'connection_id' => ['required', 'integer'],
             'to' => ['required', 'email'],
             'subject' => ['nullable', 'string', 'max:255'],
-            'message' => ['required', 'string'],
+            'message' => ['required_without:attachments', 'nullable', 'string'],
+            'attachments' => ['nullable', 'array', 'max:20'],
+            'attachments.*' => ['file', 'max:25600'],
         ]);
 
         $connection = Connection::where('id', $validated['connection_id'])
@@ -202,7 +204,12 @@ class ConversationController extends Controller
         ]);
 
         try {
-            $message = (new EmailHandler())->sendNewEmail($conversation, $subject, $validated['message']);
+            $message = (new EmailHandler())->sendNewEmail(
+                $conversation,
+                $subject,
+                (string) ($validated['message'] ?? ''),
+                $request->file('attachments', [])
+            );
         } catch (\Throwable $th) {
             // Roll back the empty conversation we just opened so a failed send
             // doesn't leave a dangling thread.
