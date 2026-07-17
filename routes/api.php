@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
+use App\Http\Controllers\Api\Admin\AdminInvoiceController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
 use App\Http\Controllers\Api\Admin\AdminSettingsController;
@@ -312,6 +313,15 @@ Route::prefix('admin')->group(function () {
             Route::post('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'assign']);
             Route::delete('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'cancel']);
         });
+
+        // Billing — invoices. Backs both the Invoices and the Payments page:
+        // there is no separate payments table, an invoice is the charge record.
+        Route::get('/invoices', [AdminInvoiceController::class, 'index'])
+            ->middleware('permission:bo.invoices.view');
+
+        // Billing — money received, aggregated.
+        Route::get('/statistics/revenue', [AdminStatisticsController::class, 'revenue'])
+            ->middleware('permission:bo.revenue.view');
 
         // Roles & permissions management
         Route::middleware('permission:bo.roles.manage')->group(function () {

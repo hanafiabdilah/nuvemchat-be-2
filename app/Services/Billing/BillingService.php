@@ -192,8 +192,14 @@ class BillingService
             $subscription = Subscription::lockForUpdate()->find($invoice->subscription_id);
             $invoice->refresh();
 
-            if ($invoice->status === InvoiceStatus::Paid) {
-                return; // idempotent — already applied
+            // Already paid: a repeat 'approved' is a duplicate notification, and a
+            // late 'rejected'/'cancelled' must never un-pay a settled invoice. Only a
+            // refund/chargeback may still move it — those arrive precisely because it
+            // was paid, so a blanket return here made the 'refunded' arm below dead
+            // code and InvoiceStatus::Refunded unreachable.
+            if ($invoice->status === InvoiceStatus::Paid
+                && ! in_array($status, ['refunded', 'charged_back'], true)) {
+                return;
             }
 
             $invoice->mp_payment_id ??= $paymentId;

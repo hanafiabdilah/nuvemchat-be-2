@@ -19,11 +19,16 @@ class GrowthStats
             ->map(fn ($i) => Carbon::now()->startOfMonth()->subMonths($i));
     }
 
-    public static function monthExpr(): string
+    /**
+     * Month bucket expression for a timestamp column. Revenue buckets on `paid_at`
+     * rather than `created_at`, hence the parameter. The sqlite branch keeps the
+     * test suite working — production is MySQL.
+     */
+    public static function monthExpr(string $column = 'created_at'): string
     {
         return DB::connection()->getDriverName() === 'sqlite'
-            ? "strftime('%Y-%m', created_at)"
-            : "DATE_FORMAT(created_at, '%Y-%m')";
+            ? "strftime('%Y-%m', {$column})"
+            : "DATE_FORMAT({$column}, '%Y-%m')";
     }
 
     /**

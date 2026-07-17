@@ -25,6 +25,9 @@ class PlatformRbacSeeder extends Seeder
         'bo.roles.manage',
         'bo.plans.manage',
         'bo.subscriptions.manage',
+        // Invoices and Payments are two lenses on the same table, so one permission.
+        'bo.invoices.view',
+        'bo.revenue.view',
         'bo.settings.manage',
     ];
 
