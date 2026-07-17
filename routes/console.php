@@ -53,6 +53,13 @@ Schedule::command('billing:pull-cards')
     ->everyFifteenMinutes()
     ->onFailure(fn () => logger()->error('Card renewal pull failed'));
 
+// Remind owners the day before their subscription falls due. Runs after pix-generate
+// so a fresh pix charge already exists when the reminder goes out.
+Schedule::command('billing:send-due-reminders --days-before=1')
+    ->dailyAt('09:00')
+    ->timezone('America/Sao_Paulo')
+    ->onFailure(fn () => logger()->error('Due reminder dispatch failed'));
+
 // Advance overdue subscriptions: past_due → grace → suspended; expire stale pix.
 // Runs at :05 so the card pull above (:00/:15/:30/:45) has already extended payers.
 Schedule::command('billing:process-overdue')

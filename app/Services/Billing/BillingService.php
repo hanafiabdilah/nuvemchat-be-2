@@ -5,6 +5,7 @@ namespace App\Services\Billing;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
+use App\Enums\Notification\NotificationType;
 use App\Events\SubscriptionUpdated;
 use App\Models\Invoice;
 use App\Models\Plan;
@@ -29,6 +30,7 @@ class BillingService
     public function __construct(
         protected MercadoPagoClient $mp,
         protected SubscriptionGate $gate,
+        protected BillingNotifier $notifier,
     ) {}
 
     /**
@@ -446,15 +448,28 @@ class BillingService
 
     public function markPastDue(Subscription $subscription): void
     {
+        // Already past due — leave the grace window alone. reconcilePreapproval()
+        // calls this unconditionally for 'paused' preapprovals and billing:pull-cards
+        // runs every 15 minutes, so re-stamping grace_ends_at here kept pushing the
+        // deadline forward and suspend() could never fire.
+        if ($subscription->status === SubscriptionStatus::PastDue) {
+            return;
+        }
+
         $subscription->update([
             'status' => SubscriptionStatus::PastDue,
             'grace_ends_at' => now()->addDays(config('services.mercadopago.grace_days')),
         ]);
         $this->gate->forget($subscription->tenant);
+        $this->notifier->notify(NotificationType::SubscriptionPastDue, $subscription);
     }
 
     public function suspend(Subscription $subscription): void
     {
+        if ($subscription->status === SubscriptionStatus::Suspended) {
+            return;
+        }
+
         if ($subscription->payment_method === PaymentMethod::Card && $subscription->mp_preapproval_id) {
             try {
                 $this->mp->cancelPreapproval($subscription->mp_preapproval_id);
@@ -466,6 +481,7 @@ class BillingService
         $subscription->update(['status' => SubscriptionStatus::Suspended]);
         $this->gate->forget($subscription->tenant);
         $this->fireUpdated($subscription);
+        $this->notifier->notify(NotificationType::SubscriptionSuspended, $subscription);
     }
 
     public function changeQuantity(Subscription $subscription, int $newQuantity): Subscription
@@ -565,6 +581,11 @@ class BillingService
 
     protected function activate(Subscription $subscription, ?CarbonInterface $periodEnd): void
     {
+        // Renewals land here too (recordRecurringPayment / onInvoicePaid run every
+        // cycle), so only a real transition into Active is worth announcing —
+        // otherwise a card tenant is congratulated every month.
+        $wasActive = $subscription->status === SubscriptionStatus::Active;
+
         $subscription->update([
             'status' => SubscriptionStatus::Active,
             'current_period_start' => $subscription->current_period_start ?? now(),
@@ -572,6 +593,10 @@ class BillingService
             'grace_ends_at' => null,
         ]);
         $this->gate->forget($subscription->tenant);
+
+        if (! $wasActive) {
+            $this->notifier->notify(NotificationType::SubscriptionActivated, $subscription);
+        }
     }
 
     protected function markCancelled(Subscription $subscription): void

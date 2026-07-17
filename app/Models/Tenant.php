@@ -17,6 +17,18 @@ class Tenant extends Model
         return $this->belongsTo(User::class);
     }
 
+    /**
+     * The owner to reach for platform notifications, or null when there is no
+     * verified WhatsApp number — legacy accounts predating verification and
+     * Fortify-created users have none. Callers skip rather than fail.
+     */
+    public function notifiableOwner(): ?User
+    {
+        $user = $this->user;
+
+        return $user && $user->whatsapp_verified_at && filled($user->whatsapp_number) ? $user : null;
+    }
+
     public function subscriptions()
     {
         return $this->hasMany(Subscription::class);

@@ -42,6 +42,7 @@ class Subscription extends Model
         'current_period_end' => 'datetime',
         'trial_ends_at' => 'datetime',
         'grace_ends_at' => 'datetime',
+        'due_reminder_sent_at' => 'datetime',
         'cancel_at_period_end' => 'boolean',
         'cancelled_at' => 'datetime',
     ];

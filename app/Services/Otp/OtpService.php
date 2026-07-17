@@ -3,10 +3,9 @@
 namespace App\Services\Otp;
 
 use App\Enums\Notification\NotificationType;
-use App\Jobs\SendWhatsappMessageJob;
 use App\Models\Otp;
 use App\Models\User;
-use App\Services\Notification\NotificationConfig;
+use App\Services\Notification\NotificationService;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -23,6 +22,10 @@ class OtpService
     private const TTL_MINUTES = 10;
     private const RESEND_COOLDOWN_SECONDS = 60;
     private const MAX_ATTEMPTS = 5;
+
+    public function __construct(
+        protected NotificationService $notifications,
+    ) {}
 
     /**
      * Normalize a phone number to bare digits (E.164 without the leading +),
@@ -107,10 +110,21 @@ class OtpService
 
         $otp->forceFill(['verified_at' => now()])->save();
 
+        // The welcome rides on the first successful verification rather than on
+        // registration: until the code is confirmed the number is unproven, and a
+        // mistyped one would otherwise get a second unsolicited message.
+        $firstVerification = $user->whatsapp_verified_at === null;
+
         $user->forceFill([
             'whatsapp_verified_at' => now(),
             'whatsapp_number' => $otp->whatsapp_number,
         ])->save();
+
+        if ($firstVerification) {
+            $this->notifications->send(NotificationType::WelcomeRegistration, $user->whatsapp_number, [
+                'name' => $user->name,
+            ], $user->id);
+        }
     }
 
     /**
@@ -131,31 +145,16 @@ class OtpService
     }
 
     /**
-     * Queue delivery of the OTP off the request path. Dispatched after the response
-     * is sent so a slow/unreachable provider can never block registration or resend —
-     * the previous inline HTTP call with no timeout was what caused those requests to
-     * hang and surface as a "connection timeout" on the client. The job records the
-     * attempt (sent/failed) to whatsapp_message_logs either way.
+     * Hand the OTP to NotificationService, which renders the (admin-overridable)
+     * template and queues delivery off the request path — a slow or unreachable
+     * provider must never block registration or resend. WhatsappOtp is a required
+     * event, so it is exempt from the notification toggles.
      */
     private function dispatch(Otp $otp, User $user): void
     {
-        SendWhatsappMessageJob::dispatchAfterResponse(
-            $otp->whatsapp_number,
-            $this->render($otp->code),
-            'otp',
-            $user->id,
-        );
-    }
-
-    private function render(string $code): string
-    {
-        // Body is dynamic: super-admin can override the template in Back Office →
-        // Integrations → Notifications; falls back to the enum default.
-        $template = NotificationConfig::template(NotificationType::WhatsappOtp);
-
-        return strtr($template, [
-            '{{code}}' => $code,
-            '{{ttl}}' => (string) self::TTL_MINUTES,
-        ]);
+        $this->notifications->send(NotificationType::WhatsappOtp, $otp->whatsapp_number, [
+            'code' => $otp->code,
+            'ttl' => (string) self::TTL_MINUTES,
+        ], $user->id);
     }
 }

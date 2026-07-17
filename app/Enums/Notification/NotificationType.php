@@ -78,6 +78,16 @@ enum NotificationType: string
     }
 
     /**
+     * Discriminator written to whatsapp_message_logs.type ("otp | notification:<event>").
+     * The OTP keeps its bare 'otp' value: the column is indexed, already holds
+     * production rows, and the Back Office log filter selects on it.
+     */
+    public function logType(): string
+    {
+        return $this === self::WhatsappOtp ? 'otp' : 'notification:' . $this->value;
+    }
+
+    /**
      * Catalog for the configuration UI.
      *
      * @return array<int, array{value: string, label: string, default_template: string, placeholders: array<int, string>, required: bool}>
