@@ -21,6 +21,7 @@ class Connection extends Model
         'api_key',
         'accept_message',
         'closing_message',
+        'service_hours',
     ];
 
     protected $casts = [
@@ -29,6 +30,7 @@ class Connection extends Model
         'credentials' => 'array',
         'last_seen_uid' => 'integer',
         'last_synced_at' => 'datetime',
+        'service_hours' => 'array',
     ];
 
     /**

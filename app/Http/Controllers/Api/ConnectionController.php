@@ -10,6 +10,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\BusinessHours;
 use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\InstagramConfig;
@@ -407,6 +408,59 @@ class ConnectionController extends Controller
             'message' => 'Automated messages updated successfully',
             'data' => $connection->toResource(ConnectionResource::class),
         ], 200);
+    }
+
+    /**
+     * Return the connection's service hours (falling back to a sensible default
+     * when nothing has been configured yet) plus the live open/closed state.
+     */
+    public function serviceHours(int $id)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+        $config = $connection->service_hours ?: BusinessHours::defaultConfig();
+
+        return response()->json([
+            'data' => array_merge($config, [
+                'is_open_now' => BusinessHours::isOpen($connection),
+            ]),
+        ], 200);
+    }
+
+    /**
+     * Update the connection's service hours.
+     */
+    public function updateServiceHours(int $id, Request $request)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        $validated = $request->validate([
+            'enabled' => ['required', 'boolean'],
+            'timezone' => ['required', 'string', Rule::in(timezone_identifiers_list())],
+            'away_message' => ['nullable', 'string', 'max:1000'],
+            'days' => ['required', 'array'],
+            'days.*' => ['array'],
+            'days.*.*.open' => ['required', 'date_format:H:i'],
+            'days.*.*.close' => ['required', 'date_format:H:i'],
+        ]);
+
+        // Keep only the recognised day keys, in canonical order.
+        $days = [];
+        foreach (BusinessHours::DAYS as $day) {
+            $days[$day] = array_values($validated['days'][$day] ?? []);
+        }
+
+        $connection->update([
+            'service_hours' => [
+                'enabled' => (bool) $validated['enabled'],
+                'timezone' => $validated['timezone'],
+                'days' => $days,
+                'away_message' => $validated['away_message'] ?? '',
+            ],
+        ]);
+
+        broadcast(new ConnectionUpdated($connection));
+
+        return $this->serviceHours($id);
     }
 
     private function instagramOauth(Connection $connection): string

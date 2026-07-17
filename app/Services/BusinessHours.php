@@ -2,15 +2,18 @@
 
 namespace App\Services;
 
-use App\Models\Tenant;
+use App\Models\Connection;
 use Carbon\Carbon;
 
 /**
- * Per-tenant service (business) hours. Used to gate AI → human handoff: a human
- * is only offered while the tenant is "open"; outside those hours the AI keeps
- * handling the conversation.
+ * Per-connection service (business) hours. Used to gate AI → human handoff: a
+ * human is only offered while the connection is "open"; outside those hours the
+ * AI keeps handling the conversation.
  *
- * Shape stored in `tenants.service_hours` (JSON):
+ * Scoped to the connection rather than the tenant because one tenant may run
+ * several unrelated businesses, each keeping its own schedule.
+ *
+ * Shape stored in `connections.service_hours` (JSON):
  *   {
  *     "enabled": true,
  *     "timezone": "America/Sao_Paulo",
@@ -23,15 +26,15 @@ class BusinessHours
     public const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
     /**
-     * Is the tenant currently within its service hours?
+     * Is the connection currently within its service hours?
      *
-     * When service hours are not configured or disabled, the tenant is treated
-     * as always open (handoff to a human is always allowed) — opting in is the
-     * explicit action.
+     * When service hours are not configured or disabled, the connection is
+     * treated as always open (handoff to a human is always allowed) — opting in
+     * is the explicit action.
      */
-    public static function isOpen(Tenant $tenant, ?Carbon $now = null): bool
+    public static function isOpen(Connection $connection, ?Carbon $now = null): bool
     {
-        $config = $tenant->service_hours;
+        $config = $connection->service_hours;
 
         if (empty($config) || empty($config['enabled'])) {
             return true;
@@ -65,9 +68,9 @@ class BusinessHours
      * The message to send when a contact reaches out (or asks for a human)
      * outside service hours. Null when not configured.
      */
-    public static function awayMessage(Tenant $tenant): ?string
+    public static function awayMessage(Connection $connection): ?string
     {
-        $message = $tenant->service_hours['away_message'] ?? null;
+        $message = $connection->service_hours['away_message'] ?? null;
 
         return is_string($message) && trim($message) !== '' ? $message : null;
     }

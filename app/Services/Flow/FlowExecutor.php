@@ -10,11 +10,11 @@ use App\Events\ConversationHandoff;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Models\AiHubAgent;
+use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\FlowNode;
 use App\Models\FlowState;
 use App\Models\Message;
-use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\BusinessHours;
 use App\Services\Message\MessageService;
@@ -618,9 +618,10 @@ class FlowExecutor
             'contact' => $conversation->contact->{$key} ?? null,
             'conversation' => $conversation->{$key} ?? null,
             // "service_hours.is_open" → "true"/"false" so a Condition node can
-            // branch on whether the tenant is currently within service hours.
+            // branch on whether the conversation's connection is currently
+            // within its service hours.
             'service_hours' => $key === 'is_open'
-                ? (BusinessHours::isOpen($conversation->connection->tenant) ? 'true' : 'false')
+                ? (BusinessHours::isOpen($conversation->connection) ? 'true' : 'false')
                 : null,
             default => null,
         };
@@ -888,17 +889,16 @@ class FlowExecutor
             return;
         }
 
-        $conversation = $flowState->conversation;
-        $tenant = $conversation->connection->tenant;
+        $connection = $flowState->conversation->connection;
 
-        if (BusinessHours::isOpen($tenant)) {
+        if (BusinessHours::isOpen($connection)) {
             $this->transferToHuman($flowState, $reason);
             return;
         }
 
         // Outside service hours: no human available.
         if ($aiCanContinue) {
-            $this->sendAwayMessageOnce($flowState, $tenant);
+            $this->sendAwayMessageOnce($flowState, $connection);
             return; // stay on this AIAgent node, keep handling with the AI
         }
 
@@ -979,9 +979,9 @@ class FlowExecutor
     }
 
     /**
-     * Send the tenant's configured away message at most once per flow run.
+     * Send the connection's configured away message at most once per flow run.
      */
-    protected function sendAwayMessageOnce(FlowState $flowState, Tenant $tenant): void
+    protected function sendAwayMessageOnce(FlowState $flowState, Connection $connection): void
     {
         $stateData = $flowState->state_data ?? [];
 
@@ -989,7 +989,7 @@ class FlowExecutor
             return;
         }
 
-        $awayMessage = BusinessHours::awayMessage($tenant);
+        $awayMessage = BusinessHours::awayMessage($connection);
 
         if ($awayMessage) {
             $awayMessage = $this->interpolateVariables($awayMessage, $flowState);
@@ -1191,7 +1191,7 @@ class FlowExecutor
         // Mode "AI only outside service hours": within service hours this node
         // must not run the AI at all — hand straight to the human queue and stop.
         if ($this->handoffMode($data) === 'human_only_in_hours'
-            && BusinessHours::isOpen($flowState->conversation->connection->tenant)) {
+            && BusinessHours::isOpen($flowState->conversation->connection)) {
             Log::info('FlowExecutor: AIAgent skipped — within service hours, routing to human', [
                 'node_id' => $node->id,
                 'conversation_id' => $flowState->conversation_id,

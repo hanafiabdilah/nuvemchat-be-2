@@ -2,7 +2,6 @@
 
 use App\Enums\Billing\Feature;
 use App\Http\Controllers\Api\AgentController;
-use App\Http\Controllers\Api\ServiceHoursController;
 use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
 use App\Http\Controllers\Api\AiHub\AgentKnowledgeController as AiHubAgentKnowledgeController;
 use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileController;
@@ -148,9 +147,9 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::delete('/connections/{id}', [ConnectionController::class, 'destroy'])->middleware('permission:connections.delete');
     Route::put('/connections/{id}/automated-messages', [ConnectionController::class, 'updateAutomatedMessages'])->middleware('permission:connections.update-automated-messages');
 
-    // Service hours (business hours that gate AI → human handoff)
-    Route::get('/service-hours', [ServiceHoursController::class, 'show'])->middleware('permission:service-hours.view');
-    Route::put('/service-hours', [ServiceHoursController::class, 'update'])->middleware('permission:service-hours.update');
+    // Service hours (business hours that gate AI → human handoff), per connection
+    Route::get('/connections/{id}/service-hours', [ConnectionController::class, 'serviceHours'])->middleware('permission:service-hours.view');
+    Route::put('/connections/{id}/service-hours', [ConnectionController::class, 'updateServiceHours'])->middleware('permission:service-hours.update');
 
     // Agent routes - protected by permissions
     Route::get('/agents', [AgentController::class, 'index'])->middleware('permission:agents.view');
