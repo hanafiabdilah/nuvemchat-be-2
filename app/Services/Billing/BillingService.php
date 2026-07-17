@@ -82,8 +82,8 @@ class BillingService
             $this->activate($subscription, $this->nextPeriodEnd($subscription, now()));
             $this->recordPaidInvoice($subscription, $response['id'] ?? null, PaymentMethod::Card);
         } else {
-            // Pending authorization — keep waiting; webhook will confirm.
-            $subscription->status = SubscriptionStatus::PastDue;
+            // Pending authorization — stays past_due until the webhook confirms.
+            // The save still matters: it persists mp_preapproval_id.
             $subscription->save();
         }
 
@@ -97,9 +97,8 @@ class BillingService
      */
     protected function subscribeWithPix(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
+        // Starts past_due (createPendingSubscription); becomes active once the pix is paid.
         $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Pix, $opts['quantity'] ?? 1);
-        $subscription->status = SubscriptionStatus::PastDue; // becomes active once the pix is paid
-        $subscription->save();
 
         $this->createPixInvoice($subscription, $opts['payer_email']);
         $this->fireUpdated($subscription);
@@ -138,7 +137,10 @@ class BillingService
             'description' => "Assinatura {$plan?->name} — fatura #{$invoice->id}",
             'payment_method_id' => 'pix',
             'payer' => ['email' => $payerEmail],
-            'date_of_expiration' => $expiresAt->toIso8601String(),
+            // MercadoPago demands milliseconds here (yyyy-MM-dd'T'HH:mm:ss.SSSZ).
+            // toIso8601String() omits them and the API rejects the whole request
+            // with "must be valid date and format (yyyy-MM-dd'T'HH:mm:ssz)".
+            'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
             'external_reference' => $this->externalReference($subscription->tenant, $subscription, $invoice),
         ];
 
@@ -562,7 +564,12 @@ class BillingService
             $subscription = Subscription::create([
                 'tenant_id' => $tenant->id,
                 'plan_id' => $plan->id,
-                'status' => SubscriptionStatus::Trialing,
+                // Must NOT be a usable status. This row is committed and pointed at
+                // by tenant.current_subscription_id before the provider is called,
+                // so anything usable here grants free access when that call throws —
+                // and with no current_period_end it would never lapse either.
+                // Callers move it to Active once payment is confirmed.
+                'status' => SubscriptionStatus::PastDue,
                 'payment_method' => $method,
                 'billing_cycle' => $plan->billing_cycle->value,
                 'price_cents' => $plan->price_cents * $quantity,
