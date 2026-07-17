@@ -1,8 +1,10 @@
 <?php
 
 use App\Enums\Billing\BillingCycle;
+use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
+use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Tenant;
 use App\Models\User;
@@ -79,6 +81,22 @@ test('the expiry is not the bare ISO-8601 string MercadoPago rejects', function 
         '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/',
         $request->data()['date_of_expiration'] ?? ''
     ));
+});
+
+test('a rejected pix charge does not leave a payable invoice with no QR', function () {
+    // The invoice row is created before the provider call, so a rejection used to
+    // strand it as `pending` forever with no QR — unpayable, unviewable, and enough
+    // to make billing:pix-generate's $hasOpen guard skip issuing a real one.
+    Http::fake(['*/v1/payments' => Http::response(['message' => 'invalid date_of_expiration'], 400)]);
+    $tenant = billingTenant();
+
+    expect(fn () => app(BillingService::class)->subscribe($tenant, billingPlan(), PaymentMethod::Pix, [
+        'payer_email' => 'ana@example.test',
+    ]))->toThrow(Exception::class);
+
+    $invoice = Invoice::where('tenant_id', $tenant->id)->latest('id')->first();
+    expect($invoice->status)->toBe(InvoiceStatus::Failed);
+    expect(Invoice::where('tenant_id', $tenant->id)->where('status', InvoiceStatus::Pending)->exists())->toBeFalse();
 });
 
 // --- No access before payment --------------------------------------------

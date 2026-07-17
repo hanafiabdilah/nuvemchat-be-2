@@ -19,7 +19,16 @@ class UserController extends Controller
         $data = $user->toResource(UserResource::class)->resolve($request);
 
         if ($tenant !== null) {
-            $data['entitlements'] = app(SubscriptionGate::class)->entitlements($tenant);
+            $gate = app(SubscriptionGate::class);
+            $data['entitlements'] = $gate->entitlements($tenant);
+
+            // Mirrors EnsureSubscriptionActive so the UI can hide what the API would
+            // 403 on. Entitlements alone are status-blind (they come from the plan
+            // snapshot), so they cannot answer "is this tenant paid up?".
+            $data['billing'] = [
+                'enforced' => (bool) config('services.mercadopago.enforce'),
+                'subscription_usable' => $gate->usable($tenant),
+            ];
         }
 
         return response()->json([

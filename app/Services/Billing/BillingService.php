@@ -144,7 +144,18 @@ class BillingService
             'external_reference' => $this->externalReference($subscription->tenant, $subscription, $invoice),
         ];
 
-        $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
+        try {
+            $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            // The row has to exist before the call (its id goes in the payload), so a
+            // provider rejection would otherwise strand a pending invoice that looks
+            // payable but carries no QR — and the $hasOpen guard in billing:pix-generate
+            // would then refuse to issue a real one.
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            throw $e;
+        }
+
         $txData = $response['point_of_interaction']['transaction_data'] ?? [];
 
         $invoice->update([
