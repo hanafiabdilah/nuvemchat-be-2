@@ -411,12 +411,25 @@ class ConnectionController extends Controller
     }
 
     /**
+     * Email is a shared inbox: no flow ever runs on it and there is no AI → human
+     * handoff, so a schedule would have nothing to gate.
+     */
+    private function assertSupportsServiceHours(Connection $connection): void
+    {
+        if ($connection->channel === Channel::Email) {
+            abort(422, 'Service hours do not apply to email connections.');
+        }
+    }
+
+    /**
      * Return the connection's service hours (falling back to a sensible default
      * when nothing has been configured yet) plus the live open/closed state.
      */
     public function serviceHours(int $id)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
+        $this->assertSupportsServiceHours($connection);
+
         $config = $connection->service_hours ?: BusinessHours::defaultConfig();
 
         return response()->json([
@@ -432,6 +445,7 @@ class ConnectionController extends Controller
     public function updateServiceHours(int $id, Request $request)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
+        $this->assertSupportsServiceHours($connection);
 
         $validated = $request->validate([
             'enabled' => ['required', 'boolean'],
