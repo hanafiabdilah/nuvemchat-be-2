@@ -44,6 +44,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
 
         if (! is_array($event)) {
             Log::warning('WhatsappProxyhubHandler: event is not an object', ['value_type' => gettype($event)]);
+
             return;
         }
 
@@ -55,20 +56,39 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
 
             if ($info['IsGroup'] ?? false) {
                 Log::info('WhatsappProxyhubHandler: skipping group message');
+
+                return;
+            }
+
+            // WhatsApp device-level control traffic (disappearing-message sync,
+            // app-state/history sync, key exchange). It carries no body, so
+            // persisting it would only add blank "unsupported" rows. Mirrors
+            // WhatsappWApiHandler — this channel acts on no protocol type, so
+            // every one of them is dropped.
+            if (isset($event['Message']['protocolMessage'])) {
+                Log::info('WhatsappProxyhubHandler: skipping protocol message', [
+                    'connection_id' => $connection->id,
+                    'protocol_type' => $event['Message']['protocolMessage']['type'] ?? null,
+                    'message_id' => $info['ID'] ?? null,
+                ]);
+
                 return;
             }
 
             if ($info['IsFromMe'] ?? false) {
                 $this->handleOwnMessage($connection, $event);
+
                 return;
             }
 
             $this->handleReceived($connection, $event);
+
             return;
         }
 
         if ($isReceipt) {
             $this->handleReceipt($connection, $event);
+
             return;
         }
 
@@ -94,6 +114,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
                 'message_id' => $messageId,
                 'phone' => $phone,
             ]);
+
             return;
         }
 
@@ -122,6 +143,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
 
             if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
                 Log::info('WhatsappProxyhubHandler: duplicate message ignored', ['message_id' => $messageId]);
+
                 return null;
             }
 
@@ -147,7 +169,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
         broadcast(new MessageReceived($message));
         broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
-        $flowExecutor = new FlowExecutor();
+        $flowExecutor = new FlowExecutor;
 
         if ($isNewConversation && $conversationForWelcome) {
             if ($connection->flow_id) {
@@ -235,6 +257,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
 
         if (! $column || empty($ids)) {
             Log::info('WhatsappProxyhubHandler: receipt ignored', ['type' => $type, 'ids' => $ids]);
+
             return;
         }
 
@@ -365,6 +388,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
         if (! $node || ! $url || ! $mediaKeyB64 || ! $mimetype) {
             Log::warning('WhatsappProxyhubHandler: missing media data', ['message_id' => $message->id]);
             $message->update(['error' => 'Missing media data']);
+
             return;
         }
 
@@ -372,16 +396,18 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             $enc = Http::timeout(120)->get($url);
             if ($enc->failed()) {
                 $message->update(['error' => 'Failed to download media']);
+
                 return;
             }
 
             $plain = $this->decryptWhatsappMedia($enc->body(), base64_decode($mediaKeyB64), $type);
             if ($plain === null) {
                 $message->update(['error' => 'Failed to decrypt media']);
+
                 return;
             }
 
-            $path = 'media/' . $message->id . '_' . uniqid() . '.' . $this->extensionFromMime($mimetype);
+            $path = 'media/'.$message->id.'_'.uniqid().'.'.$this->extensionFromMime($mimetype);
             Storage::disk('local')->put($path, $plain);
             $message->update(['attachment' => $path]);
 

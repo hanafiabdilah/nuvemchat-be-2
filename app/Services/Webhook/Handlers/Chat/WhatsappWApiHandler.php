@@ -26,6 +26,13 @@ use Illuminate\Support\Facades\Storage;
 
 class WhatsappWApiHandler implements ChatHandlerInterface
 {
+    /**
+     * The only `protocolMessage` types that map to something a user sees.
+     * Everything else (EPHEMERAL_SYNC_RESPONSE, EPHEMERAL_SETTING, HISTORY_SYNC_NOTIFICATION,
+     * APP_STATE_SYNC_KEY_SHARE, …) is device-level control traffic with no content.
+     */
+    private const ACTIONABLE_PROTOCOL_TYPES = ['REVOKE', 'MESSAGE_EDIT'];
+
     public function getConversationId(array $payload): ?string
     {
         return $payload['chat']['id'] ?? null;
@@ -143,6 +150,23 @@ class WhatsappWApiHandler implements ChatHandlerInterface
 
         if(in_array($event, ['webhookReceived', 'webhookDelivery']) && isset($payload['msgContent']['protocolMessage']['type'])){
             $type = $payload['msgContent']['protocolMessage']['type'];
+        }
+
+        // Drop protocol messages we don't act on. These are WhatsApp's own
+        // device-to-device control traffic (disappearing-message sync, app-state
+        // and history sync, key exchange) and carry no body — persisting them
+        // just litters the conversation with blank "unsupported" rows.
+        // The original user message always arrives in its own webhook.
+        if (isset($payload['msgContent']['protocolMessage'])
+            && !in_array($type, self::ACTIONABLE_PROTOCOL_TYPES, true)
+        ) {
+            Log::info('WhatsappWApiHandler: Skipping non-actionable protocol message', [
+                'connection_id' => $connection->id,
+                'protocol_type' => $type,
+                'message_id' => $payload['messageId'] ?? null,
+            ]);
+
+            return;
         }
 
         switch ($event) {
