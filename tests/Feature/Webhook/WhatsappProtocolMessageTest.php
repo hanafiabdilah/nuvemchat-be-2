@@ -159,3 +159,81 @@ test('proxyhub drops protocol messages instead of storing them as unsupported', 
     expect(Message::count())->toBe(0)
         ->and(Conversation::count())->toBe(0);
 });
+
+/**
+ * Real ProxyBR payload: INITIAL_SECURITY_NOTIFICATION_SETTING_SYNC.
+ *
+ * Two traits the earlier cases did not cover:
+ *  - `protocolMessage.type` is the **numeric** proto enum (9), not a string;
+ *  - `IsFromMe` is true, so it takes the handleOwnMessage path — the guard has
+ *    to sit before that branch or it would be stored as an outgoing message.
+ */
+test('proxyhub drops a peer protocol message with a numeric type sent from self', function () {
+    Event::fake();
+    $connection = protocolTestConnection(Channel::WhatsappProxyhub);
+
+    (new WhatsappProxyhubHandler)->handle($connection, [
+        'type' => 'Message',
+        'event' => [
+            'Info' => [
+                'Category' => 'peer',
+                'Chat' => '6282122787699@s.whatsapp.net',
+                'ID' => '3A42CDA0A7298B45F149',
+                'IsFromMe' => true,
+                'IsGroup' => false,
+                'PushName' => null,
+                'Sender' => '6282122787699@s.whatsapp.net',
+                'SenderAlt' => '204457707106524@lid',
+                'Timestamp' => '2026-07-21T10:05:52-03:00',
+                'Type' => 'text',
+            ],
+            'Message' => [
+                'messageContextInfo' => [
+                    'deviceListMetadata' => [
+                        'senderKeyHash' => 'f9R9c5OtQG2Wiw==',
+                        'senderTimestamp' => 1784639143,
+                    ],
+                    'deviceListMetadataVersion' => 2,
+                ],
+                'protocolMessage' => [
+                    'initialSecurityNotificationSettingSync' => ['securityNotificationEnabled' => false],
+                    'type' => 9,
+                ],
+            ],
+            'RawMessage' => [
+                'protocolMessage' => [
+                    'initialSecurityNotificationSettingSync' => ['securityNotificationEnabled' => false],
+                    'type' => 9,
+                ],
+            ],
+        ],
+    ]);
+
+    expect(Message::count())->toBe(0)
+        ->and(Conversation::count())->toBe(0);
+});
+
+test('proxyhub still records a genuine message sent from the phone', function () {
+    Event::fake();
+    $connection = protocolTestConnection(Channel::WhatsappProxyhub);
+
+    // Same IsFromMe path, real content — must not be swallowed by the guard.
+    (new WhatsappProxyhubHandler)->handle($connection, [
+        'type' => 'Message',
+        'event' => [
+            'Info' => [
+                'Chat' => '6282122787699@s.whatsapp.net',
+                'ID' => 'REAL-OUTGOING-1',
+                'IsFromMe' => true,
+                'IsGroup' => false,
+                'Sender' => '6282122787699@s.whatsapp.net',
+                'SenderAlt' => '204457707106524@lid',
+                'Timestamp' => '2026-07-21T10:05:52-03:00',
+            ],
+            'Message' => ['conversation' => 'from desktop'],
+        ],
+    ]);
+
+    expect(Message::count())->toBe(1)
+        ->and(Message::first()->body)->toBe('from desktop');
+});
