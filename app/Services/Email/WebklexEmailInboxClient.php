@@ -13,16 +13,24 @@ class WebklexEmailInboxClient implements EmailInboxClient
     public function __construct(
         private readonly Client $client,
         private readonly Folder $folder,
-    ) {
-    }
+    ) {}
 
-    public function fetchSince(int $lastSeenUid): iterable
+    public function fetchSince(int $lastSeenUid, int $limit): iterable
     {
-        $startUid = max(1, $lastSeenUid + 1);
+        $uids = $this->pendingUids($lastSeenUid);
+
+        if ($uids === []) {
+            return;
+        }
+
+        // UIDs are sparse (deleted mail leaves gaps), so slice the actual UID
+        // list rather than walking a fixed-width numeric window — otherwise a
+        // large gap would burn whole passes fetching nothing.
+        $batch = array_slice($uids, 0, $limit);
 
         $messages = $this->folder
             ->query()
-            ->whereUid($startUid . ':*')
+            ->whereUid(reset($batch).':'.end($batch))
             ->leaveUnread()
             ->setFetchBody(true)
             ->fetchOrder('asc')
@@ -31,6 +39,46 @@ class WebklexEmailInboxClient implements EmailInboxClient
         foreach ($messages as $message) {
             yield $this->mapMessage($message);
         }
+    }
+
+    public function countSince(int $lastSeenUid): int
+    {
+        return count($this->pendingUids($lastSeenUid));
+    }
+
+    /**
+     * UIDs above $lastSeenUid, ascending. Headers only — this runs over the
+     * whole backlog, so it must never pull bodies or attachments.
+     *
+     * @return array<int, int>
+     */
+    private function pendingUids(int $lastSeenUid): array
+    {
+        $startUid = max(1, $lastSeenUid + 1);
+
+        $messages = $this->folder
+            ->query()
+            ->whereUid($startUid.':*')
+            ->leaveUnread()
+            ->setFetchBody(false)
+            ->fetchOrder('asc')
+            ->get();
+
+        $uids = [];
+
+        foreach ($messages as $message) {
+            $uid = (int) $message->getUid();
+
+            // An `n:*` range still returns the highest message when n is past
+            // the top of the mailbox, so re-check the bound here.
+            if ($uid >= $startUid) {
+                $uids[] = $uid;
+            }
+        }
+
+        sort($uids);
+
+        return $uids;
     }
 
     public function disconnect(): void
@@ -88,7 +136,7 @@ class WebklexEmailInboxClient implements EmailInboxClient
     {
         $address = $attribute?->first();
 
-        if (!$address) {
+        if (! $address) {
             return [];
         }
 

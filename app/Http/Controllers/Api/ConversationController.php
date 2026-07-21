@@ -191,7 +191,7 @@ class ConversationController extends Controller
 
         $contact = Contact::createFromExternalData($connection, $recipient, $recipient);
 
-        // Thread key mirrors FetchEmails::conversationExternalId so a later reply
+        // Thread key mirrors EmailInboxSynchronizer::conversationExternalId so a later reply
         // on the same subject reuses this conversation.
         $externalId = 'email:' . sha1($contact->id . '|' . $this->normalizeEmailSubject($subject));
 

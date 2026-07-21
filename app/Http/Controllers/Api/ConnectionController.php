@@ -4,10 +4,13 @@ namespace App\Http\Controllers\Api;
 
 use App\Enums\Billing\Feature;
 use App\Enums\Connection\Channel;
+use App\Enums\Connection\Status as ConnectionStatus;
+use App\Enums\Connection\SyncStatus;
 use App\Events\ConnectionUpdated;
 use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
+use App\Jobs\SyncEmailInbox;
 use App\Models\Connection;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
@@ -15,6 +18,7 @@ use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
+use App\Services\Email\EmailInboxSynchronizer;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -24,7 +28,7 @@ class ConnectionController extends Controller
 {
     public function __construct(
         protected ConnectionService $connectionService,
-    ){
+    ) {
         //
     }
 
@@ -221,7 +225,7 @@ class ConnectionController extends Controller
                 'message' => 'Running connection successfully',
                 'data' => $connection->toResource(ConnectionResource::class),
             ], 200);
-        } catch(ValidationException $th) {
+        } catch (ValidationException $th) {
             throw $th;
         } catch (ConnectionException $th) {
             $status = $th->getHttpStatusCode();
@@ -232,6 +236,7 @@ class ConnectionController extends Controller
                 $status = 502;
                 $message = 'Nao foi possivel conectar a instancia junto ao provedor. Verifique a configuracao da integracao.';
             }
+
             return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             return response()->json([
@@ -253,7 +258,7 @@ class ConnectionController extends Controller
                 'message' => 'Connection migrated successfully',
                 'data' => $connection->toResource(ConnectionResource::class),
             ], 200);
-        } catch(ValidationException $th) {
+        } catch (ValidationException $th) {
             throw $th;
         } catch (ConnectionException $th) {
             $status = $th->getHttpStatusCode();
@@ -264,6 +269,7 @@ class ConnectionController extends Controller
                 $status = 502;
                 $message = 'Nao foi possivel conectar a instancia junto ao provedor. Verifique a configuracao da integracao.';
             }
+
             return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             Log::error('Failed to migrate connection', [
@@ -299,6 +305,7 @@ class ConnectionController extends Controller
                 $status = 502;
                 $message = 'Nao foi possivel conectar a instancia junto ao provedor. Verifique a configuracao da integracao.';
             }
+
             return response()->json(['message' => $message], $status);
         } catch (\Throwable $th) {
             return response()->json([
@@ -307,6 +314,53 @@ class ConnectionController extends Controller
         } finally {
             broadcast(new ConnectionUpdated($connection));
         }
+    }
+
+    /**
+     * Queue an inbound-mail pull for an email connection.
+     *
+     * Marks the connection 'syncing' and broadcasts before returning so the
+     * SPA reflects the state immediately, rather than looking idle until a
+     * worker happens to pick the job up.
+     */
+    public function syncInbox(int $id, EmailInboxSynchronizer $synchronizer)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        if ($connection->channel !== Channel::Email) {
+            return response()->json([
+                'message' => 'Apenas conexoes de e-mail podem ser sincronizadas.',
+            ], 422);
+        }
+
+        if ($connection->status !== ConnectionStatus::Active) {
+            return response()->json([
+                'message' => 'Conecte a caixa de e-mail antes de sincronizar.',
+            ], 422);
+        }
+
+        // Already running: report success so a double-click is harmless.
+        if ($synchronizer->isSyncing($connection)) {
+            return response()->json([
+                'message' => 'Sincronizacao ja em andamento.',
+                'data' => $connection->toResource(ConnectionResource::class),
+            ], 200);
+        }
+
+        $connection->forceFill([
+            'sync_status' => SyncStatus::Syncing,
+            'sync_error' => null,
+            'sync_started_at' => now(),
+        ])->save();
+
+        broadcast(new ConnectionUpdated($connection));
+
+        SyncEmailInbox::dispatch($connection->id);
+
+        return response()->json([
+            'message' => 'Sincronizacao iniciada.',
+            'data' => $connection->toResource(ConnectionResource::class),
+        ], 202);
     }
 
     public function generateApiKey(int $id)
@@ -331,7 +385,7 @@ class ConnectionController extends Controller
                 'message' => 'Connection disconnected successfully',
                 'data' => $connection->toResource(ConnectionResource::class),
             ], 200);
-        } catch(ConnectionException $th){
+        } catch (ConnectionException $th) {
             return response()->json([
                 'message' => $th->getMessage(),
             ], $th->getHttpStatusCode());
@@ -354,7 +408,7 @@ class ConnectionController extends Controller
             return response()->json([
                 'message' => 'Connection deleted successfully',
             ], 200);
-        } catch(ConnectionException $th){
+        } catch (ConnectionException $th) {
             return response()->json([
                 'message' => $th->getMessage(),
             ], $th->getHttpStatusCode());
@@ -495,13 +549,13 @@ class ConnectionController extends Controller
         ]);
 
         // Build URL manual sesuai contoh Meta
-        $oauthUrl = "https://www.instagram.com/oauth/authorize"
-            . "?force_reauth=true"
-            . "&client_id={$clientId}"
-            . "&redirect_uri={$redirectUri}"
-            . "&response_type=code"
-            . "&scope={$scope}"
-            . "&state={$state}";
+        $oauthUrl = 'https://www.instagram.com/oauth/authorize'
+            .'?force_reauth=true'
+            ."&client_id={$clientId}"
+            ."&redirect_uri={$redirectUri}"
+            .'&response_type=code'
+            ."&scope={$scope}"
+            ."&state={$state}";
 
         return $oauthUrl;
     }

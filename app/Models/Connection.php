@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
+use App\Enums\Connection\SyncStatus;
 use Illuminate\Database\Eloquent\Model;
 
 class Connection extends Model
@@ -18,6 +19,10 @@ class Connection extends Model
         'credentials',
         'last_seen_uid',
         'last_synced_at',
+        'sync_status',
+        'sync_error',
+        'sync_remaining',
+        'sync_started_at',
         'api_key',
         'accept_message',
         'closing_message',
@@ -30,6 +35,9 @@ class Connection extends Model
         'credentials' => 'array',
         'last_seen_uid' => 'integer',
         'last_synced_at' => 'datetime',
+        'sync_status' => SyncStatus::class,
+        'sync_remaining' => 'integer',
+        'sync_started_at' => 'datetime',
         'service_hours' => 'array',
     ];
 

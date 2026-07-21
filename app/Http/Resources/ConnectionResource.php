@@ -28,6 +28,14 @@ class ConnectionResource extends JsonResource
             'color' => $this->color,
             'status' => $this->status,
             'credentials' => $credentials,
+            // Only email has an inbox to poll; other channels are push/webhook.
+            'sync' => $this->when($this->channel === Channel::Email, fn () => [
+                'status' => $this->sync_status,
+                'error' => $this->sync_error,
+                'remaining' => $this->sync_remaining,
+                'started_at' => $this->sync_started_at,
+                'last_synced_at' => $this->last_synced_at,
+            ]),
             'automated_messages' => [
                 'accept_message' => $this->accept_message,
                 'closing_message' => $this->closing_message,

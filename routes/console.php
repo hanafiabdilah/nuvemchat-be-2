@@ -29,11 +29,15 @@ Schedule::command('whatsapp:validate-tokens')
         logger()->error('WhatsApp token validation failed');
     });
 
-// Poll active email inboxes for new IMAP UIDs. Each connection keeps its own
-// cursor in connections.last_seen_uid, so this does not rescan the mailbox.
+// Queue an inbox pull for each active email connection. Each connection keeps
+// its own cursor in connections.last_seen_uid, so this does not rescan the
+// mailbox, and SyncEmailInbox is unique-per-connection.
+// The overlap lock is capped at 5 minutes: withoutOverlapping() defaults to 24h,
+// so a run killed mid-flight (OOM on a large first sync) would otherwise block
+// every later tick for a full day and silently stop all email sync.
 Schedule::command('email:fetch')
     ->everyMinute()
-    ->withoutOverlapping()
+    ->withoutOverlapping(5)
     ->onFailure(function () {
         logger()->error('Email inbox fetch failed');
     });
