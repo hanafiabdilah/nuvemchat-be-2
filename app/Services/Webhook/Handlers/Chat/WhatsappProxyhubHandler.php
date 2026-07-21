@@ -261,7 +261,8 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             return;
         }
 
-        $timestamp = isset($event['Timestamp']) ? Carbon::parse($event['Timestamp']) : Carbon::now();
+        // Same offset trap as message timestamps — receipts feed read_at/delivery_at.
+        $timestamp = $this->parseTimestamp($event['Timestamp'] ?? null);
 
         foreach ($ids as $externalId) {
             $message = Message::whereHas('conversation', fn ($q) => $q->where('connection_id', $connection->id))
@@ -319,9 +320,34 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
 
     public function getMessageSentAt(array $event): Carbon
     {
-        $ts = $event['Info']['Timestamp'] ?? null;
+        return $this->parseTimestamp($event['Info']['Timestamp'] ?? null);
+    }
 
-        return $ts ? Carbon::parse($ts) : Carbon::now();
+    /**
+     * whatsmeow emits RFC3339 carrying the host's UTC offset (e.g.
+     * `2026-07-21T10:34:28-03:00`). Carbon keeps that offset, and Eloquent then
+     * writes the *wall clock* — so `10:34:28` landed in a UTC column while a
+     * message sent from the panel at the same instant stored `13:34:28` via
+     * now(). Same conversation, timestamps 3 hours apart, order scrambled.
+     *
+     * Normalising to the app timezone puts every source on one clock.
+     */
+    private function parseTimestamp(?string $timestamp): Carbon
+    {
+        if (! $timestamp) {
+            return Carbon::now();
+        }
+
+        try {
+            return Carbon::parse($timestamp)->setTimezone(config('app.timezone'));
+        } catch (\Throwable $exception) {
+            Log::warning('WhatsappProxyhubHandler: unparseable timestamp, falling back to now()', [
+                'timestamp' => $timestamp,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return Carbon::now();
+        }
     }
 
     public function getContactName(array $event): ?string
