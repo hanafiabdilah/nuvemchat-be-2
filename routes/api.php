@@ -151,6 +151,8 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
     Route::get('/connections/{id}/business-profile', [ConnectionController::class, 'businessProfile']);
     Route::put('/connections/{id}/business-profile', [ConnectionController::class, 'updateBusinessProfile'])->middleware('permission:connections.update');
+    // Email only — edits the stored mailbox credentials in place (see updateCredentials).
+    Route::put('/connections/{id}/credentials', [ConnectionController::class, 'updateCredentials'])->middleware('permission:connections.connect');
     Route::put('/connections/{id}', [ConnectionController::class, 'update'])->middleware('permission:connections.update');
     Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus'])->middleware('permission:connections.check-status');
     // Reuses the check-status permission on purpose: both are "poke this

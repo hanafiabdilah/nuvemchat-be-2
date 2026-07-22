@@ -42,6 +42,70 @@ class EmailChannel implements ChannelInterface
         ]);
     }
 
+    /**
+     * Re-save the credentials of an already-connected mailbox (host/port/security
+     * changes, a rotated app password, or a corrected address).
+     *
+     * The password is optional here: leaving it blank keeps the stored one, so an
+     * agent can fix a port without knowing the mailbox password. Both IMAP and SMTP
+     * are re-tested before anything is written — a mailbox that fails to log in must
+     * never overwrite credentials that currently work.
+     *
+     * @throws ConnectionException|ValidationException
+     */
+    public function updateCredentials(Connection $connection, array $data): void
+    {
+        $existing = is_array($connection->credentials) ? $connection->credentials : [];
+
+        // Blank/absent password means "keep the current one".
+        if (trim((string) ($data['password'] ?? '')) === '') {
+            unset($data['password']);
+            $data['password'] = $this->storedPassword($existing);
+        }
+
+        $credentials = $this->validatedCredentials($data);
+        $password = $credentials['password'];
+
+        $this->assertImapLogin($credentials, $password);
+        $this->assertSmtpLogin($credentials, $password);
+
+        $connection->update([
+            'status' => Status::Active,
+            'credentials' => [
+                'email' => $credentials['email'],
+                'password' => Crypt::encryptString($password),
+                'imap_host' => $credentials['imap_host'],
+                'imap_port' => $credentials['imap_port'],
+                'imap_encryption' => $credentials['imap_encryption'],
+                'smtp_host' => $credentials['smtp_host'],
+                'smtp_port' => $credentials['smtp_port'],
+                'smtp_encryption' => $credentials['smtp_encryption'],
+            ],
+        ]);
+    }
+
+    /**
+     * The mailbox password currently on file, decrypted.
+     *
+     * @throws ValidationException when there is nothing usable to fall back to.
+     */
+    private function storedPassword(array $existing): string
+    {
+        if (empty($existing['password'])) {
+            throw ValidationException::withMessages([
+                'password' => 'Informe a senha da caixa de e-mail.',
+            ]);
+        }
+
+        try {
+            return Crypt::decryptString($existing['password']);
+        } catch (DecryptException) {
+            throw ValidationException::withMessages([
+                'password' => 'A senha armazenada nao pode ser lida. Informe a senha novamente.',
+            ]);
+        }
+    }
+
     public function disconnect(Connection $connection): void
     {
         $connection->update([

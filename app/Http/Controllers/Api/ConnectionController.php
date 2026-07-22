@@ -196,6 +196,51 @@ class ConnectionController extends Controller
         ], 200);
     }
 
+    /**
+     * Update the stored credentials of an email connection (host, port, security,
+     * address or password) without having to disconnect and reconnect the mailbox —
+     * a disconnect wipes `credentials`, which would strand the inbox mid-sync.
+     *
+     * Email only: every other channel gets its credentials from an OAuth callback or
+     * from the provider, so there is nothing here for a user to hand-edit.
+     */
+    public function updateCredentials(int $id, Request $request, EmailChannel $channel)
+    {
+        $connection = $request->user()->tenant->connections()->findOrFail($id);
+
+        if ($connection->channel !== Channel::Email) {
+            return response()->json([
+                'message' => 'Credentials can only be edited on email connections.',
+            ], 422);
+        }
+
+        // Password is optional on update: blank keeps the one already on file.
+        $request->validate([
+            ...EmailChannel::rules(),
+            'password' => ['nullable', 'string'],
+        ]);
+
+        try {
+            $channel->updateCredentials($connection, $request->all());
+
+            return response()->json([
+                'message' => 'Credentials updated successfully',
+                'data' => $connection->fresh()->toResource(ConnectionResource::class),
+            ]);
+        } catch (ValidationException $th) {
+            throw $th;
+        } catch (ConnectionException $th) {
+            $status = $th->getHttpStatusCode();
+            // A mailbox rejecting the login must not read as "your session expired":
+            // the SPA logs the user out on any 401 (same guard as connect()).
+            $status = in_array($status, [401, 419], true) ? 502 : $status;
+
+            return response()->json(['message' => $th->getMessage()], $status);
+        } finally {
+            broadcast(new ConnectionUpdated($connection->fresh()));
+        }
+    }
+
     public function connect(int $id, Request $request)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
