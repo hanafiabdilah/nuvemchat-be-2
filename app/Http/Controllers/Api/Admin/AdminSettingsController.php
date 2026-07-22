@@ -65,7 +65,6 @@ class AdminSettingsController extends Controller
                 'facebook' => [
                     'app_id' => FacebookConfig::appId(),
                     'config_id' => FacebookConfig::configId(),
-                    'redirect_uri' => FacebookConfig::redirectUri(),
                     'app_secret_set' => ! empty($fbSecret),
                     'app_secret_preview' => $this->mask($fbSecret),
                     'webhook_verify_token_set' => ! empty($fbVerify),
@@ -137,7 +136,6 @@ class AdminSettingsController extends Controller
             'facebook' => ['sometimes', 'array'],
             'facebook.app_id' => ['nullable', 'string', 'max:255'],
             'facebook.config_id' => ['nullable', 'string', 'max:255'],
-            'facebook.redirect_uri' => ['nullable', 'url', 'max:255'],
             'facebook.app_secret' => ['nullable', 'string', 'max:512'],
             'facebook.webhook_verify_token' => ['nullable', 'string', 'max:255'],
 
@@ -214,7 +212,6 @@ class AdminSettingsController extends Controller
             // Public values: stored as-is.
             Setting::set(FacebookConfig::KEY_APP_ID, $fb['app_id'] ?? null);
             Setting::set(FacebookConfig::KEY_CONFIG_ID, $fb['config_id'] ?? null);
-            Setting::set(FacebookConfig::KEY_REDIRECT_URI, $fb['redirect_uri'] ?? null);
 
             // Secrets: only replaced when a new value is supplied.
             if (! empty($fb['app_secret'])) {

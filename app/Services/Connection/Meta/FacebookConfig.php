@@ -15,7 +15,6 @@ class FacebookConfig
     public const KEY_APP_SECRET = 'facebook.app_secret';
     public const KEY_WEBHOOK_VERIFY_TOKEN = 'facebook.webhook_verify_token';
     public const KEY_CONFIG_ID = 'facebook.config_id';
-    public const KEY_REDIRECT_URI = 'facebook.redirect_uri';
 
     public static function appId(): ?string
     {
@@ -36,10 +35,5 @@ class FacebookConfig
     public static function configId(): ?string
     {
         return Setting::get(self::KEY_CONFIG_ID);
-    }
-
-    public static function redirectUri(): ?string
-    {
-        return Setting::get(self::KEY_REDIRECT_URI);
     }
 }

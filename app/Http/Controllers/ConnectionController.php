@@ -481,16 +481,14 @@ class ConnectionController extends Controller
         try {
             $connection = Connection::findOrFail($connectionId);
 
+            // No redirect_uri: the code comes from WhatsApp Embedded Signup (FB.login
+            // with response_type=code), which is not issued against a redirect URI.
+            // Sending one here would make Meta reject the exchange as a mismatch.
             $tokenRequestData = [
                 'client_id' => FacebookConfig::appId(),
                 'client_secret' => FacebookConfig::appSecret(),
                 'code' => $code,
             ];
-
-            $redirectUri = FacebookConfig::redirectUri();
-            if (!empty($redirectUri)) {
-                $tokenRequestData['redirect_uri'] = $redirectUri;
-            }
 
             $response = Http::asForm()->post('https://graph.facebook.com/v25.0/oauth/access_token', $tokenRequestData);
 
