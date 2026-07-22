@@ -14,6 +14,8 @@ namespace App\Enums\Notification;
 enum NotificationType: string
 {
     case WhatsappOtp = 'whatsapp_otp';
+    case PasswordResetOtp = 'password_reset_otp';
+    case PasswordChanged = 'password_changed';
     case WelcomeRegistration = 'welcome_registration';
     case SubscriptionActivated = 'subscription_activated';
     case SubscriptionDue = 'subscription_due';
@@ -25,6 +27,8 @@ enum NotificationType: string
     {
         return match ($this) {
             self::WhatsappOtp => 'WhatsApp verification code (OTP)',
+            self::PasswordResetOtp => 'Password reset code (OTP)',
+            self::PasswordChanged => 'Password changed confirmation',
             self::WelcomeRegistration => 'Welcome (registration)',
             self::SubscriptionActivated => 'Subscription activated',
             self::SubscriptionDue => 'Subscription due date',
@@ -41,6 +45,8 @@ enum NotificationType: string
     {
         return match ($this) {
             self::WhatsappOtp => "🔐 Seu código de verificação Pingly é *{{code}}*. Ele expira em {{ttl}} minutos. Não compartilhe este código.",
+            self::PasswordResetOtp => "🔑 Olá {{name}}, seu código para redefinir a senha da Chat Pingly é *{{code}}*. Ele expira em {{ttl}} minutos. Se não foi você que pediu, ignore esta mensagem e não compartilhe o código.",
+            self::PasswordChanged => "✅ Olá {{name}}, a senha da sua conta Chat Pingly foi alterada em {{datetime}}. Se não foi você, entre em contato com o suporte imediatamente.",
             self::WelcomeRegistration => "Olá {{name}}! 👋 Sua conta na Chat Pingly foi criada com sucesso. Escolha um plano para começar.",
             self::SubscriptionActivated => "Parabéns {{name}}! 🎉 Sua assinatura do plano {{plan}} está ativa. Bom trabalho!",
             self::SubscriptionDue => "Olá {{name}}, sua assinatura {{plan}} vence em {{due_date}}. Valor: {{amount}}.",
@@ -59,6 +65,8 @@ enum NotificationType: string
     {
         return match ($this) {
             self::WhatsappOtp => ['code', 'ttl'],
+            self::PasswordResetOtp => ['name', 'code', 'ttl'],
+            self::PasswordChanged => ['name', 'datetime'],
             self::WelcomeRegistration => ['name'],
             self::SubscriptionActivated => ['name', 'plan'],
             self::SubscriptionDue => ['name', 'plan', 'due_date', 'amount'],
@@ -69,22 +77,27 @@ enum NotificationType: string
 
     /**
      * Required events are transactional and always sent regardless of the master
-     * enable/per-event toggles (e.g. the OTP — disabling it would break signup).
-     * Their template is still editable.
+     * enable/per-event toggles (e.g. the OTPs — disabling them would break signup
+     * and lock users out of password recovery). Their template is still editable.
      */
     public function isRequired(): bool
     {
-        return $this === self::WhatsappOtp;
+        return in_array($this, [self::WhatsappOtp, self::PasswordResetOtp], true);
     }
 
     /**
-     * Discriminator written to whatsapp_message_logs.type ("otp | notification:<event>").
-     * The OTP keeps its bare 'otp' value: the column is indexed, already holds
-     * production rows, and the Back Office log filter selects on it.
+     * Discriminator written to whatsapp_message_logs.type ("otp* | notification:<event>").
+     * The signup OTP keeps its bare 'otp' value: the column is indexed, already holds
+     * production rows, and the Back Office log filter selects on it. Other OTPs share
+     * that prefix so the same filter (a LIKE 'otp%') still catches them.
      */
     public function logType(): string
     {
-        return $this === self::WhatsappOtp ? 'otp' : 'notification:' . $this->value;
+        return match ($this) {
+            self::WhatsappOtp => 'otp',
+            self::PasswordResetOtp => 'otp:password_reset',
+            default => 'notification:' . $this->value,
+        };
     }
 
     /**

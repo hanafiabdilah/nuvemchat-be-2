@@ -30,6 +30,7 @@ use App\Http\Controllers\Api\Admin\WhatsappLogController as AdminWhatsappLogCont
 use App\Http\Controllers\Api\Admin\OtpController as AdminOtpController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\OtpController;
+use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\Billing\BillingController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ImpersonationController;
@@ -54,6 +55,15 @@ Route::post('/auth/register', [AuthController::class, 'register']);
 
 // Public: tenant app exchanges a one-time Back Office code for a session.
 Route::post('/impersonate/redeem', [ImpersonationController::class, 'redeem']);
+
+// Forgotten-password recovery via WhatsApp OTP. Public by necessity (the user cannot
+// log in), so throttled per IP on top of the service's own resend cooldown and
+// per-code attempt cap.
+Route::prefix('auth/password')->middleware('throttle:10,1')->group(function () {
+    Route::post('/forgot', [PasswordResetController::class, 'forgot']);
+    Route::post('/verify', [PasswordResetController::class, 'verify']);
+    Route::post('/reset', [PasswordResetController::class, 'reset']);
+});
 
 // WhatsApp number verification (post-registration). Authenticated but intentionally
 // outside the subscription.active gate so a brand-new tenant can verify before paying.

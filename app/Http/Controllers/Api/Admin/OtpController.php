@@ -17,10 +17,12 @@ class OtpController extends Controller
         $perPage = (int) $request->query('per_page', 25);
         $statusFilter = $request->query('status'); // pending | verified | expired
         $search = $request->query('search');       // number contains
+        $purpose = $request->query('purpose');     // whatsapp_verification | password_reset
 
         $otps = Otp::query()
             ->with('user:id,name,email')
             ->when($search, fn ($q) => $q->where('whatsapp_number', 'like', "%{$search}%"))
+            ->when($purpose, fn ($q) => $q->where('purpose', $purpose))
             ->when($statusFilter === 'verified', fn ($q) => $q->whereNotNull('verified_at'))
             ->when($statusFilter === 'pending', fn ($q) => $q->whereNull('verified_at')->where('expires_at', '>', now()))
             ->when($statusFilter === 'expired', fn ($q) => $q->whereNull('verified_at')->where('expires_at', '<=', now()))
