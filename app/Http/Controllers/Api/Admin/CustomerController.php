@@ -12,7 +12,7 @@ class CustomerController extends Controller
     /**
      * Paginated list of every customer (tenant) on the platform.
      *
-     * Supports ?search= (owner name/email), ?per_page=, and ?sort=
+     * Supports ?search= (owner name/email/WhatsApp number), ?per_page=, and ?sort=
      * (newest|oldest). Not tenant-scoped — this is a platform admin view.
      */
     public function index(Request $request)
@@ -27,9 +27,14 @@ class CustomerController extends Controller
             ->with('user')
             ->withCount(['users', 'connections', 'contacts', 'conversations'])
             ->when($search !== '', function ($query) use ($search) {
-                $query->whereHas('user', function ($q) use ($search) {
+                // Numbers are stored as bare digits, so a search typed with spaces,
+                // dashes or a leading + would never match without stripping them first.
+                $digits = preg_replace('/\D+/', '', $search);
+
+                $query->whereHas('user', function ($q) use ($search, $digits) {
                     $q->where('name', 'like', "%{$search}%")
-                        ->orWhere('email', 'like', "%{$search}%");
+                        ->orWhere('email', 'like', "%{$search}%")
+                        ->when($digits !== '', fn ($q2) => $q2->orWhere('whatsapp_number', 'like', "%{$digits}%"));
                 });
             })
             ->orderBy('id', $sort === 'oldest' ? 'asc' : 'desc')

@@ -22,6 +22,10 @@ class CustomerResource extends JsonResource
                 'id' => $this->user?->id,
                 'name' => $this->user?->name,
                 'email' => $this->user?->email,
+                // Bare digits (E.164 without the +), as stored. Null for legacy
+                // accounts created before the number became part of signup.
+                'whatsapp_number' => $this->user?->whatsapp_number,
+                'whatsapp_verified' => $this->user?->whatsapp_verified_at !== null,
             ]),
             'counts' => [
                 'users' => $this->users_count ?? 0,
