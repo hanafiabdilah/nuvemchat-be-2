@@ -90,6 +90,9 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/quantity', [BillingController::class, 'changeQuantity'])->middleware('permission:billing.manage')->name('quantity');
         Route::post('/pix/refresh', [BillingController::class, 'refreshPix'])->middleware('permission:billing.manage')->name('pix-refresh');
         Route::post('/cancel', [BillingController::class, 'cancel'])->middleware('permission:billing.manage')->name('cancel');
+        // Abandon an unpaid checkout (frees the tenant to pick another plan).
+        Route::post('/pending/cancel', [BillingController::class, 'cancelPending'])->middleware('permission:billing.manage')->name('pending-cancel');
+        Route::post('/invoices/{invoice}/cancel', [BillingController::class, 'cancelInvoice'])->middleware('permission:billing.manage')->name('invoice-cancel');
     });
     Route::get('/plans', [BillingController::class, 'plans'])->middleware('permission:billing.view')->name('plans.index');
 

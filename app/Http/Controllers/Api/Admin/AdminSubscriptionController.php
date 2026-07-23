@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Exceptions\Billing\PaymentAlreadySettledException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Billing\SubscriptionResource;
 use App\Models\Plan;
@@ -78,7 +79,16 @@ class AdminSubscriptionController extends Controller
         $subscription = $tenant->currentSubscription;
         abort_if($subscription === null, 404, 'No subscription');
 
-        $this->billing->cancel($subscription);
+        try {
+            $this->billing->cancel($subscription);
+        } catch (PaymentAlreadySettledException) {
+            // The tenant's pix cleared mid-cancel — the subscription is live now.
+            return response()->json([
+                'message' => 'O pagamento já foi confirmado. A assinatura permanece ativa.',
+                'code' => 'payment_already_settled',
+                'data' => new SubscriptionResource($subscription->fresh()->loadMissing('plan')),
+            ], 409);
+        }
 
         return response()->json(['data' => new SubscriptionResource($subscription->fresh()->loadMissing('plan'))]);
     }

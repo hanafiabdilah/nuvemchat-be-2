@@ -7,6 +7,7 @@ use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Enums\Notification\NotificationType;
 use App\Events\SubscriptionUpdated;
+use App\Exceptions\Billing\PaymentAlreadySettledException;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
@@ -185,6 +186,7 @@ class BillingService
 
         if (! $invoice) {
             Log::warning('MercadoPago payment with no matching invoice', ['payment_id' => $paymentId]);
+
             return;
         }
 
@@ -266,6 +268,7 @@ class BillingService
         $subscription = Subscription::where('mp_preapproval_id', $preapprovalId)->first();
         if (! $subscription) {
             Log::warning('MercadoPago recurring charge with no matching subscription', ['preapproval_id' => $preapprovalId]);
+
             return;
         }
 
@@ -384,6 +387,7 @@ class BillingService
                 if ($unlinked) {
                     $unlinked->update(['mp_payment_id' => $paymentId]);
                     $linked++;
+
                     continue;
                 }
 
@@ -416,6 +420,8 @@ class BillingService
      */
     public function grantManual(Tenant $tenant, ?Plan $plan, ?CarbonInterface $endsAt, User $admin, ?string $note = null): Subscription
     {
+        $this->voidSupersededCharges($tenant);
+
         return DB::transaction(function () use ($tenant, $plan, $endsAt, $admin, $note) {
             $this->supersedeCurrent($tenant);
 
@@ -447,6 +453,14 @@ class BillingService
      */
     public function cancel(Subscription $subscription): Subscription
     {
+        // Nothing was ever paid on this one (typically a pix QR that was never
+        // settled), so there is no period to run out — tear it down outright and
+        // hand the tenant a clean slate. Manual/comp grants have no invoices
+        // either, hence the usable-status guard.
+        if (! $subscription->status->isUsable() && ! $this->hasSettledInvoice($subscription)) {
+            return $this->cancelPendingCheckout($subscription);
+        }
+
         if ($subscription->payment_method === PaymentMethod::Card && $subscription->mp_preapproval_id) {
             try {
                 $this->mp->cancelPreapproval($subscription->mp_preapproval_id);
@@ -463,6 +477,135 @@ class BillingService
         $this->fireUpdated($subscription);
 
         return $subscription;
+    }
+
+    /**
+     * Abandon a checkout that was never paid: void the open charge at the
+     * provider, drop the preapproval, mark the subscription cancelled and detach
+     * it from the tenant.
+     *
+     * Detaching matters — a cancelled row left in tenant.current_subscription_id
+     * still reads as "your current plan" everywhere (the plan grid would keep
+     * badging it as current and refuse to let the tenant pick it again), while
+     * granting nothing. Clearing the pointer puts the tenant back in the same
+     * state as before they started, free to choose any plan.
+     *
+     * @throws PaymentAlreadySettledException if the charge settled mid-cancel.
+     */
+    public function cancelPendingCheckout(Subscription $subscription): Subscription
+    {
+        if ($this->hasSettledInvoice($subscription)) {
+            throw new PaymentAlreadySettledException;
+        }
+
+        $this->voidOpenPixInvoices($subscription);
+
+        // The void above re-reads any charge MercadoPago refused to cancel, so a
+        // pix paid seconds before this call has already been applied (and the
+        // subscription activated). Never tear that down.
+        if ($this->hasSettledInvoice($subscription)) {
+            throw new PaymentAlreadySettledException;
+        }
+
+        if ($subscription->payment_method === PaymentMethod::Card && $subscription->mp_preapproval_id) {
+            try {
+                $this->mp->cancelPreapproval($subscription->mp_preapproval_id);
+            } catch (\Throwable $e) {
+                Log::error('Failed to cancel MercadoPago preapproval', [
+                    'subscription_id' => $subscription->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        $tenant = $subscription->tenant;
+
+        DB::transaction(function () use ($subscription, $tenant) {
+            $subscription->update([
+                'status' => SubscriptionStatus::Cancelled,
+                'cancelled_at' => now(),
+                'cancel_at_period_end' => false,
+                'grace_ends_at' => null,
+            ]);
+
+            // Only if it is still the pointer — a concurrent subscribe may have
+            // already moved the tenant onto a newer subscription.
+            if ($tenant && $tenant->current_subscription_id === $subscription->id) {
+                $tenant->forceFill(['current_subscription_id' => null])->save();
+            }
+        });
+
+        if ($tenant) {
+            $this->gate->forget($tenant);
+        }
+
+        $this->fireUpdated($subscription);
+
+        return $subscription->fresh();
+    }
+
+    /**
+     * Void every still-open pix charge on a subscription. Returns how many were
+     * cancelled.
+     */
+    public function voidOpenPixInvoices(Subscription $subscription): int
+    {
+        $open = $subscription->invoices()
+            ->where('status', InvoiceStatus::Pending->value)
+            ->where('payment_method', PaymentMethod::Pix->value)
+            ->get();
+
+        $cancelled = 0;
+
+        foreach ($open as $invoice) {
+            $cancelled += $this->cancelInvoice($invoice)->status === InvoiceStatus::Cancelled ? 1 : 0;
+        }
+
+        return $cancelled;
+    }
+
+    /**
+     * Cancel a single pending charge, killing the pix QR at MercadoPago first so
+     * a stale copy-paste code can never settle afterwards.
+     */
+    public function cancelInvoice(Invoice $invoice): Invoice
+    {
+        if ($invoice->status !== InvoiceStatus::Pending) {
+            return $invoice;
+        }
+
+        if ($invoice->mp_payment_id) {
+            try {
+                $this->mp->cancelPayment($invoice->mp_payment_id);
+            } catch (\Throwable $e) {
+                // MercadoPago refuses to cancel a charge it already settled. Re-read
+                // it: if the tenant paid moments before hitting cancel, honour the
+                // payment instead of voiding a charge they actually made.
+                $payment = null;
+
+                try {
+                    $payment = $this->mp->getPayment($invoice->mp_payment_id);
+                } catch (\Throwable) {
+                    // Provider unreachable — fall through and void locally.
+                }
+
+                if (($payment['status'] ?? null) === 'approved') {
+                    $this->applyPaymentUpdate($payment);
+
+                    return $invoice->fresh();
+                }
+
+                Log::warning('Failed to cancel pix charge at MercadoPago', [
+                    'invoice_id' => $invoice->id,
+                    'mp_payment_id' => $invoice->mp_payment_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        $invoice->update(['status' => InvoiceStatus::Cancelled]);
+
+        return $invoice->fresh();
     }
 
     public function markPastDue(Subscription $subscription): void
@@ -575,6 +718,10 @@ class BillingService
             $quotas = array_merge($plan->quotas ?? [], ['max_instances' => $quantity]);
         }
 
+        // Before the tenant moves on: void whatever charge the old subscription
+        // still has open (calls MercadoPago, so keep it out of the transaction).
+        $this->voidSupersededCharges($tenant);
+
         return DB::transaction(function () use ($tenant, $plan, $method, $quantity, $quotas) {
             $this->supersedeCurrent($tenant);
 
@@ -648,11 +795,33 @@ class BillingService
         ]);
     }
 
+    /** Whether any charge on this subscription was ever actually paid. */
+    protected function hasSettledInvoice(Subscription $subscription): bool
+    {
+        return $subscription->invoices()
+            ->whereIn('status', [InvoiceStatus::Paid->value, InvoiceStatus::Refunded->value])
+            ->exists();
+    }
+
     protected function supersedeCurrent(Tenant $tenant): void
     {
         $current = $tenant->currentSubscription;
         if ($current && $current->status !== SubscriptionStatus::Cancelled) {
             $current->update(['status' => SubscriptionStatus::Cancelled, 'cancelled_at' => now()]);
+        }
+    }
+
+    /**
+     * Kill the outgoing subscription's unpaid pix charges before it is replaced.
+     * Without this, switching plans leaves the old QR live: paying it would
+     * settle an invoice belonging to a superseded subscription — money in, no
+     * access, since the tenant pointer has moved on. Runs outside the caller's
+     * transaction because it talks to MercadoPago.
+     */
+    protected function voidSupersededCharges(Tenant $tenant): void
+    {
+        if ($current = $tenant->currentSubscription) {
+            $this->voidOpenPixInvoices($current);
         }
     }
 

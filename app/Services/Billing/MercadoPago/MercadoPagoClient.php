@@ -87,6 +87,19 @@ class MercadoPagoClient
     }
 
     /**
+     * Cancel a still-pending payment (kills the pix QR at the provider so a late
+     * scan can't settle a charge the tenant already walked away from).
+     * MercadoPago rejects this once the payment is approved.
+     */
+    public function cancelPayment(string $id): array
+    {
+        return $this->http()
+            ->put("/v1/payments/{$id}", ['status' => 'cancelled'])
+            ->throw()
+            ->json();
+    }
+
+    /**
      * Fetch a recurring subscription charge. The `subscription_authorized_payment`
      * webhook's data.id references this resource, which links the preapproval to the
      * actual payment: { id, preapproval_id, status, transaction_amount, payment{id,status} }.

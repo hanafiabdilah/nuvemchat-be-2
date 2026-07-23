@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers\Api\Billing;
 
+use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Connection\Channel;
+use App\Exceptions\Billing\PaymentAlreadySettledException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Billing\InvoiceResource;
 use App\Http\Resources\Billing\PlanResource;
@@ -177,9 +179,76 @@ class BillingController extends Controller
         $subscription = $this->tenant($request)->currentSubscription;
         abort_if($subscription === null, 404, 'No subscription');
 
-        $this->billing->cancel($subscription);
+        try {
+            $this->billing->cancel($subscription);
+        } catch (PaymentAlreadySettledException) {
+            return $this->paymentSettledResponse($request);
+        }
 
-        return response()->json(['data' => new SubscriptionResource($subscription->fresh()->loadMissing('plan'))]);
+        // An unpaid checkout is torn down and detached, leaving the tenant with no
+        // plan at all — reflect that instead of echoing the dangling row back.
+        $current = $this->tenant($request)->fresh()->currentSubscription;
+
+        return response()->json([
+            'data' => $current ? new SubscriptionResource($current->loadMissing('plan')) : null,
+        ]);
+    }
+
+    /**
+     * Abandon an unpaid checkout (typically a pix QR that was never settled) so
+     * the tenant is free to pick a different plan.
+     */
+    public function cancelPending(Request $request)
+    {
+        $subscription = $this->tenant($request)->currentSubscription;
+        abort_if($subscription === null, 404, 'No subscription');
+
+        // A live plan is cancelled at period end, never voided outright.
+        abort_if(
+            $subscription->status->isUsable(),
+            422,
+            'Esta assinatura já está ativa. Use o cancelamento da assinatura.',
+        );
+
+        try {
+            $this->billing->cancelPendingCheckout($subscription);
+        } catch (PaymentAlreadySettledException) {
+            return $this->paymentSettledResponse($request);
+        }
+
+        return response()->json(['data' => null]);
+    }
+
+    /**
+     * Cancel a single open charge (kills the pix QR at the provider).
+     */
+    public function cancelInvoice(Request $request, Invoice $invoice)
+    {
+        abort_if($invoice->tenant_id !== $request->user()->tenant_id, 403);
+        abort_if($invoice->status !== InvoiceStatus::Pending, 422, 'Esta fatura não está mais pendente.');
+
+        $invoice = $this->billing->cancelInvoice($invoice);
+
+        if ($invoice->status === InvoiceStatus::Paid) {
+            return $this->paymentSettledResponse($request);
+        }
+
+        return response()->json(['data' => new InvoiceResource($invoice)]);
+    }
+
+    /**
+     * The cancel lost the race against the payment: report it as a conflict and
+     * hand back the (now active) subscription so the UI can settle on the truth.
+     */
+    private function paymentSettledResponse(Request $request)
+    {
+        $current = $this->tenant($request)->fresh()->currentSubscription;
+
+        return response()->json([
+            'message' => 'O pagamento já foi confirmado. A assinatura permanece ativa.',
+            'code' => 'payment_already_settled',
+            'data' => $current ? new SubscriptionResource($current->loadMissing('plan')) : null,
+        ], 409);
     }
 
     private function tenant(Request $request)
