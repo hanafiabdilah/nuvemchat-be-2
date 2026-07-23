@@ -7,7 +7,7 @@ use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Services\Billing\MercadoPago\MercadoPagoConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
-use App\Services\Connection\Proxy\ProxyhubConfig;
+use App\Services\Connection\Proxy\ApiwayConfig;
 use App\Services\Connection\WApi\WApiConfig;
 use App\Services\Notification\NotificationConfig;
 use Illuminate\Database\Seeder;
@@ -15,20 +15,20 @@ use Illuminate\Database\Seeder;
 class SettingSeeder extends Seeder
 {
     /**
-     * Seed default platform settings. ProxyHub credentials are DB-only; the
+     * Seed default platform settings. API Way credentials are DB-only; the
      * base URL gets a sensible default, and any existing PROXYHUB_INTEGRATOR_TOKEN
      * in .env is migrated into the DB once so a working setup isn't lost.
      */
     public function run(): void
     {
-        if (Setting::get(ProxyhubConfig::KEY_BASE_URL) === null) {
-            Setting::set(ProxyhubConfig::KEY_BASE_URL, ProxyhubConfig::DEFAULT_BASE_URL);
+        if (Setting::get(ApiwayConfig::KEY_BASE_URL) === null) {
+            Setting::set(ApiwayConfig::KEY_BASE_URL, ApiwayConfig::DEFAULT_BASE_URL);
         }
 
         // One-time migration of the legacy env token (if present and not yet set).
         $envToken = env('PROXYHUB_INTEGRATOR_TOKEN');
-        if (! empty($envToken) && Setting::get(ProxyhubConfig::KEY_INTEGRATOR_TOKEN) === null) {
-            Setting::set(ProxyhubConfig::KEY_INTEGRATOR_TOKEN, $envToken);
+        if (! empty($envToken) && Setting::get(ApiwayConfig::KEY_INTEGRATOR_TOKEN) === null) {
+            Setting::set(ApiwayConfig::KEY_INTEGRATOR_TOKEN, $envToken);
         }
 
         // One-time migration of MercadoPago credentials from .env into the DB.
@@ -76,7 +76,7 @@ class SettingSeeder extends Seeder
             NotificationConfig::KEY_PROVIDER => NotificationConfig::DEFAULT_PROVIDER,
             NotificationConfig::KEY_PINGLY_BASE_URL => NotificationConfig::DEFAULT_PINGLY_BASE_URL,
             NotificationConfig::KEY_WAPI_BASE_URL => NotificationConfig::DEFAULT_WAPI_BASE_URL,
-            NotificationConfig::KEY_PROXYBR_BASE_URL => ProxyhubConfig::DEFAULT_BASE_URL,
+            NotificationConfig::KEY_PROXYBR_BASE_URL => ApiwayConfig::DEFAULT_BASE_URL,
         ];
         foreach ($notificationDefaults as $key => $value) {
             if (Setting::get($key) === null) {

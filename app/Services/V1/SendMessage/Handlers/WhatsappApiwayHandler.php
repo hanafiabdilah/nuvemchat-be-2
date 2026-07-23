@@ -8,11 +8,11 @@ use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
-class WhatsappProxyhubHandler implements SendMessageHandlerInterface
+class WhatsappApiwayHandler implements SendMessageHandlerInterface
 {
     private function base(): string
     {
-        return \App\Services\Connection\Proxy\ProxyhubConfig::baseUrl();
+        return \App\Services\Connection\Proxy\ApiwayConfig::baseUrl();
     }
     public function handleSendMessage(Connection $connection, array $data): array
     {
@@ -32,7 +32,7 @@ class WhatsappProxyhubHandler implements SendMessageHandlerInterface
             ])->post($this->base() . '/v1/message/send-text?instanceId=' . $connection->credentials['instance_id'], $payload);
 
             if (!$response->successful()) {
-                Log::error('WhatsappProxyhubHandler: Failed to send message', [
+                Log::error('WhatsappApiwayHandler: Failed to send message', [
                     'response_status' => $response->status(),
                     'response_body' => $response->body(),
                     'connection_id' => $connection->id,
@@ -43,7 +43,7 @@ class WhatsappProxyhubHandler implements SendMessageHandlerInterface
 
             $responseArray = $response->json();
 
-            Log::info('WhatsappProxyhubHandler: Message sent successfully', [
+            Log::info('WhatsappApiwayHandler: Message sent successfully', [
                 'connection_id' => $connection->id,
                 'phone' => $data['phone'],
                 'message_id' => $responseArray['data']['id'] ?? $responseArray['messageId'] ?? null,
@@ -52,7 +52,7 @@ class WhatsappProxyhubHandler implements SendMessageHandlerInterface
 
             return $responseArray;
         } catch (\Throwable $th) {
-            Log::error('WhatsappProxyhubHandler: Failed to send message', [
+            Log::error('WhatsappApiwayHandler: Failed to send message', [
                 'error' => $th->getMessage(),
                 'connection_id' => $connection->id,
             ]);

@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
- * ProxyBR API (Directly) — a ProxyHub instance using CLIENT-LEVEL credentials
+ * ProxyBR API (Directly) — an API Way instance using CLIENT-LEVEL credentials
  * (a specific instance id + token), not the platform integrator token.
  *
  *   POST {base}/v1/message/send-text?instanceId={id}

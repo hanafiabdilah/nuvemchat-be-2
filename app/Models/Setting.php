@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Cache;
 
 /**
  * Global platform key-value settings. Values are encrypted at rest and cached
- * to keep reads cheap on hot paths (e.g. the ProxyHub channel).
+ * to keep reads cheap on hot paths (e.g. the API Way channel).
  */
 class Setting extends Model
 {

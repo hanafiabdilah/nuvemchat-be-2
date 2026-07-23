@@ -145,7 +145,7 @@ class MessageResource extends JsonResource
         }
 
         return match($channel) {
-            Channel::WhatsappWApi, Channel::WhatsappProxyhub => $this->getWhatsappWApiMeta(),
+            Channel::WhatsappWApi, Channel::WhatsappApiway => $this->getWhatsappWApiMeta(),
             Channel::WhatsappOfficial => $this->getWhatsappOfficialMeta(),
             Channel::Instagram => null,        // TODO: implement when needed
             Channel::Telegram => null,         // TODO: implement when needed

@@ -5,7 +5,7 @@ namespace App\Services\Connection\Proxy;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
-class ProxyhubMetricsService
+class ApiwayMetricsService
 {
     public function todayForInstances(array $instanceIds): array
     {
@@ -18,18 +18,18 @@ class ProxyhubMetricsService
             ];
         }
 
-        $url = ProxyhubConfig::baseUrl() . '/v1/metrics?instanceIds=' . implode(',', $instanceIds);
+        $url = ApiwayConfig::baseUrl() . '/v1/metrics?instanceIds=' . implode(',', $instanceIds);
 
         try {
             $response = Http::withHeaders([
-                'Authorization' => 'Bearer ' . ProxyhubConfig::integratorToken(),
+                'Authorization' => 'Bearer ' . ApiwayConfig::integratorToken(),
             ])->connectTimeout(15)
                 ->timeout(20)
                 ->retry(2, 500)
                 ->get($url);
 
             if (! $response->successful()) {
-                Log::warning('ProxyHub metrics request failed', [
+                Log::warning('API Way metrics request failed', [
                     'status' => $response->status(),
                     'response' => $response->json(),
                 ]);
@@ -44,7 +44,7 @@ class ProxyhubMetricsService
                 'receivedToday' => (int) ($json['receivedToday'] ?? 0),
             ];
         } catch (\Throwable $th) {
-            Log::warning('ProxyHub metrics request error', [
+            Log::warning('API Way metrics request error', [
                 'error' => $th->getMessage(),
             ]);
 

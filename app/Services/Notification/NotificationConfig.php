@@ -4,7 +4,7 @@ namespace App\Services\Notification;
 
 use App\Enums\Notification\NotificationType;
 use App\Models\Setting;
-use App\Services\Connection\Proxy\ProxyhubConfig;
+use App\Services\Connection\Proxy\ApiwayConfig;
 
 /**
  * Single source of truth for platform notification settings. All values live in
@@ -28,7 +28,7 @@ class NotificationConfig
     public const KEY_WAPI_INSTANCE_ID = 'notifications.wapi.instance_id';
     public const KEY_WAPI_TOKEN = 'notifications.wapi.token';
 
-    // ProxyBR API (Directly) — a ProxyHub instance (client-level credentials,
+    // ProxyBR API (Directly) — an API Way instance (client-level credentials,
     // not the platform integrator token).
     public const KEY_PROXYBR_BASE_URL = 'notifications.proxybr.base_url';
     public const KEY_PROXYBR_INSTANCE_ID = 'notifications.proxybr.instance_id';
@@ -77,7 +77,7 @@ class NotificationConfig
 
     public static function proxybrBaseUrl(): string
     {
-        return rtrim((string) Setting::get(self::KEY_PROXYBR_BASE_URL, ProxyhubConfig::DEFAULT_BASE_URL), '/');
+        return rtrim((string) Setting::get(self::KEY_PROXYBR_BASE_URL, ApiwayConfig::DEFAULT_BASE_URL), '/');
     }
 
     public static function proxybrInstanceId(): ?string

@@ -7,7 +7,7 @@ use App\Services\Contact\Channels\InstagramChannel;
 use App\Services\Contact\Channels\LiveChatWidgetChannel;
 use App\Services\Contact\Channels\TelegramChannel;
 use App\Services\Contact\Channels\WhatsappOfficialChannel;
-use App\Services\Contact\Channels\WhatsappProxyhubChannel;
+use App\Services\Contact\Channels\WhatsappApiwayChannel;
 use App\Services\Contact\Channels\WhatsappWApiChannel;
 
 class ContactChannelFactory
@@ -16,7 +16,7 @@ class ContactChannelFactory
     {
         return match ($channel) {
             Channel::WhatsappWApi => new WhatsappWApiChannel(),
-            Channel::WhatsappProxyhub => new WhatsappProxyhubChannel(),
+            Channel::WhatsappApiway => new WhatsappApiwayChannel(),
             Channel::WhatsappOfficial => new WhatsappOfficialChannel(),
             Channel::Instagram => new InstagramChannel(),
             Channel::Telegram => new TelegramChannel(),

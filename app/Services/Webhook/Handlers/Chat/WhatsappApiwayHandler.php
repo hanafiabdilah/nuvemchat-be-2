@@ -21,10 +21,10 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
 /**
- * Inbound webhook handler for the WhatsApp ProxyHub channel.
+ * Inbound webhook handler for the WhatsApp API Way channel.
  *
  * Unlike W-API (which sends a flat `{ event: "webhookReceived", msgContent, sender, chat }`
- * payload), ProxyHub forwards the **native whatsmeow event** wrapped as `{ "event": {...} }`:
+ * payload), API Way forwards the **native whatsmeow event** wrapped as `{ "event": {...} }`:
  *   - Message event:  event.Info { ID, Chat, Sender, SenderAlt, PushName, IsFromMe,
  *                     IsGroup, Timestamp, Type } + event.Message { conversation | imageMessage | ... }
  *   - Receipt event:  event.MessageIDs[], event.Type (delivered/read/played), event.MessageSource
@@ -32,18 +32,18 @@ use Illuminate\Support\Facades\Storage;
  * Identities use LID addressing; the real phone number is in `SenderAlt`
  * (e.g. `6282122787699:73@s.whatsapp.net`).
  */
-class WhatsappProxyhubHandler implements ChatHandlerInterface
+class WhatsappApiwayHandler implements ChatHandlerInterface
 {
     public function handle(Connection $connection, array $payload)
     {
-        // ProxyHub wraps each whatsmeow event as:
+        // API Way wraps each whatsmeow event as:
         //   { event: {...}, instanceName, type: "Message"|"Receipt"|"Presence"|..., userID }
         // The top-level `type` is the authoritative discriminator.
         $type = $payload['type'] ?? null;
         $event = $payload['event'] ?? $payload['data'] ?? $payload;
 
         if (! is_array($event)) {
-            Log::warning('WhatsappProxyhubHandler: event is not an object', ['value_type' => gettype($event)]);
+            Log::warning('WhatsappApiwayHandler: event is not an object', ['value_type' => gettype($event)]);
 
             return;
         }
@@ -55,7 +55,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             $info = $event['Info'] ?? [];
 
             if ($info['IsGroup'] ?? false) {
-                Log::info('WhatsappProxyhubHandler: skipping group message');
+                Log::info('WhatsappApiwayHandler: skipping group message');
 
                 return;
             }
@@ -66,7 +66,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             // WhatsappWApiHandler — this channel acts on no protocol type, so
             // every one of them is dropped.
             if (isset($event['Message']['protocolMessage'])) {
-                Log::info('WhatsappProxyhubHandler: skipping protocol message', [
+                Log::info('WhatsappApiwayHandler: skipping protocol message', [
                     'connection_id' => $connection->id,
                     'protocol_type' => $event['Message']['protocolMessage']['type'] ?? null,
                     'message_id' => $info['ID'] ?? null,
@@ -94,7 +94,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
 
         // Presence / connection / unknown events — connection status is handled by
         // polling status-instance, so just log to capture new event types.
-        Log::info('WhatsappProxyhubHandler: unhandled event', [
+        Log::info('WhatsappApiwayHandler: unhandled event', [
             'connection_id' => $connection->id,
             'type' => $type,
             'keys' => array_keys($event),
@@ -110,7 +110,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
         $messageType = $this->getMessageType($event);
 
         if (! $messageId || ! $phone) {
-            Log::warning('WhatsappProxyhubHandler: missing required fields', [
+            Log::warning('WhatsappApiwayHandler: missing required fields', [
                 'message_id' => $messageId,
                 'phone' => $phone,
             ]);
@@ -142,7 +142,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             }
 
             if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
-                Log::info('WhatsappProxyhubHandler: duplicate message ignored', ['message_id' => $messageId]);
+                Log::info('WhatsappApiwayHandler: duplicate message ignored', ['message_id' => $messageId]);
 
                 return null;
             }
@@ -176,14 +176,14 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
                 try {
                     $flowExecutor->startFlow($conversationForWelcome);
                 } catch (\Throwable $th) {
-                    Log::error('WhatsappProxyhubHandler: failed to start flow', ['error' => $th->getMessage()]);
+                    Log::error('WhatsappApiwayHandler: failed to start flow', ['error' => $th->getMessage()]);
                 }
             }
         } else {
             try {
                 $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($event) ?? '');
             } catch (\Throwable $th) {
-                Log::error('WhatsappProxyhubHandler: failed to resume flow', ['error' => $th->getMessage()]);
+                Log::error('WhatsappApiwayHandler: failed to resume flow', ['error' => $th->getMessage()]);
             }
         }
     }
@@ -256,7 +256,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             : (in_array($type, ['', 'delivered', 'delivery'], true) ? 'delivery_at' : null);
 
         if (! $column || empty($ids)) {
-            Log::info('WhatsappProxyhubHandler: receipt ignored', ['type' => $type, 'ids' => $ids]);
+            Log::info('WhatsappApiwayHandler: receipt ignored', ['type' => $type, 'ids' => $ids]);
 
             return;
         }
@@ -341,7 +341,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
         try {
             return Carbon::parse($timestamp)->setTimezone(config('app.timezone'));
         } catch (\Throwable $exception) {
-            Log::warning('WhatsappProxyhubHandler: unparseable timestamp, falling back to now()', [
+            Log::warning('WhatsappApiwayHandler: unparseable timestamp, falling back to now()', [
                 'timestamp' => $timestamp,
                 'error' => $exception->getMessage(),
             ]);
@@ -402,7 +402,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
      * Download the encrypted WhatsApp media from the CDN URL in the webhook and
      * decrypt it locally (HKDF-SHA256 + AES-256-CBC) — the standard WhatsApp
      * media scheme. Everything needed is in the payload, so this doesn't depend
-     * on ProxyHub's (undocumented) download-media response shape.
+     * on API Way's (undocumented) download-media response shape.
      */
     private function handleMediaMessage(Message $message, array $event, MessageType $type): void
     {
@@ -412,7 +412,7 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
         $mimetype = $node['mimetype'] ?? null;
 
         if (! $node || ! $url || ! $mediaKeyB64 || ! $mimetype) {
-            Log::warning('WhatsappProxyhubHandler: missing media data', ['message_id' => $message->id]);
+            Log::warning('WhatsappApiwayHandler: missing media data', ['message_id' => $message->id]);
             $message->update(['error' => 'Missing media data']);
 
             return;
@@ -437,9 +437,9 @@ class WhatsappProxyhubHandler implements ChatHandlerInterface
             Storage::disk('local')->put($path, $plain);
             $message->update(['attachment' => $path]);
 
-            Log::info('WhatsappProxyhubHandler: media downloaded', ['message_id' => $message->id, 'path' => $path]);
+            Log::info('WhatsappApiwayHandler: media downloaded', ['message_id' => $message->id, 'path' => $path]);
         } catch (\Throwable $e) {
-            Log::error('WhatsappProxyhubHandler: media handling failed', ['message_id' => $message->id, 'error' => $e->getMessage()]);
+            Log::error('WhatsappApiwayHandler: media handling failed', ['message_id' => $message->id, 'error' => $e->getMessage()]);
             $message->update(['error' => $e->getMessage()]);
         }
     }

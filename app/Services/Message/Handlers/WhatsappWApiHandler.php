@@ -23,7 +23,7 @@ class WhatsappWApiHandler implements MessageHandlerInterface
     }
 
     /**
-     * W-API base URL. Overridden by the ProxyHub handler.
+     * W-API base URL. Overridden by the API Way handler.
      */
     protected function base(): string
     {

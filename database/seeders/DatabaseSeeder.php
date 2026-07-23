@@ -40,7 +40,7 @@ class DatabaseSeeder extends Seeder
         $this->call(PlanSeeder::class);
         $this->call(WhatsappApiPlanSeeder::class);
 
-        // Platform settings (ProxyHub credentials, etc.)
+        // Platform settings (API Way credentials, etc.)
         $this->call(SettingSeeder::class);
     }
 }

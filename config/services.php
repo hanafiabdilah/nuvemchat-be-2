@@ -45,8 +45,8 @@ return [
     // W-API integrator (managed) token lives in the `settings` table (DB-only).
     // See App\Services\Connection\WApi\WApiConfig.
 
-    // ProxyHub credentials live in the `settings` table (DB-only), managed by
-    // super-admin in the Back Office. See App\Services\Connection\Proxy\ProxyhubConfig.
+    // API Way credentials live in the `settings` table (DB-only), managed by
+    // super-admin in the Back Office. See App\Services\Connection\Proxy\ApiwayConfig.
 
     // AI Agent Hub credentials live in the `settings` table (DB-only).
     // See App\Services\AiAgentHub\AiAgentHubConfig.

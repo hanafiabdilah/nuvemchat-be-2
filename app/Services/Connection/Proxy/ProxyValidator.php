@@ -10,7 +10,7 @@ use Illuminate\Validation\ValidationException;
 /**
  * Parses a user-supplied proxy string (`ip:port:username:password`), detects
  * whether it speaks HTTP or SOCKS5 by probing it, and builds the proxy URL that
- * ProxyHub expects (`{scheme}://user:pass@ip:port`).
+ * API Way expects (`{scheme}://user:pass@ip:port`).
  */
 class ProxyValidator
 {

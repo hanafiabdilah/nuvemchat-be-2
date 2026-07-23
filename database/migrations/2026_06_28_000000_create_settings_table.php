@@ -9,7 +9,7 @@ return new class extends Migration
     /**
      * Global platform key-value settings (managed by super-admin). Values are
      * encrypted at the application layer (see App\Models\Setting), so secrets
-     * like the ProxyHub integrator token are never stored in plaintext.
+     * like the API Way integrator token are never stored in plaintext.
      */
     public function up(): void
     {

@@ -8,7 +8,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\Tenant;
 use App\Models\User;
-use App\Services\Webhook\Handlers\Chat\WhatsappProxyhubHandler;
+use App\Services\Webhook\Handlers\Chat\WhatsappApiwayHandler;
 use App\Services\Webhook\Handlers\Chat\WhatsappWApiHandler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
@@ -132,11 +132,11 @@ test('w-api still routes REVOKE and MESSAGE_EDIT to their handlers', function (s
     expect(Message::count())->toBe(0);
 })->with(['REVOKE', 'MESSAGE_EDIT']);
 
-test('proxyhub drops protocol messages instead of storing them as unsupported', function () {
+test('api way drops protocol messages instead of storing them as unsupported', function () {
     Event::fake();
-    $connection = protocolTestConnection(Channel::WhatsappProxyhub);
+    $connection = protocolTestConnection(Channel::WhatsappApiway);
 
-    (new WhatsappProxyhubHandler)->handle($connection, [
+    (new WhatsappApiwayHandler)->handle($connection, [
         'type' => 'Message',
         'event' => [
             'Info' => [
@@ -168,11 +168,11 @@ test('proxyhub drops protocol messages instead of storing them as unsupported', 
  *  - `IsFromMe` is true, so it takes the handleOwnMessage path — the guard has
  *    to sit before that branch or it would be stored as an outgoing message.
  */
-test('proxyhub drops a peer protocol message with a numeric type sent from self', function () {
+test('api way drops a peer protocol message with a numeric type sent from self', function () {
     Event::fake();
-    $connection = protocolTestConnection(Channel::WhatsappProxyhub);
+    $connection = protocolTestConnection(Channel::WhatsappApiway);
 
-    (new WhatsappProxyhubHandler)->handle($connection, [
+    (new WhatsappApiwayHandler)->handle($connection, [
         'type' => 'Message',
         'event' => [
             'Info' => [
@@ -213,12 +213,12 @@ test('proxyhub drops a peer protocol message with a numeric type sent from self'
         ->and(Conversation::count())->toBe(0);
 });
 
-test('proxyhub still records a genuine message sent from the phone', function () {
+test('api way still records a genuine message sent from the phone', function () {
     Event::fake();
-    $connection = protocolTestConnection(Channel::WhatsappProxyhub);
+    $connection = protocolTestConnection(Channel::WhatsappApiway);
 
     // Same IsFromMe path, real content — must not be swallowed by the guard.
-    (new WhatsappProxyhubHandler)->handle($connection, [
+    (new WhatsappApiwayHandler)->handle($connection, [
         'type' => 'Message',
         'event' => [
             'Info' => [

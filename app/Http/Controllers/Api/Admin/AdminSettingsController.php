@@ -10,7 +10,7 @@ use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Services\Billing\MercadoPago\MercadoPagoConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
-use App\Services\Connection\Proxy\ProxyhubConfig;
+use App\Services\Connection\Proxy\ApiwayConfig;
 use App\Services\Connection\WApi\WApiConfig;
 use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationProviderFactory;
@@ -24,7 +24,7 @@ class AdminSettingsController extends Controller
      */
     public function show()
     {
-        $token = ProxyhubConfig::integratorToken();
+        $token = ApiwayConfig::integratorToken();
         $mpAccess = MercadoPagoConfig::accessToken();
         $mpSecret = MercadoPagoConfig::webhookSecret();
 
@@ -38,13 +38,18 @@ class AdminSettingsController extends Controller
         $notifToken = NotificationConfig::wapiToken();
         $notifProxyToken = NotificationConfig::proxybrToken();
 
+        $apiway = [
+            'base_url' => ApiwayConfig::baseUrl(),
+            'integrator_token_set' => ! empty($token),
+            'integrator_token_preview' => $this->mask($token),
+        ];
+
         return response()->json([
             'data' => [
-                'proxyhub' => [
-                    'base_url' => ProxyhubConfig::baseUrl(),
-                    'integrator_token_set' => ! empty($token),
-                    'integrator_token_preview' => $this->mask($token),
-                ],
+                'apiway' => $apiway,
+                // Legacy alias kept so a Back Office build from before the API Way
+                // rebrand keeps rendering this section. Drop once all clients update.
+                'proxyhub' => $apiway,
                 'mercadopago' => [
                     // Public key is meant to be exposed (frontend Bricks).
                     'public_key' => MercadoPagoConfig::publicKey(),
@@ -117,6 +122,12 @@ class AdminSettingsController extends Controller
     public function update(Request $request)
     {
         $validated = $request->validate([
+            'apiway' => ['sometimes', 'array'],
+            'apiway.base_url' => ['required_with:apiway', 'url', 'max:255'],
+            'apiway.integrator_token' => ['nullable', 'string', 'max:255'],
+
+            // Legacy payload key accepted from Back Office builds that predate the
+            // API Way rebrand. Drop once all clients update.
             'proxyhub' => ['sometimes', 'array'],
             'proxyhub.base_url' => ['required_with:proxyhub', 'url', 'max:255'],
             'proxyhub.integrator_token' => ['nullable', 'string', 'max:255'],
@@ -166,11 +177,14 @@ class AdminSettingsController extends Controller
             'notifications.templates.*' => ['nullable', 'string', 'max:2000'],
         ]);
 
-        if ($request->has('proxyhub')) {
-            Setting::set(ProxyhubConfig::KEY_BASE_URL, rtrim($validated['proxyhub']['base_url'], '/'));
+        // `proxyhub` is the pre-rebrand payload key; still honoured for older clients.
+        $apiway = $validated['apiway'] ?? $validated['proxyhub'] ?? null;
 
-            if (! empty($validated['proxyhub']['integrator_token'])) {
-                Setting::set(ProxyhubConfig::KEY_INTEGRATOR_TOKEN, $validated['proxyhub']['integrator_token']);
+        if ($apiway !== null) {
+            Setting::set(ApiwayConfig::KEY_BASE_URL, rtrim($apiway['base_url'], '/'));
+
+            if (! empty($apiway['integrator_token'])) {
+                Setting::set(ApiwayConfig::KEY_INTEGRATOR_TOKEN, $apiway['integrator_token']);
             }
         }
 

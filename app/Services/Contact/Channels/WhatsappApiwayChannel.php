@@ -10,11 +10,11 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
-class WhatsappProxyhubChannel implements ContactChannelInterface
+class WhatsappApiwayChannel implements ContactChannelInterface
 {
     private function base(): string
     {
-        return \App\Services\Connection\Proxy\ProxyhubConfig::baseUrl();
+        return \App\Services\Connection\Proxy\ApiwayConfig::baseUrl();
     }
     public function addContact(Connection $connection, array $data): Contact
     {

@@ -57,7 +57,7 @@ class ConnectionController extends Controller
         $tenant = $request->user()->tenant;
 
         $instanceIds = $tenant->connections()
-            ->where('channel', Channel::WhatsappProxyhub->value)
+            ->where('channel', Channel::WhatsappApiway->value)
             ->get()
             ->map(function (Connection $connection) {
                 return $connection->credentials['instance_id'] ?? null;
@@ -67,7 +67,7 @@ class ConnectionController extends Controller
             ->values()
             ->all();
 
-        $metrics = app(\App\Services\Connection\Proxy\ProxyhubMetricsService::class)
+        $metrics = app(\App\Services\Connection\Proxy\ApiwayMetricsService::class)
             ->todayForInstances($instanceIds);
 
         return response()->json([
@@ -90,7 +90,7 @@ class ConnectionController extends Controller
         $tenant = $request->user()->tenant;
         $gate = app(SubscriptionGate::class);
 
-        if ($validated['channel'] === Channel::WhatsappProxyhub->value) {
+        if ($validated['channel'] === Channel::WhatsappApiway->value) {
             if (! $gate->feature($tenant, Feature::WhatsappApi->value)) {
                 return response()->json([
                     'message' => 'This feature (whatsapp_api) is not included in your current plan.',
@@ -100,7 +100,7 @@ class ConnectionController extends Controller
             }
 
             $instancesCount = $tenant->connections()
-                ->where('channel', Channel::WhatsappProxyhub->value)
+                ->where('channel', Channel::WhatsappApiway->value)
                 ->count();
 
             if (! $gate->canConsume($tenant, 'max_instances', $instancesCount)) {
@@ -246,7 +246,7 @@ class ConnectionController extends Controller
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
         // Dedicated/custom proxy is a paid add-on gated by the `proxy` feature.
-        if ($connection->channel === Channel::WhatsappProxyhub->value) {
+        if ($connection->channel === Channel::WhatsappApiway->value) {
             $proxyMode = $request->input('proxy_mode', $connection->credentials['proxy_mode'] ?? 'shared');
 
             if (in_array($proxyMode, ['dedicated', 'custom'], true)

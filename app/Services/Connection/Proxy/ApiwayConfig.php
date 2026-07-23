@@ -5,11 +5,13 @@ namespace App\Services\Connection\Proxy;
 use App\Models\Setting;
 
 /**
- * Single source of truth for ProxyHub platform credentials. Stored in the
+ * Single source of truth for API Way platform credentials. Stored in the
  * `settings` table (managed by super-admin in the Back Office) — not in .env.
  */
-class ProxyhubConfig
+class ApiwayConfig
 {
+    // The `proxyhub.*` prefix predates the API Way rebrand. It is the primary key of
+    // rows already in the `settings` table, so it stays as-is.
     public const KEY_BASE_URL = 'proxyhub.base_url';
     public const KEY_INTEGRATOR_TOKEN = 'proxyhub.integrator_token';
 

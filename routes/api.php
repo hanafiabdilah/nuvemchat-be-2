@@ -303,7 +303,7 @@ Route::prefix('admin')->group(function () {
             Route::delete('/admins/{admin}', [AdminAdminController::class, 'destroy']);
         });
 
-        // Platform settings (ProxyHub credentials, etc.) + WhatsApp delivery audit.
+        // Platform settings (API Way credentials, etc.) + WhatsApp delivery audit.
         Route::middleware('permission:bo.settings.manage')->group(function () {
             Route::get('/settings', [AdminSettingsController::class, 'show']);
             Route::put('/settings', [AdminSettingsController::class, 'update']);

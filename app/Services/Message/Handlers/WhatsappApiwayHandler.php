@@ -15,15 +15,15 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class WhatsappProxyhubHandler implements MessageHandlerInterface
+class WhatsappApiwayHandler implements MessageHandlerInterface
 {
     private function base(): string
     {
-        return \App\Services\Connection\Proxy\ProxyhubConfig::baseUrl();
+        return \App\Services\Connection\Proxy\ApiwayConfig::baseUrl();
     }
 
     /**
-     * URL fast-path: the ProxyHub send-{type} endpoints accept a URL directly in
+     * URL fast-path: the API Way send-{type} endpoints accept a URL directly in
      * the media field, so reference the caller's URL, store it as the attachment
      * and skip hosting/persisting bytes. Throws on a non-success response so the
      * caller can fall back to downloading the file.
@@ -56,13 +56,13 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
         ])->post($this->base() . '/v1/message/send-' . $endpointType . '?instanceId=' . $connection->credentials['instance_id'], $payload);
 
         if (!$response->successful()) {
-            throw new Exception("ProxyHub rejected {$endpointType} URL: " . $response->body());
+            throw new Exception("API Way rejected {$endpointType} URL: " . $response->body());
         }
 
         $responseArray = $response->json();
 
         $message = $conversation->messages()->create([
-            'external_id' => $this->getMessageId($responseArray) ?: uniqid('proxyhub_', true),
+            'external_id' => $this->getMessageId($responseArray) ?: uniqid('apiway_', true),
             'sender_type' => SenderType::Outgoing,
             'message_type' => $messageTypeEnum,
             'body' => $body,
@@ -77,7 +77,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
     }
     public function getMessageId(array $payload): string
     {
-        // ProxyHub wraps the send response as { success, data: { id, status } };
+        // API Way wraps the send response as { success, data: { id, status } };
         // fall back to the flat messageId for safety.
         return $payload['data']['id'] ?? $payload['messageId'] ?? '';
     }
@@ -98,7 +98,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
             ->first();
 
         if (!$repliedMessage) {
-            Log::warning('WhatsappProxyhubHandler: Replied message not found', [
+            Log::warning('WhatsappApiwayHandler: Replied message not found', [
                 'replied_message_id' => $repliedMessageId,
                 'conversation_id' => $conversation->id,
             ]);
@@ -135,7 +135,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             $responseArray = $response->json();
 
-            Log::info('WhatsappProxyhubHandler: Text message sent', [
+            Log::info('WhatsappApiwayHandler: Text message sent', [
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -153,7 +153,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             return $message;
         } catch (\Throwable $th) {
-            Log::error('WhatsappProxyhubHandler: Failed to send message', [
+            Log::error('WhatsappApiwayHandler: Failed to send message', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -189,7 +189,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                     $data['message'] ?? null,
                 );
             } catch (\Throwable $th) {
-                Log::warning('WhatsappProxyhubHandler: URL image send failed, falling back to download', [
+                Log::warning('WhatsappApiwayHandler: URL image send failed, falling back to download', [
                     'error' => $th->getMessage(),
                     'conversation_id' => $conversation->id,
                 ]);
@@ -228,7 +228,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             $responseArray = $response->json();
 
-            Log::info('WhatsappProxyhubHandler: Image message sent', [
+            Log::info('WhatsappApiwayHandler: Image message sent', [
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -254,7 +254,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             return $message;
         } catch (\Throwable $th) {
-            Log::error('WhatsappProxyhubHandler: Failed to send image message', [
+            Log::error('WhatsappApiwayHandler: Failed to send image message', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -286,7 +286,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                     $media->url,
                 );
             } catch (\Throwable $th) {
-                Log::warning('WhatsappProxyhubHandler: URL audio send failed, falling back to download', [
+                Log::warning('WhatsappApiwayHandler: URL audio send failed, falling back to download', [
                     'error' => $th->getMessage(),
                     'conversation_id' => $conversation->id,
                 ]);
@@ -304,7 +304,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             // Convert to OGG if not MP3 or OGG
             if (!in_array($extension, ['mp3', 'ogg'])) {
-                Log::info('WhatsappProxyhubHandler: Converting audio to OGG', [
+                Log::info('WhatsappApiwayHandler: Converting audio to OGG', [
                     'original_format' => $extension,
                 ]);
 
@@ -321,7 +321,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                 exec($command, $output, $returnVar);
 
                 if ($returnVar !== 0 || !file_exists($outputPath)) {
-                    Log::error('WhatsappProxyhubHandler: Audio conversion failed', [
+                    Log::error('WhatsappApiwayHandler: Audio conversion failed', [
                         'command' => $command,
                         'output' => $output,
                         'return_var' => $returnVar,
@@ -344,7 +344,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
             $audioBase64 = base64_encode($audioContent);
             $audioDataUri = 'data:' . $mimeType . ';base64,' . $audioBase64;
 
-            Log::info('WhatsappProxyhubHandler: Sending audio', [
+            Log::info('WhatsappApiwayHandler: Sending audio', [
                 'format' => $extension,
                 'mime_type' => $mimeType,
                 'size' => strlen($audioContent),
@@ -367,7 +367,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             $responseArray = $response->json();
 
-            Log::info('WhatsappProxyhubHandler: Audio message sent', [
+            Log::info('WhatsappApiwayHandler: Audio message sent', [
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -393,7 +393,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             return $message;
         } catch (\Throwable $th) {
-            Log::error('WhatsappProxyhubHandler: Failed to send audio message', [
+            Log::error('WhatsappApiwayHandler: Failed to send audio message', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -430,7 +430,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                     $data['message'] ?? null,
                 );
             } catch (\Throwable $th) {
-                Log::warning('WhatsappProxyhubHandler: URL video send failed, falling back to download', [
+                Log::warning('WhatsappApiwayHandler: URL video send failed, falling back to download', [
                     'error' => $th->getMessage(),
                     'conversation_id' => $conversation->id,
                 ]);
@@ -453,7 +453,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
             // Generate public URL
             $videoUrl = url('storage/' . $tempPublicPath);
 
-            Log::info('WhatsappProxyhubHandler: Sending video via URL', [
+            Log::info('WhatsappApiwayHandler: Sending video via URL', [
                 'url' => $videoUrl,
                 'size' => strlen($videoContent),
                 'conversation_id' => $conversation->id,
@@ -477,7 +477,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             $responseArray = $response->json();
 
-            Log::info('WhatsappProxyhubHandler: Video message sent', [
+            Log::info('WhatsappApiwayHandler: Video message sent', [
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -511,7 +511,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                 Storage::disk('public')->delete($tempPublicPath);
             }
 
-            Log::error('WhatsappProxyhubHandler: Failed to send video message', [
+            Log::error('WhatsappApiwayHandler: Failed to send video message', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -552,7 +552,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                     $data['message'] ?? null,
                 );
             } catch (\Throwable $th) {
-                Log::warning('WhatsappProxyhubHandler: URL document send failed, falling back to download', [
+                Log::warning('WhatsappApiwayHandler: URL document send failed, falling back to download', [
                     'error' => $th->getMessage(),
                     'conversation_id' => $conversation->id,
                 ]);
@@ -579,7 +579,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
             $filename = $data['document']->getClientOriginalName();
             $extension = $data['document']->getClientOriginalExtension();
 
-            Log::info('WhatsappProxyhubHandler: Sending document via URL', [
+            Log::info('WhatsappApiwayHandler: Sending document via URL', [
                 'url' => $documentUrl,
                 'filename' => $filename,
                 'extension' => $extension,
@@ -607,7 +607,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             $responseArray = $response->json();
 
-            Log::info('WhatsappProxyhubHandler: Document message sent', [
+            Log::info('WhatsappApiwayHandler: Document message sent', [
                 'response' => $responseArray,
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -641,7 +641,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                 Storage::disk('public')->delete($tempPublicPath);
             }
 
-            Log::error('WhatsappProxyhubHandler: Failed to send document message', [
+            Log::error('WhatsappApiwayHandler: Failed to send document message', [
                 'error' => $th->getMessage(),
                 'conversation_id' => $conversation->id,
                 'connection_id' => $connection->id,
@@ -679,7 +679,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             // Cek jika API tidak support edit message
             if (!$response->successful()) {
-                Log::warning('WhatsappProxyhubHandler: Edit message may not be supported', [
+                Log::warning('WhatsappApiwayHandler: Edit message may not be supported', [
                     'response' => $responseArray,
                     'status' => $response->status(),
                     'message_id' => $message->id,
@@ -689,7 +689,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                     ($responseArray['message'] ?? 'Unknown error'));
             }
 
-            Log::info('WhatsappProxyhubHandler: Message edited successfully', [
+            Log::info('WhatsappApiwayHandler: Message edited successfully', [
                 'response' => $responseArray,
                 'message_id' => $message->id,
                 'conversation_id' => $conversation->id,
@@ -704,7 +704,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             return $message->fresh();
         } catch (\Throwable $th) {
-            Log::error('WhatsappProxyhubHandler: Failed to edit message', [
+            Log::error('WhatsappApiwayHandler: Failed to edit message', [
                 'error' => $th->getMessage(),
                 'message_id' => $message->id,
                 'conversation_id' => $conversation->id,
@@ -734,13 +734,13 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             $responseArray = $response->json();
 
-            Log::info('WhatsappProxyhubHandler: Delete response received', [
+            Log::info('WhatsappApiwayHandler: Delete response received', [
                 'status' => $response->status(),
                 'response' => $responseArray,
             ]);
 
             if (!$response->successful()) {
-                Log::warning('WhatsappProxyhubHandler: Delete message request failed', [
+                Log::warning('WhatsappApiwayHandler: Delete message request failed', [
                     'response' => $responseArray,
                     'status' => $response->status(),
                     'message_id' => $message->id,
@@ -750,7 +750,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
                     ($responseArray['message'] ?? 'Unknown error'));
             }
 
-            Log::info('WhatsappProxyhubHandler: Message deleted successfully', [
+            Log::info('WhatsappApiwayHandler: Message deleted successfully', [
                 'response' => $responseArray,
                 'message_id' => $message->id,
                 'conversation_id' => $conversation->id,
@@ -763,7 +763,7 @@ class WhatsappProxyhubHandler implements MessageHandlerInterface
 
             return true;
         } catch (\Throwable $th) {
-            Log::error('WhatsappProxyhubHandler: Failed to delete message', [
+            Log::error('WhatsappApiwayHandler: Failed to delete message', [
                 'error' => $th->getMessage(),
                 'message_id' => $message->id,
                 'conversation_id' => $conversation->id,

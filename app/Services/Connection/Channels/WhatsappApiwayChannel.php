@@ -6,19 +6,19 @@ use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException as AppConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
-use App\Services\Connection\Proxy\ProxyhubConfig;
+use App\Services\Connection\Proxy\ApiwayConfig;
 use App\Services\Connection\Proxy\ProxyValidator;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * WhatsApp ProxyHub channel. Mirrors W-API but is managed-only (the system always
+ * WhatsApp API Way channel. Mirrors W-API but is managed-only (the system always
  * creates the instance via the integrator) and sets a proxy on the instance at
  * creation time. proxyMode: shared (server IP) | dedicated (ProxyBR IPv4) |
  * custom (the user supplies ip:port:username:password, validated & detected).
  */
-class WhatsappProxyhubChannel implements ChannelInterface
+class WhatsappApiwayChannel implements ChannelInterface
 {
     private const PROXY_MODES = ['shared', 'dedicated', 'custom'];
 
@@ -30,12 +30,12 @@ class WhatsappProxyhubChannel implements ChannelInterface
 
     private function base(): string
     {
-        return ProxyhubConfig::baseUrl();
+        return ApiwayConfig::baseUrl();
     }
 
     private function integratorToken(): string
     {
-        return (string) ProxyhubConfig::integratorToken();
+        return (string) ApiwayConfig::integratorToken();
     }
 
     public function connect(Connection $connection, array $data)
@@ -95,7 +95,7 @@ class WhatsappProxyhubChannel implements ChannelInterface
             'webhookReceivedUrl' => $webhookUrl,
         ];
 
-        Log::info('Creating WhatsApp ProxyHub managed instance', ['connection' => $connection->id, 'proxy_mode' => $proxyMode]);
+        Log::info('Creating WhatsApp API Way managed instance', ['connection' => $connection->id, 'proxy_mode' => $proxyMode]);
 
         // Retry only on ConnectionException: connection-establishment failures mean
         // the request never reached the server, so retrying cannot create a duplicate.
@@ -113,8 +113,8 @@ class WhatsappProxyhubChannel implements ChannelInterface
         $responseJson = $response->json();
 
         if ($response->failed()) {
-            Log::error('WhatsApp ProxyHub managed instance creation failed', ['connection' => $connection->id, 'response' => $responseJson, 'status' => $response->status()]);
-            throw new AppConnectionException($responseJson['message'] ?? 'Failed to create managed instance on ProxyHub', $response->status() ?: 500);
+            Log::error('WhatsApp API Way managed instance creation failed', ['connection' => $connection->id, 'response' => $responseJson, 'status' => $response->status()]);
+            throw new AppConnectionException($responseJson['message'] ?? 'Failed to create managed instance on API Way', $response->status() ?: 500);
         }
 
         $connection->update([
@@ -147,7 +147,7 @@ class WhatsappProxyhubChannel implements ChannelInterface
                     ->retry(2, 500)
                     ->put($endpoint, ['value' => $webhookUrl]);
             } catch (\Throwable $th) {
-                Log::warning('WhatsApp ProxyHub webhook setup failed', ['event' => $event, 'connection' => $connection->id, 'error' => $th->getMessage()]);
+                Log::warning('WhatsApp API Way webhook setup failed', ['event' => $event, 'connection' => $connection->id, 'error' => $th->getMessage()]);
             }
         }
     }
@@ -164,11 +164,11 @@ class WhatsappProxyhubChannel implements ChannelInterface
         $qrJson = $qr->json();
 
         if ($qr->failed()) {
-            Log::error('WhatsApp ProxyHub QR request failed', ['connection' => $connection->id, 'response' => $qrJson, 'status' => $qr->status()]);
-            throw new AppConnectionException($qrJson['message'] ?? 'Failed to retrieve QR code from ProxyHub', $qr->status() ?: 500);
+            Log::error('WhatsApp API Way QR request failed', ['connection' => $connection->id, 'response' => $qrJson, 'status' => $qr->status()]);
+            throw new AppConnectionException($qrJson['message'] ?? 'Failed to retrieve QR code from API Way', $qr->status() ?: 500);
         }
 
-        // ProxyHub wraps instance responses as { success, data: { qrcode: <data URI> } }.
+        // API Way wraps instance responses as { success, data: { qrcode: <data URI> } }.
         $qrCode = $qrJson['data']['qrcode']
             ?? $qrJson['qrcode'] ?? $qrJson['qrCode'] ?? $qrJson['value'] ?? null;
 
@@ -189,11 +189,11 @@ class WhatsappProxyhubChannel implements ChannelInterface
         $statusJson = $status->json();
 
         if ($status->failed()) {
-            Log::error('WhatsApp ProxyHub status request failed', ['connection' => $connection->id, 'response' => $statusJson, 'status' => $status->status()]);
-            throw new AppConnectionException($statusJson['message'] ?? 'Failed to connect to ProxyHub', $status->status() ?: 500);
+            Log::error('WhatsApp API Way status request failed', ['connection' => $connection->id, 'response' => $statusJson, 'status' => $status->status()]);
+            throw new AppConnectionException($statusJson['message'] ?? 'Failed to connect to API Way', $status->status() ?: 500);
         }
 
-        // ProxyHub wraps instance responses as
+        // API Way wraps instance responses as
         // { success, data: { connected: bool, loggedIn: bool, jid } }.
         // The instance is only usable when it's BOTH connected to WhatsApp AND
         // logged in (paired) — connected alone can mean "waiting for QR scan".
@@ -215,7 +215,7 @@ class WhatsappProxyhubChannel implements ChannelInterface
             $connection->update(['status' => Status::Inactive]);
             throw $th instanceof AppConnectionException
                 ? $th
-                : new AppConnectionException('An error occurred while checking ProxyHub connection status', 500);
+                : new AppConnectionException('An error occurred while checking API Way connection status', 500);
         }
     }
 
@@ -228,7 +228,7 @@ class WhatsappProxyhubChannel implements ChannelInterface
                 ->timeout(20)
                 ->get($this->base() . '/v1/instance/disconnect?instanceId=' . $connection->credentials['instance_id']);
         } catch (\Throwable $th) {
-            Log::warning('Error disconnecting ProxyHub, marking inactive anyway', ['connection' => $connection->id, 'error' => $th->getMessage()]);
+            Log::warning('Error disconnecting API Way, marking inactive anyway', ['connection' => $connection->id, 'error' => $th->getMessage()]);
         }
 
         $connection->update([
@@ -250,7 +250,7 @@ class WhatsappProxyhubChannel implements ChannelInterface
                 ->timeout(20)
                 ->delete($this->base() . '/v1/delete-instance?instanceId=' . $connection->credentials['instance_id']);
         } catch (\Throwable $th) {
-            Log::warning('Error deleting ProxyHub managed instance, continuing', ['connection' => $connection->id, 'error' => $th->getMessage()]);
+            Log::warning('Error deleting API Way managed instance, continuing', ['connection' => $connection->id, 'error' => $th->getMessage()]);
         }
     }
 }

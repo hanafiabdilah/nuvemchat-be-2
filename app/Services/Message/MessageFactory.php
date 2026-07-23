@@ -8,7 +8,7 @@ use App\Services\Message\Handlers\InstagramHandler;
 use App\Services\Message\Handlers\LiveChatWidgetHandler;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
 use App\Services\Message\Handlers\TelegramHandler;
-use App\Services\Message\Handlers\WhatsappProxyhubHandler;
+use App\Services\Message\Handlers\WhatsappApiwayHandler;
 use App\Services\Message\Handlers\WhatsappWApiHandler;
 use InvalidArgumentException;
 
@@ -21,7 +21,7 @@ class MessageFactory
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
             Channel::Telegram => new TelegramHandler(),
             Channel::WhatsappWApi => new WhatsappWApiHandler(),
-            Channel::WhatsappProxyhub => new WhatsappProxyhubHandler(),
+            Channel::WhatsappApiway => new WhatsappApiwayHandler(),
             Channel::LiveChatWidget => new LiveChatWidgetHandler(),
             Channel::Email => new EmailHandler(),
             default => throw new InvalidArgumentException("Unsupported channel: " . $channel->value),

@@ -143,7 +143,7 @@ class BillingController extends Controller
         abort_if(! $subscription->plan?->quantity_enabled, 422, 'Este plano não permite alteração de quantidade.');
 
         $instancesCount = $tenant->connections()
-            ->where('channel', Channel::WhatsappProxyhub->value)
+            ->where('channel', Channel::WhatsappApiway->value)
             ->count();
 
         if ($validated['quantity'] < $instancesCount) {
