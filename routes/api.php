@@ -116,6 +116,8 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/conversations/bulk-status', [ConversationController::class, 'bulkUpdateStatus']);
         Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
         Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
+        Route::get('/conversations/{id}/transfer-targets', [ConversationController::class, 'transferTargets']);
+        Route::post('/conversations/{id}/transfer', [ConversationController::class, 'transfer']);
         Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
         Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
         Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);

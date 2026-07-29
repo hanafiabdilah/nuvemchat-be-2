@@ -7,6 +7,7 @@ use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Events\ConversationTransferred;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Exceptions\ConnectionException;
@@ -651,6 +652,90 @@ class ConversationController extends Controller
 
         return response()->json([
             'message' => 'Conversation resolved',
+        ]);
+    }
+
+    /**
+     * Agents the current conversation can be transferred to: every user of the
+     * tenant except the current assignee. Only someone who can act on the
+     * conversation (owner / assignee / email-inbox member) may list them.
+     */
+    public function transferTargets(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(!$conversation->isAccessibleBy(Auth::user())){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        $agents = Auth::user()->tenant->users()
+            ->where('users.id', '!=', $conversation->user_id)
+            ->orderBy('name')
+            ->get(['users.id', 'users.name', 'users.email']);
+
+        return response()->json([
+            'data' => $agents,
+        ]);
+    }
+
+    /**
+     * Transfer an Active conversation to another agent of the tenant. Allowed
+     * for whoever can act on the conversation (owner / current assignee /
+     * email-inbox member). Broadcasts ConversationUpdated for state sync plus
+     * ConversationTransferred so the receiving agent gets a notification.
+     */
+    public function transfer(Request $request, int $id)
+    {
+        $validated = $request->validate([
+            'agent_id' => ['required', 'integer'],
+        ]);
+
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(!$conversation->isAccessibleBy(Auth::user())){
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $target = Auth::user()->tenant->users()->find($validated['agent_id']);
+
+        if(!$target){
+            return response()->json([
+                'message' => 'Agent not found',
+            ], 404);
+        }
+
+        if((int) $conversation->user_id === (int) $target->id){
+            return response()->json([
+                'message' => 'Conversation is already assigned to this agent',
+            ], 400);
+        }
+
+        $conversation->user_id = $target->id;
+        $conversation->needs_human = false;
+        $conversation->save();
+
+        $conversation->load('agent');
+
+        broadcast(new ConversationUpdated($conversation));
+        broadcast(new ConversationTransferred($conversation, Auth::user(), $target));
+
+        return response()->json([
+            'message' => 'Conversation transferred',
+            'data' => new ConversationResource($conversation),
         ]);
     }
 
