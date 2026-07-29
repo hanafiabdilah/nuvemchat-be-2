@@ -10,6 +10,12 @@ class Tenant extends Model
     protected $fillable = [
         'user_id',
         'current_subscription_id',
+        'ai_suggest_config',
+    ];
+
+    protected $casts = [
+        // {provider, api_key, model} for "Respond with AI" — encrypted at rest.
+        'ai_suggest_config' => 'encrypted:array',
     ];
 
     public function user()

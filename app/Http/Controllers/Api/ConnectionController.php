@@ -510,6 +510,28 @@ class ConnectionController extends Controller
     }
 
     /**
+     * Per-connection switch for "Respond with AI" reply suggestions. The
+     * provider credentials themselves are tenant-level (AiSuggestController).
+     */
+    public function updateAiSuggest(int $id, Request $request)
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        $validated = $request->validate([
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        $connection->update(['ai_suggest_enabled' => $validated['enabled']]);
+
+        broadcast(new ConnectionUpdated($connection));
+
+        return response()->json([
+            'message' => 'AI suggestions updated successfully',
+            'data' => $connection->toResource(ConnectionResource::class),
+        ], 200);
+    }
+
+    /**
      * Email is a shared inbox: no flow ever runs on it and there is no AI → human
      * handoff, so a schedule would have nothing to gate.
      */

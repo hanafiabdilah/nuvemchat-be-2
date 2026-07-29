@@ -36,6 +36,7 @@ class ConnectionResource extends JsonResource
                 'started_at' => $this->sync_started_at,
                 'last_synced_at' => $this->last_synced_at,
             ]),
+            'ai_suggest_enabled' => (bool) $this->ai_suggest_enabled,
             'automated_messages' => [
                 'accept_message' => $this->accept_message,
                 'closing_message' => $this->closing_message,

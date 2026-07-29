@@ -76,6 +76,9 @@ class RoleAndPermissionSeeder extends Seeder
             'service-hours.view',
             'service-hours.update',
 
+            // "Respond with AI" reply suggestions (tenant provider keys)
+            'ai-suggest.settings',
+
             // WhatsApp message templates (Cloud API)
             'templates.view',
             'templates.create',

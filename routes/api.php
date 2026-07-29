@@ -2,6 +2,7 @@
 
 use App\Enums\Billing\Feature;
 use App\Http\Controllers\Api\AgentController;
+use App\Http\Controllers\Api\AiSuggestController;
 use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
 use App\Http\Controllers\Api\AiHub\AgentKnowledgeController as AiHubAgentKnowledgeController;
 use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileController;
@@ -118,6 +119,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
         Route::get('/conversations/{id}/transfer-targets', [ConversationController::class, 'transferTargets']);
         Route::post('/conversations/{id}/transfer', [ConversationController::class, 'transfer']);
+        Route::post('/conversations/{id}/ai-suggest', [AiSuggestController::class, 'suggest'])->middleware('throttle:15,1');
         Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
         Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
         Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);
@@ -167,6 +169,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::post('/connections/{id}/disconnect', [ConnectionController::class, 'disconnect'])->middleware('permission:connections.disconnect');
     Route::delete('/connections/{id}', [ConnectionController::class, 'destroy'])->middleware('permission:connections.delete');
     Route::put('/connections/{id}/automated-messages', [ConnectionController::class, 'updateAutomatedMessages'])->middleware('permission:connections.update-automated-messages');
+    Route::put('/connections/{id}/ai-suggest', [ConnectionController::class, 'updateAiSuggest'])->middleware('permission:connections.update');
+
+    // "Respond with AI" — tenant-level provider keys (openai/gemini/anthropic)
+    Route::get('/ai-suggest/settings', [AiSuggestController::class, 'settings'])->middleware('permission:ai-suggest.settings');
+    Route::put('/ai-suggest/settings', [AiSuggestController::class, 'updateSettings'])->middleware('permission:ai-suggest.settings');
 
     // Service hours (business hours that gate AI → human handoff), per connection
     Route::get('/connections/{id}/service-hours', [ConnectionController::class, 'serviceHours'])->middleware('permission:service-hours.view');

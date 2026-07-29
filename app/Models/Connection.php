@@ -27,9 +27,11 @@ class Connection extends Model
         'accept_message',
         'closing_message',
         'service_hours',
+        'ai_suggest_enabled',
     ];
 
     protected $casts = [
+        'ai_suggest_enabled' => 'boolean',
         'channel' => Channel::class,
         'status' => Status::class,
         'credentials' => 'array',
