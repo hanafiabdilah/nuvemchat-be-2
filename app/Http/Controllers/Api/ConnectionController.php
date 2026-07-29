@@ -510,18 +510,27 @@ class ConnectionController extends Controller
     }
 
     /**
-     * Per-connection switch for "Respond with AI" reply suggestions. The
-     * provider credentials themselves are tenant-level (AiSuggestController).
+     * Link/unlink a "Respond with AI" agent to this connection. A null
+     * agent_id turns the feature off; the agents themselves are managed in
+     * AiSuggestController.
      */
     public function updateAiSuggest(int $id, Request $request)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
         $validated = $request->validate([
-            'enabled' => ['required', 'boolean'],
+            'agent_id' => ['nullable', 'integer'],
         ]);
 
-        $connection->update(['ai_suggest_enabled' => $validated['enabled']]);
+        $agentId = $validated['agent_id'] ?? null;
+
+        if ($agentId !== null) {
+            // Must belong to the same tenant.
+            request()->user()->tenant->aiSuggestAgents()->findOrFail($agentId);
+        }
+
+        $connection->update(['ai_suggest_agent_id' => $agentId]);
+        $connection->load('aiSuggestAgent');
 
         broadcast(new ConnectionUpdated($connection));
 

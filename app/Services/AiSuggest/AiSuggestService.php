@@ -30,16 +30,16 @@ class AiSuggestService
 
     public function suggest(Conversation $conversation): string
     {
-        $config = $conversation->connection->tenant->ai_suggest_config;
+        $agent = $conversation->connection->aiSuggestAgent;
 
-        $provider = $config['provider'] ?? null;
-        $apiKey = $config['api_key'] ?? null;
+        $provider = $agent?->provider;
+        $apiKey = (string) ($agent?->api_key ?? '');
 
-        if (!in_array($provider, self::PROVIDERS, true) || empty($apiKey)) {
-            throw new RuntimeException('AI suggestions are not configured for this account.');
+        if (!$agent || !in_array($provider, self::PROVIDERS, true) || $apiKey === '') {
+            throw new RuntimeException('No AI agent is linked to this connection.');
         }
 
-        $model = trim((string) ($config['model'] ?? '')) ?: self::DEFAULT_MODELS[$provider];
+        $model = trim((string) ($agent->model ?? '')) ?: self::DEFAULT_MODELS[$provider];
 
         [$system, $messages] = $this->buildPrompt($conversation);
 

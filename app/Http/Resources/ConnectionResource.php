@@ -36,7 +36,11 @@ class ConnectionResource extends JsonResource
                 'started_at' => $this->sync_started_at,
                 'last_synced_at' => $this->last_synced_at,
             ]),
-            'ai_suggest_enabled' => (bool) $this->ai_suggest_enabled,
+            'ai_suggest_agent_id' => $this->ai_suggest_agent_id,
+            'ai_suggest_agent' => $this->ai_suggest_agent_id ? [
+                'id' => $this->aiSuggestAgent?->id,
+                'name' => $this->aiSuggestAgent?->name,
+            ] : null,
             'automated_messages' => [
                 'accept_message' => $this->accept_message,
                 'closing_message' => $this->closing_message,

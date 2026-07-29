@@ -171,9 +171,12 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::put('/connections/{id}/automated-messages', [ConnectionController::class, 'updateAutomatedMessages'])->middleware('permission:connections.update-automated-messages');
     Route::put('/connections/{id}/ai-suggest', [ConnectionController::class, 'updateAiSuggest'])->middleware('permission:connections.update');
 
-    // "Respond with AI" — tenant-level provider keys (openai/gemini/anthropic)
-    Route::get('/ai-suggest/settings', [AiSuggestController::class, 'settings'])->middleware('permission:ai-suggest.settings');
-    Route::put('/ai-suggest/settings', [AiSuggestController::class, 'updateSettings'])->middleware('permission:ai-suggest.settings');
+    // "Respond with AI" — tenant-managed AI agents (openai/gemini/anthropic keys).
+    // Listing is also allowed for connections.update so the link picker works.
+    Route::get('/ai-suggest/agents', [AiSuggestController::class, 'agents'])->middleware('permission:ai-suggest.settings|connections.update');
+    Route::post('/ai-suggest/agents', [AiSuggestController::class, 'storeAgent'])->middleware('permission:ai-suggest.settings');
+    Route::put('/ai-suggest/agents/{id}', [AiSuggestController::class, 'updateAgent'])->middleware('permission:ai-suggest.settings');
+    Route::delete('/ai-suggest/agents/{id}', [AiSuggestController::class, 'destroyAgent'])->middleware('permission:ai-suggest.settings');
 
     // Service hours (business hours that gate AI → human handoff), per connection
     Route::get('/connections/{id}/service-hours', [ConnectionController::class, 'serviceHours'])->middleware('permission:service-hours.view');

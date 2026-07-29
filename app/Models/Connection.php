@@ -27,11 +27,10 @@ class Connection extends Model
         'accept_message',
         'closing_message',
         'service_hours',
-        'ai_suggest_enabled',
+        'ai_suggest_agent_id',
     ];
 
     protected $casts = [
-        'ai_suggest_enabled' => 'boolean',
         'channel' => Channel::class,
         'status' => Status::class,
         'credentials' => 'array',
@@ -49,6 +48,14 @@ class Connection extends Model
     public function tenant()
     {
         return $this->belongsTo(Tenant::class);
+    }
+
+    /**
+     * The "Respond with AI" agent linked to this connection (null = feature off).
+     */
+    public function aiSuggestAgent()
+    {
+        return $this->belongsTo(AiSuggestAgent::class);
     }
 
     /**

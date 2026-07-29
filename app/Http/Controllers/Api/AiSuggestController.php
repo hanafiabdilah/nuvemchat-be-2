@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Enums\Conversation\Status;
 use App\Http\Controllers\Controller;
+use App\Models\AiSuggestAgent;
 use App\Models\Conversation;
 use App\Services\AiSuggest\AiSuggestService;
 use Illuminate\Http\Request;
@@ -14,58 +15,85 @@ use Illuminate\Validation\Rule;
 class AiSuggestController extends Controller
 {
     /**
-     * Tenant-level provider configuration for "Respond with AI".
-     * The API key is never returned — only whether one is set and a preview.
+     * List the tenant's "Respond with AI" agents. API keys are never returned
+     * — only whether one is set and a short preview.
      */
-    public function settings()
+    public function agents()
     {
-        $config = Auth::user()->tenant->ai_suggest_config ?? [];
-        $apiKey = (string) ($config['api_key'] ?? '');
+        $agents = Auth::user()->tenant->aiSuggestAgents()
+            ->withCount('connections')
+            ->orderBy('name')
+            ->get();
 
         return response()->json([
-            'data' => [
-                'provider' => $config['provider'] ?? null,
-                'model' => $config['model'] ?? null,
-                'api_key_set' => $apiKey !== '',
-                'api_key_preview' => $apiKey !== '' ? '••••' . substr($apiKey, -4) : null,
+            'data' => $agents->map(fn (AiSuggestAgent $agent) => $this->presentAgent($agent)),
+            'meta' => [
                 'providers' => AiSuggestService::PROVIDERS,
                 'default_models' => AiSuggestService::DEFAULT_MODELS,
             ],
         ]);
     }
 
-    public function updateSettings(Request $request)
+    public function storeAgent(Request $request)
     {
         $validated = $request->validate([
+            'name' => ['required', 'string', 'max:100'],
             'provider' => ['required', Rule::in(AiSuggestService::PROVIDERS)],
+            'api_key' => ['required', 'string', 'max:500'],
             'model' => ['nullable', 'string', 'max:100'],
-            // Optional when a key is already stored — blank keeps the current one.
-            'api_key' => ['nullable', 'string', 'max:500'],
         ]);
 
-        $tenant = Auth::user()->tenant;
-        $current = $tenant->ai_suggest_config ?? [];
-
-        $apiKey = trim((string) ($validated['api_key'] ?? ''));
-        if ($apiKey === '') {
-            $apiKey = (string) ($current['api_key'] ?? '');
-        }
-
-        if ($apiKey === '') {
-            return response()->json([
-                'message' => 'An API key is required.',
-            ], 422);
-        }
-
-        $tenant->ai_suggest_config = [
+        $agent = Auth::user()->tenant->aiSuggestAgents()->create([
+            'name' => $validated['name'],
             'provider' => $validated['provider'],
-            'api_key' => $apiKey,
+            'api_key' => trim($validated['api_key']),
             'model' => trim((string) ($validated['model'] ?? '')) ?: null,
-        ];
-        $tenant->save();
+        ]);
 
         return response()->json([
-            'message' => 'AI suggestion settings saved',
+            'message' => 'AI agent created',
+            'data' => $this->presentAgent($agent),
+        ], 201);
+    }
+
+    public function updateAgent(Request $request, int $id)
+    {
+        $agent = Auth::user()->tenant->aiSuggestAgents()->findOrFail($id);
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:100'],
+            'provider' => ['required', Rule::in(AiSuggestService::PROVIDERS)],
+            // Optional on update — blank keeps the stored key.
+            'api_key' => ['nullable', 'string', 'max:500'],
+            'model' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        $apiKey = trim((string) ($validated['api_key'] ?? ''));
+
+        $agent->update([
+            'name' => $validated['name'],
+            'provider' => $validated['provider'],
+            'model' => trim((string) ($validated['model'] ?? '')) ?: null,
+            ...($apiKey !== '' ? ['api_key' => $apiKey] : []),
+        ]);
+
+        return response()->json([
+            'message' => 'AI agent updated',
+            'data' => $this->presentAgent($agent),
+        ]);
+    }
+
+    /**
+     * Deleting an agent silently unlinks its connections (FK null on delete),
+     * turning the feature off for them.
+     */
+    public function destroyAgent(int $id)
+    {
+        $agent = Auth::user()->tenant->aiSuggestAgents()->findOrFail($id);
+        $agent->delete();
+
+        return response()->json([
+            'message' => 'AI agent deleted',
         ]);
     }
 
@@ -91,9 +119,9 @@ class AiSuggestController extends Controller
             ], 400);
         }
 
-        if(!$conversation->connection->ai_suggest_enabled){
+        if(!$conversation->connection->ai_suggest_agent_id){
             return response()->json([
-                'message' => 'AI suggestions are not enabled for this connection',
+                'message' => 'No AI agent is linked to this connection',
             ], 400);
         }
 
@@ -115,5 +143,20 @@ class AiSuggestController extends Controller
                 'suggestion' => $suggestion,
             ],
         ]);
+    }
+
+    protected function presentAgent(AiSuggestAgent $agent): array
+    {
+        $apiKey = (string) $agent->api_key;
+
+        return [
+            'id' => $agent->id,
+            'name' => $agent->name,
+            'provider' => $agent->provider,
+            'model' => $agent->model,
+            'api_key_set' => $apiKey !== '',
+            'api_key_preview' => $apiKey !== '' ? '••••' . substr($apiKey, -4) : null,
+            'connections_count' => $agent->connections_count ?? $agent->connections()->count(),
+        ];
     }
 }
