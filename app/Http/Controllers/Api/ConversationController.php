@@ -290,6 +290,8 @@ class ConversationController extends Controller
         $variables['contact.username'] = $conversation->contact?->username;
         $variables['contact.phone'] = $conversation->contact?->external_id;
         $variables['conversation.status'] = $conversation->status?->value;
+        // The composing agent — mirrors {{agent_name}} in accept/closing messages.
+        $variables['agent_name'] = Auth::user()->name;
 
         // Drop null-valued fields so the composer only offers resolvable tokens.
         $variables = collect($variables)->reject(fn ($value) => $value === null)->all();
