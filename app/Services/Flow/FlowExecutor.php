@@ -614,7 +614,10 @@ class FlowExecutor
         $key = $parts[1];
 
         return match($source) {
-            'variable' => $flowState->state_data[$key] ?? null,
+            // Use the full remainder (collapsing legacy repeated "variable."
+            // prefixes) so "variable.x" and "variable.variable.x" both read
+            // state_data['x'].
+            'variable' => $flowState->state_data[preg_replace('/^(?:variable\.)+/', '', $field)] ?? null,
             'contact' => $conversation->contact->{$key} ?? null,
             'conversation' => $conversation->{$key} ?? null,
             // "service_hours.is_open" → "true"/"false" so a Condition node can
@@ -1104,6 +1107,11 @@ class FlowExecutor
         $data = $node->data;
         $conversation = $flowState->conversation;
         $variableKey = $data['variable_key'] ?? null;
+        // Legacy nodes saved the key as "variable.x" — templates and Condition
+        // lookups resolve {{variable.x}} to state_data['x'], so store bare.
+        if (is_string($variableKey)) {
+            $variableKey = preg_replace('/^(?:variable\.)+/', '', $variableKey) ?: null;
+        }
         $validationType = $data['validation'] ?? 'any';
         $errorMessage = $this->interpolateVariables(
             (string) ($data['error_message'] ?? 'Input tidak valid. Silakan coba lagi.'),
