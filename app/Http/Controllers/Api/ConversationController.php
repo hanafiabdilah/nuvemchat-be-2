@@ -196,13 +196,31 @@ class ConversationController extends Controller
         // on the same subject reuses this conversation.
         $externalId = 'email:' . sha1($contact->id . '|' . $this->normalizeEmailSubject($subject));
 
-        $conversation = Conversation::create([
-            'contact_id' => $contact->id,
-            'connection_id' => $connection->id,
-            'external_id' => $externalId,
-            'status' => Status::Active,
-            'last_message_at' => now(),
-        ]);
+        // Reuse an open thread with the same recipient+subject instead of always
+        // creating a new one — composing twice must not fork the conversation
+        // (the inbound sync threads replies into a single external_id too).
+        $conversation = Conversation::where('external_id', $externalId)
+            ->where('contact_id', $contact->id)
+            ->where('connection_id', $connection->id)
+            ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
+            ->latest('id')
+            ->first();
+        $createdConversation = $conversation === null;
+
+        if ($conversation) {
+            $conversation->update([
+                'status' => Status::Active,
+                'last_message_at' => now(),
+            ]);
+        } else {
+            $conversation = Conversation::create([
+                'contact_id' => $contact->id,
+                'connection_id' => $connection->id,
+                'external_id' => $externalId,
+                'status' => Status::Active,
+                'last_message_at' => now(),
+            ]);
+        }
 
         try {
             $message = (new EmailHandler())->sendNewEmail(
@@ -213,8 +231,11 @@ class ConversationController extends Controller
             );
         } catch (\Throwable $th) {
             // Roll back the empty conversation we just opened so a failed send
-            // doesn't leave a dangling thread.
-            $conversation->delete();
+            // doesn't leave a dangling thread — but never delete a pre-existing
+            // thread that was merely reused.
+            if ($createdConversation) {
+                $conversation->delete();
+            }
 
             if ($th instanceof ValidationException) {
                 throw $th;

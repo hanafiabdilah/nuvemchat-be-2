@@ -6,6 +6,7 @@ use Carbon\CarbonInterface;
 use Webklex\PHPIMAP\Attribute;
 use Webklex\PHPIMAP\Client;
 use Webklex\PHPIMAP\Folder;
+use Webklex\PHPIMAP\IMAP;
 use Webklex\PHPIMAP\Message as ImapMessage;
 
 class WebklexEmailInboxClient implements EmailInboxClient
@@ -28,9 +29,13 @@ class WebklexEmailInboxClient implements EmailInboxClient
         // large gap would burn whole passes fetching nothing.
         $batch = array_slice($uids, 0, $limit);
 
+        // CUSTOM = raw, unquoted criteria. whereUid() quotes the range
+        // (UID SEARCH UID "1:35") and Gmail rejects quoted sequence-sets with
+        // "BAD Could not parse command"; Dovecot merely tolerates them.
         $messages = $this->folder
             ->query()
-            ->whereUid(reset($batch).':'.end($batch))
+            ->where('CUSTOM UID '.reset($batch).':'.end($batch))
+            ->setSequence(IMAP::ST_UID)
             ->leaveUnread()
             ->setFetchBody(true)
             ->fetchOrder('asc')
@@ -47,8 +52,10 @@ class WebklexEmailInboxClient implements EmailInboxClient
     }
 
     /**
-     * UIDs above $lastSeenUid, ascending. Headers only — this runs over the
-     * whole backlog, so it must never pull bodies or attachments.
+     * UIDs above $lastSeenUid, ascending. SEARCH only — this spans the whole
+     * backlog, so it must never fetch headers or bodies: on a large mailbox
+     * that fetch is what blew the socket timeout ("Empty response") and left
+     * the first sync permanently failed.
      *
      * @return array<int, int>
      */
@@ -56,27 +63,21 @@ class WebklexEmailInboxClient implements EmailInboxClient
     {
         $startUid = max(1, $lastSeenUid + 1);
 
-        $messages = $this->folder
+        // CUSTOM keeps the range unquoted (Gmail-safe, see fetchSince) and
+        // ST_UID makes the server both match and answer in UIDs.
+        $uids = $this->folder
             ->query()
-            ->whereUid($startUid.':*')
-            ->leaveUnread()
-            ->setFetchBody(false)
-            ->fetchOrder('asc')
-            ->get();
-
-        $uids = [];
-
-        foreach ($messages as $message) {
-            $uid = (int) $message->getUid();
-
+            ->where('CUSTOM UID '.$startUid.':*')
+            ->setSequence(IMAP::ST_UID)
+            ->search()
+            ->map(fn ($uid) => (int) $uid)
             // An `n:*` range still returns the highest message when n is past
             // the top of the mailbox, so re-check the bound here.
-            if ($uid >= $startUid) {
-                $uids[] = $uid;
-            }
-        }
-
-        sort($uids);
+            ->filter(fn (int $uid) => $uid >= $startUid)
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
 
         return $uids;
     }

@@ -196,3 +196,41 @@ test('smtp authentication failure while sending email does not return http 401',
     $response->assertStatus(422)
         ->assertJsonPath('message', 'Falha na autenticacao SMTP: usuario ou senha invalidos.');
 });
+
+test('composing twice with the same recipient and subject reuses the conversation', function () {
+    $this->withoutMiddleware();
+
+    $transport = new CapturingEmailTransport();
+    app()->instance(EmailSmtpTransportFactory::class, new FakeEmailSmtpTransportFactory($transport));
+
+    $user = User::factory()->create();
+    $conversation = emailReplyConversation($user);
+    $connection = $conversation->connection;
+    $connection->users()->attach($user->id);
+
+    Sanctum::actingAs($user);
+
+    $first = $this->postJson('/api/conversations/compose-email', [
+        'connection_id' => $connection->id,
+        'to' => 'novo@example.com',
+        'subject' => 'Orcamento',
+        'message' => 'Primeira mensagem',
+    ]);
+    $first->assertStatus(201);
+
+    // "Re:" normalizes to the same thread key — composing again must not fork
+    // a second conversation for the same recipient+subject.
+    $second = $this->postJson('/api/conversations/compose-email', [
+        'connection_id' => $connection->id,
+        'to' => 'novo@example.com',
+        'subject' => 'Re: Orcamento',
+        'message' => 'Segunda mensagem',
+    ]);
+    $second->assertStatus(201);
+
+    expect($second->json('data.id'))->toBe($first->json('data.id'));
+
+    // Only the helper's pre-existing thread plus the single composed one.
+    expect(Conversation::where('connection_id', $connection->id)->count())->toBe(2);
+    expect(Message::where('conversation_id', $first->json('data.id'))->count())->toBe(2);
+});

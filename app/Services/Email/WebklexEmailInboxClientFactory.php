@@ -10,7 +10,12 @@ use Webklex\PHPIMAP\Folder;
 
 class WebklexEmailInboxClientFactory implements EmailInboxClientFactory
 {
-    private const TIMEOUT_SECONDS = 10;
+    /**
+     * Per-socket-operation timeout. The sync fetches up to BATCH_SIZE full
+     * bodies+attachments per pass; 10s (the connect-test value) was enough to
+     * kill the first sync of any large or slow mailbox mid-flight.
+     */
+    private const TIMEOUT_SECONDS = 60;
 
     public function make(Connection $connection): EmailInboxClient
     {
