@@ -243,6 +243,8 @@ class WhatsappWApiHandler implements ChatHandlerInterface
         Log::info('Whatsapp WAPI connected', ['connection' => $connection]);
 
         broadcast(new ConnectionUpdated($connection));
+
+        \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
     }
 
     private function handleDisconnected(Connection $connection, array $payload)

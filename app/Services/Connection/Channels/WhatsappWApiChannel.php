@@ -38,6 +38,8 @@ class WhatsappWApiChannel implements ChannelInterface
             'status' => $statusJson['connected'] === true ? Status::Active : Status::Inactive,
         ]);
 
+        \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
+
         return $connection;
     }
 
@@ -155,7 +157,21 @@ class WhatsappWApiChannel implements ChannelInterface
             $connection = $this->handleOwnInstance($connection, $data);
         }
 
-        if($connection->status === Status::Active) return;
+        // Opt-in to importing the chat list once the instance pairs. Stored in
+        // credentials AFTER instance handling (which rewrites credentials).
+        if (array_key_exists('import_history', $data)) {
+            $connection->update([
+                'credentials' => array_merge($connection->credentials ?? [], [
+                    'import_history' => filter_var($data['import_history'], FILTER_VALIDATE_BOOLEAN),
+                ]),
+            ]);
+            $connection->refresh();
+        }
+
+        if($connection->status === Status::Active) {
+            \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
+            return;
+        }
 
         // If managed instance was just created, wait for server to initialize
         if(($connection->credentials['newly_created'] ?? false)){
@@ -340,6 +356,8 @@ class WhatsappWApiChannel implements ChannelInterface
             $connection->update([
                 'status' => $statusJson['connected'] === true ? Status::Active : Status::Inactive,
             ]);
+
+            \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
         } catch (\Throwable $th) {
             $connection->update([
                 'status' => Status::Inactive,

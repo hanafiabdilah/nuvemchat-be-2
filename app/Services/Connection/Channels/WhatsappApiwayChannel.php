@@ -61,7 +61,19 @@ class WhatsappApiwayChannel implements ChannelInterface
 
         $connection = $this->handleManagedInstance($connection, $data['proxy_mode'], $proxyUrl, $proxyMeta);
 
+        // Opt-in to importing the chat list once the instance pairs. Stored in
+        // credentials AFTER instance handling (which rewrites credentials).
+        if (array_key_exists('import_history', $data)) {
+            $connection->update([
+                'credentials' => array_merge($connection->credentials ?? [], [
+                    'import_history' => filter_var($data['import_history'], FILTER_VALIDATE_BOOLEAN),
+                ]),
+            ]);
+            $connection->refresh();
+        }
+
         if ($connection->status === Status::Active) {
+            \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
             return;
         }
 
@@ -203,6 +215,8 @@ class WhatsappApiwayChannel implements ChannelInterface
         $connection->update([
             'status' => $isActive ? Status::Active : Status::Inactive,
         ]);
+
+        \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
 
         return $connection;
     }
