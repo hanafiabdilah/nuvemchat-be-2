@@ -17,6 +17,14 @@ class MessageReceived implements ShouldBroadcast
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     /**
+     * Max body bytes to put on the wire. Reverb rejects frames above
+     * max_message_size (default 10KB) with "Payload too large" — a full email
+     * body blew every broadcast, so no message ever arrived in realtime. The
+     * SPA sees body_truncated and pulls the full row via the messages delta.
+     */
+    public const BROADCAST_BODY_LIMIT = 4000;
+
+    /**
      * Create a new event instance.
      */
     public function __construct(
@@ -50,6 +58,14 @@ class MessageReceived implements ShouldBroadcast
      */
     public function broadcastWith(): array
     {
-        return (new MessageResource($this->message))->resolve();
+        $data = (new MessageResource($this->message))->resolve();
+
+        if (is_string($data['body'] ?? null) && strlen($data['body']) > self::BROADCAST_BODY_LIMIT) {
+            // mb_strcut never splits a UTF-8 character at the byte boundary.
+            $data['body'] = mb_strcut($data['body'], 0, self::BROADCAST_BODY_LIMIT);
+            $data['body_truncated'] = true;
+        }
+
+        return $data;
     }
 }

@@ -68,6 +68,7 @@ class EmailInboxSynchronizer
 
                     // Still advance the cursor, or this message blocks the batch forever.
                     $maxSeenUid = max($maxSeenUid, $email->uid);
+                    $connection->forceFill(['last_seen_uid' => $maxSeenUid])->save();
 
                     continue;
                 }
@@ -75,6 +76,11 @@ class EmailInboxSynchronizer
                 $message = $this->persistEmail($connection, $email);
                 $maxSeenUid = max($maxSeenUid, $email->uid);
                 $imported++;
+
+                // Persist the cursor per message, not per pass: a slow mailbox
+                // (Gmail bodies + attachments) can hit the job timeout mid-batch,
+                // and losing the cursor would restart the same batch forever.
+                $connection->forceFill(['last_seen_uid' => $maxSeenUid])->save();
 
                 broadcast(new MessageReceived($message));
                 broadcast(new ConversationUpdated($message->conversation->load('contact')));

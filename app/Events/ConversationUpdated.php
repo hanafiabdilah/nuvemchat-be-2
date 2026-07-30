@@ -50,6 +50,23 @@ class ConversationUpdated implements ShouldBroadcast
      */
     public function broadcastWith(): array
     {
-        return (new ConversationResource($this->conversation))->resolve();
+        $data = (new ConversationResource($this->conversation))->resolve();
+
+        // last_message here only feeds the conversation-list preview (one
+        // line), but a full email body pushes the frame over Reverb's
+        // max_message_size and the whole broadcast is dropped ("Payload too
+        // large") — truncate hard. The thread itself reads from the messages
+        // store, not from this payload.
+        $lastMessage = $data['last_message'] ?? null;
+        if ($lastMessage instanceof \App\Http\Resources\MessageResource) {
+            $lastMessage = $lastMessage->resolve();
+            $data['last_message'] = $lastMessage;
+        }
+        if (is_array($lastMessage) && is_string($lastMessage['body'] ?? null) && strlen($lastMessage['body']) > 500) {
+            $data['last_message']['body'] = mb_strcut($lastMessage['body'], 0, 500);
+            $data['last_message']['body_truncated'] = true;
+        }
+
+        return $data;
     }
 }

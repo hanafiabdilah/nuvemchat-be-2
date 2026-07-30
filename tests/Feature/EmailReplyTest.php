@@ -234,3 +234,21 @@ test('composing twice with the same recipient and subject reuses the conversatio
     expect(Conversation::where('connection_id', $connection->id)->count())->toBe(2);
     expect(Message::where('conversation_id', $first->json('data.id'))->count())->toBe(2);
 });
+
+test('broadcast payloads truncate long email bodies to fit the reverb frame limit', function () {
+    $conversation = emailReplyConversation();
+    $message = emailReplyIncomingMessage($conversation, [
+        'body' => str_repeat('corpo muito longo ', 2000), // ~36KB > 10KB frame limit
+    ]);
+
+    $payload = (new \App\Events\MessageReceived($message->refresh()))->broadcastWith();
+
+    expect(strlen($payload['body']))->toBeLessThanOrEqual(\App\Events\MessageReceived::BROADCAST_BODY_LIMIT);
+    expect($payload['body_truncated'])->toBeTrue();
+
+    $convPayload = (new \App\Events\ConversationUpdated($conversation->fresh()->load('contact')))->broadcastWith();
+    $lastMessage = $convPayload['last_message'];
+
+    expect(strlen($lastMessage['body']))->toBeLessThanOrEqual(500);
+    expect($lastMessage['body_truncated'])->toBeTrue();
+});

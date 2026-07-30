@@ -11,6 +11,15 @@ use Webklex\PHPIMAP\Message as ImapMessage;
 
 class WebklexEmailInboxClient implements EmailInboxClient
 {
+    /**
+     * Messages per IMAP FETCH round. get() materializes every message in the
+     * requested range — bodies included — before returning anything, so a
+     * whole 200-message batch from a slow server (Gmail) can outlive the job
+     * timeout without yielding a single message, starving the caller's
+     * per-message cursor saves. Small chunks make progress durable.
+     */
+    private const FETCH_CHUNK = 25;
+
     public function __construct(
         private readonly Client $client,
         private readonly Folder $folder,
@@ -29,20 +38,24 @@ class WebklexEmailInboxClient implements EmailInboxClient
         // large gap would burn whole passes fetching nothing.
         $batch = array_slice($uids, 0, $limit);
 
+        // Each chunk is a contiguous slice of the sorted existing UIDs, so the
+        // first:last range covers exactly its members.
         // CUSTOM = raw, unquoted criteria. whereUid() quotes the range
         // (UID SEARCH UID "1:35") and Gmail rejects quoted sequence-sets with
         // "BAD Could not parse command"; Dovecot merely tolerates them.
-        $messages = $this->folder
-            ->query()
-            ->where('CUSTOM UID '.reset($batch).':'.end($batch))
-            ->setSequence(IMAP::ST_UID)
-            ->leaveUnread()
-            ->setFetchBody(true)
-            ->fetchOrder('asc')
-            ->get();
+        foreach (array_chunk($batch, self::FETCH_CHUNK) as $chunk) {
+            $messages = $this->folder
+                ->query()
+                ->where('CUSTOM UID '.reset($chunk).':'.end($chunk))
+                ->setSequence(IMAP::ST_UID)
+                ->leaveUnread()
+                ->setFetchBody(true)
+                ->fetchOrder('asc')
+                ->get();
 
-        foreach ($messages as $message) {
-            yield $this->mapMessage($message);
+            foreach ($messages as $message) {
+                yield $this->mapMessage($message);
+            }
         }
     }
 
