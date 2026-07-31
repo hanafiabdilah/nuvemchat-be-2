@@ -8,6 +8,7 @@ use App\Services\Message\Handlers\InstagramHandler;
 use App\Services\Message\Handlers\LiveChatWidgetHandler;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
 use App\Services\Message\Handlers\TelegramHandler;
+use App\Services\Message\Handlers\TikTokHandler;
 use App\Services\Message\Handlers\WhatsappApiwayHandler;
 use App\Services\Message\Handlers\WhatsappWApiHandler;
 use InvalidArgumentException;
@@ -20,6 +21,7 @@ class MessageFactory
             Channel::Instagram => new InstagramHandler(),
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
             Channel::Telegram => new TelegramHandler(),
+            Channel::TikTok => new TikTokHandler(),
             Channel::WhatsappWApi => new WhatsappWApiHandler(),
             Channel::WhatsappApiway => new WhatsappApiwayHandler(),
             Channel::LiveChatWidget => new LiveChatWidgetHandler(),
