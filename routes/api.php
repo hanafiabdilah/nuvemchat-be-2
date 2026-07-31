@@ -123,6 +123,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
         Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
         Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);
+        Route::get('/conversations/{id}/messages/{message_id}/email-html', [ConversationController::class, 'emailHtml']);
 
         Route::get('/tags', [TagController::class, 'index']);
 

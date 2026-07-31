@@ -24,6 +24,7 @@ use App\Services\Message\MessageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -332,6 +333,34 @@ class ConversationController extends Controller
             ->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->get();
 
         return MessageResource::collection($messages)->response();
+    }
+
+    /**
+     * Raw HTML body of an inbound e-mail. Stored on disk by
+     * EmailInboxSynchronizer (too large for broadcasts/IndexedDB) and pulled
+     * on demand when the reading pane opens. The SPA sanitizes it before
+     * rendering — this returns the message exactly as received.
+     */
+    public function emailHtml(int $id, int $message_id)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if(!$conversation->isAccessibleBy(Auth::user())){
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $message = $conversation->messages()->findOrFail($message_id);
+        $path = $message->meta['email']['html_path'] ?? null;
+
+        if (!$path || !Storage::disk('local')->exists($path)) {
+            return response()->json(['message' => 'This message has no HTML body'], 404);
+        }
+
+        return response()->json([
+            'html' => Storage::disk('local')->get($path),
+        ]);
     }
 
     public function sendInteractive(Request $request, int $id)

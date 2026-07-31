@@ -184,6 +184,7 @@ class EmailInboxSynchronizer
                 'meta' => $meta,
             ]);
 
+            $meta = $this->storeHtmlBody($message, $email, $meta);
             $this->storeAttachments($message, $email->attachments, $meta);
 
             return $message->refresh();
@@ -280,6 +281,34 @@ class EmailInboxSynchronizer
     }
 
     /**
+     * Persist the raw HTML body as a file next to the attachments. It is kept
+     * off the messages row on purpose: broadcasts are size-capped (see
+     * MessageReceived::BROADCAST_BODY_LIMIT) and the SPA caches every message
+     * in IndexedDB, so the HTML is fetched on demand instead
+     * (GET /conversations/{id}/messages/{id}/email-html). The SPA sanitizes it
+     * before rendering.
+     *
+     * @param  array<string, mixed>  $meta
+     * @return array<string, mixed>
+     */
+    private function storeHtmlBody(Message $message, InboundEmail $email, array $meta): array
+    {
+        $html = trim((string) $email->htmlBody);
+
+        if ($html === '') {
+            return $meta;
+        }
+
+        $path = 'media/'.$message->id.'_'.uniqid().'_body.html';
+        Storage::disk('local')->put($path, $html);
+
+        $meta['email']['html_path'] = $path;
+        $message->update(['meta' => $meta]);
+
+        return $meta;
+    }
+
+    /**
      * @param  array<int, InboundEmailAttachment>  $attachments
      * @param  array<string, mixed>  $meta
      */
@@ -296,6 +325,7 @@ class EmailInboxSynchronizer
             $stored[] = [
                 'name' => $attachment->filename,
                 'content_type' => $attachment->contentType,
+                'content_id' => $attachment->contentId,
                 'path' => $path,
             ];
         }

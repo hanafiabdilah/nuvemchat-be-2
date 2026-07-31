@@ -8,6 +8,9 @@ class InboundEmailAttachment
         public readonly string $filename,
         public readonly string $content,
         public readonly ?string $contentType = null,
+        // Content-ID header (without <>), used to resolve cid: references
+        // inside the HTML body to inline images.
+        public readonly ?string $contentId = null,
     ) {
     }
 }

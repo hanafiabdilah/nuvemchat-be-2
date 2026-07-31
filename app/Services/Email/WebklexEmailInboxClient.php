@@ -206,6 +206,10 @@ class WebklexEmailInboxClient implements EmailInboxClient
                 filename: $filename ?: 'attachment',
                 content: (string) $attachment->getContent(),
                 contentType: $attachment->getMimeType(),
+                // Webklex falls back to a content hash when the part has no
+                // Content-ID; a hash never appears as a cid: ref, so it is a
+                // harmless value here.
+                contentId: $attachment->id ?: null,
             );
         }
 

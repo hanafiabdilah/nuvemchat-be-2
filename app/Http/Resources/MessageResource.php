@@ -173,6 +173,11 @@ class MessageResource extends JsonResource
             }, $email['attachments']);
         }
 
+        // The HTML body itself stays on disk (too large for broadcasts and
+        // IndexedDB); the SPA fetches it on demand when this flag is set.
+        $email['has_html'] = !empty($email['html_path']);
+        unset($email['html_path']);
+
         return ['email' => $email];
     }
 
