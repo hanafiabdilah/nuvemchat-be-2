@@ -8,6 +8,7 @@ use App\Services\Billing\MercadoPago\MercadoPagoConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\Connection\TikTok\TikTokConfig;
 use App\Services\Connection\WApi\WApiConfig;
 use App\Services\Notification\NotificationConfig;
 use Illuminate\Database\Seeder;
@@ -59,6 +60,10 @@ class SettingSeeder extends Seeder
             FacebookConfig::KEY_CONFIG_ID => env('FACEBOOK_CONFIG_ID'),
 
             WApiConfig::KEY_MANAGED_TOKEN => env('WAPI_MANAGED_TOKEN'),
+
+            TikTokConfig::KEY_APP_ID => env('TIKTOK_APP_ID'),
+            TikTokConfig::KEY_APP_SECRET => env('TIKTOK_APP_SECRET'),
+            TikTokConfig::KEY_REDIRECT_URI => env('TIKTOK_REDIRECT_URI'),
 
             AiAgentHubConfig::KEY_BASE_URL => env('AI_AGENT_HUB_BASE_URL'),
             AiAgentHubConfig::KEY_ADMIN_TOKEN => env('AI_AGENT_HUB_ADMIN_TOKEN'),

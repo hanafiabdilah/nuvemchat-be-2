@@ -11,6 +11,7 @@ use App\Services\Billing\MercadoPago\MercadoPagoConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\Connection\TikTok\TikTokConfig;
 use App\Services\Connection\WApi\WApiConfig;
 use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationProviderFactory;
@@ -32,6 +33,7 @@ class AdminSettingsController extends Controller
         $igVerify = InstagramConfig::webhookVerifyToken();
         $fbSecret = FacebookConfig::appSecret();
         $fbVerify = FacebookConfig::webhookVerifyToken();
+        $ttSecret = TikTokConfig::appSecret();
         $wapiToken = WApiConfig::managedToken();
         $aiToken = AiAgentHubConfig::adminToken();
         $notifPinglyKey = NotificationConfig::pinglyApiKey();
@@ -74,6 +76,12 @@ class AdminSettingsController extends Controller
                     'app_secret_preview' => $this->mask($fbSecret),
                     'webhook_verify_token_set' => ! empty($fbVerify),
                     'webhook_verify_token_preview' => $this->mask($fbVerify),
+                ],
+                'tiktok' => [
+                    'app_id' => TikTokConfig::appId(),
+                    'redirect_uri' => TikTokConfig::redirectUri(),
+                    'app_secret_set' => ! empty($ttSecret),
+                    'app_secret_preview' => $this->mask($ttSecret),
                 ],
                 'wapi' => [
                     'managed_token_set' => ! empty($wapiToken),
@@ -149,6 +157,11 @@ class AdminSettingsController extends Controller
             'facebook.config_id' => ['nullable', 'string', 'max:255'],
             'facebook.app_secret' => ['nullable', 'string', 'max:512'],
             'facebook.webhook_verify_token' => ['nullable', 'string', 'max:255'],
+
+            'tiktok' => ['sometimes', 'array'],
+            'tiktok.app_id' => ['nullable', 'string', 'max:255'],
+            'tiktok.redirect_uri' => ['nullable', 'url', 'max:255'],
+            'tiktok.app_secret' => ['nullable', 'string', 'max:512'],
 
             'wapi' => ['sometimes', 'array'],
             'wapi.managed_token' => ['nullable', 'string', 'max:1024'],
@@ -233,6 +246,19 @@ class AdminSettingsController extends Controller
             }
             if (! empty($fb['webhook_verify_token'])) {
                 Setting::set(FacebookConfig::KEY_WEBHOOK_VERIFY_TOKEN, $fb['webhook_verify_token']);
+            }
+        }
+
+        if ($request->has('tiktok')) {
+            $tt = $validated['tiktok'];
+
+            // Public values: stored as-is.
+            Setting::set(TikTokConfig::KEY_APP_ID, $tt['app_id'] ?? null);
+            Setting::set(TikTokConfig::KEY_REDIRECT_URI, $tt['redirect_uri'] ?? null);
+
+            // Secret: only replaced when a new value is supplied.
+            if (! empty($tt['app_secret'])) {
+                Setting::set(TikTokConfig::KEY_APP_SECRET, $tt['app_secret']);
             }
         }
 
