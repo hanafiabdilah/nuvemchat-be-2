@@ -3,6 +3,7 @@
 use App\Http\Controllers\Webhook\ChatController;
 use App\Http\Controllers\Webhook\InstagramController;
 use App\Http\Controllers\Webhook\MercadoPagoWebhookController;
+use App\Http\Controllers\Webhook\TikTokController;
 use App\Http\Controllers\Webhook\WhatsAppController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -15,6 +16,10 @@ Route::post('/webhook/instagram', [InstagramController::class, 'handle'])->name(
 
 Route::get('/webhook/whatsapp', [WhatsAppController::class, 'verify'])->name('webhook.whatsapp.verify');
 Route::post('/webhook/whatsapp', [WhatsAppController::class, 'handle'])->name('webhook.whatsapp.handle');
+
+// TikTok Business Messaging: one app-level callback URL (registered via
+// TikTokAuthClient::updateWebhookCallback), connection resolved by user_openid.
+Route::post('/webhook/tiktok', [TikTokController::class, 'handle'])->name('webhook.tiktok');
 
 // MercadoPago payment / preapproval notifications. CSRF-exempt via the
 // `/webhook/*` glob in bootstrap/app.php.
