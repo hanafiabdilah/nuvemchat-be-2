@@ -270,7 +270,9 @@ test('the scheduled command queues one unique job per active mailbox', function 
 
     $this->artisan('email:fetch')->assertSuccessful();
 
-    Queue::assertPushed(SyncEmailInbox::class, fn ($job) => $job->connectionId === $connection->id);
+    // The dedicated queue matters: a slow IMAP pass on `default` blocks every
+    // realtime broadcast behind it (production runs a separate email worker).
+    Queue::assertPushedOn('email', SyncEmailInbox::class, fn ($job) => $job->connectionId === $connection->id);
 });
 
 test('an in-flight sync is not queued again', function () {

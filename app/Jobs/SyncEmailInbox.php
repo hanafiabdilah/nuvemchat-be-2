@@ -37,7 +37,12 @@ class SyncEmailInbox implements ShouldBeUnique, ShouldQueue
 
     public function __construct(
         public int $connectionId,
-    ) {}
+    ) {
+        // Dedicated queue, consumed by its own worker: a single IMAP pass can
+        // hold a worker for up to $timeout seconds, and on `default` that
+        // starves the realtime broadcasts (MessageReceived etc.) behind it.
+        $this->onQueue('email');
+    }
 
     public function uniqueId(): string
     {
