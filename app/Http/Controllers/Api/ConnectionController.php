@@ -17,6 +17,7 @@ use App\Services\BusinessHours;
 use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\InstagramConfig;
+use App\Services\Connection\TikTok\TikTokAuthClient;
 use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
 use App\Services\Email\EmailInboxSynchronizer;
 use Illuminate\Http\Request;
@@ -468,22 +469,27 @@ class ConnectionController extends Controller
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
-        // Only Instagram uses OAuth URL generation (WhatsApp uses embedded signup in frontend)
-        if ($connection->channel !== Channel::Instagram) {
+        // Instagram and TikTok use OAuth URL generation (WhatsApp uses embedded signup in frontend)
+        $oauthUrl = match ($connection->channel) {
+            Channel::Instagram => $this->instagramOauth($connection),
+            Channel::TikTok => $this->tiktokOauth($connection),
+            default => null,
+        };
+
+        if ($oauthUrl === null) {
             return response()->json([
                 'message' => 'This connection does not support OAuth URL generation',
             ], 400);
         }
 
-        $oauthUrl = $this->instagramOauth($connection);
-
-        Log::info('Generated Instagram OAuth URL', [
+        Log::info('Generated OAuth URL', [
             'connection_id' => $connection->id,
+            'channel' => $connection->channel->value,
             'oauth_url' => $oauthUrl,
         ]);
 
         return response()->json([
-            'message' => 'Instagram OAuth URL generated successfully',
+            'message' => 'OAuth URL generated successfully',
             'data' => [
                 'oauth_url' => $oauthUrl,
             ],
@@ -634,5 +640,16 @@ class ConnectionController extends Controller
             ."&state={$state}";
 
         return $oauthUrl;
+    }
+
+    private function tiktokOauth(Connection $connection): string
+    {
+        // Create state parameter with connection_id (same shape as Instagram's)
+        $state = base64_encode(json_encode([
+            'connection_id' => $connection->id,
+            'timestamp' => time(),
+        ]));
+
+        return TikTokAuthClient::authorizeUrl($state);
     }
 }

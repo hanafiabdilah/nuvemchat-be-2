@@ -7,6 +7,7 @@ use App\Services\Connection\Channels\InstagramChannel;
 use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\Channels\LiveChatWidgetChannel;
 use App\Services\Connection\Channels\TelegramChannel;
+use App\Services\Connection\Channels\TikTokChannel;
 use App\Services\Connection\Channels\WhatsappOfficialChannel;
 use App\Services\Connection\Channels\WhatsappApiwayChannel;
 use App\Services\Connection\Channels\WhatsappWApiChannel;
@@ -19,6 +20,7 @@ class ChannelFactory
         return match($channel) {
             Channel::Instagram => new InstagramChannel(),
             Channel::Telegram => new TelegramChannel(),
+            Channel::TikTok => new TikTokChannel(),
             Channel::WhatsappOfficial => new WhatsappOfficialChannel(),
             Channel::WhatsappWApi => new WhatsappWApiChannel(),
             Channel::WhatsappApiway => new WhatsappApiwayChannel(),

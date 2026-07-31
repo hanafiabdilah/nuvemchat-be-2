@@ -11,6 +11,7 @@ use App\Models\Message;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
+use App\Services\Connection\TikTok\TikTokAuthClient;
 use App\Services\Connection\WhatsAppTokenValidator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -162,6 +163,79 @@ class ConnectionController extends Controller
             ]);
 
             return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Failed to connect Instagram account: ' . $th->getMessage()));
+        }
+    }
+
+    public function tiktokCallback(Request $request)
+    {
+        Log::info('TikTok OAuth callback received', [
+            'query' => $request->query(),
+        ]);
+
+        $code = $request->query('code');
+        $state = $request->query('state');
+        $error = $request->query('error');
+
+        // Handle error from TikTok (user denied or cancelled the authorization)
+        if ($error) {
+            Log::error('TikTok OAuth error', [
+                'error' => $error,
+                'error_description' => $request->query('error_description'),
+            ]);
+
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('TikTok OAuth error: ' . ($request->query('error_description') ?: $error)));
+        }
+
+        if (!$code || !$state) {
+            Log::error('Missing code or state parameter in TikTok callback');
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Invalid TikTok callback: missing code or state parameter'));
+        }
+
+        try {
+            $stateData = json_decode(base64_decode($state), true);
+            $connectionId = $stateData['connection_id'] ?? null;
+
+            if (!$connectionId) {
+                throw new \Exception('Invalid state parameter');
+            }
+
+            $connection = Connection::findOrFail($connectionId);
+
+            $tokens = TikTokAuthClient::exchangeCode($code);
+
+            // Reject partial consent up-front: a missing message.* scope would
+            // otherwise only surface later as failing sends or silent webhooks.
+            $granted = array_filter(explode(',', (string) ($tokens['scope'] ?? '')));
+            $missing = array_diff(TikTokAuthClient::REQUIRED_SCOPES, $granted);
+            if (!empty($missing)) {
+                throw new \Exception('User did not grant all required TikTok permissions: ' . implode(', ', $missing));
+            }
+
+            $this->connectionService->connect($connection, [
+                'access_token' => $tokens['access_token'],
+                'refresh_token' => $tokens['refresh_token'],
+                'business_id' => $tokens['business_id'],
+                'token_expires_at' => $tokens['token_expires_at'],
+                'refresh_token_expires_at' => $tokens['refresh_token_expires_at'],
+                'scope' => $tokens['scope'],
+            ]);
+
+            broadcast(new ConnectionUpdated($connection->fresh()));
+
+            Log::info('TikTok account connected successfully', [
+                'connection_id' => $connectionId,
+                'business_id' => $tokens['business_id'],
+            ]);
+
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=success&message=' . urlencode('TikTok account connected successfully!'));
+
+        } catch (\Throwable $th) {
+            Log::error('Error processing TikTok callback', [
+                'error' => $th->getMessage(),
+                'trace' => $th->getTraceAsString(),
+            ]);
+
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Failed to connect TikTok account: ' . $th->getMessage()));
         }
     }
 

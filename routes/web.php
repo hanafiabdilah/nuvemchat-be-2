@@ -27,6 +27,10 @@ Route::post('/oauth/instagram/data-deletion', [ConnectionController::class, 'ins
 Route::get('/instagram/deletion-status', [ConnectionController::class, 'instagramDeletionStatus'])
     ->name('instagram.deletion-status');
 
+// TikTok OAuth (Business Messaging)
+Route::get('/oauth/tiktok/callback', [ConnectionController::class, 'tiktokCallback'])
+    ->name('oauth.tiktok.callback');
+
 // Facebook OAuth (for WhatsApp & Messenger)
 Route::match(['get', 'post'], '/oauth/facebook/callback', [ConnectionController::class, 'facebookCallback'])
     ->name('oauth.facebook.callback');

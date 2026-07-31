@@ -21,6 +21,12 @@ class ConnectionResource extends JsonResource
             unset($credentials['password']);
         }
 
+        // The SPA only needs the account identity (username/display_name);
+        // OAuth tokens stay server-side.
+        if ($this->channel === Channel::TikTok && is_array($credentials)) {
+            unset($credentials['access_token'], $credentials['refresh_token']);
+        }
+
         return [
             'id' => $this->id,
             'channel' => $this->channel,

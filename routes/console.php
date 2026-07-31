@@ -20,6 +20,14 @@ Schedule::command('instagram:refresh-tokens --days-before=7')
         logger()->error('Instagram token refresh failed');
     });
 
+// TikTok access tokens only live ~24h (refresh tokens ~30 days): refresh hourly,
+// well ahead of expiry, so sends never hit a dead token mid-conversation.
+Schedule::command('tiktok:refresh-tokens --minutes-before=120')
+    ->hourly()
+    ->onFailure(function () {
+        logger()->error('TikTok token refresh failed');
+    });
+
 // Reactively detect WhatsApp connections whose access_token has been revoked
 // (e.g. user removed app from Facebook Settings). Catches revocations missed
 // by the deauth webhook or where signed_request user_id could not be matched.
