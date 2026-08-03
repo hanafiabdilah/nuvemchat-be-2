@@ -2,22 +2,37 @@
 
 namespace App\Services\Email;
 
+use DateTimeInterface;
+
 interface EmailInboxClient
 {
     /**
-     * Fetch at most $limit messages with a UID above $lastSeenUid, oldest
-     * first. Bounding the batch keeps the first sync of a large mailbox from
-     * running until it times out or exhausts memory.
+     * UIDs strictly above $uid, ascending — the tail of newly arrived mail.
+     * SEARCH-only: it spans the whole backlog, so it must never fetch headers
+     * or bodies.
      *
-     * @return iterable<InboundEmail>
+     * @return array<int, int>
      */
-    public function fetchSince(int $lastSeenUid, int $limit): iterable;
+    public function uidsAfter(int $uid): array;
 
     /**
-     * How many messages sit above $lastSeenUid. Drives the progress readout,
-     * so it must not fetch bodies or attachments.
+     * UIDs of messages received on/after $since (the whole mailbox when null),
+     * strictly below $beforeUid when given, ascending. Drives the newest-first
+     * backfill and the progress readout. SEARCH-only, like uidsAfter().
+     *
+     * @return array<int, int>
      */
-    public function countSince(int $lastSeenUid): int;
+    public function uidsWithin(?DateTimeInterface $since, ?int $beforeUid): array;
+
+    /**
+     * Fetch exactly these UIDs — bodies and attachments included — yielding
+     * them in the given order (pass a descending list for newest-first).
+     * Bounding the list keeps one pass from running until it times out.
+     *
+     * @param  array<int, int>  $uids
+     * @return iterable<InboundEmail>
+     */
+    public function fetch(array $uids): iterable;
 
     public function disconnect(): void;
 }

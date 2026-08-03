@@ -3,6 +3,7 @@
 namespace App\Services\Email;
 
 use Carbon\CarbonInterface;
+use DateTimeInterface;
 use Webklex\PHPIMAP\Attribute;
 use Webklex\PHPIMAP\Client;
 use Webklex\PHPIMAP\Folder;
@@ -25,74 +26,104 @@ class WebklexEmailInboxClient implements EmailInboxClient
         private readonly Folder $folder,
     ) {}
 
-    public function fetchSince(int $lastSeenUid, int $limit): iterable
+    public function uidsAfter(int $uid): array
     {
-        $uids = $this->pendingUids($lastSeenUid);
+        $startUid = max(1, $uid + 1);
+
+        // An `n:*` range still returns the highest message when n is past the
+        // top of the mailbox, so re-check the bound here.
+        return $this->searchUids(
+            'UID '.$startUid.':*',
+            fn (int $found) => $found >= $startUid
+        );
+    }
+
+    public function uidsWithin(?DateTimeInterface $since, ?int $beforeUid): array
+    {
+        if ($beforeUid !== null && $beforeUid <= 1) {
+            return [];
+        }
+
+        $criteria = 'UID 1:'.($beforeUid !== null ? $beforeUid - 1 : '*');
+
+        if ($since !== null) {
+            // SINCE matches on INTERNALDATE with day granularity; the RFC 3501
+            // date is unquoted and always uses English month names, which
+            // format() guarantees regardless of the app locale.
+            $criteria .= ' SINCE '.$since->format('j-M-Y');
+        }
+
+        return $this->searchUids(
+            $criteria,
+            fn (int $found) => $beforeUid === null || $found < $beforeUid
+        );
+    }
+
+    public function fetch(array $uids): iterable
+    {
+        $uids = array_values(array_unique(array_map('intval', $uids)));
 
         if ($uids === []) {
             return;
         }
 
-        // UIDs are sparse (deleted mail leaves gaps), so slice the actual UID
-        // list rather than walking a fixed-width numeric window — otherwise a
-        // large gap would burn whole passes fetching nothing.
-        $batch = array_slice($uids, 0, $limit);
+        // A min:max range also matches UIDs the caller did not ask for when
+        // the list has gaps (mail outside the sync window whose INTERNALDATE
+        // is out of UID order), so filter the response back to the request.
+        $requested = array_flip($uids);
 
-        // Each chunk is a contiguous slice of the sorted existing UIDs, so the
-        // first:last range covers exactly its members.
+        // Each chunk is a contiguous slice of the caller's ordered UID list,
+        // so the min:max range covers (at least) exactly its members.
         // CUSTOM = raw, unquoted criteria. whereUid() quotes the range
         // (UID SEARCH UID "1:35") and Gmail rejects quoted sequence-sets with
         // "BAD Could not parse command"; Dovecot merely tolerates them.
-        foreach (array_chunk($batch, self::FETCH_CHUNK) as $chunk) {
+        foreach (array_chunk($uids, self::FETCH_CHUNK) as $chunk) {
+            $first = (int) reset($chunk);
+            $last = (int) end($chunk);
+
             $messages = $this->folder
                 ->query()
-                ->where('CUSTOM UID '.reset($chunk).':'.end($chunk))
+                ->where('CUSTOM UID '.min($first, $last).':'.max($first, $last))
                 ->setSequence(IMAP::ST_UID)
                 ->leaveUnread()
                 ->setFetchBody(true)
-                ->fetchOrder('asc')
+                ->fetchOrder($first <= $last ? 'asc' : 'desc')
                 ->get();
 
             foreach ($messages as $message) {
-                yield $this->mapMessage($message);
+                $mapped = $this->mapMessage($message);
+
+                if (isset($requested[$mapped->uid])) {
+                    yield $mapped;
+                }
             }
         }
     }
 
-    public function countSince(int $lastSeenUid): int
-    {
-        return count($this->pendingUids($lastSeenUid));
-    }
-
     /**
-     * UIDs above $lastSeenUid, ascending. SEARCH only — this spans the whole
-     * backlog, so it must never fetch headers or bodies: on a large mailbox
-     * that fetch is what blew the socket timeout ("Empty response") and left
-     * the first sync permanently failed.
+     * SEARCH only — a UID scan spans the whole backlog, so it must never fetch
+     * headers or bodies: on a large mailbox that fetch is what blew the socket
+     * timeout ("Empty response") and left the first sync permanently failed.
      *
+     * @param  \Closure(int): bool  $bound  Server answers can overshoot the
+     *                                      requested range; re-check it here.
      * @return array<int, int>
      */
-    private function pendingUids(int $lastSeenUid): array
+    private function searchUids(string $criteria, \Closure $bound): array
     {
-        $startUid = max(1, $lastSeenUid + 1);
-
-        // CUSTOM keeps the range unquoted (Gmail-safe, see fetchSince) and
+        // CUSTOM keeps the criteria unquoted (Gmail-safe, see fetch) and
         // ST_UID makes the server both match and answer in UIDs.
-        $uids = $this->folder
+        return $this->folder
             ->query()
-            ->where('CUSTOM UID '.$startUid.':*')
+            ->where('CUSTOM '.$criteria)
             ->setSequence(IMAP::ST_UID)
             ->search()
             ->map(fn ($uid) => (int) $uid)
-            // An `n:*` range still returns the highest message when n is past
-            // the top of the mailbox, so re-check the bound here.
-            ->filter(fn (int $uid) => $uid >= $startUid)
+            ->filter($bound)
             ->unique()
             ->sort()
             ->values()
             ->all();
-
-        return $uids;
     }
 
     public function disconnect(): void

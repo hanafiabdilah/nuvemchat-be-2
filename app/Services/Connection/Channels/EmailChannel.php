@@ -29,6 +29,7 @@ class EmailChannel implements ChannelInterface
 
         $connection->update([
             'status' => Status::Active,
+            ...$this->syncWindowAttributes($connection, $credentials),
             'credentials' => [
                 'email' => $credentials['email'],
                 'password' => Crypt::encryptString($password),
@@ -71,6 +72,7 @@ class EmailChannel implements ChannelInterface
 
         $connection->update([
             'status' => Status::Active,
+            ...$this->syncWindowAttributes($connection, $credentials),
             'credentials' => [
                 'email' => $credentials['email'],
                 'password' => Crypt::encryptString($password),
@@ -82,6 +84,34 @@ class EmailChannel implements ChannelInterface
                 'smtp_encryption' => $credentials['smtp_encryption'],
             ],
         ]);
+    }
+
+    /**
+     * The sync-window column updates for this save. Only touched when the
+     * request actually carries the field, so older clients keep the stored
+     * value. Changing the window re-arms the backfill: the next pass resumes
+     * below the existing UID floor with the new cutoff, importing mail that
+     * is now inside the window without ever refetching what is already local.
+     *
+     * @return array<string, mixed>
+     */
+    private function syncWindowAttributes(Connection $connection, array $credentials): array
+    {
+        if (! array_key_exists('sync_window_days', $credentials)) {
+            return [];
+        }
+
+        $days = $credentials['sync_window_days'] === null
+            ? null
+            : (int) $credentials['sync_window_days'];
+
+        $attributes = ['sync_window_days' => $days];
+
+        if ($days !== $connection->sync_window_days) {
+            $attributes['backfill_done'] = false;
+        }
+
+        return $attributes;
     }
 
     /**
@@ -170,6 +200,8 @@ class EmailChannel implements ChannelInterface
             'smtp_host' => ['required', 'string', 'max:255'],
             'smtp_port' => ['required', 'integer', 'min:1', 'max:65535'],
             'smtp_encryption' => ['required', 'in:ssl,tls,none'],
+            // How far back to import mail. Null/absent = the whole mailbox.
+            'sync_window_days' => ['nullable', 'integer', 'in:30,60,90,365'],
         ];
     }
 

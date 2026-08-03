@@ -41,6 +41,8 @@ class ConnectionResource extends JsonResource
                 'remaining' => $this->sync_remaining,
                 'started_at' => $this->sync_started_at,
                 'last_synced_at' => $this->last_synced_at,
+                // Import horizon in days; null = the whole mailbox.
+                'window_days' => $this->sync_window_days,
             ]),
             'ai_suggest_agent_id' => $this->ai_suggest_agent_id,
             'ai_suggest_agent' => $this->ai_suggest_agent_id ? [

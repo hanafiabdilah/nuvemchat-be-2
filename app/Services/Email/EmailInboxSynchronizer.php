@@ -24,6 +24,12 @@ use Illuminate\Support\Str;
  * Pulls one batch of inbound mail for a single connection and keeps the
  * connection's sync state current so the SPA can show progress.
  *
+ * Each pass runs two phases against the mailbox:
+ *  - tail: mail above `last_seen_uid` (new arrivals), in arrival order;
+ *  - backfill: history inside the connection's sync window
+ *    (`sync_window_days`, null = everything), newest first, walking
+ *    `backfill_uid` downward until the window is drained (`backfill_done`).
+ *
  * A pass is deliberately bounded: the first sync of an existing mailbox can
  * span thousands of messages, and fetching them all in one run is what makes
  * the inbox look permanently empty (the run dies before committing anything).
@@ -51,6 +57,12 @@ class EmailInboxSynchronizer
      */
     public const MAX_PASS_SECONDS = 240;
 
+    /** Wall-clock cutoff for the running pass (epoch seconds, microtime). */
+    private float $deadline = 0.0;
+
+    /** Persist failures seen in the running pass (see MAX_PERSIST_FAILURES). */
+    private int $failures = 0;
+
     public function __construct(
         private readonly EmailInboxClientFactory $clientFactory,
     ) {}
@@ -68,77 +80,73 @@ class EmailInboxSynchronizer
 
         $client = null;
         $imported = 0;
-        $failures = 0;
 
         try {
-            $lastSeenUid = (int) ($connection->last_seen_uid ?? 0);
-            $maxSeenUid = $lastSeenUid;
-            $deadline = microtime(true) + self::MAX_PASS_SECONDS;
+            $this->deadline = microtime(true) + self::MAX_PASS_SECONDS;
+            $this->failures = 0;
+            $budget = self::BATCH_SIZE;
             $client = $this->clientFactory->make($connection);
 
-            foreach ($client->fetchSince($lastSeenUid, self::BATCH_SIZE) as $email) {
-                if (microtime(true) >= $deadline) {
-                    break;
-                }
+            $cutoff = $connection->sync_window_days
+                ? now()->subDays((int) $connection->sync_window_days)
+                : null;
 
-                if (! $email->fromEmail) {
-                    Log::warning('EmailInboxSynchronizer: skipping message without sender', [
-                        'connection_id' => $connection->id,
-                        'uid' => $email->uid,
-                    ]);
+            // Phase 1 — tail: mail that arrived after the newest message
+            // already imported, in arrival order. Runs first so a live inbox
+            // stays current even while a long backfill is still draining.
+            if ((int) $connection->last_seen_uid > 0) {
+                $tail = array_slice($client->uidsAfter((int) $connection->last_seen_uid), 0, $budget);
 
-                    // Still advance the cursor, or this message blocks the batch forever.
-                    $maxSeenUid = max($maxSeenUid, $email->uid);
-                    $connection->forceFill(['last_seen_uid' => $maxSeenUid])->save();
+                [$processed, $importedNow] = $this->importUids($connection, $client, $tail,
+                    fn (Connection $c, int $uid) => $c->forceFill([
+                        'last_seen_uid' => max((int) $c->last_seen_uid, $uid),
+                    ])->save()
+                );
 
-                    continue;
-                }
-
-                try {
-                    $message = $this->persistEmail($connection, $email);
-                } catch (\Throwable $exception) {
-                    // One message the DB refuses must not wedge the whole
-                    // mailbox: the cursor only moved after a successful
-                    // persist, so a single poison email was refetched and
-                    // refailed every pass forever. Log it, advance past it,
-                    // keep going. A systemic outage is different: if the DB
-                    // is down the cursor save below throws too and the pass
-                    // aborts through the outer catch, and repeated failures
-                    // bail out instead of skipping through the backlog.
-                    if (++$failures > self::MAX_PERSIST_FAILURES) {
-                        throw $exception;
-                    }
-
-                    Log::error('EmailInboxSynchronizer: skipping message that failed to persist', [
-                        'connection_id' => $connection->id,
-                        'tenant_id' => $connection->tenant_id,
-                        'uid' => $email->uid,
-                        'message_id' => $email->messageId,
-                        'error' => $exception->getMessage(),
-                    ]);
-
-                    $maxSeenUid = max($maxSeenUid, $email->uid);
-                    $connection->forceFill(['last_seen_uid' => $maxSeenUid])->save();
-
-                    continue;
-                }
-
-                $maxSeenUid = max($maxSeenUid, $email->uid);
-                $imported++;
-
-                // Persist the cursor per message, not per pass: a slow mailbox
-                // (Gmail bodies + attachments) can hit the job timeout mid-batch,
-                // and losing the cursor would restart the same batch forever.
-                $connection->forceFill(['last_seen_uid' => $maxSeenUid])->save();
-
-                broadcast(new MessageReceived($message));
-                broadcast(new ConversationUpdated($message->conversation->load('contact')));
+                $imported += $importedNow;
+                $budget -= $processed;
             }
 
-            $remaining = $client->countSince($maxSeenUid);
+            // Phase 2 — backfill: history inside the sync window, newest
+            // first, so the inbox fills with current conversations before old
+            // ones. Walks the UID floor downward until the window is drained.
+            if (! $connection->backfill_done && $budget > 0 && microtime(true) < $this->deadline) {
+                $pool = $client->uidsWithin($cutoff, $connection->backfill_uid);
+
+                if ((int) $connection->last_seen_uid === 0) {
+                    // First pass ever: pin the tail cursor to the top of the
+                    // mailbox now, so mail older than the window is never
+                    // mistaken for "new" once this backfill finishes.
+                    $top = $pool !== [] ? max($pool) : max([0, ...$client->uidsAfter(0)]);
+                    $connection->forceFill(['last_seen_uid' => $top])->save();
+                }
+
+                // Newest N candidates, descending.
+                $batch = array_reverse(array_slice($pool, -$budget));
+
+                [$processed, $importedNow] = $this->importUids($connection, $client, $batch,
+                    fn (Connection $c, int $uid) => $c->forceFill([
+                        'backfill_uid' => min((int) ($c->backfill_uid ?? PHP_INT_MAX), $uid),
+                        'last_seen_uid' => max((int) $c->last_seen_uid, $uid),
+                    ])->save()
+                );
+
+                $imported += $importedNow;
+
+                // Every candidate was walked in this pass (none were cut off
+                // by the budget or the deadline): the window is fully local.
+                if ($processed === count($pool)) {
+                    $connection->forceFill(['backfill_done' => true])->save();
+                }
+            }
+
+            $remaining = count($client->uidsAfter((int) $connection->last_seen_uid));
+
+            if (! $connection->backfill_done) {
+                $remaining += count($client->uidsWithin($cutoff, $connection->backfill_uid));
+            }
 
             $connection->forceFill([
-                'last_seen_uid' => $maxSeenUid,
                 'last_synced_at' => now(),
                 'sync_status' => SyncStatus::Idle,
                 'sync_error' => null,
@@ -165,6 +173,84 @@ class EmailInboxSynchronizer
             $client?->disconnect();
             broadcast(new ConnectionUpdated($connection->refresh()));
         }
+    }
+
+    /**
+     * Fetch and persist the given UIDs in order. $advance moves the calling
+     * phase's cursor past a UID once it is safely imported (or deliberately
+     * skipped), per message rather than per pass: a slow mailbox (Gmail
+     * bodies + attachments) can hit the job timeout mid-batch, and losing the
+     * cursor would restart the same batch forever.
+     *
+     * @param  array<int, int>  $uids
+     * @param  \Closure(Connection, int): void  $advance
+     * @return array{0: int, 1: int} [UIDs processed, messages imported]
+     */
+    private function importUids(Connection $connection, EmailInboxClient $client, array $uids, \Closure $advance): array
+    {
+        if ($uids === []) {
+            return [0, 0];
+        }
+
+        $processed = 0;
+        $imported = 0;
+
+        foreach ($client->fetch($uids) as $email) {
+            if (microtime(true) >= $this->deadline) {
+                break;
+            }
+
+            if (! $email->fromEmail) {
+                Log::warning('EmailInboxSynchronizer: skipping message without sender', [
+                    'connection_id' => $connection->id,
+                    'uid' => $email->uid,
+                ]);
+
+                // Still advance the cursor, or this message blocks the batch forever.
+                $advance($connection, $email->uid);
+                $processed++;
+
+                continue;
+            }
+
+            try {
+                $message = $this->persistEmail($connection, $email);
+            } catch (\Throwable $exception) {
+                // One message the DB refuses must not wedge the whole
+                // mailbox: the cursor only moved after a successful
+                // persist, so a single poison email was refetched and
+                // refailed every pass forever. Log it, advance past it,
+                // keep going. A systemic outage is different: if the DB
+                // is down the cursor save below throws too and the pass
+                // aborts through the outer catch, and repeated failures
+                // bail out instead of skipping through the backlog.
+                if (++$this->failures > self::MAX_PERSIST_FAILURES) {
+                    throw $exception;
+                }
+
+                Log::error('EmailInboxSynchronizer: skipping message that failed to persist', [
+                    'connection_id' => $connection->id,
+                    'tenant_id' => $connection->tenant_id,
+                    'uid' => $email->uid,
+                    'message_id' => $email->messageId,
+                    'error' => $exception->getMessage(),
+                ]);
+
+                $advance($connection, $email->uid);
+                $processed++;
+
+                continue;
+            }
+
+            $advance($connection, $email->uid);
+            $processed++;
+            $imported++;
+
+            broadcast(new MessageReceived($message));
+            broadcast(new ConversationUpdated($message->conversation->load('contact')));
+        }
+
+        return [$processed, $imported];
     }
 
     /**

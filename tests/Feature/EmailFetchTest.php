@@ -50,38 +50,46 @@ class FakeEmailInboxClient implements EmailInboxClient
      */
     public function __construct(private readonly array $messages) {}
 
-    public function fetchSince(int $lastSeenUid, int $limit): iterable
+    public function uidsAfter(int $uid): array
     {
-        $yielded = 0;
+        return $this->uids(fn (InboundEmail $message) => $message->uid > $uid);
+    }
 
-        foreach ($this->pending($lastSeenUid) as $message) {
-            if ($yielded >= $limit) {
-                return;
+    public function uidsWithin(?DateTimeInterface $since, ?int $beforeUid): array
+    {
+        return $this->uids(fn (InboundEmail $message) => ($beforeUid === null || $message->uid < $beforeUid)
+            && ($since === null || ($message->sentAt !== null && $message->sentAt->gte($since))));
+    }
+
+    public function fetch(array $uids): iterable
+    {
+        $byUid = [];
+
+        foreach ($this->messages as $message) {
+            $byUid[$message->uid] = $message;
+        }
+
+        foreach ($uids as $uid) {
+            if (isset($byUid[$uid])) {
+                yield $byUid[$uid];
             }
-
-            $yielded++;
-            yield $message;
         }
     }
 
-    public function countSince(int $lastSeenUid): int
-    {
-        return count($this->pending($lastSeenUid));
-    }
-
     /**
-     * @return array<int, InboundEmail>
+     * @param  \Closure(InboundEmail): bool  $matches
+     * @return array<int, int>
      */
-    private function pending(int $lastSeenUid): array
+    private function uids(\Closure $matches): array
     {
-        $pending = array_values(array_filter(
-            $this->messages,
-            fn (InboundEmail $message) => $message->uid > $lastSeenUid
-        ));
+        $uids = array_map(
+            fn (InboundEmail $message) => $message->uid,
+            array_values(array_filter($this->messages, $matches))
+        );
 
-        usort($pending, fn ($a, $b) => $a->uid <=> $b->uid);
+        sort($uids);
 
-        return $pending;
+        return $uids;
     }
 
     public function disconnect(): void {}
@@ -306,9 +314,13 @@ test('a large mailbox is imported in bounded batches and reports the backlog', f
     app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory($messages));
 
     // First pass: capped at BATCH_SIZE, with the rest reported as remaining.
+    // The backfill walks newest-first, so what waits is the OLDEST mail — the
+    // inbox shows current conversations from the very first pass.
     $this->artisan('email:fetch --sync')->assertSuccessful();
 
     expect(Message::count())->toBe(EmailInboxSynchronizer::BATCH_SIZE)
+        ->and(Message::where('external_id', "bulk-{$total}@example.com")->exists())->toBeTrue()
+        ->and(Message::where('external_id', 'bulk-1@example.com')->exists())->toBeFalse()
         ->and($connection->refresh()->sync_remaining)->toBe(5)
         ->and($connection->sync_status)->toBe(SyncStatus::Idle);
 
@@ -338,6 +350,61 @@ test('a failing mailbox is recorded as failed with the reason', function () {
     expect($connection->sync_status)->toBe(SyncStatus::Failed)
         ->and($connection->sync_error)->toContain('IMAP authentication failed')
         ->and($connection->sync_started_at)->toBeNull();
+});
+
+test('a sync window imports only mail inside it', function () {
+    Event::fake([MessageReceived::class, ConversationUpdated::class]);
+    $connection = emailFetchConnection();
+    $connection->forceFill(['sync_window_days' => 30])->save();
+
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory([
+        inboundEmail(['uid' => 1, 'messageId' => 'ancient@example.com', 'sentAt' => now()->subDays(400)]),
+        inboundEmail(['uid' => 2, 'messageId' => 'old@example.com', 'sentAt' => now()->subDays(45)]),
+        inboundEmail(['uid' => 3, 'messageId' => 'recent@example.com', 'sentAt' => now()->subDays(3)]),
+        inboundEmail(['uid' => 4, 'messageId' => 'today@example.com', 'sentAt' => now()]),
+    ]));
+
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    $connection->refresh();
+
+    expect(Message::count())->toBe(2)
+        ->and(Message::where('external_id', 'old@example.com')->exists())->toBeFalse()
+        ->and(Message::where('external_id', 'today@example.com')->exists())->toBeTrue()
+        // The tail cursor sits at the top of the mailbox, so out-of-window
+        // history is never mistaken for new mail on later passes.
+        ->and($connection->last_seen_uid)->toBe(4)
+        ->and($connection->backfill_done)->toBeTrue()
+        ->and($connection->sync_remaining)->toBe(0);
+});
+
+test('widening the sync window backfills older mail without refetching newer mail', function () {
+    Event::fake([MessageReceived::class, ConversationUpdated::class]);
+    $connection = emailFetchConnection();
+    $connection->forceFill(['sync_window_days' => 30])->save();
+
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory([
+        inboundEmail(['uid' => 1, 'messageId' => 'older@example.com', 'sentAt' => now()->subDays(60)]),
+        inboundEmail(['uid' => 2, 'messageId' => 'newer@example.com', 'sentAt' => now()->subDays(5)]),
+    ]));
+
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    expect(Message::count())->toBe(1)
+        ->and($connection->refresh()->backfill_done)->toBeTrue();
+
+    // What EmailChannel does when the user picks a wider window: re-arm the
+    // backfill, keeping the UID floor so newer mail is not walked again.
+    $connection->forceFill(['sync_window_days' => 90, 'backfill_done' => false])->save();
+
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    $connection->refresh();
+
+    expect(Message::count())->toBe(2)
+        ->and(Message::where('external_id', 'older@example.com')->exists())->toBeTrue()
+        ->and($connection->backfill_done)->toBeTrue()
+        ->and($connection->sync_remaining)->toBe(0);
 });
 
 test('the scheduled command queues one unique job per active mailbox', function () {
