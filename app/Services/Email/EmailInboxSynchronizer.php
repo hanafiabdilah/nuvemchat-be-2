@@ -42,6 +42,15 @@ class EmailInboxSynchronizer
     /** Persist failures tolerated per pass before treating them as systemic. */
     public const MAX_PERSIST_FAILURES = 10;
 
+    /**
+     * Wall-clock budget for one pass, safely under SyncEmailInbox::$timeout
+     * (280s). A mailbox slow enough to outlive the job timeout mid-batch
+     * keeps its cursor (saved per message) but stays 'syncing' until the
+     * stale window expires — a 15-minute dead stop every pass. Ending the
+     * pass cleanly instead lets the next minute's tick resume immediately.
+     */
+    public const MAX_PASS_SECONDS = 240;
+
     public function __construct(
         private readonly EmailInboxClientFactory $clientFactory,
     ) {}
@@ -64,9 +73,14 @@ class EmailInboxSynchronizer
         try {
             $lastSeenUid = (int) ($connection->last_seen_uid ?? 0);
             $maxSeenUid = $lastSeenUid;
+            $deadline = microtime(true) + self::MAX_PASS_SECONDS;
             $client = $this->clientFactory->make($connection);
 
             foreach ($client->fetchSince($lastSeenUid, self::BATCH_SIZE) as $email) {
+                if (microtime(true) >= $deadline) {
+                    break;
+                }
+
                 if (! $email->fromEmail) {
                     Log::warning('EmailInboxSynchronizer: skipping message without sender', [
                         'connection_id' => $connection->id,
