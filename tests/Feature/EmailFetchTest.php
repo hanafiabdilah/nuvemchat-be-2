@@ -196,6 +196,82 @@ test('email html is converted to safe plain text before storage', function () {
         ->and($body)->not->toContain('alert("xss")');
 });
 
+test('legacy single-byte bodies are converted to utf-8 instead of failing', function () {
+    Event::fake([MessageReceived::class, ConversationUpdated::class]);
+    emailFetchConnection();
+
+    // ISO-8859-1 bytes, the exact shape of the production poison email:
+    // MySQL rejects \xE1 with error 1366 and the mailbox never advances.
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory([
+        inboundEmail([
+            'uid' => 1,
+            'messageId' => 'latin1-message@example.com',
+            'subject' => "Lembrete de vencimento em Maring\xE1",
+            'fromName' => "Jo\xE3o",
+            'textBody' => "Maring\xE1-PR, 08 de novembro de 2025.",
+        ]),
+    ]));
+
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    $message = Message::firstOrFail();
+
+    expect($message->body)->toBe('Maringá-PR, 08 de novembro de 2025.')
+        ->and($message->meta['email']['subject'])->toBe('Lembrete de vencimento em Maringá')
+        ->and(mb_check_encoding($message->body, 'UTF-8'))->toBeTrue();
+});
+
+test('oversized bodies are truncated to fit the column', function () {
+    Event::fake([MessageReceived::class, ConversationUpdated::class]);
+    emailFetchConnection();
+
+    // Multibyte filler so the cut lands mid-character without the byte guard.
+    $body = str_repeat('á', EmailInboxSynchronizer::MAX_BODY_BYTES);
+
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory([
+        inboundEmail([
+            'uid' => 1,
+            'messageId' => 'oversized-message@example.com',
+            'textBody' => $body,
+        ]),
+    ]));
+
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    $stored = Message::firstOrFail()->body;
+
+    expect(strlen($stored))->toBeLessThanOrEqual(EmailInboxSynchronizer::MAX_BODY_BYTES)
+        ->and(mb_check_encoding($stored, 'UTF-8'))->toBeTrue();
+});
+
+test('a message that cannot be persisted is skipped and the cursor still advances', function () {
+    Event::fake([MessageReceived::class, ConversationUpdated::class]);
+    $connection = emailFetchConnection();
+
+    // Stand-in for a DB-level rejection sqlite cannot reproduce (strict
+    // MySQL charset/length errors): fail exactly one message at persist time.
+    Message::creating(function (Message $message) {
+        if ($message->external_id === 'poison@example.com') {
+            throw new RuntimeException('simulated insert failure');
+        }
+    });
+
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory([
+        inboundEmail(['uid' => 1, 'messageId' => 'ok-1@example.com']),
+        inboundEmail(['uid' => 2, 'messageId' => 'poison@example.com']),
+        inboundEmail(['uid' => 3, 'messageId' => 'ok-2@example.com']),
+    ]));
+
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    $connection->refresh();
+
+    expect(Message::count())->toBe(2)
+        ->and($connection->last_seen_uid)->toBe(3)
+        ->and($connection->sync_status)->toBe(SyncStatus::Idle)
+        ->and($connection->sync_remaining)->toBe(0);
+});
+
 test('a completed pass reports idle with no backlog left', function () {
     Event::fake([MessageReceived::class, ConversationUpdated::class]);
     $connection = emailFetchConnection();

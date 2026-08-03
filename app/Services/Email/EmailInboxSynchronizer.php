@@ -36,6 +36,12 @@ class EmailInboxSynchronizer
     /** A 'syncing' connection older than this is treated as a dead run. */
     public const STALE_AFTER_MINUTES = 15;
 
+    /** Byte cap for `messages.body` — the TEXT column tops out at 64KB. */
+    public const MAX_BODY_BYTES = 60000;
+
+    /** Persist failures tolerated per pass before treating them as systemic. */
+    public const MAX_PERSIST_FAILURES = 10;
+
     public function __construct(
         private readonly EmailInboxClientFactory $clientFactory,
     ) {}
@@ -53,6 +59,7 @@ class EmailInboxSynchronizer
 
         $client = null;
         $imported = 0;
+        $failures = 0;
 
         try {
             $lastSeenUid = (int) ($connection->last_seen_uid ?? 0);
@@ -73,7 +80,35 @@ class EmailInboxSynchronizer
                     continue;
                 }
 
-                $message = $this->persistEmail($connection, $email);
+                try {
+                    $message = $this->persistEmail($connection, $email);
+                } catch (\Throwable $exception) {
+                    // One message the DB refuses must not wedge the whole
+                    // mailbox: the cursor only moved after a successful
+                    // persist, so a single poison email was refetched and
+                    // refailed every pass forever. Log it, advance past it,
+                    // keep going. A systemic outage is different: if the DB
+                    // is down the cursor save below throws too and the pass
+                    // aborts through the outer catch, and repeated failures
+                    // bail out instead of skipping through the backlog.
+                    if (++$failures > self::MAX_PERSIST_FAILURES) {
+                        throw $exception;
+                    }
+
+                    Log::error('EmailInboxSynchronizer: skipping message that failed to persist', [
+                        'connection_id' => $connection->id,
+                        'tenant_id' => $connection->tenant_id,
+                        'uid' => $email->uid,
+                        'message_id' => $email->messageId,
+                        'error' => $exception->getMessage(),
+                    ]);
+
+                    $maxSeenUid = max($maxSeenUid, $email->uid);
+                    $connection->forceFill(['last_seen_uid' => $maxSeenUid])->save();
+
+                    continue;
+                }
+
                 $maxSeenUid = max($maxSeenUid, $email->uid);
                 $imported++;
 
@@ -147,6 +182,8 @@ class EmailInboxSynchronizer
 
     private function persistEmail(Connection $connection, InboundEmail $email): Message
     {
+        $email = $this->sanitize($email);
+
         return DB::transaction(function () use ($connection, $email) {
             $contact = Contact::createFromExternalData(
                 $connection,
@@ -277,7 +314,56 @@ class EmailInboxSynchronizer
             $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
         }
 
-        return Str::of($text)->replaceMatches('/[ \t]+/', ' ')->trim()->toString();
+        $text = Str::of($text)->replaceMatches('/[ \t]+/', ' ')->trim()->toString();
+
+        // The body column is TEXT (64KB); mb_strcut trims on a byte budget
+        // without splitting a multibyte character at the cut point.
+        return mb_strcut($text, 0, self::MAX_BODY_BYTES);
+    }
+
+    /**
+     * Webklex decodes RFC2047 *headers* but leaves bodies in whatever charset
+     * the sender declared — ISO-8859-1 mail is still common — and MySQL
+     * rejects non-UTF-8 bytes outright (error 1366), which used to wedge a
+     * whole mailbox on one legacy message. Normalize every string that can
+     * reach a table column or the meta JSON before touching the database.
+     */
+    private function sanitize(InboundEmail $email): InboundEmail
+    {
+        $utf8 = fn (?string $value): ?string => $value === null ? null : $this->utf8($value);
+
+        return new InboundEmail(
+            uid: $email->uid,
+            messageId: $utf8($email->messageId),
+            fromEmail: $this->utf8($email->fromEmail),
+            fromName: $utf8($email->fromName),
+            subject: $utf8($email->subject),
+            to: array_map($this->utf8(...), $email->to),
+            cc: array_map($this->utf8(...), $email->cc),
+            inReplyTo: $utf8($email->inReplyTo),
+            references: array_map($this->utf8(...), $email->references),
+            textBody: $utf8($email->textBody),
+            htmlBody: $utf8($email->htmlBody),
+            sentAt: $email->sentAt,
+            attachments: $email->attachments,
+        );
+    }
+
+    private function utf8(string $text): string
+    {
+        if ($text === '' || mb_check_encoding($text, 'UTF-8')) {
+            return $text;
+        }
+
+        // Windows-1252 (superset of ISO-8859-1) maps every byte, so this
+        // always yields valid UTF-8 and is the right guess for legacy
+        // single-byte mail.
+        $converted = mb_convert_encoding($text, 'UTF-8', 'Windows-1252');
+
+        return is_string($converted) && mb_check_encoding($converted, 'UTF-8')
+            ? $converted
+            // Last resort: drop the invalid sequences rather than fail the insert.
+            : (string) mb_convert_encoding($text, 'UTF-8', 'UTF-8');
     }
 
     /**
@@ -323,7 +409,9 @@ class EmailInboxSynchronizer
         foreach ($attachments as $attachment) {
             $path = $this->storeAttachment($message, $attachment);
             $stored[] = [
-                'name' => $attachment->filename,
+                // The name lands in the meta JSON cast, which refuses to
+                // encode invalid UTF-8 just like the body column does.
+                'name' => $this->utf8($attachment->filename),
                 'content_type' => $attachment->contentType,
                 'content_id' => $attachment->contentId,
                 'path' => $path,
