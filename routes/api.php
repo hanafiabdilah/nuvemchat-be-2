@@ -119,7 +119,9 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
         Route::get('/conversations/{id}/transfer-targets', [ConversationController::class, 'transferTargets']);
         Route::post('/conversations/{id}/transfer', [ConversationController::class, 'transfer']);
-        Route::post('/conversations/{id}/ai-suggest', [AiSuggestController::class, 'suggest'])->middleware('throttle:15,1');
+        // Suggestions run on the tenant's AI Hub agents, so the plan must
+        // include the hub feature.
+        Route::post('/conversations/{id}/ai-suggest', [AiSuggestController::class, 'suggest'])->middleware(['feature:ai_agent_hub', 'throttle:15,1']);
         Route::post('/conversations/{id}/tags', [ConversationController::class, 'syncTags']);
         Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
         Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);
@@ -170,14 +172,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::post('/connections/{id}/disconnect', [ConnectionController::class, 'disconnect'])->middleware('permission:connections.disconnect');
     Route::delete('/connections/{id}', [ConnectionController::class, 'destroy'])->middleware('permission:connections.delete');
     Route::put('/connections/{id}/automated-messages', [ConnectionController::class, 'updateAutomatedMessages'])->middleware('permission:connections.update-automated-messages');
-    Route::put('/connections/{id}/ai-suggest', [ConnectionController::class, 'updateAiSuggest'])->middleware('permission:connections.update');
+    Route::put('/connections/{id}/ai-suggest', [ConnectionController::class, 'updateAiSuggest'])->middleware(['feature:ai_agent_hub', 'permission:connections.update']);
 
     // "Respond with AI" — tenant-managed AI agents (openai/gemini/anthropic keys).
     // Listing is also allowed for connections.update so the link picker works.
-    Route::get('/ai-suggest/agents', [AiSuggestController::class, 'agents'])->middleware('permission:ai-suggest.settings|connections.update');
-    Route::post('/ai-suggest/agents', [AiSuggestController::class, 'storeAgent'])->middleware('permission:ai-suggest.settings');
-    Route::put('/ai-suggest/agents/{id}', [AiSuggestController::class, 'updateAgent'])->middleware('permission:ai-suggest.settings');
-    Route::delete('/ai-suggest/agents/{id}', [AiSuggestController::class, 'destroyAgent'])->middleware('permission:ai-suggest.settings');
 
     // Service hours (business hours that gate AI → human handoff), per connection
     Route::get('/connections/{id}/service-hours', [ConnectionController::class, 'serviceHours'])->middleware('permission:service-hours.view');
@@ -229,7 +227,9 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::patch('/provider-credentials/{id}', [AiHubProviderCredentialController::class, 'update'])->middleware('permission:ai-agents.update');
         Route::delete('/provider-credentials/{id}', [AiHubProviderCredentialController::class, 'destroy'])->middleware('permission:ai-agents.delete');
 
-        Route::get('/agents', [AiHubAgentController::class, 'index'])->middleware('permission:ai-agents.view');
+        // connections.update may also list: the Connections page needs the
+        // agent roster for the "Respond with AI" link dropdown.
+        Route::get('/agents', [AiHubAgentController::class, 'index'])->middleware('permission:ai-agents.view|connections.update');
         Route::post('/agents', [AiHubAgentController::class, 'store'])->middleware('permission:ai-agents.create');
         Route::patch('/agents/{id}', [AiHubAgentController::class, 'update'])->middleware('permission:ai-agents.update');
         Route::delete('/agents/{id}', [AiHubAgentController::class, 'destroy'])->middleware('permission:ai-agents.delete');

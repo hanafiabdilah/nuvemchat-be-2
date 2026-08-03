@@ -736,6 +736,10 @@ class AiAgentHubTenantService
      * The caller is responsible for delivering the AI reply to the contact
      * (via MessageService) and linking the produced Message back to the
      * AiHubRun by setting `message_id`.
+     *
+     * $conversationExternalId overrides the hub-side conversation key. Use it
+     * when the run must not touch the real conversation's hub state — e.g.
+     * "Respond with AI" drafts, which run under a synthetic id.
      */
     public function runAgent(
         AiHubAgent $agent,
@@ -743,7 +747,8 @@ class AiAgentHubTenantService
         string $userMessage,
         ?int $flowStateId = null,
         ?int $flowNodeId = null,
-        array $metadata = []
+        array $metadata = [],
+        ?string $conversationExternalId = null
     ): AiHubRun {
         $tenant = $agent->aiHubTenant;
         $conversation->loadMissing(['contact', 'connection']);
@@ -752,7 +757,7 @@ class AiAgentHubTenantService
             'agentExternalId' => $agent->external_id,
             'responseMode' => 'sync',
             'conversation' => [
-                'externalId' => $conversation->external_id,
+                'externalId' => $conversationExternalId ?? $conversation->external_id,
                 'channel' => $this->mapChannelForHub($conversation->connection->channel),
                 'contactExternalId' => $conversation->contact->external_id,
                 'contactName' => $conversation->contact->name,

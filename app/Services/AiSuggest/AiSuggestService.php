@@ -2,9 +2,10 @@
 
 namespace App\Services\AiSuggest;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
-use Illuminate\Support\Facades\Http;
+use App\Services\AiAgentHub\AiAgentHubTenantService;
 use RuntimeException;
 
 /**
@@ -12,67 +13,68 @@ use RuntimeException;
  * conversation transcript. The result is only pasted into the composer; the
  * agent edits and sends it manually, so nothing here touches the send path.
  *
- * Providers are called directly over HTTP with the tenant's own API key
- * (tenants.ai_suggest_config, encrypted): openai, gemini or anthropic.
+ * Suggestions run on the AI Hub agent linked to the connection — the same
+ * trained agent (persona, knowledge, skills) the flow AIAgent nodes use, so
+ * one agent serves both features. Each draft runs under a synthetic hub
+ * conversation id so drafting never touches the hub-side state of the real
+ * conversation.
  */
 class AiSuggestService
 {
-    public const PROVIDERS = ['openai', 'gemini', 'anthropic'];
-
-    public const DEFAULT_MODELS = [
-        'openai' => 'gpt-4o-mini',
-        'gemini' => 'gemini-2.0-flash',
-        'anthropic' => 'claude-opus-5',
-    ];
-
     /** How many recent messages to include in the prompt. */
     protected const TRANSCRIPT_LIMIT = 20;
+
+    public function __construct(
+        private readonly AiAgentHubTenantService $hub,
+    ) {}
 
     public function suggest(Conversation $conversation): string
     {
         $agent = $conversation->connection->aiSuggestAgent;
 
-        $provider = $agent?->provider;
-        $apiKey = (string) ($agent?->api_key ?? '');
-
-        if (!$agent || !in_array($provider, self::PROVIDERS, true) || $apiKey === '') {
+        if (!$agent) {
             throw new RuntimeException('No AI agent is linked to this connection.');
         }
 
-        $model = trim((string) ($agent->model ?? '')) ?: self::DEFAULT_MODELS[$provider];
-
-        [$system, $messages] = $this->buildPrompt($conversation);
-
-        if (empty($messages)) {
-            throw new RuntimeException('There are no messages to base a suggestion on.');
+        // The hub has no channel mapping for email, and the webmail composer
+        // never offers the suggest button — fail with a clear message if the
+        // endpoint is hit anyway.
+        if ($conversation->connection->channel === Channel::Email) {
+            throw new RuntimeException('AI suggestions are not available for email conversations.');
         }
 
-        return match ($provider) {
-            'openai' => $this->suggestWithOpenAi($apiKey, $model, $system, $messages),
-            'gemini' => $this->suggestWithGemini($apiKey, $model, $system, $messages),
-            'anthropic' => $this->suggestWithAnthropic($apiKey, $model, $system, $messages),
-        };
+        [$instruction, $lastMessageId] = $this->buildInstruction($conversation);
+
+        $run = $this->hub->runAgent(
+            $agent,
+            $conversation,
+            $instruction,
+            metadata: ['purpose' => 'ai_suggest'],
+            // Fresh hub conversation per draft: hub state is keyed by this id,
+            // and a draft must neither inherit nor contaminate the state of
+            // the real conversation (or of earlier drafts).
+            conversationExternalId: "suggest:{$conversation->id}:m{$lastMessageId}",
+        );
+
+        $suggestion = trim((string) ($run->output_message ?? ''));
+
+        if ($suggestion === '') {
+            throw new RuntimeException('The AI agent returned an empty suggestion.');
+        }
+
+        return $suggestion;
     }
 
     /**
-     * Build [system prompt, chat transcript] from the last messages.
-     * Transcript entries are ['role' => 'user'|'assistant', 'content' => string]
-     * — 'user' is the customer, 'assistant' is the agent/bot side.
+     * One self-contained instruction: the drafting task plus the recent
+     * transcript. The hub tracks history per conversation and this run uses a
+     * fresh conversation id, so all context must travel in the message itself.
+     *
+     * @return array{0: string, 1: int} [instruction, last transcript message id]
      */
-    protected function buildPrompt(Conversation $conversation): array
+    protected function buildInstruction(Conversation $conversation): array
     {
         $contactName = $conversation->contact?->name ?: 'the customer';
-
-        $system = <<<PROMPT
-You are assisting a customer support agent on an omnichannel messaging platform.
-Based on the conversation transcript, draft the agent's next reply to the customer ({$contactName}).
-
-Rules:
-- Reply in the same language the customer is writing in.
-- Be helpful, friendly and concise, in a tone appropriate for chat messaging.
-- Output ONLY the message text to send — no quotes, labels, options or explanations.
-- If information is missing to fully resolve the request, ask the customer a clear follow-up question instead of inventing facts.
-PROMPT;
 
         $recent = $conversation->messages()
             ->whereNull('unsend_at')
@@ -81,144 +83,45 @@ PROMPT;
             ->get()
             ->reverse();
 
-        $messages = [];
+        $lines = [];
+        $lastId = 0;
 
         foreach ($recent as $message) {
-            $role = $message->sender_type === SenderType::Incoming ? 'user' : 'assistant';
-
             $body = trim((string) ($message->body ?? ''));
+
             if ($body === '') {
                 $type = $message->message_type?->value ?? 'message';
                 $body = $type === 'text' ? '' : "[{$type}]";
             }
+
             if ($body === '') {
                 continue;
             }
 
-            // Merge consecutive same-role messages so every provider accepts
-            // the transcript (some require strict user/assistant alternation).
-            $lastIndex = count($messages) - 1;
-            if ($lastIndex >= 0 && $messages[$lastIndex]['role'] === $role) {
-                $messages[$lastIndex]['content'] .= "\n" . $body;
-            } else {
-                $messages[] = ['role' => $role, 'content' => $body];
-            }
+            $speaker = $message->sender_type === SenderType::Incoming ? 'Customer' : 'Agent';
+            $lines[] = "{$speaker}: {$body}";
+            $lastId = max($lastId, (int) $message->id);
         }
 
-        // Providers require the transcript to start with a user turn.
-        if (!empty($messages) && $messages[0]['role'] !== 'user') {
-            array_shift($messages);
+        if (empty($lines)) {
+            throw new RuntimeException('There are no messages to base a suggestion on.');
         }
 
-        // And to end with one (no assistant prefill): if the agent spoke last,
-        // turn the request into an explicit follow-up instruction.
-        if (!empty($messages) && $messages[count($messages) - 1]['role'] !== 'user') {
-            $messages[] = [
-                'role' => 'user',
-                'content' => '[The customer has not replied yet. Draft an appropriate follow-up message from the agent.]',
-            ];
-        }
+        $transcript = implode("\n", $lines);
 
-        return [$system, $messages];
-    }
+        $instruction = <<<PROMPT
+You are assisting a human support agent. Based on the conversation transcript below, draft the agent's next reply to the customer ({$contactName}).
 
-    protected function suggestWithOpenAi(string $apiKey, string $model, string $system, array $messages): string
-    {
-        $response = Http::withToken($apiKey)
-            ->timeout(60)
-            ->post('https://api.openai.com/v1/chat/completions', [
-                'model' => $model,
-                'max_completion_tokens' => 1024,
-                'messages' => array_merge(
-                    [['role' => 'system', 'content' => $system]],
-                    $messages
-                ),
-            ]);
+Rules:
+- Reply in the same language the customer is writing in.
+- Be helpful, friendly and concise, in a tone appropriate for chat messaging.
+- Output ONLY the message text to send — no quotes, labels, options or explanations.
+- If information is missing to fully resolve the request, ask the customer a clear follow-up question instead of inventing facts.
 
-        if ($response->failed()) {
-            $this->failFromProvider('OpenAI', $response->json('error.message'), $response->status());
-        }
+Transcript:
+{$transcript}
+PROMPT;
 
-        $text = trim((string) $response->json('choices.0.message.content'));
-
-        if ($text === '') {
-            throw new RuntimeException('OpenAI returned an empty suggestion.');
-        }
-
-        return $text;
-    }
-
-    protected function suggestWithGemini(string $apiKey, string $model, string $system, array $messages): string
-    {
-        $contents = array_map(fn (array $message) => [
-            'role' => $message['role'] === 'assistant' ? 'model' : 'user',
-            'parts' => [['text' => $message['content']]],
-        ], $messages);
-
-        $response = Http::withHeaders(['x-goog-api-key' => $apiKey])
-            ->timeout(60)
-            ->post("https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent", [
-                'system_instruction' => ['parts' => [['text' => $system]]],
-                'contents' => $contents,
-                'generationConfig' => ['maxOutputTokens' => 1024],
-            ]);
-
-        if ($response->failed()) {
-            $this->failFromProvider('Gemini', $response->json('error.message'), $response->status());
-        }
-
-        $text = trim((string) $response->json('candidates.0.content.parts.0.text'));
-
-        if ($text === '') {
-            throw new RuntimeException('Gemini returned an empty suggestion.');
-        }
-
-        return $text;
-    }
-
-    protected function suggestWithAnthropic(string $apiKey, string $model, string $system, array $messages): string
-    {
-        $response = Http::withHeaders([
-                'x-api-key' => $apiKey,
-                'anthropic-version' => '2023-06-01',
-            ])
-            ->timeout(60)
-            ->post('https://api.anthropic.com/v1/messages', [
-                'model' => $model,
-                'max_tokens' => 1024,
-                'system' => $system,
-                'messages' => $messages,
-            ]);
-
-        if ($response->failed()) {
-            $this->failFromProvider('Anthropic', $response->json('error.message'), $response->status());
-        }
-
-        // Safety classifiers can decline with HTTP 200 + stop_reason "refusal" —
-        // content may be empty, so check before reading it.
-        if ($response->json('stop_reason') === 'refusal') {
-            throw new RuntimeException('Anthropic declined to draft a suggestion for this conversation.');
-        }
-
-        $text = '';
-        foreach ((array) $response->json('content') as $block) {
-            if (($block['type'] ?? null) === 'text') {
-                $text .= $block['text'] ?? '';
-            }
-        }
-        $text = trim($text);
-
-        if ($text === '') {
-            throw new RuntimeException('Anthropic returned an empty suggestion.');
-        }
-
-        return $text;
-    }
-
-    protected function failFromProvider(string $provider, ?string $message, int $status): never
-    {
-        $detail = $message ? ": {$message}" : " (HTTP {$status})";
-
-        throw new RuntimeException("{$provider} request failed{$detail}");
+        return [$instruction, $lastId];
     }
 }

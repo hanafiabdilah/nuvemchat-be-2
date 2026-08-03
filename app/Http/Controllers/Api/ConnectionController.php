@@ -11,6 +11,7 @@ use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Jobs\SyncEmailInbox;
+use App\Models\AiHubAgent;
 use App\Models\Connection;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
@@ -531,8 +532,11 @@ class ConnectionController extends Controller
         $agentId = $validated['agent_id'] ?? null;
 
         if ($agentId !== null) {
-            // Must belong to the same tenant.
-            request()->user()->tenant->aiSuggestAgents()->findOrFail($agentId);
+            // Must be one of this tenant's AI Hub agents (the same agents the
+            // flow AIAgent nodes use).
+            AiHubAgent::where('id', $agentId)
+                ->whereHas('aiHubTenant', fn ($q) => $q->where('tenant_id', request()->user()->tenant_id))
+                ->firstOrFail();
         }
 
         $connection->update(['ai_suggest_agent_id' => $agentId]);

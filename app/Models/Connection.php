@@ -57,11 +57,13 @@ class Connection extends Model
     }
 
     /**
-     * The "Respond with AI" agent linked to this connection (null = feature off).
+     * The "Respond with AI" agent linked to this connection (null = feature
+     * off). Points at the AI Hub agents — the same agents flow AIAgent nodes
+     * use — so one trained agent serves both features.
      */
     public function aiSuggestAgent()
     {
-        return $this->belongsTo(AiSuggestAgent::class);
+        return $this->belongsTo(AiHubAgent::class, 'ai_suggest_agent_id');
     }
 
     /**

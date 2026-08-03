@@ -12,11 +12,6 @@ class Tenant extends Model
         'current_subscription_id',
     ];
 
-    public function aiSuggestAgents()
-    {
-        return $this->hasMany(AiSuggestAgent::class);
-    }
-
     public function user()
     {
         return $this->belongsTo(User::class);
