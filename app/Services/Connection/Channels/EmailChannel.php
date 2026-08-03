@@ -89,9 +89,15 @@ class EmailChannel implements ChannelInterface
     /**
      * The sync-window column updates for this save. Only touched when the
      * request actually carries the field, so older clients keep the stored
-     * value. Changing the window re-arms the backfill: the next pass resumes
+     * value.
+     *
+     * Only a WIDER window re-arms the backfill: the next pass then resumes
      * below the existing UID floor with the new cutoff, importing mail that
-     * is now inside the window without ever refetching what is already local.
+     * is now inside the window without refetching what is already local.
+     * A narrower window keeps a finished backfill finished — everything
+     * inside the smaller window is a subset of what was already imported, and
+     * re-arming would pointlessly re-walk (and re-broadcast) that stretch. A
+     * still-running backfill simply picks up the new cutoff on its next pass.
      *
      * @return array<string, mixed>
      */
@@ -107,7 +113,8 @@ class EmailChannel implements ChannelInterface
 
         $attributes = ['sync_window_days' => $days];
 
-        if ($days !== $connection->sync_window_days) {
+        // Null = the whole mailbox, i.e. the widest possible window.
+        if (($days ?? PHP_INT_MAX) > ($connection->sync_window_days ?? PHP_INT_MAX)) {
             $attributes['backfill_done'] = false;
         }
 

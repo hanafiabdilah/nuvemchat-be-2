@@ -95,16 +95,34 @@ class EmailInboxSynchronizer
             // already imported, in arrival order. Runs first so a live inbox
             // stays current even while a long backfill is still draining.
             if ((int) $connection->last_seen_uid > 0) {
-                $tail = array_slice($client->uidsAfter((int) $connection->last_seen_uid), 0, $budget);
+                $tail = $client->uidsAfter((int) $connection->last_seen_uid);
 
-                [$processed, $importedNow] = $this->importUids($connection, $client, $tail,
-                    fn (Connection $c, int $uid) => $c->forceFill([
-                        'last_seen_uid' => max((int) $c->last_seen_uid, $uid),
-                    ])->save()
-                );
+                if (count($tail) > $budget) {
+                    // A gap bigger than one pass is not "new mail" — it is a
+                    // backlog (a mailbox migrated mid-sync from the old
+                    // oldest-first walk, or a long offline stretch). Draining
+                    // it here would ignore the sync window and run oldest-
+                    // first, with sync_remaining stuck at the full backlog.
+                    // Fold it into the backfill walk instead: pin the ceiling
+                    // to the mailbox top and restart the floor from up there.
+                    // Out-of-window mail is then never fetched at all, and
+                    // any stretch that is already local is re-persisted
+                    // idempotently (no duplicates) as the floor passes it.
+                    $connection->forceFill([
+                        'last_seen_uid' => max($tail),
+                        'backfill_uid' => null,
+                        'backfill_done' => false,
+                    ])->save();
+                } else {
+                    [$processed, $importedNow] = $this->importUids($connection, $client, $tail,
+                        fn (Connection $c, int $uid) => $c->forceFill([
+                            'last_seen_uid' => max((int) $c->last_seen_uid, $uid),
+                        ])->save()
+                    );
 
-                $imported += $importedNow;
-                $budget -= $processed;
+                    $imported += $importedNow;
+                    $budget -= $processed;
+                }
             }
 
             // Phase 2 — backfill: history inside the sync window, newest

@@ -11,6 +11,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Email\EmailInboxClient;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\EmailInboxSynchronizer;
@@ -93,6 +94,14 @@ class FakeEmailInboxClient implements EmailInboxClient
     }
 
     public function disconnect(): void {}
+}
+
+/** EmailChannel without the live IMAP/SMTP probes, to test the save logic. */
+class FakeEmailChannel extends EmailChannel
+{
+    protected function assertImapLogin(array $credentials, string $password): void {}
+
+    protected function assertSmtpLogin(array $credentials, string $password): void {}
 }
 
 function emailFetchConnection(): Connection
@@ -405,6 +414,87 @@ test('widening the sync window backfills older mail without refetching newer mai
         ->and(Message::where('external_id', 'older@example.com')->exists())->toBeTrue()
         ->and($connection->backfill_done)->toBeTrue()
         ->and($connection->sync_remaining)->toBe(0);
+});
+
+test('a legacy mid-sync backlog folds into the windowed newest-first backfill', function () {
+    Event::fake([MessageReceived::class, ConversationUpdated::class]);
+    $connection = emailFetchConnection();
+
+    // State left by the old oldest-first walk + the migration: the cursor sits
+    // low in the mailbox and the connection is marked backfill_done, so the
+    // whole backlog above the cursor looks like "new mail" to the tail phase —
+    // which would drain it oldest-first, ignoring the 30-day window.
+    $connection->forceFill([
+        'last_seen_uid' => 5,
+        'sync_window_days' => 30,
+        'backfill_done' => true,
+    ])->save();
+
+    // Backlog above the cursor bigger than one pass: uids 6..210 (205 > 200),
+    // of which only uids 150..210 are inside the 30-day window.
+    $messages = [];
+    for ($uid = 6; $uid <= 210; $uid++) {
+        $messages[] = inboundEmail([
+            'uid' => $uid,
+            'messageId' => "legacy-{$uid}@example.com",
+            'sentAt' => $uid >= 150 ? now()->subDays(5) : now()->subDays(100),
+        ]);
+    }
+
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory($messages));
+
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    $connection->refresh();
+
+    // Only the in-window slice was imported (newest-first), the ceiling sits
+    // at the mailbox top, and the reported total reflects the window — not
+    // the old full backlog.
+    expect(Message::count())->toBe(61)
+        ->and(Message::where('external_id', 'legacy-100@example.com')->exists())->toBeFalse()
+        ->and(Message::where('external_id', 'legacy-210@example.com')->exists())->toBeTrue()
+        ->and($connection->last_seen_uid)->toBe(210)
+        ->and($connection->backfill_done)->toBeTrue()
+        ->and($connection->sync_remaining)->toBe(0);
+});
+
+test('only widening the sync window re-arms a finished backfill', function () {
+    $connection = emailFetchConnection();
+    $connection->forceFill([
+        'sync_window_days' => 90,
+        'last_seen_uid' => 10,
+        'backfill_uid' => 1,
+        'backfill_done' => true,
+    ])->save();
+
+    $payload = fn (?int $days) => [
+        'email' => 'inbox@example.com',
+        'imap_host' => 'imap.example.com',
+        'imap_port' => 993,
+        'imap_encryption' => 'ssl',
+        'smtp_host' => 'smtp.example.com',
+        'smtp_port' => 465,
+        'smtp_encryption' => 'ssl',
+        'sync_window_days' => $days,
+    ];
+
+    $channel = new FakeEmailChannel;
+
+    // Narrowing (90 → 30): everything inside the smaller window is already
+    // local, so the backfill must stay finished — re-arming would re-walk
+    // (and re-broadcast) the whole 30-day stretch for nothing.
+    $channel->updateCredentials($connection, $payload(30));
+
+    expect($connection->refresh()->sync_window_days)->toBe(30)
+        ->and($connection->backfill_done)->toBeTrue();
+
+    // Widening (30 → 365): older mail is now inside the window — re-arm, but
+    // keep the UID floor so newer mail is never walked again.
+    $channel->updateCredentials($connection, $payload(365));
+
+    expect($connection->refresh()->sync_window_days)->toBe(365)
+        ->and($connection->backfill_done)->toBeFalse()
+        ->and($connection->backfill_uid)->toBe(1);
 });
 
 test('the scheduled command queues one unique job per active mailbox', function () {
