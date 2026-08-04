@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Enums\Connection\Status;
 use App\Events\ConnectionUpdated;
 use App\Jobs\DeauthorizeRevokedWhatsAppConnections;
+use App\Jobs\SyncCoexistenceSmbData;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -536,6 +537,12 @@ class ConnectionController extends Controller
         // the SAME id Meta sends in the data-deletion/deauth signed_request, so we
         // persist it to reliably match deletion requests back to this connection.
         $fbUserId = $request->input('fb_user_id');
+        // Coexistence: the frontend launched Embedded Signup with
+        // featureType=whatsapp_business_app_onboarding (number stays active on
+        // the WhatsApp Business App). Meta's is_on_biz_app field is checked
+        // later as the authoritative signal; this flag covers the race where
+        // the field hasn't flipped yet right after onboarding.
+        $isCoexistence = filter_var($request->input('is_coexistence', false), FILTER_VALIDATE_BOOLEAN);
 
         if (!$connectionId && $state = $request->input('state')) {
             $stateData = json_decode(base64_decode($state), true) ?: [];
@@ -543,6 +550,7 @@ class ConnectionController extends Controller
             $wabaId = $wabaId ?: ($stateData['waba_id'] ?? null);
             $phoneNumberId = $phoneNumberId ?: ($stateData['phone_number_id'] ?? null);
             $fbUserId = $fbUserId ?: ($stateData['fb_user_id'] ?? null);
+            $isCoexistence = $isCoexistence || !empty($stateData['is_coexistence']);
         }
 
         if (!$connectionId) {
@@ -579,7 +587,7 @@ class ConnectionController extends Controller
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
-            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId, $fbUserId);
+            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId, $fbUserId, $isCoexistence);
 
         } catch (\Throwable $th) {
             Log::error('Error processing Facebook callback', [
@@ -593,7 +601,7 @@ class ConnectionController extends Controller
         }
     }
 
-    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null, ?string $fbUserId = null)
+    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null, ?string $fbUserId = null, bool $isCoexistence = false)
     {
         try {
             // The WABA id comes from the frontend WA_EMBEDDED_SIGNUP "FINISH"
@@ -610,7 +618,9 @@ class ConnectionController extends Controller
             // platform_type + code_verification_status drive the "already
             // registered on Cloud API?" decision below — without them we'd
             // re-register every time and risk PIN-mismatch failures.
-            $phoneFields = 'id,display_phone_number,verified_name,quality_rating,code_verification_status,platform_type,is_pin_enabled';
+            // is_on_biz_app is Meta's authoritative Coexistence signal: true
+            // means the number is (also) live on the WhatsApp Business App.
+            $phoneFields = 'id,display_phone_number,verified_name,quality_rating,code_verification_status,platform_type,is_pin_enabled,is_on_biz_app';
 
             $primaryPhone = null;
 
@@ -645,6 +655,9 @@ class ConnectionController extends Controller
             $platformType = $primaryPhone['platform_type'] ?? null;
             $codeVerificationStatus = $primaryPhone['code_verification_status'] ?? null;
             $isPinEnabled = $primaryPhone['is_pin_enabled'] ?? false;
+            // Trust Meta over the frontend flag, but keep the flag as a
+            // fallback: right after onboarding is_on_biz_app can lag.
+            $isCoexistence = $isCoexistence || (bool) ($primaryPhone['is_on_biz_app'] ?? false);
 
             $this->subscribeWabaApp((string) $wabaId, $accessToken);
 
@@ -652,8 +665,11 @@ class ConnectionController extends Controller
             // safely re-runnable: if the number is already registered with a
             // PIN we don't know, the call fails (133015). Skip when Meta
             // already reports the number as live on Cloud API and verified.
-            $alreadyRegistered = ($platformType === 'CLOUD_API')
-                && ($codeVerificationStatus === 'VERIFIED');
+            // Coexistence numbers are registered by Meta during the Business
+            // App onboarding flow itself (no OTP/PIN on our side) — calling
+            // /register for them fails, so they always skip.
+            $alreadyRegistered = $isCoexistence
+                || (($platformType === 'CLOUD_API') && ($codeVerificationStatus === 'VERIFIED'));
 
             // Credentials may be null here — e.g. re-authorizing a connection
             // that was wiped by a Meta data-deletion callback. Normalize to an
@@ -667,6 +683,7 @@ class ConnectionController extends Controller
                     'platform_type' => $platformType,
                     'code_verification_status' => $codeVerificationStatus,
                     'is_pin_enabled' => $isPinEnabled,
+                    'is_coexistence' => $isCoexistence,
                 ]);
             } else {
                 // Use stored PIN if we have one (e.g. previous attempt), else mint a new one.
@@ -703,15 +720,24 @@ class ConnectionController extends Controller
                 'fb_user_id' => $fbUserId ?: ($existingCredentials['fb_user_id'] ?? null),
                 'token_type' => 'SYSTEM_USER',
                 'token_expires_at' => null,
+                'platform_type' => $platformType,
+                'is_coexistence' => $isCoexistence,
             ]);
 
             broadcast(new ConnectionUpdated($connection->fresh()));
+
+            // Coexistence 24h window: request contact + history sync from the
+            // Business App right away (webhooks deliver the data async).
+            if ($isCoexistence) {
+                SyncCoexistenceSmbData::dispatchIfPending($connection->fresh());
+            }
 
             Log::info('WhatsApp account connected successfully', [
                 'connection_id' => $connection->id,
                 'business_account_id' => $wabaId,
                 'phone_number_id' => $phoneNumberId,
                 'display_phone_number' => $displayPhoneNumber,
+                'is_coexistence' => $isCoexistence,
             ]);
 
             // Return JSON response instead of redirect for embedded signup

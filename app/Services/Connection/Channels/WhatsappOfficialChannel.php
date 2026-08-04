@@ -37,6 +37,8 @@ class WhatsappOfficialChannel implements ChannelInterface
             'fb_user_id' => ['nullable', 'string'],
             'token_type' => ['nullable', 'string'],
             'token_expires_at' => ['nullable', 'string'],
+            'platform_type' => ['nullable', 'string'],
+            'is_coexistence' => ['nullable', 'boolean'],
         ])->validate();
 
         // Check if this phone number is already connected
@@ -84,6 +86,12 @@ class WhatsappOfficialChannel implements ChannelInterface
                     'fb_user_id' => $data['fb_user_id'] ?? null,
                     'token_type' => $data['token_type'] ?? null,
                     'token_expires_at' => $data['token_expires_at'] ?? null,
+                    // Coexistence: number is also live on the WhatsApp Business
+                    // App. Rewriting credentials here intentionally resets any
+                    // previous smb_data_sync state — each (re-)onboarding opens
+                    // a fresh 24h sync window.
+                    'platform_type' => $data['platform_type'] ?? null,
+                    'is_coexistence' => (bool) ($data['is_coexistence'] ?? false),
                 ],
             ]);
 

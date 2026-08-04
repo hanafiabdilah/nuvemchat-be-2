@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Connection;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Webhook\ChatService;
+use App\Services\Webhook\Handlers\Chat\WhatsappCoexistenceHandler;
 use App\Services\Webhook\MetaSignatureVerifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -16,6 +17,7 @@ class WhatsAppController extends Controller
 {
     public function __construct(
         protected ChatService $chatService,
+        protected WhatsappCoexistenceHandler $coexistenceHandler,
     ){
         //
     }
@@ -70,8 +72,10 @@ class WhatsAppController extends Controller
                 continue;
             };
 
-            // Template approval status changes arrive on the same WABA webhook
-            // but a different field. Handle them separately from message events.
+            // The WABA webhook multiplexes several fields. Route by field:
+            // templates and Coexistence fields (message echoes, history sync,
+            // contact sync, account_update) each have their own handler; only
+            // the remaining changes (live messages/statuses) go to ChatService.
             $changes = $entry['changes'] ?? [];
             $hasTemplateStatus = collect($changes)
                 ->contains(fn ($change) => ($change['field'] ?? null) === 'message_template_status_update');
@@ -81,7 +85,20 @@ class WhatsAppController extends Controller
                 continue;
             }
 
-            $this->chatService->handle($connection, $entry);
+            $chatChanges = [];
+
+            foreach ($changes as $change) {
+                if (in_array($change['field'] ?? null, WhatsappCoexistenceHandler::FIELDS, true)) {
+                    $this->coexistenceHandler->handleChange($connection, $change);
+                } else {
+                    $chatChanges[] = $change;
+                }
+            }
+
+            if (!empty($chatChanges)) {
+                $entry['changes'] = $chatChanges;
+                $this->chatService->handle($connection, $entry);
+            }
         }
 
         return response()->json([

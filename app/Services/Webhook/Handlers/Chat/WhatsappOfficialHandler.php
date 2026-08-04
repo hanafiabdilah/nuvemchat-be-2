@@ -158,7 +158,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
         }
     }
 
-    private function handleMessage(Connection $connection, array $payload)
+    protected function handleMessage(Connection $connection, array $payload)
     {
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
