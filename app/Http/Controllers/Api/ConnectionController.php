@@ -294,44 +294,6 @@ class ConnectionController extends Controller
         }
     }
 
-    public function migrate(int $id, Request $request)
-    {
-        $connection = request()->user()->tenant->connections()->findOrFail($id);
-
-        try {
-            $this->connectionService->migrate($connection, $request->all());
-
-            return response()->json([
-                'message' => 'Connection migrated successfully',
-                'data' => $connection->toResource(ConnectionResource::class),
-            ], 200);
-        } catch (ValidationException $th) {
-            throw $th;
-        } catch (ConnectionException $th) {
-            $status = $th->getHttpStatusCode();
-            $message = $th->getMessage();
-            if (in_array($status, [401, 419], true)) {
-                // Never forward an upstream/provider auth failure as 401 — the SPA logs
-                // the user out on any 401. Surface it as a gateway error instead.
-                $status = 502;
-                $message = 'Nao foi possivel conectar a instancia junto ao provedor. Verifique a configuracao da integracao.';
-            }
-
-            return response()->json(['message' => $message], $status);
-        } catch (\Throwable $th) {
-            Log::error('Failed to migrate connection', [
-                'connection_id' => $connection->id,
-                'error' => $th->getMessage(),
-            ]);
-
-            return response()->json([
-                'message' => 'Failed to migrate connection',
-            ], 500);
-        } finally {
-            broadcast(new ConnectionUpdated($connection));
-        }
-    }
-
     public function checkStatus(int $id)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);

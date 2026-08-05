@@ -8,7 +8,6 @@ use App\Services\V1\SendMessage\Handlers\TelegramHandler;
 use App\Services\V1\SendMessage\Handlers\TikTokHandler;
 use App\Services\V1\SendMessage\Handlers\WhatsappOfficialHandler;
 use App\Services\V1\SendMessage\Handlers\WhatsappApiwayHandler;
-use App\Services\V1\SendMessage\Handlers\WhatsappWApiHandler;
 use App\Services\V1\SendMessage\SendMessageHandlerInterface;
 use InvalidArgumentException;
 
@@ -18,7 +17,6 @@ class SendMessageFactory
     {
         return match($channel){
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
-            Channel::WhatsappWApi => new WhatsappWApiHandler(),
             Channel::WhatsappApiway => new WhatsappApiwayHandler(),
             Channel::Instagram => new InstagramHandler(),
             Channel::Telegram => new TelegramHandler(),

@@ -9,14 +9,12 @@ use App\Services\Contact\Channels\TelegramChannel;
 use App\Services\Contact\Channels\TikTokChannel;
 use App\Services\Contact\Channels\WhatsappOfficialChannel;
 use App\Services\Contact\Channels\WhatsappApiwayChannel;
-use App\Services\Contact\Channels\WhatsappWApiChannel;
 
 class ContactChannelFactory
 {
     public static function make(Channel $channel): ContactChannelInterface
     {
         return match ($channel) {
-            Channel::WhatsappWApi => new WhatsappWApiChannel(),
             Channel::WhatsappApiway => new WhatsappApiwayChannel(),
             Channel::WhatsappOfficial => new WhatsappOfficialChannel(),
             Channel::Instagram => new InstagramChannel(),

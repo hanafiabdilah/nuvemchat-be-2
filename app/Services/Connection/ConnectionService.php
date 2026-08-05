@@ -7,8 +7,6 @@ use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelFactory;
-use App\Services\Connection\Channels\WhatsappWApiChannel;
-use Illuminate\Support\Facades\Log;
 
 class ConnectionService
 {
@@ -58,15 +56,6 @@ class ConnectionService
         $channel->disconnect($connection);
     }
 
-    public function migrate(Connection $connection, array $data): void
-    {
-        if ($connection->channel !== Channel::WhatsappWApi) {
-            throw new ConnectionException('Migration is only supported for Whatsapp WApi connections.', 400);
-        }
-
-        (new WhatsappWApiChannel())->migrate($connection, $data);
-    }
-
     public function delete(Connection $connection): void
     {
         // Validation: Instagram and WhatsApp Official connections must be disconnected first
@@ -106,11 +95,6 @@ class ConnectionService
                     'error' => $th->getMessage(),
                 ]);
             }
-        }
-
-        // For w-api managed instances, also delete the instance on the w-api platform
-        if ($connection->channel === Channel::WhatsappWApi && ($connection->credentials['is_managed'] ?? false)) {
-            (new WhatsappWApiChannel())->deleteManagedInstance($connection);
         }
 
         // API Way instances are always managed — delete the instance on API Way.

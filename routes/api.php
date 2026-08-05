@@ -157,7 +157,6 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // Connection routes - protected by permissions
     Route::post('/connections', [ConnectionController::class, 'store'])->middleware('permission:connections.create');
     Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect'])->middleware('permission:connections.connect');
-    Route::post('/connections/{id}/migrate', [ConnectionController::class, 'migrate'])->middleware('permission:connections.connect');
     Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
     Route::get('/connections/{id}/business-profile', [ConnectionController::class, 'businessProfile']);
     Route::put('/connections/{id}/business-profile', [ConnectionController::class, 'updateBusinessProfile'])->middleware('permission:connections.update');

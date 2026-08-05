@@ -12,7 +12,6 @@ use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ApiwayConfig;
 use App\Services\Connection\TikTok\TikTokConfig;
-use App\Services\Connection\WApi\WApiConfig;
 use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationProviderFactory;
 use Illuminate\Http\Request;
@@ -34,7 +33,6 @@ class AdminSettingsController extends Controller
         $fbSecret = FacebookConfig::appSecret();
         $fbVerify = FacebookConfig::webhookVerifyToken();
         $ttSecret = TikTokConfig::appSecret();
-        $wapiToken = WApiConfig::managedToken();
         $aiToken = AiAgentHubConfig::adminToken();
         $notifPinglyKey = NotificationConfig::pinglyApiKey();
         $notifToken = NotificationConfig::wapiToken();
@@ -82,10 +80,6 @@ class AdminSettingsController extends Controller
                     'redirect_uri' => TikTokConfig::redirectUri(),
                     'app_secret_set' => ! empty($ttSecret),
                     'app_secret_preview' => $this->mask($ttSecret),
-                ],
-                'wapi' => [
-                    'managed_token_set' => ! empty($wapiToken),
-                    'managed_token_preview' => $this->mask($wapiToken),
                 ],
                 'ai_agent_hub' => [
                     'base_url' => AiAgentHubConfig::baseUrl(),
@@ -162,9 +156,6 @@ class AdminSettingsController extends Controller
             'tiktok.app_id' => ['nullable', 'string', 'max:255'],
             'tiktok.redirect_uri' => ['nullable', 'url', 'max:255'],
             'tiktok.app_secret' => ['nullable', 'string', 'max:512'],
-
-            'wapi' => ['sometimes', 'array'],
-            'wapi.managed_token' => ['nullable', 'string', 'max:1024'],
 
             'ai_agent_hub' => ['sometimes', 'array'],
             'ai_agent_hub.base_url' => ['nullable', 'url', 'max:255'],
@@ -259,13 +250,6 @@ class AdminSettingsController extends Controller
             // Secret: only replaced when a new value is supplied.
             if (! empty($tt['app_secret'])) {
                 Setting::set(TikTokConfig::KEY_APP_SECRET, $tt['app_secret']);
-            }
-        }
-
-        if ($request->has('wapi')) {
-            // Secret: only replaced when a new value is supplied.
-            if (! empty($validated['wapi']['managed_token'])) {
-                Setting::set(WApiConfig::KEY_MANAGED_TOKEN, $validated['wapi']['managed_token']);
             }
         }
 

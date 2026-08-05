@@ -62,9 +62,8 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
 
             // WhatsApp device-level control traffic (disappearing-message sync,
             // app-state/history sync, key exchange). It carries no body, so
-            // persisting it would only add blank "unsupported" rows. Mirrors
-            // WhatsappWApiHandler — this channel acts on no protocol type, so
-            // every one of them is dropped.
+            // persisting it would only add blank "unsupported" rows. This
+            // channel acts on no protocol type, so every one of them is dropped.
             if (isset($event['Message']['protocolMessage'])) {
                 Log::info('WhatsappApiwayHandler: skipping protocol message', [
                     'connection_id' => $connection->id,

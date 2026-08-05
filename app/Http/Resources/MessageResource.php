@@ -145,7 +145,7 @@ class MessageResource extends JsonResource
         }
 
         return match($channel) {
-            Channel::WhatsappWApi, Channel::WhatsappApiway => $this->getWhatsappWApiMeta(),
+            Channel::WhatsappApiway => $this->getWhatsappApiwayMeta(),
             Channel::WhatsappOfficial => $this->getWhatsappOfficialMeta(),
             Channel::Instagram => null,        // TODO: implement when needed
             Channel::Telegram => null,         // TODO: implement when needed
@@ -203,20 +203,20 @@ class MessageResource extends JsonResource
     }
 
     /**
-     * Get processed meta for WhatsApp W-API messages
+     * Get processed meta for WhatsApp API Way messages
      */
-    private function getWhatsappWApiMeta(): ?array
+    private function getWhatsappApiwayMeta(): ?array
     {
         return match($this->message_type) {
-            MessageType::Location => $this->getWhatsappWApiLocationData(),
+            MessageType::Location => $this->getWhatsappApiwayLocationData(),
             default => null,
         };
     }
 
     /**
-     * Extract location data from WhatsApp W-API meta
+     * Extract location data from WhatsApp API Way meta
      */
-    private function getWhatsappWApiLocationData(): ?array
+    private function getWhatsappApiwayLocationData(): ?array
     {
         $location = $this->meta['msgContent']['locationMessage'] ?? null;
 

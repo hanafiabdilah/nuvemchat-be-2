@@ -23,19 +23,19 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * "Import chat history" for W-API / API Way: once the instance pairs, pull the
+ * "Import chat history" for API Way: once the instance pairs, pull the
  * chat LIST from the provider and turn each recent chat into a Pending
  * conversation (contact + conversation + one preview message) so agents can
  * pick existing customers up from the queue.
  *
- * What the providers actually allow (verified against both APIs):
- *   - W-API exposes GET /v1/chats/fetch-chats, but NO endpoint to fetch a
- *     chat's message backlog — so only the chat list (+ last-message preview
- *     when present) can be imported, never the full history.
+ * What the provider actually allows:
+ *   - GET /v1/chats/fetch-chats returns the chat list only — there is NO
+ *     endpoint to fetch a chat's message backlog, so only the chat list
+ *     (+ last-message preview when present) can be imported, never the full
+ *     history.
  *   - API Way currently answers fetch-chats with 501 not_supported_yet
- *     ("em breve"); the job detects that and marks the import "unsupported".
- *     Since API Way mirrors W-API's /v1 surface, this code starts working
- *     there as soon as the endpoint ships.
+ *     ("em breve"); the job detects that and marks the import "unsupported",
+ *     and starts working as soon as the endpoint ships.
  *
  * Limits (deliberate): newest MAX_CHATS chats only, none older than
  * MAX_AGE_DAYS, individual chats only (groups/broadcast/newsletter skipped),
@@ -64,7 +64,7 @@ class ImportWhatsappChatHistory implements ShouldQueue
      */
     public static function dispatchIfPending(Connection $connection): void
     {
-        if (!in_array($connection->channel, [Channel::WhatsappWApi, Channel::WhatsappApiway], true)) {
+        if ($connection->channel !== Channel::WhatsappApiway) {
             return;
         }
         if ($connection->status !== ConnectionStatus::Active) {
@@ -159,9 +159,7 @@ class ImportWhatsappChatHistory implements ShouldQueue
      */
     protected function fetchChats(Connection $connection): ?array
     {
-        $base = $connection->channel === Channel::WhatsappApiway
-            ? ApiwayConfig::baseUrl()
-            : 'https://api.w-api.app';
+        $base = ApiwayConfig::baseUrl();
 
         // Legacy rows exist whose credentials predate the instance_id/token
         // shape — there is nothing to call for those.

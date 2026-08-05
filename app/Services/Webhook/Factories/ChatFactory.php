@@ -9,7 +9,6 @@ use App\Services\Webhook\Handlers\Chat\TelegramHandler;
 use App\Services\Webhook\Handlers\Chat\TikTokHandler;
 use App\Services\Webhook\Handlers\Chat\WhatsappOfficialHandler;
 use App\Services\Webhook\Handlers\Chat\WhatsappApiwayHandler;
-use App\Services\Webhook\Handlers\Chat\WhatsappWApiHandler;
 
 class ChatFactory
 {
@@ -18,7 +17,6 @@ class ChatFactory
         return match ($channel) {
             Channel::Telegram => new TelegramHandler(),
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
-            Channel::WhatsappWApi => new WhatsappWApiHandler(),
             Channel::WhatsappApiway => new WhatsappApiwayHandler(),
             Channel::Instagram => new InstagramHandler(),
             Channel::TikTok => new TikTokHandler(),

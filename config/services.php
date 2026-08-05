@@ -42,9 +42,6 @@ return [
     // Facebook (Meta) credentials for WhatsApp Cloud API & Messenger live in the
     // `settings` table (DB-only). See App\Services\Connection\Meta\FacebookConfig.
 
-    // W-API integrator (managed) token lives in the `settings` table (DB-only).
-    // See App\Services\Connection\WApi\WApiConfig.
-
     // API Way credentials live in the `settings` table (DB-only), managed by
     // super-admin in the Back Office. See App\Services\Connection\Proxy\ApiwayConfig.
 

@@ -10,7 +10,6 @@ use App\Services\Message\Handlers\WhatsappOfficialHandler;
 use App\Services\Message\Handlers\TelegramHandler;
 use App\Services\Message\Handlers\TikTokHandler;
 use App\Services\Message\Handlers\WhatsappApiwayHandler;
-use App\Services\Message\Handlers\WhatsappWApiHandler;
 use InvalidArgumentException;
 
 class MessageFactory
@@ -22,7 +21,6 @@ class MessageFactory
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
             Channel::Telegram => new TelegramHandler(),
             Channel::TikTok => new TikTokHandler(),
-            Channel::WhatsappWApi => new WhatsappWApiHandler(),
             Channel::WhatsappApiway => new WhatsappApiwayHandler(),
             Channel::LiveChatWidget => new LiveChatWidgetHandler(),
             Channel::Email => new EmailHandler(),
