@@ -28,7 +28,9 @@ class ConversationResource extends JsonResource
             'handoff_at' => $this->handoff_at?->timestamp,
             'last_message' => $message,
             'last_message_at' => $this->last_message_at?->timestamp,
-            'unread' => $this->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->count(),
+            // Prefer the withCount aggregate when the query provided it (sync
+            // pages) — the fallback query runs once per conversation otherwise.
+            'unread' => $this->unread_count ?? $this->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->count(),
             'contact' => ContactResource::make($this->contact),
             'tags' => TagResource::collection($this->tags),
             'agent' => UserResource::make($this->agent),

@@ -34,18 +34,59 @@ class ConversationController extends Controller
     public function index(Request $request)
     {
         $since = $request->input('since');
+        $before = $request->input('before');
+        $limit = (int) $request->input('limit', 100);
+        $limit = max(1, min($limit, 500));
 
-        $conversations = Conversation::with('contact')->whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })
+        // Eager-load everything ConversationResource touches (incl. the nested
+        // MessageResource on last_message) — without this a 500-row sync page
+        // explodes into thousands of lazy queries.
+        $query = Conversation::with([
+                'contact',
+                'tags',
+                'agent',
+                'flowState.currentNode',
+                'lastMessage.repliedMessage',
+                'lastMessage.reactions',
+                'lastMessage.sentByUser',
+                'lastMessage.sentByFlow',
+                'lastMessage.sentByAiHubAgent',
+                'lastMessage.conversation.connection',
+            ])
+            ->withCount(['messages as unread_count' => function ($q) {
+                $q->where('sender_type', SenderType::Incoming)->whereNull('read_at');
+            }])
+            ->whereHas('connection', function($q){
+                $q->where('tenant_id', Auth::user()->tenant_id);
+            })
             // Skip conversations with no message yet (e.g. a Live Chat Widget session
             // that was opened but the visitor never typed) — they would otherwise show
             // as empty rows with a null "1970" date in the list.
             ->whereHas('messages')
-            ->where('updated_at', '>', $since)->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC')->get();
+            // Ordered by id (not last_message_at) so the `before` cursor is a plain
+            // unique key — the client sorts by lastMessageAt locally from IndexedDB.
+            ->orderBy('id', 'DESC');
+
+        // Delta sync: only conversations touched since the last sync.
+        if ($since !== null && $since !== '') {
+            $query->where('updated_at', '>', $since);
+        }
+
+        // Cursor pagination. Client walks backwards by passing `before` =
+        // smallest id it already holds, until has_more is false.
+        if ($before !== null && $before !== '') {
+            $query->where('id', '<', $before);
+        }
+
+        // Fetch one extra row to detect whether more conversations remain.
+        $conversations = $query->limit($limit + 1)->get();
+        $hasMore = $conversations->count() > $limit;
+        $conversations = $conversations->take($limit);
 
         return response()->json([
             'data' => ConversationResource::collection($conversations),
+            'has_more' => $hasMore,
+            'next_before' => $hasMore ? $conversations->last()?->id : null,
             'server_time' => now()->toIso8601String(),
         ]);
     }

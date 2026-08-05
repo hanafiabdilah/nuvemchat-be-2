@@ -27,8 +27,19 @@ class Conversation extends Model
         'last_message_at' => 'datetime',
     ];
 
+    // Eager-loadable variant of last_message (one query per page instead of one
+    // per conversation). Same ordering as the accessor below.
+    public function lastMessage()
+    {
+        return $this->hasOne(Message::class)->ofMany(['created_at' => 'max', 'id' => 'max']);
+    }
+
     public function getLastMessageAttribute()
     {
+        if ($this->relationLoaded('lastMessage')) {
+            return $this->getRelation('lastMessage');
+        }
+
         return $this->messages()->latest('created_at')->latest('id')->first();
     }
 
