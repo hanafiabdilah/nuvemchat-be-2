@@ -59,6 +59,16 @@ class WebklexEmailInboxClient implements EmailInboxClient
         );
     }
 
+    /**
+     * Cumulative RFC822.SIZE budget per FETCH round. get() materializes every
+     * message of the round at once — raw response, parsed parts, decoded
+     * attachments, several copies each — so a round of 25 mid-size messages
+     * (a few MB each) still OOMs the worker even when every one of them is
+     * under the per-message cap. A round closes early once its summed size
+     * passes this; a single message above it gets a round of its own.
+     */
+    private const CHUNK_BYTES = 4 * 1024 * 1024;
+
     public function fetch(array $uids, ?int $maxMessageBytes = null): iterable
     {
         $uids = array_values(array_unique(array_map('intval', $uids)));
@@ -67,32 +77,78 @@ class WebklexEmailInboxClient implements EmailInboxClient
             return;
         }
 
-        foreach (array_chunk($uids, self::FETCH_CHUNK) as $chunk) {
-            // RFC822.SIZE first (SEARCH/FETCH-size only, no bodies): a huge
-            // message must never be downloaded at all — Webklex buffers the
-            // whole literal in memory and a 47MB mail fatally OOMs the worker
-            // mid-read, before any exception handling can run.
-            $sizes = $maxMessageBytes !== null ? $this->sizes($chunk) : [];
+        // RFC822.SIZE first (sizes only, never bodies): a huge message must
+        // not be downloaded at all — Webklex buffers the whole literal in
+        // memory and a 47MB mail fatally OOMs the worker mid-read, before
+        // any exception handling can run.
+        $sizes = $maxMessageBytes !== null ? $this->sizes($uids) : [];
 
-            $fetchable = array_values(array_filter(
-                $chunk,
-                fn (int $uid) => $maxMessageBytes === null || ($sizes[$uid] ?? 0) <= $maxMessageBytes
-            ));
+        foreach (self::planFetch($uids, $sizes, $maxMessageBytes) as $step) {
+            if ($step instanceof OversizedEmail) {
+                yield $step;
 
-            $messages = $this->messagesByUid($fetchable);
+                continue;
+            }
 
-            // Yield in the caller's order, interleaving oversized markers at
-            // their exact position: the caller advances its cursor per yielded
-            // item, and an out-of-order marker would jump the cursor past
-            // UIDs that have not been walked yet.
-            foreach ($chunk as $uid) {
-                if ($maxMessageBytes !== null && ($sizes[$uid] ?? 0) > $maxMessageBytes) {
-                    yield new OversizedEmail($uid, (int) $sizes[$uid]);
-                } elseif (isset($messages[$uid])) {
+            $messages = $this->messagesByUid($step);
+
+            foreach ($step as $uid) {
+                if (isset($messages[$uid])) {
                     yield $messages[$uid];
                 }
             }
         }
+    }
+
+    /**
+     * Split the caller's ordered UID list into FETCH rounds bounded by both
+     * count (FETCH_CHUNK) and cumulative size (CHUNK_BYTES), with oversized
+     * UIDs replaced by markers at their exact position — the caller advances
+     * its cursor per yielded item, and an out-of-position marker would jump
+     * the cursor past UIDs that have not been walked yet. A UID the size map
+     * does not answer for counts as zero, preserving the plain fetch path.
+     *
+     * @internal Public only so the grouping is unit-testable without IMAP.
+     *
+     * @param  array<int, int>  $uids
+     * @param  array<int, int>  $sizes
+     * @return array<int, OversizedEmail|array<int, int>>
+     */
+    public static function planFetch(array $uids, array $sizes, ?int $maxMessageBytes): array
+    {
+        $plan = [];
+        $group = [];
+        $groupBytes = 0;
+
+        $flush = function () use (&$plan, &$group, &$groupBytes): void {
+            if ($group !== []) {
+                $plan[] = $group;
+                $group = [];
+                $groupBytes = 0;
+            }
+        };
+
+        foreach ($uids as $uid) {
+            $bytes = $sizes[$uid] ?? 0;
+
+            if ($maxMessageBytes !== null && $bytes > $maxMessageBytes) {
+                $flush();
+                $plan[] = new OversizedEmail($uid, $bytes);
+
+                continue;
+            }
+
+            if ($group !== [] && (count($group) >= self::FETCH_CHUNK || $groupBytes + $bytes > self::CHUNK_BYTES)) {
+                $flush();
+            }
+
+            $group[] = $uid;
+            $groupBytes += $bytes;
+        }
+
+        $flush();
+
+        return $plan;
     }
 
     /**

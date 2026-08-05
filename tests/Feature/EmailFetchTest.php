@@ -17,6 +17,7 @@ use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\EmailInboxSynchronizer;
 use App\Services\Email\InboundEmail;
 use App\Services\Email\OversizedEmail;
+use App\Services\Email\WebklexEmailInboxClient;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
@@ -326,6 +327,35 @@ test('an oversized message is skipped without downloading and the cursor advance
         ->and($connection->last_seen_uid)->toBe(3)
         ->and($connection->sync_status)->toBe(SyncStatus::Idle)
         ->and($connection->sync_remaining)->toBe(0);
+});
+
+test('fetch rounds are bounded by count and cumulative size, isolating heavy stretches', function () {
+    $mb = 1024 * 1024;
+    $cap = 8 * $mb;
+
+    // No sizes known: pure count chunking, the pre-existing behaviour.
+    expect(WebklexEmailInboxClient::planFetch(range(1, 60), [], $cap))
+        ->toBe([range(1, 25), range(26, 50), range(51, 60)]);
+
+    // The production OOM shape: an over-cap message becomes a marker at its
+    // exact position, and 3MB neighbours are split into their own rounds
+    // (3+3 > 4MB budget) instead of being materialized 25-wide at once —
+    // that cumulative parse is what exhausted the worker even with every
+    // message under the per-message cap.
+    $plan = WebklexEmailInboxClient::planFetch(
+        [1, 2, 3, 4, 5, 6],
+        [2 => 47 * $mb, 3 => 3 * $mb, 4 => 3 * $mb, 5 => $mb, 6 => $mb],
+        $cap,
+    );
+
+    expect($plan[0])->toBe([1])
+        ->and($plan[1])->toBeInstanceOf(OversizedEmail::class)
+        ->and($plan[1]->uid)->toBe(2)
+        ->and($plan[1]->bytes)->toBe(47 * $mb)
+        ->and($plan[2])->toBe([3])
+        ->and($plan[3])->toBe([4, 5])
+        ->and($plan[4])->toBe([6])
+        ->and($plan)->toHaveCount(5);
 });
 
 test('a completed pass reports idle with no backlog left', function () {
