@@ -29,10 +29,15 @@ interface EmailInboxClient
      * them in the given order (pass a descending list for newest-first).
      * Bounding the list keeps one pass from running until it times out.
      *
+     * With $maxMessageBytes set, messages whose RFC822.SIZE exceeds it are
+     * never downloaded: an OversizedEmail marker is yielded in their place —
+     * in order, so the caller's per-message cursor can step over them without
+     * jumping past UIDs that have not been walked yet.
+     *
      * @param  array<int, int>  $uids
-     * @return iterable<InboundEmail>
+     * @return iterable<InboundEmail|OversizedEmail>
      */
-    public function fetch(array $uids): iterable;
+    public function fetch(array $uids, ?int $maxMessageBytes = null): iterable;
 
     public function disconnect(): void;
 }

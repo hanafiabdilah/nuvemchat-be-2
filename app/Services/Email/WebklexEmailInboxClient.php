@@ -59,7 +59,7 @@ class WebklexEmailInboxClient implements EmailInboxClient
         );
     }
 
-    public function fetch(array $uids): iterable
+    public function fetch(array $uids, ?int $maxMessageBytes = null): iterable
     {
         $uids = array_values(array_unique(array_map('intval', $uids)));
 
@@ -67,37 +67,95 @@ class WebklexEmailInboxClient implements EmailInboxClient
             return;
         }
 
-        // A min:max range also matches UIDs the caller did not ask for when
-        // the list has gaps (mail outside the sync window whose INTERNALDATE
-        // is out of UID order), so filter the response back to the request.
-        $requested = array_flip($uids);
-
-        // Each chunk is a contiguous slice of the caller's ordered UID list,
-        // so the min:max range covers (at least) exactly its members.
-        // CUSTOM = raw, unquoted criteria. whereUid() quotes the range
-        // (UID SEARCH UID "1:35") and Gmail rejects quoted sequence-sets with
-        // "BAD Could not parse command"; Dovecot merely tolerates them.
         foreach (array_chunk($uids, self::FETCH_CHUNK) as $chunk) {
-            $first = (int) reset($chunk);
-            $last = (int) end($chunk);
+            // RFC822.SIZE first (SEARCH/FETCH-size only, no bodies): a huge
+            // message must never be downloaded at all — Webklex buffers the
+            // whole literal in memory and a 47MB mail fatally OOMs the worker
+            // mid-read, before any exception handling can run.
+            $sizes = $maxMessageBytes !== null ? $this->sizes($chunk) : [];
 
-            $messages = $this->folder
-                ->query()
-                ->where('CUSTOM UID '.min($first, $last).':'.max($first, $last))
-                ->setSequence(IMAP::ST_UID)
-                ->leaveUnread()
-                ->setFetchBody(true)
-                ->fetchOrder($first <= $last ? 'asc' : 'desc')
-                ->get();
+            $fetchable = array_values(array_filter(
+                $chunk,
+                fn (int $uid) => $maxMessageBytes === null || ($sizes[$uid] ?? 0) <= $maxMessageBytes
+            ));
 
-            foreach ($messages as $message) {
-                $mapped = $this->mapMessage($message);
+            $messages = $this->messagesByUid($fetchable);
 
-                if (isset($requested[$mapped->uid])) {
-                    yield $mapped;
+            // Yield in the caller's order, interleaving oversized markers at
+            // their exact position: the caller advances its cursor per yielded
+            // item, and an out-of-order marker would jump the cursor past
+            // UIDs that have not been walked yet.
+            foreach ($chunk as $uid) {
+                if ($maxMessageBytes !== null && ($sizes[$uid] ?? 0) > $maxMessageBytes) {
+                    yield new OversizedEmail($uid, (int) $sizes[$uid]);
+                } elseif (isset($messages[$uid])) {
+                    yield $messages[$uid];
                 }
             }
         }
+    }
+
+    /**
+     * Download and map one chunk of UIDs, keyed by UID. The criteria is an
+     * explicit comma set, not a min:max range: a range would drag excluded
+     * UIDs (an oversized message sitting between two fetchable ones) right
+     * back into the download. CUSTOM = raw, unquoted criteria — whereUid()
+     * quotes the set and Gmail rejects quoted sequence-sets with "BAD Could
+     * not parse command"; Dovecot merely tolerates them.
+     *
+     * @param  array<int, int>  $uids
+     * @return array<int, InboundEmail>
+     */
+    private function messagesByUid(array $uids): array
+    {
+        if ($uids === []) {
+            return [];
+        }
+
+        $requested = array_flip($uids);
+
+        $messages = $this->folder
+            ->query()
+            ->where('CUSTOM UID '.implode(',', $uids))
+            ->setSequence(IMAP::ST_UID)
+            ->leaveUnread()
+            ->setFetchBody(true)
+            ->get();
+
+        $mapped = [];
+
+        foreach ($messages as $message) {
+            $email = $this->mapMessage($message);
+
+            if (isset($requested[$email->uid])) {
+                $mapped[$email->uid] = $email;
+            }
+        }
+
+        return $mapped;
+    }
+
+    /**
+     * RFC822.SIZE for the given UIDs — never fetches headers or bodies. A UID
+     * the server does not answer for is simply absent (callers treat missing
+     * as small, preserving the plain fetch path).
+     *
+     * @param  array<int, int>  $uids
+     * @return array<int, int>
+     */
+    private function sizes(array $uids): array
+    {
+        // A raw FETCH silently returns nothing when no mailbox is selected;
+        // query()/search() select implicitly, this call does not.
+        $this->client->openFolder($this->folder->path);
+
+        $sizes = [];
+
+        foreach ($this->client->getConnection()->sizes($uids)->data() as $uid => $size) {
+            $sizes[(int) $uid] = (int) $size;
+        }
+
+        return $sizes;
     }
 
     /**

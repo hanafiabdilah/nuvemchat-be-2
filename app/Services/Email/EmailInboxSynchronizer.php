@@ -49,6 +49,16 @@ class EmailInboxSynchronizer
     public const MAX_PERSIST_FAILURES = 10;
 
     /**
+     * Messages above this RFC822.SIZE are skipped without downloading (the
+     * client yields an OversizedEmail marker instead). Webklex buffers the
+     * whole message in memory plus parsed copies, so one 47MB newsletter
+     * fatally OOMed the 128MB email worker on every pass — during FETCH,
+     * where no persist-level guard can run — and the cursor never moved past
+     * it. 8MB keeps the peak comfortably inside the worker's memory limit.
+     */
+    public const MAX_MESSAGE_BYTES = 8 * 1024 * 1024;
+
+    /**
      * Wall-clock budget for one pass, safely under SyncEmailInbox::$timeout
      * (280s). A mailbox slow enough to outlive the job timeout mid-batch
      * keeps its cursor (saved per message) but stays 'syncing' until the
@@ -213,9 +223,23 @@ class EmailInboxSynchronizer
         $processed = 0;
         $imported = 0;
 
-        foreach ($client->fetch($uids) as $email) {
+        foreach ($client->fetch($uids, self::MAX_MESSAGE_BYTES) as $email) {
             if (microtime(true) >= $this->deadline) {
                 break;
+            }
+
+            if ($email instanceof OversizedEmail) {
+                Log::warning('EmailInboxSynchronizer: skipping oversized message', [
+                    'connection_id' => $connection->id,
+                    'tenant_id' => $connection->tenant_id,
+                    'uid' => $email->uid,
+                    'bytes' => $email->bytes,
+                ]);
+
+                $advance($connection, $email->uid);
+                $processed++;
+
+                continue;
             }
 
             if (! $email->fromEmail) {

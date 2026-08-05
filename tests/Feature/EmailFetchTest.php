@@ -16,6 +16,7 @@ use App\Services\Email\EmailInboxClient;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\EmailInboxSynchronizer;
 use App\Services\Email\InboundEmail;
+use App\Services\Email\OversizedEmail;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
@@ -28,10 +29,12 @@ class FakeEmailInboxClientFactory implements EmailInboxClientFactory
 {
     /**
      * @param  array<int, InboundEmail>  $messages
+     * @param  array<int, int>  $sizes  RFC822.SIZE by UID; unlisted UIDs are small.
      */
     public function __construct(
         private readonly array $messages,
         private readonly ?\Throwable $failWith = null,
+        private readonly array $sizes = [],
     ) {}
 
     public function make(Connection $connection): EmailInboxClient
@@ -40,7 +43,7 @@ class FakeEmailInboxClientFactory implements EmailInboxClientFactory
             throw $this->failWith;
         }
 
-        return new FakeEmailInboxClient($this->messages);
+        return new FakeEmailInboxClient($this->messages, $this->sizes);
     }
 }
 
@@ -48,8 +51,12 @@ class FakeEmailInboxClient implements EmailInboxClient
 {
     /**
      * @param  array<int, InboundEmail>  $messages
+     * @param  array<int, int>  $sizes  RFC822.SIZE by UID; unlisted UIDs are small.
      */
-    public function __construct(private readonly array $messages) {}
+    public function __construct(
+        private readonly array $messages,
+        private readonly array $sizes = [],
+    ) {}
 
     public function uidsAfter(int $uid): array
     {
@@ -62,7 +69,7 @@ class FakeEmailInboxClient implements EmailInboxClient
             && ($since === null || ($message->sentAt !== null && $message->sentAt->gte($since))));
     }
 
-    public function fetch(array $uids): iterable
+    public function fetch(array $uids, ?int $maxMessageBytes = null): iterable
     {
         $byUid = [];
 
@@ -71,7 +78,11 @@ class FakeEmailInboxClient implements EmailInboxClient
         }
 
         foreach ($uids as $uid) {
-            if (isset($byUid[$uid])) {
+            $bytes = $this->sizes[$uid] ?? 0;
+
+            if ($maxMessageBytes !== null && $bytes > $maxMessageBytes) {
+                yield new OversizedEmail($uid, $bytes);
+            } elseif (isset($byUid[$uid])) {
                 yield $byUid[$uid];
             }
         }
@@ -284,6 +295,34 @@ test('a message that cannot be persisted is skipped and the cursor still advance
     $connection->refresh();
 
     expect(Message::count())->toBe(2)
+        ->and($connection->last_seen_uid)->toBe(3)
+        ->and($connection->sync_status)->toBe(SyncStatus::Idle)
+        ->and($connection->sync_remaining)->toBe(0);
+});
+
+test('an oversized message is skipped without downloading and the cursor advances', function () {
+    Event::fake([MessageReceived::class, ConversationUpdated::class]);
+    $connection = emailFetchConnection();
+
+    // The production shape: a 47MB newsletter whose FETCH fatally OOMs the
+    // worker mid-read. It must never be downloaded — only stepped over, or it
+    // wedges the mailbox forever (the persist-level skip never runs on a
+    // fatal error).
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory(
+        [
+            inboundEmail(['uid' => 1, 'messageId' => 'ok-1@example.com']),
+            inboundEmail(['uid' => 2, 'messageId' => 'huge@example.com']),
+            inboundEmail(['uid' => 3, 'messageId' => 'ok-2@example.com']),
+        ],
+        sizes: [2 => 47 * 1024 * 1024],
+    ));
+
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    $connection->refresh();
+
+    expect(Message::count())->toBe(2)
+        ->and(Message::where('external_id', 'huge@example.com')->exists())->toBeFalse()
         ->and($connection->last_seen_uid)->toBe(3)
         ->and($connection->sync_status)->toBe(SyncStatus::Idle)
         ->and($connection->sync_remaining)->toBe(0);
