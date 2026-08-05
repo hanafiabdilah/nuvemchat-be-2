@@ -1,13 +1,17 @@
 <?php
 
 use App\Enums\Connection\Channel;
+use App\Enums\Connection\SyncStatus;
 use App\Exceptions\ConnectionException;
+use App\Jobs\SyncEmailInbox;
 use App\Models\Connection;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\ConnectionService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Queue;
 use Laravel\Sanctum\Sanctum;
 
 uses(RefreshDatabase::class);
@@ -77,6 +81,41 @@ test('it validates the email connect payload before connecting', function () {
 
     $response->assertUnprocessable()
         ->assertJsonValidationErrors(['email', 'password', 'imap_host', 'imap_port', 'imap_encryption', 'smtp_host', 'smtp_port', 'smtp_encryption']);
+});
+
+test('connecting an email inbox marks it syncing and queues the first pass immediately', function () {
+    Queue::fake();
+
+    $user = actingAsTenantUser();
+
+    $connection = Connection::create([
+        'tenant_id' => $user->tenant_id,
+        'channel' => Channel::Email,
+        'name' => 'Suporte',
+    ]);
+
+    // Real IMAP/SMTP logins are out of scope here — stub the assertions and
+    // exercise the rest of connect() for real.
+    $channel = Mockery::mock(EmailChannel::class)
+        ->makePartial()
+        ->shouldAllowMockingProtectedMethods();
+    $channel->shouldReceive('assertImapLogin')->once();
+    $channel->shouldReceive('assertSmtpLogin')->once();
+
+    $channel->connect($connection, validEmailConnectPayload());
+
+    $connection->refresh();
+
+    // The sync bar must show progress from the first render after connect,
+    // not sit on "idle" until the scheduler's next tick.
+    expect($connection->sync_status)->toBe(SyncStatus::Syncing)
+        ->and($connection->sync_started_at)->not->toBeNull();
+
+    Queue::assertPushedOn(
+        'email',
+        SyncEmailInbox::class,
+        fn (SyncEmailInbox $job) => $job->connectionId === $connection->id,
+    );
 });
 
 test('it never forwards provider authentication failures as http 401', function () {

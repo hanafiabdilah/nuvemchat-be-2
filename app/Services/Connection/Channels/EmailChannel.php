@@ -3,7 +3,9 @@
 namespace App\Services\Connection\Channels;
 
 use App\Enums\Connection\Status;
+use App\Enums\Connection\SyncStatus;
 use App\Exceptions\ConnectionException;
+use App\Jobs\SyncEmailInbox;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use Illuminate\Contracts\Encryption\DecryptException;
@@ -41,6 +43,19 @@ class EmailChannel implements ChannelInterface
                 'smtp_encryption' => $credentials['smtp_encryption'],
             ],
         ]);
+
+        // Start the first pass now instead of waiting for the next scheduler
+        // tick: a fresh mailbox that sits idle for up to a minute reads as
+        // "connected but broken". Pre-marking mirrors ConnectionController::
+        // syncInbox so the sync bar shows progress from the very first render;
+        // the job is unique per connection, so a racing scheduler tick is a no-op.
+        $connection->forceFill([
+            'sync_status' => SyncStatus::Syncing,
+            'sync_error' => null,
+            'sync_started_at' => now(),
+        ])->save();
+
+        SyncEmailInbox::dispatch($connection->id);
     }
 
     /**
