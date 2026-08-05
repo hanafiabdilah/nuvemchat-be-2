@@ -17,7 +17,17 @@ class MessageController extends Controller
         $limit = (int) $request->input('limit', 100);
         $limit = max(1, min($limit, 500));
 
-        $query = Message::whereHas('conversation', function($q){
+        // Eager-load everything MessageResource touches — without this, each
+        // message lazy-loads its relations and a 500-row sync page explodes
+        // into hundreds of queries.
+        $query = Message::with([
+            'repliedMessage',
+            'reactions',
+            'sentByUser',
+            'sentByFlow',
+            'sentByAiHubAgent',
+            'conversation.connection',
+        ])->whereHas('conversation', function($q){
             $q->whereHas('connection', function($q){
                 $q->where('tenant_id', Auth::user()->tenant_id);
             });
