@@ -160,6 +160,17 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
 
     protected function handleMessage(Connection $connection, array $payload)
     {
+        // Meta delivers type "unsupported" (error 131051 "Message type unknown")
+        // when the Cloud API can't relay the content — there is nothing to store.
+        if (($payload['changes'][0]['value']['messages'][0]['type'] ?? null) === 'unsupported') {
+            Log::info('WhatsappOfficialHandler: Skipping unsupported message', [
+                'connection_id' => $connection->id,
+                'message_id' => $this->getMessageId($payload),
+                'errors' => $payload['changes'][0]['value']['messages'][0]['errors'] ?? null,
+            ]);
+            return;
+        }
+
         $conversationId = $this->getConversationId($payload);
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
