@@ -109,9 +109,26 @@ class WhatsappOfficialChannel implements ChannelInterface
         }
     }
 
+    /**
+     * Programmatic disconnect, mirroring what "revoke access" on the
+     * Facebook Business Integrations page does: unsubscribe the WABA from
+     * webhooks, deregister the number from Cloud API, and revoke the app
+     * permissions granted by the Facebook user. Each remote step is
+     * best-effort — the token may already be revoked on Meta's side — so
+     * the connection is always deactivated locally.
+     */
     public function disconnect(Connection $connection): void
     {
-        throw new Exception('WhatsApp does not support programmatic disconnection. Please instruct the user to disconnect the account from their WhatsApp settings or revoke access from the Facebook Business Integrations page.');
+        if (!empty($connection->credentials['access_token'])) {
+            $this->unsubscribeWebhook($connection);
+            $this->deregisterPhoneNumber($connection);
+            $this->revokePermissions($connection);
+        }
+
+        $connection->update([
+            'status' => Status::Inactive,
+            'credentials' => null,
+        ]);
     }
 
     public function checkStatus(Connection $connection): void
@@ -203,6 +220,137 @@ class WhatsappOfficialChannel implements ChannelInterface
             ]);
 
             throw $th;
+        }
+    }
+
+    private function unsubscribeWebhook(Connection $connection): void
+    {
+        $businessAccountId = $connection->credentials['business_account_id'] ?? null;
+        $accessToken = $connection->credentials['access_token'] ?? null;
+
+        if (!$businessAccountId || !$accessToken) {
+            return;
+        }
+
+        // The subscription is per-WABA, not per-number: other active numbers
+        // on the same WABA still need their webhooks.
+        $wabaSharedWithActiveSibling = Connection::where('id', '!=', $connection->id)
+            ->where('channel', Channel::WhatsappOfficial)
+            ->where('status', Status::Active)
+            ->where('credentials->business_account_id', $businessAccountId)
+            ->exists();
+
+        if ($wabaSharedWithActiveSibling) {
+            Log::info('Skipping WABA webhook unsubscribe — WABA shared with another active connection', [
+                'connection_id' => $connection->id,
+                'business_account_id' => $businessAccountId,
+            ]);
+            return;
+        }
+
+        try {
+            // DELETE /{whatsapp-business-account-id}/subscribed_apps
+            $response = Http::withToken($accessToken)
+                ->delete("https://graph.facebook.com/v25.0/{$businessAccountId}/subscribed_apps");
+
+            if (!$response->successful()) {
+                Log::warning('Failed to unsubscribe from WhatsApp webhooks', [
+                    'connection_id' => $connection->id,
+                    'business_account_id' => $businessAccountId,
+                    'status' => $response->status(),
+                    'response' => $response->json(),
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::warning('Error while unsubscribing from WhatsApp webhooks', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
+    private function deregisterPhoneNumber(Connection $connection): void
+    {
+        $phoneNumberId = $connection->credentials['phone_number_id'] ?? null;
+        $accessToken = $connection->credentials['access_token'] ?? null;
+
+        if (!$phoneNumberId || !$accessToken) {
+            return;
+        }
+
+        // Meta rejects deregistration of coexistence numbers (still live on
+        // the WhatsApp Business app) — offboarding those happens on the phone.
+        if (!empty($connection->credentials['is_coexistence'])) {
+            return;
+        }
+
+        try {
+            // POST /{phone-number-id}/deregister — removes the number from
+            // Cloud API; it can be re-registered on a future connect.
+            $response = Http::withToken($accessToken)
+                ->post("https://graph.facebook.com/v25.0/{$phoneNumberId}/deregister");
+
+            if (!$response->successful()) {
+                Log::warning('Failed to deregister WhatsApp phone number', [
+                    'connection_id' => $connection->id,
+                    'phone_number_id' => $phoneNumberId,
+                    'status' => $response->status(),
+                    'response' => $response->json(),
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::warning('Error while deregistering WhatsApp phone number', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
+    private function revokePermissions(Connection $connection): void
+    {
+        $fbUserId = $connection->credentials['fb_user_id'] ?? null;
+        $accessToken = $connection->credentials['access_token'] ?? null;
+
+        if (!$fbUserId || !$accessToken) {
+            return;
+        }
+
+        // Revoking kills the token for every connection this Facebook user
+        // onboarded, so keep it while an active sibling still depends on it.
+        $tokenSharedWithActiveSibling = Connection::where('id', '!=', $connection->id)
+            ->where('channel', Channel::WhatsappOfficial)
+            ->where('status', Status::Active)
+            ->where('credentials->fb_user_id', $fbUserId)
+            ->exists();
+
+        if ($tokenSharedWithActiveSibling) {
+            Log::info('Skipping permission revoke — token shared with another active connection', [
+                'connection_id' => $connection->id,
+                'fb_user_id' => $fbUserId,
+            ]);
+            return;
+        }
+
+        try {
+            // DELETE /{user-id}/permissions — de-authorizes the app for this
+            // user (same effect as removing it from Business Integrations).
+            // Also triggers our facebookDeauthorize callback.
+            $response = Http::withToken($accessToken)
+                ->delete("https://graph.facebook.com/v25.0/{$fbUserId}/permissions");
+
+            if (!$response->successful()) {
+                Log::warning('Failed to revoke WhatsApp app permissions', [
+                    'connection_id' => $connection->id,
+                    'fb_user_id' => $fbUserId,
+                    'status' => $response->status(),
+                    'response' => $response->json(),
+                ]);
+            }
+        } catch (\Throwable $th) {
+            Log::warning('Error while revoking WhatsApp app permissions', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
         }
     }
 }

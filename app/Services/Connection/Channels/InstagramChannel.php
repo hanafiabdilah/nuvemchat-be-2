@@ -83,9 +83,20 @@ class InstagramChannel implements ChannelInterface
         }
     }
 
+    /**
+     * Instagram Login has no server-side revoke: no oauth/revoke endpoint
+     * and no DELETE /subscribed_apps on graph.instagram.com. Full revocation
+     * can only be done by the user (Instagram Settings → Apps and Websites),
+     * which fires our deauthorize callback. Locally we deactivate and drop
+     * the credentials — inbound webhooks stop matching an active connection
+     * and the long-lived token expires within 60 days once refresh stops.
+     */
     public function disconnect(Connection $connection): void
     {
-        throw new Exception('Instagram does not support programmatic disconnection. Please instruct the user to disconnect the account from their Instagram settings or revoke access from the Facebook Business Integrations page.');
+        $connection->update([
+            'status' => Status::Inactive,
+            'credentials' => null,
+        ]);
     }
 
     public function checkStatus(Connection $connection): void
