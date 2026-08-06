@@ -139,10 +139,19 @@ class WhatsappApiwayChannel implements ChannelInterface
                 // available_events unknown — register with the default set.
             }
 
+            // available_events comes back as [{value, label}, ...] but the PUT
+            // expects plain event names — sending the raw objects fails the
+            // partner's validation (400 invalid_body) and leaves the webhook
+            // unset, so inbound messages never arrive.
+            $events = array_values(array_filter(array_map(
+                fn ($event) => is_array($event) ? ($event['value'] ?? null) : $event,
+                $current['available_events'] ?? [],
+            )));
+
             $this->partner->setInstanceWebhook(
                 $instance->provider_instance_id,
                 $webhookUrl,
-                $current['available_events'] ?? [],
+                $events,
             );
         } catch (\Throwable $th) {
             Log::error('API Way webhook registration failed — inbound messages will not arrive until reconnect', [

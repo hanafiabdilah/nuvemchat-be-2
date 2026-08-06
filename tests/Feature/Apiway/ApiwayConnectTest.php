@@ -75,8 +75,12 @@ function fakeLinkSurface(string $instanceUuid): void
         "portal.proxybr.com.br/api/partner/v1/apiway/instances/{$instanceUuid}/token" => Http::response([
             'data' => ['token' => 'instance-token-1', 'masked' => 'inst***1'],
         ]),
+        // available_events uses the partner's real shape: objects, not strings.
         "portal.proxybr.com.br/api/partner/v1/apiway/instances/{$instanceUuid}/webhook" => Http::response([
-            'data' => ['url' => null, 'events' => [], 'available_events' => ['message', 'status']],
+            'data' => ['url' => null, 'events' => [], 'available_events' => [
+                ['value' => 'Message', 'label' => 'Mensagem recebida'],
+                ['value' => 'Receipt', 'label' => 'Status de entrega'],
+            ]],
         ]),
         'whats-api.ipbr.pro/v1/instance/qr-code*' => Http::response([
             'success' => true, 'data' => ['qrcode' => 'data:image/png;base64,QR'],
@@ -107,12 +111,14 @@ test('connect links an owned instance: partner token fetched, webhook registered
         ->and($connection->credentials['import_history'])->toBeTrue()
         ->and($connection->credentials['qr_code'])->toBe('data:image/png;base64,QR');
 
-    // The webhook PUT carried our chat endpoint + the available events.
+    // The webhook PUT carried our chat endpoint + the available events as
+    // plain names — the partner validates events.* as strings, so sending
+    // the raw {value, label} objects would 400 and leave the webhook unset.
     Http::assertSent(function ($request) use ($connection) {
         return str_contains($request->url(), '/webhook')
             && $request->method() === 'PUT'
             && $request['url'] === route('webhook.chat', ['id' => $connection->id])
-            && $request['events'] === ['message', 'status'];
+            && $request['events'] === ['Message', 'Receipt'];
     });
 });
 
