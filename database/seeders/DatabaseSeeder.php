@@ -38,7 +38,7 @@ class DatabaseSeeder extends Seeder
 
         // Billing plans + comp backfill for existing tenants
         $this->call(PlanSeeder::class);
-        $this->call(WhatsappApiPlanSeeder::class);
+        $this->call(ApiwayPlanSeeder::class);
 
         // Platform settings (API Way credentials, etc.)
         $this->call(SettingSeeder::class);

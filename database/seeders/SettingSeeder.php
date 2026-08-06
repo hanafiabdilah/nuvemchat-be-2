@@ -25,6 +25,10 @@ class SettingSeeder extends Seeder
             Setting::set(ApiwayConfig::KEY_BASE_URL, ApiwayConfig::DEFAULT_BASE_URL);
         }
 
+        if (Setting::get(ApiwayConfig::KEY_PARTNER_BASE_URL) === null) {
+            Setting::set(ApiwayConfig::KEY_PARTNER_BASE_URL, ApiwayConfig::DEFAULT_PARTNER_BASE_URL);
+        }
+
         // One-time migration of the legacy env token (if present and not yet set).
         $envToken = env('PROXYHUB_INTEGRATOR_TOKEN');
         if (! empty($envToken) && Setting::get(ApiwayConfig::KEY_INTEGRATOR_TOKEN) === null) {

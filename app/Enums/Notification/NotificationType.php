@@ -21,6 +21,10 @@ enum NotificationType: string
     case SubscriptionDue = 'subscription_due';
     case SubscriptionPastDue = 'subscription_past_due';
     case SubscriptionSuspended = 'subscription_suspended';
+    case ApiwayPurchaseActivated = 'apiway_purchase_activated';
+    case ApiwayRenewalDue = 'apiway_renewal_due';
+    case ApiwayExpired = 'apiway_expired';
+    case ApiwayProvisionFailed = 'apiway_provision_failed';
 
     /** Human-readable label for the Back Office configuration UI. */
     public function label(): string
@@ -34,6 +38,10 @@ enum NotificationType: string
             self::SubscriptionDue => 'Subscription due date',
             self::SubscriptionPastDue => 'Payment overdue',
             self::SubscriptionSuspended => 'Subscription suspended',
+            self::ApiwayPurchaseActivated => 'API Way instance activated',
+            self::ApiwayRenewalDue => 'API Way renewal due',
+            self::ApiwayExpired => 'API Way subscription expired',
+            self::ApiwayProvisionFailed => 'API Way provisioning failed',
         };
     }
 
@@ -52,6 +60,10 @@ enum NotificationType: string
             self::SubscriptionDue => "Olá {{name}}, sua assinatura {{plan}} vence em {{due_date}}. Valor: {{amount}}.",
             self::SubscriptionPastDue => "Olá {{name}}, não identificamos o pagamento da sua assinatura {{plan}}. Regularize para evitar a suspensão.",
             self::SubscriptionSuspended => "Olá {{name}}, sua assinatura {{plan}} foi suspensa por falta de pagamento. Reative quando quiser.",
+            self::ApiwayPurchaseActivated => "Olá {{name}}! 🎉 Sua(s) {{quantity}} instância(s) API Way já está(ão) ativa(s). Acesse o painel para parear seu WhatsApp.",
+            self::ApiwayRenewalDue => "Olá {{name}}, sua assinatura API Way vence em {{due_date}}. Valor: {{amount}}. Atenção: após o vencimento a instância é desativada permanentemente.",
+            self::ApiwayExpired => "Olá {{name}}, sua assinatura API Way expirou e a(s) instância(s) foi(ram) desativada(s) permanentemente. Contrate uma nova instância para continuar.",
+            self::ApiwayProvisionFailed => "Olá {{name}}, não conseguimos ativar sua instância API Way. Nossa equipe já foi acionada e entrará em contato.",
         };
     }
 
@@ -72,6 +84,10 @@ enum NotificationType: string
             self::SubscriptionDue => ['name', 'plan', 'due_date', 'amount'],
             self::SubscriptionPastDue => ['name', 'plan'],
             self::SubscriptionSuspended => ['name', 'plan'],
+            self::ApiwayPurchaseActivated => ['name', 'quantity'],
+            self::ApiwayRenewalDue => ['name', 'due_date', 'amount', 'quantity'],
+            self::ApiwayExpired => ['name', 'quantity'],
+            self::ApiwayProvisionFailed => ['name'],
         };
     }
 

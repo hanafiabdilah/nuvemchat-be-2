@@ -2,18 +2,21 @@
 
 namespace App\Services\Billing;
 
+use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Enums\Notification\NotificationType;
 use App\Events\SubscriptionUpdated;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
+use App\Models\ApiwaySubscription;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Billing\MercadoPago\MercadoPagoClient;
+use App\Services\Connection\Apiway\ApiwayService;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -35,16 +38,21 @@ class BillingService
     ) {}
 
     /**
+     * Shared MercadoPago client — also used by ApiwayService for the per-unit
+     * preapprovals, so both flows run against the same credentials.
+     */
+    public function mercadoPago(): MercadoPagoClient
+    {
+        return $this->mp;
+    }
+
+    /**
      * Subscribe a tenant to a plan via card (recurring) or pix.
      *
-     * @param  array{card_token_id?:string, payer_email:string, quantity?:int}  $opts
+     * @param  array{card_token_id?:string, payer_email:string}  $opts
      */
     public function subscribe(Tenant $tenant, Plan $plan, PaymentMethod $method, array $opts): Subscription
     {
-        $opts['quantity'] = $plan->quantity_enabled
-            ? max(1, (int) ($opts['quantity'] ?? 1))
-            : 1;
-
         return match ($method) {
             PaymentMethod::Card => $this->subscribeWithCard($tenant, $plan, $opts),
             PaymentMethod::Pix => $this->subscribeWithPix($tenant, $plan, $opts),
@@ -57,7 +65,7 @@ class BillingService
      */
     protected function subscribeWithCard(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $opts['quantity'] ?? 1);
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card);
 
         $payload = [
             'reason' => $plan->name,
@@ -99,7 +107,7 @@ class BillingService
     protected function subscribeWithPix(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
         // Starts past_due (createPendingSubscription); becomes active once the pix is paid.
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Pix, $opts['quantity'] ?? 1);
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Pix);
 
         $this->createPixInvoice($subscription, $opts['payer_email']);
         $this->fireUpdated($subscription);
@@ -190,6 +198,14 @@ class BillingService
             return;
         }
 
+        // API Way invoices have no plan subscription behind them — their paid
+        // hook provisions/renews at ProxyBR (via queued jobs) instead.
+        if ($invoice->purpose !== null && $invoice->purpose !== InvoicePurpose::Subscription) {
+            $this->applyApiwayPaymentUpdate($invoice, $paymentId, $status);
+
+            return;
+        }
+
         DB::transaction(function () use ($invoice, $paymentId, $status) {
             $subscription = Subscription::lockForUpdate()->find($invoice->subscription_id);
             $invoice->refresh();
@@ -216,6 +232,112 @@ class BillingService
     }
 
     /**
+     * Settle a MercadoPago payment against an API Way invoice. Mirrors the
+     * subscription path's guards but never touches Subscription state; the
+     * paid hook only flips local status and dispatches provisioning/renew jobs
+     * (no partner HTTP inside the webhook transaction).
+     */
+    protected function applyApiwayPaymentUpdate(Invoice $invoice, string $paymentId, ?string $status): void
+    {
+        DB::transaction(function () use ($invoice, $paymentId, $status) {
+            if ($invoice->apiway_subscription_id) {
+                ApiwaySubscription::lockForUpdate()->find($invoice->apiway_subscription_id);
+            }
+
+            $invoice->refresh();
+
+            if ($invoice->status === InvoiceStatus::Paid
+                && ! in_array($status, ['refunded', 'charged_back'], true)) {
+                return;
+            }
+
+            $invoice->mp_payment_id ??= $paymentId;
+
+            match ($status) {
+                'approved' => tap($invoice)->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]),
+                'refunded', 'charged_back' => $invoice->update(['status' => InvoiceStatus::Refunded]),
+                'rejected', 'cancelled' => $invoice->update(['status' => InvoiceStatus::Failed]),
+                default => $invoice->save(), // pending / in_process — leave as-is
+            };
+
+            if ($status === 'approved') {
+                app(ApiwayService::class)->handleApiwayInvoicePaid($invoice->fresh());
+            }
+        });
+    }
+
+    /**
+     * Create a payable Pix charge for an API Way purchase or renewal. The
+     * amount always comes from the subscription row, which the caller has just
+     * priced from a fresh ProxyBR quote — never from client input.
+     */
+    public function createApiwayPixInvoice(
+        ApiwaySubscription $apiwaySubscription,
+        InvoicePurpose $purpose,
+        ?string $payerEmail = null,
+    ): Invoice {
+        $expiresAt = now()->addDay();
+        $payerEmail ??= $apiwaySubscription->tenant->user?->email ?? 'no-reply@example.com';
+
+        $isRenewal = $purpose === InvoicePurpose::ApiwayRenewal;
+        $periodStart = $isRenewal && $apiwaySubscription->expires_at?->isFuture()
+            ? $apiwaySubscription->expires_at->copy()
+            : now();
+        $periodEnd = $periodStart->copy()->addDays($apiwaySubscription->cycle === 'anual' ? 365 : 30);
+
+        $invoice = Invoice::create([
+            'tenant_id' => $apiwaySubscription->tenant_id,
+            'apiway_subscription_id' => $apiwaySubscription->id,
+            'purpose' => $purpose,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Pix,
+            'amount_cents' => $apiwaySubscription->total_price_cents,
+            'currency' => 'BRL',
+            'period_start' => $periodStart,
+            'period_end' => $periodEnd,
+            // Renewals must settle BEFORE the ProxyBR expiry (no grace there).
+            'due_date' => $isRenewal
+                ? $apiwaySubscription->expires_at?->toDateString()
+                : $expiresAt->toDateString(),
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
+
+        $description = $isRenewal
+            ? "Renovação API Way — fatura #{$invoice->id}"
+            : "API Way — {$apiwaySubscription->quantity} instância(s) — fatura #{$invoice->id}";
+
+        $payload = [
+            'transaction_amount' => $this->toAmount($invoice->amount_cents),
+            'description' => $description,
+            'payment_method_id' => 'pix',
+            'payer' => ['email' => $payerEmail],
+            // Same millisecond-format requirement as createPixInvoice().
+            'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
+            'external_reference' => "tenant:{$apiwaySubscription->tenant_id}:apiway:inv:{$invoice->id}",
+        ];
+
+        try {
+            $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            throw $e;
+        }
+
+        $txData = $response['point_of_interaction']['transaction_data'] ?? [];
+
+        $invoice->update([
+            'mp_payment_id' => isset($response['id']) ? (string) $response['id'] : null,
+            'pix_qr_code' => $txData['qr_code'] ?? null,
+            'pix_qr_code_base64' => $txData['qr_code_base64'] ?? null,
+            'pix_copy_paste' => $txData['qr_code'] ?? null,
+            'pix_expires_at' => $expiresAt,
+        ]);
+
+        return $invoice->fresh();
+    }
+
+    /**
      * Reconcile a card subscription from a MercadoPago preapproval notification.
      */
     public function reconcilePreapproval(array $preapproval): void
@@ -227,6 +349,12 @@ class BillingService
 
         $subscription = Subscription::where('mp_preapproval_id', $id)->first();
         if (! $subscription) {
+            // API Way unit purchases carry their own preapprovals.
+            $apiway = ApiwaySubscription::where('mp_preapproval_id', $id)->first();
+            if ($apiway) {
+                app(ApiwayService::class)->handlePreapprovalStatus($apiway, $preapproval['status'] ?? null);
+            }
+
             return;
         }
 
@@ -267,6 +395,14 @@ class BillingService
 
         $subscription = Subscription::where('mp_preapproval_id', $preapprovalId)->first();
         if (! $subscription) {
+            // API Way unit purchases: the recurring charge pays a renewal.
+            $apiway = ApiwaySubscription::where('mp_preapproval_id', $preapprovalId)->first();
+            if ($apiway) {
+                app(ApiwayService::class)->recordUnitCardRenewal($apiway, $paymentId, $status);
+
+                return;
+            }
+
             Log::warning('MercadoPago recurring charge with no matching subscription', ['preapproval_id' => $preapprovalId]);
 
             return;
@@ -432,7 +568,6 @@ class BillingService
                 'payment_method' => PaymentMethod::Manual,
                 'billing_cycle' => $plan?->billing_cycle?->value,
                 'price_cents' => 0,
-                'quantity' => 1,
                 'quotas_snapshot' => $plan?->quotas,
                 'features_snapshot' => $plan?->features,
                 'current_period_start' => now(),
@@ -646,51 +781,6 @@ class BillingService
         $this->notifier->notify(NotificationType::SubscriptionSuspended, $subscription);
     }
 
-    public function changeQuantity(Subscription $subscription, int $newQuantity): Subscription
-    {
-        $newQuantity = max(1, $newQuantity);
-        $subscription->loadMissing('plan');
-        $plan = $subscription->plan;
-
-        if (! $plan?->quantity_enabled) {
-            throw new \InvalidArgumentException('Subscription plan does not support quantity changes.');
-        }
-
-        $total = $plan->price_cents * $newQuantity;
-
-        if ($subscription->payment_method === PaymentMethod::Card && $subscription->mp_preapproval_id) {
-            try {
-                $this->mp->updatePreapproval($subscription->mp_preapproval_id, [
-                    'auto_recurring' => [
-                        'transaction_amount' => $this->toAmount($total),
-                        'currency_id' => $plan->currency,
-                    ],
-                ]);
-            } catch (\Throwable $e) {
-                Log::error('Failed to update MercadoPago preapproval amount', [
-                    'subscription_id' => $subscription->id,
-                    'mp_preapproval_id' => $subscription->mp_preapproval_id,
-                    'error' => $e->getMessage(),
-                ]);
-
-                throw new \RuntimeException('Failed to update MercadoPago preapproval amount.', 0, $e);
-            }
-        }
-
-        $subscription->update([
-            'price_cents' => $total,
-            'quantity' => $newQuantity,
-            'quotas_snapshot' => array_merge($subscription->quotas_snapshot ?? [], [
-                'max_instances' => $newQuantity,
-            ]),
-        ]);
-
-        $this->gate->forget($subscription->tenant);
-        $this->fireUpdated($subscription);
-
-        return $subscription;
-    }
-
     // --- internals -------------------------------------------------------
 
     protected function onInvoicePaid(Subscription $subscription, Invoice $invoice): void
@@ -709,20 +799,13 @@ class BillingService
         $this->fireUpdated($subscription);
     }
 
-    protected function createPendingSubscription(Tenant $tenant, Plan $plan, PaymentMethod $method, int $quantity = 1): Subscription
+    protected function createPendingSubscription(Tenant $tenant, Plan $plan, PaymentMethod $method): Subscription
     {
-        $quantity = $plan->quantity_enabled ? max(1, $quantity) : 1;
-        $quotas = $plan->quotas;
-
-        if ($plan->quantity_enabled) {
-            $quotas = array_merge($plan->quotas ?? [], ['max_instances' => $quantity]);
-        }
-
         // Before the tenant moves on: void whatever charge the old subscription
         // still has open (calls MercadoPago, so keep it out of the transaction).
         $this->voidSupersededCharges($tenant);
 
-        return DB::transaction(function () use ($tenant, $plan, $method, $quantity, $quotas) {
+        return DB::transaction(function () use ($tenant, $plan, $method) {
             $this->supersedeCurrent($tenant);
 
             $subscription = Subscription::create([
@@ -736,9 +819,8 @@ class BillingService
                 'status' => SubscriptionStatus::PastDue,
                 'payment_method' => $method,
                 'billing_cycle' => $plan->billing_cycle->value,
-                'price_cents' => $plan->price_cents * $quantity,
-                'quantity' => $quantity,
-                'quotas_snapshot' => $quotas,
+                'price_cents' => $plan->price_cents,
+                'quotas_snapshot' => $plan->quotas,
                 'features_snapshot' => $plan->features,
                 'current_period_start' => now(),
                 'trial_ends_at' => $plan->trial_days > 0 ? now()->addDays($plan->trial_days) : null,

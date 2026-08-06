@@ -25,6 +25,7 @@ class AdminSettingsController extends Controller
     public function show()
     {
         $token = ApiwayConfig::integratorToken();
+        $partnerToken = ApiwayConfig::partnerToken();
         $mpAccess = MercadoPagoConfig::accessToken();
         $mpSecret = MercadoPagoConfig::webhookSecret();
 
@@ -42,6 +43,9 @@ class AdminSettingsController extends Controller
             'base_url' => ApiwayConfig::baseUrl(),
             'integrator_token_set' => ! empty($token),
             'integrator_token_preview' => $this->mask($token),
+            'partner_base_url' => ApiwayConfig::partnerBaseUrl(),
+            'partner_token_set' => ! empty($partnerToken),
+            'partner_token_preview' => $this->mask($partnerToken),
         ];
 
         return response()->json([
@@ -127,12 +131,16 @@ class AdminSettingsController extends Controller
             'apiway' => ['sometimes', 'array'],
             'apiway.base_url' => ['required_with:apiway', 'url', 'max:255'],
             'apiway.integrator_token' => ['nullable', 'string', 'max:255'],
+            'apiway.partner_base_url' => ['nullable', 'url', 'max:255'],
+            'apiway.partner_token' => ['nullable', 'string', 'max:512'],
 
             // Legacy payload key accepted from Back Office builds that predate the
             // API Way rebrand. Drop once all clients update.
             'proxyhub' => ['sometimes', 'array'],
             'proxyhub.base_url' => ['required_with:proxyhub', 'url', 'max:255'],
             'proxyhub.integrator_token' => ['nullable', 'string', 'max:255'],
+            'proxyhub.partner_base_url' => ['nullable', 'url', 'max:255'],
+            'proxyhub.partner_token' => ['nullable', 'string', 'max:512'],
 
             'mercadopago' => ['sometimes', 'array'],
             'mercadopago.public_key' => ['nullable', 'string', 'max:255'],
@@ -187,8 +195,19 @@ class AdminSettingsController extends Controller
         if ($apiway !== null) {
             Setting::set(ApiwayConfig::KEY_BASE_URL, rtrim($apiway['base_url'], '/'));
 
+            if (array_key_exists('partner_base_url', $apiway)) {
+                Setting::set(
+                    ApiwayConfig::KEY_PARTNER_BASE_URL,
+                    $apiway['partner_base_url'] ? rtrim($apiway['partner_base_url'], '/') : null,
+                );
+            }
+
+            // Secrets: only replaced when a new value is supplied.
             if (! empty($apiway['integrator_token'])) {
                 Setting::set(ApiwayConfig::KEY_INTEGRATOR_TOKEN, $apiway['integrator_token']);
+            }
+            if (! empty($apiway['partner_token'])) {
+                Setting::set(ApiwayConfig::KEY_PARTNER_TOKEN, $apiway['partner_token']);
             }
         }
 

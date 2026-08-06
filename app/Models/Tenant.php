@@ -47,6 +47,16 @@ class Tenant extends Model
         return $this->hasMany(Invoice::class);
     }
 
+    public function apiwaySubscriptions()
+    {
+        return $this->hasMany(ApiwaySubscription::class);
+    }
+
+    public function apiwayInstances()
+    {
+        return $this->hasMany(ApiwayInstance::class);
+    }
+
     public function users()
     {
         return $this->hasMany(User::class);

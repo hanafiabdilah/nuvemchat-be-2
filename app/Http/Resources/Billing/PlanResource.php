@@ -22,7 +22,6 @@ class PlanResource extends JsonResource
             'features' => $this->features ?? [],
             'is_active' => $this->is_active,
             'is_public' => $this->is_public,
-            'quantity_enabled' => $this->quantity_enabled,
             'sort_order' => $this->sort_order,
             'mp_card_enabled' => $this->mp_card_enabled,
             'mp_pix_enabled' => $this->mp_pix_enabled,

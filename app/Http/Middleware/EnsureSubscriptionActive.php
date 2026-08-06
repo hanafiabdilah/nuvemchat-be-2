@@ -14,9 +14,11 @@ use Symfony\Component\HttpFoundation\Response;
 class EnsureSubscriptionActive
 {
     /**
-     * Route-name prefixes that remain accessible while suspended.
+     * Route-name prefixes that remain accessible while suspended. `apiway.`
+     * stays open so a tenant with no (or lapsed) plan can still buy and manage
+     * unit-purchased API Way instances — mode 1 of that offering.
      */
-    private const EXEMPT_PREFIXES = ['billing.', 'plans.'];
+    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'apiway.'];
 
     /**
      * Exact route URIs (relative) that remain accessible.

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use Illuminate\Database\Eloquent\Builder;
@@ -12,6 +13,8 @@ class Invoice extends Model
     protected $fillable = [
         'tenant_id',
         'subscription_id',
+        'purpose',
+        'apiway_subscription_id',
         'status',
         'payment_method',
         'amount_cents',
@@ -27,17 +30,20 @@ class Invoice extends Model
         'pix_copy_paste',
         'pix_expires_at',
         'idempotency_key',
+        'meta',
     ];
 
     protected $casts = [
         'status' => InvoiceStatus::class,
         'payment_method' => PaymentMethod::class,
+        'purpose' => InvoicePurpose::class,
         'amount_cents' => 'integer',
         'period_start' => 'datetime',
         'period_end' => 'datetime',
         'due_date' => 'date',
         'paid_at' => 'datetime',
         'pix_expires_at' => 'datetime',
+        'meta' => 'array',
     ];
 
     public function tenant()
@@ -48,6 +54,11 @@ class Invoice extends Model
     public function subscription()
     {
         return $this->belongsTo(Subscription::class);
+    }
+
+    public function apiwaySubscription()
+    {
+        return $this->belongsTo(ApiwaySubscription::class);
     }
 
     public function scopePending(Builder $query): Builder

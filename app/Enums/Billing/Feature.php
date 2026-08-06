@@ -8,12 +8,10 @@ namespace App\Enums\Billing;
  * Canonical quota keys:
  * - max_connections
  * - max_agents
- * - max_instances
- * - max_proxies
+ * - included_instances (API Way instances provisioned free with the plan)
  */
 enum Feature: string
 {
     case Chat = 'chat';
     case WhatsappApi = 'whatsapp_api';
-    case Proxy = 'proxy';
 }

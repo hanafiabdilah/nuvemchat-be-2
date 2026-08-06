@@ -27,6 +27,12 @@ class ConnectionResource extends JsonResource
             unset($credentials['access_token'], $credentials['refresh_token']);
         }
 
+        // The instance API token authorizes the whole core /v1 surface — the
+        // SPA never needs it (token reveal is a dedicated, audited endpoint).
+        if ($this->channel === Channel::WhatsappApiway && is_array($credentials)) {
+            unset($credentials['token']);
+        }
+
         return [
             'id' => $this->id,
             'channel' => $this->channel,

@@ -4,6 +4,7 @@ namespace App\Services\Billing;
 
 use App\Enums\Notification\NotificationType;
 use App\Models\Subscription;
+use App\Models\Tenant;
 use App\Services\Notification\NotificationService;
 use Illuminate\Support\Facades\Log;
 
@@ -48,5 +49,31 @@ class BillingNotifier
             'due_date' => $subscription->current_period_end?->format('d/m/Y') ?? '',
             'amount' => 'R$ ' . number_format($subscription->price_cents / 100, 2, ',', '.'),
         ], $owner->id);
+    }
+
+    /**
+     * Notify the tenant owner about an event that is not tied to a plan
+     * subscription (API Way instance lifecycle). Same silent-skip semantics
+     * as notify().
+     *
+     * @param  array<string, string|int>  $context  Extra template placeholders.
+     */
+    public function notifyTenant(NotificationType $type, Tenant $tenant, array $context = []): bool
+    {
+        $owner = $tenant->notifiableOwner();
+
+        if (! $owner) {
+            Log::warning('BillingNotifier: skipped, owner has no verified WhatsApp number', [
+                'type' => $type->value,
+                'tenant_id' => $tenant->id,
+            ]);
+
+            return false;
+        }
+
+        return $this->notifications->send($type, $owner->whatsapp_number, array_merge(
+            ['name' => $owner->name],
+            array_map(fn ($v) => (string) $v, $context),
+        ), $owner->id);
     }
 }

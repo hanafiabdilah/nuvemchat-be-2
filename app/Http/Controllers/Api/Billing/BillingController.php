@@ -4,7 +4,6 @@ namespace App\Http\Controllers\Api\Billing;
 
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
-use App\Enums\Connection\Channel;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Billing\InvoiceResource;
@@ -70,7 +69,6 @@ class BillingController extends Controller
             'method' => ['required', Rule::enum(PaymentMethod::class)],
             'card_token_id' => ['required_if:method,card', 'string'],
             'payer_email' => ['required', 'email'],
-            'quantity' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
         $plan = Plan::active()->findOrFail($validated['plan_id']);
@@ -84,7 +82,6 @@ class BillingController extends Controller
                 [
                     'card_token_id' => $validated['card_token_id'] ?? null,
                     'payer_email' => $validated['payer_email'],
-                    'quantity' => $validated['quantity'] ?? 1,
                 ],
             );
         } catch (RequestException $e) {
@@ -131,40 +128,6 @@ class BillingController extends Controller
         $invoice = $this->billing->createPixInvoice($subscription, $request->user()->email);
 
         return response()->json(['data' => new InvoiceResource($invoice)]);
-    }
-
-    public function changeQuantity(Request $request)
-    {
-        $validated = $request->validate([
-            'quantity' => ['required', 'integer', 'min:1', 'max:100'],
-        ]);
-
-        $tenant = $this->tenant($request);
-        $subscription = $tenant->currentSubscription?->loadMissing('plan');
-        abort_if($subscription === null, 404, 'No subscription');
-        abort_if(! $subscription->plan?->quantity_enabled, 422, 'Este plano não permite alteração de quantidade.');
-
-        $instancesCount = $tenant->connections()
-            ->where('channel', Channel::WhatsappApiway->value)
-            ->count();
-
-        if ($validated['quantity'] < $instancesCount) {
-            return response()->json([
-                'message' => "Você tem {$instancesCount} instâncias ativas; cancele algumas antes de reduzir.",
-            ], 422);
-        }
-
-        try {
-            $subscription = $this->billing->changeQuantity($subscription, $validated['quantity']);
-        } catch (\RuntimeException) {
-            return response()->json([
-                'message' => 'Não foi possível atualizar a assinatura no provedor de pagamento.',
-            ], 502);
-        }
-
-        return response()->json([
-            'data' => new SubscriptionResource($subscription->fresh()->loadMissing('plan')),
-        ]);
     }
 
     public function invoiceStatus(Request $request, Invoice $invoice)

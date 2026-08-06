@@ -31,7 +31,6 @@ class SubscriptionResource extends JsonResource
             'payment_method' => $this->payment_method,
             'billing_cycle' => $this->billing_cycle,
             'price_cents' => $this->price_cents,
-            'quantity' => $this->quantity,
             'is_usable' => $this->isUsable(),
             'quotas' => $entitlements['quotas'],
             'features' => $entitlements['features'],

@@ -92,26 +92,16 @@ class ConnectionController extends Controller
         $tenant = $request->user()->tenant;
         $gate = app(SubscriptionGate::class);
 
-        if ($validated['channel'] === Channel::WhatsappApiway->value) {
-            if (! $gate->feature($tenant, Feature::WhatsappApi->value)) {
-                return response()->json([
-                    'message' => 'This feature (whatsapp_api) is not included in your current plan.',
-                    'code' => 'feature_not_in_plan',
-                    'feature' => Feature::WhatsappApi->value,
-                ], 403);
-            }
-
-            $instancesCount = $tenant->connections()
-                ->where('channel', Channel::WhatsappApiway->value)
-                ->count();
-
-            if (! $gate->canConsume($tenant, 'max_instances', $instancesCount)) {
-                return response()->json([
-                    'message' => 'You have reached the maximum number of connections for your plan.',
-                    'code' => 'quota_exceeded',
-                    'quota' => 'max_instances',
-                ], 422);
-            }
+        // API Way connections are backed by purchased instances — the real
+        // gate is owning an available instance at connect time. The feature
+        // flag also turns on implicitly for tenants with live instances.
+        if ($validated['channel'] === Channel::WhatsappApiway->value
+            && ! $gate->feature($tenant, Feature::WhatsappApi->value)) {
+            return response()->json([
+                'message' => 'This feature (whatsapp_api) is not included in your current plan.',
+                'code' => 'feature_not_in_plan',
+                'feature' => Feature::WhatsappApi->value,
+            ], 403);
         }
 
         if (! $gate->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
@@ -246,20 +236,6 @@ class ConnectionController extends Controller
     public function connect(int $id, Request $request)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
-
-        // Dedicated/custom proxy is a paid add-on gated by the `proxy` feature.
-        if ($connection->channel === Channel::WhatsappApiway->value) {
-            $proxyMode = $request->input('proxy_mode', $connection->credentials['proxy_mode'] ?? 'shared');
-
-            if (in_array($proxyMode, ['dedicated', 'custom'], true)
-                && ! app(SubscriptionGate::class)->feature($request->user()->tenant, Feature::Proxy->value)) {
-                return response()->json([
-                    'message' => 'This feature (proxy) is not included in your current plan.',
-                    'code' => 'feature_not_in_plan',
-                    'feature' => Feature::Proxy->value,
-                ], 403);
-            }
-        }
 
         if ($connection->channel === Channel::Email) {
             $request->validate(EmailChannel::rules());

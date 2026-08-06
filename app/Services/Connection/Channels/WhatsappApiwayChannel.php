@@ -3,29 +3,29 @@
 namespace App\Services\Connection\Channels;
 
 use App\Enums\Connection\Status;
+use App\Exceptions\ApiwayPartnerException;
 use App\Exceptions\ConnectionException as AppConnectionException;
+use App\Models\ApiwayInstance;
 use App\Models\Connection;
+use App\Services\Connection\Apiway\ApiwayPartnerClient;
 use App\Services\Connection\ChannelInterface;
 use App\Services\Connection\Proxy\ApiwayConfig;
-use App\Services\Connection\Proxy\ProxyValidator;
-use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * WhatsApp API Way channel. Mirrors W-API but is managed-only (the system always
- * creates the instance via the integrator) and sets a proxy on the instance at
- * creation time. proxyMode: shared (server IP) | dedicated (ProxyBR IPv4) |
- * custom (the user supplies ip:port:username:password, validated & detected).
+ * WhatsApp API Way channel. Instances are PURCHASED assets provisioned by
+ * ProxyBR (see ApiwayService); connecting links one owned, unused instance to
+ * this Connection. Deleting/disconnecting never destroys the instance — it
+ * returns to the tenant's pool. Runtime traffic (QR, status, send) stays on
+ * the core with the per-instance token; the partner API is only used at link
+ * time (token fetch + webhook registration).
  */
 class WhatsappApiwayChannel implements ChannelInterface
 {
-    private const PROXY_MODES = ['shared', 'dedicated', 'custom'];
-
-    private const WEBHOOK_EVENTS = ['connected', 'disconnected', 'delivery', 'status', 'presence'];
-
     public function __construct(
-        private readonly ProxyValidator $proxyValidator = new ProxyValidator(),
+        private readonly ApiwayPartnerClient $partner = new ApiwayPartnerClient(),
     ) {}
 
     private function base(): string
@@ -33,36 +33,15 @@ class WhatsappApiwayChannel implements ChannelInterface
         return ApiwayConfig::baseUrl();
     }
 
-    private function integratorToken(): string
-    {
-        return (string) ApiwayConfig::integratorToken();
-    }
-
     public function connect(Connection $connection, array $data)
     {
-        $data['proxy_mode'] = $data['proxy_mode'] ?? $connection->credentials['proxy_mode'] ?? 'shared';
-
-        validator($data, [
-            'proxy_mode' => ['required', 'in:' . implode(',', self::PROXY_MODES)],
-            'proxy' => ['required_if:proxy_mode,custom', 'string'],
-        ])->validate();
-
-        // Resolve proxy URL. Only custom needs detection/validation.
-        $proxyUrl = '';
-        $proxyMeta = [];
-        if ($data['proxy_mode'] === 'custom') {
-            $detected = $this->proxyValidator->validate($data['proxy']);
-            $proxyUrl = $detected['url'];
-            $proxyMeta = [
-                'proxy_scheme' => $detected['scheme'],
-                'proxy_host' => $detected['host'] . ':' . $detected['port'],
-            ];
+        if (! isset($connection->credentials['instance_id'], $connection->credentials['token'])) {
+            $this->linkInstance($connection, $data);
+        } else {
+            $this->checkInstanceStatus($connection);
         }
 
-        $connection = $this->handleManagedInstance($connection, $data['proxy_mode'], $proxyUrl, $proxyMeta);
-
-        // Opt-in to importing the chat list once the instance pairs. Stored in
-        // credentials AFTER instance handling (which rewrites credentials).
+        // Opt-in to importing the chat list once the instance pairs.
         if (array_key_exists('import_history', $data)) {
             $connection->update([
                 'credentials' => array_merge($connection->credentials ?? [], [
@@ -74,93 +53,103 @@ class WhatsappApiwayChannel implements ChannelInterface
 
         if ($connection->status === Status::Active) {
             \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
-            return;
-        }
 
-        // Newly created instance needs a moment before the QR is available.
-        if ($connection->credentials['newly_created'] ?? false) {
-            sleep(3);
-            $connection->update([
-                'credentials' => array_merge($connection->credentials, ['newly_created' => null]),
-            ]);
-            $connection->refresh();
+            return;
         }
 
         $this->retrieveQrCode($connection);
     }
 
-    private function handleManagedInstance(Connection $connection, string $proxyMode, string $proxyUrl, array $proxyMeta): Connection
+    /**
+     * Link an owned, available instance to this connection: fetch its API
+     * token via the partner console, point its webhook at us, persist.
+     */
+    private function linkInstance(Connection $connection, array $data): void
     {
-        // Instance already created — just refresh status.
-        if (isset($connection->credentials['instance_id'], $connection->credentials['token'])) {
-            return $this->checkInstanceStatus($connection);
+        validator($data, [
+            'apiway_instance_id' => ['required', 'integer'],
+        ])->validate();
+
+        /** @var ApiwayInstance|null $instance */
+        $instance = ApiwayInstance::query()
+            ->whereKey($data['apiway_instance_id'])
+            ->where('tenant_id', $connection->tenant_id)
+            ->with('subscription')
+            ->first();
+
+        if (! $instance) {
+            throw new AppConnectionException('Instância API Way não encontrada.', 404);
         }
 
-        $webhookUrl = route('webhook.chat', ['id' => $connection->id]);
-
-        $payload = [
-            'instanceName' => config('app.name') . ' - #' . $connection->id,
-            'proxyMode' => $proxyMode,
-            'proxyUrl' => $proxyUrl,
-            'rejectCalls' => true,
-            'callMessage' => 'This number does not accept calls.',
-            'webhookReceivedUrl' => $webhookUrl,
-        ];
-
-        Log::info('Creating WhatsApp API Way managed instance', ['connection' => $connection->id, 'proxy_mode' => $proxyMode]);
-
-        // Retry only on ConnectionException: connection-establishment failures mean
-        // the request never reached the server, so retrying cannot create a duplicate.
-        // connectTimeout(20) absorbs cold-start DNS/TLS; timeout(45) still leaves
-        // room for create-instance, which normally completes in about 15 seconds.
-        $response = Http::withHeaders([
-            'Authorization' => 'Bearer ' . $this->integratorToken(),
-        ])->connectTimeout(20)
-            ->timeout(45)
-            ->retry(2, 1500, function ($exception) {
-                return $exception instanceof ConnectionException;
-            }, throw: false)
-            ->post($this->base() . '/v1/integrator/create-instance', $payload);
-
-        $responseJson = $response->json();
-
-        if ($response->failed()) {
-            Log::error('WhatsApp API Way managed instance creation failed', ['connection' => $connection->id, 'response' => $responseJson, 'status' => $response->status()]);
-            throw new AppConnectionException($responseJson['message'] ?? 'Failed to create managed instance on API Way', $response->status() ?: 500);
+        if ($instance->connection_id !== null && $instance->connection_id !== $connection->id) {
+            throw new AppConnectionException('Esta instância já está em uso por outra conexão.', 422);
         }
 
-        $connection->update([
-            'status' => Status::Pending,
-            'credentials' => array_merge([
-                'instance_id' => $responseJson['instanceId'],
-                'token' => $responseJson['token'],
-                'is_managed' => true,
-                'newly_created' => true,
-                'proxy_mode' => $proxyMode,
-            ], $proxyMeta),
-        ]);
+        if (! $instance->isUsable()) {
+            throw new AppConnectionException('Esta instância não está mais ativa. Renove ou contrate uma nova.', 422);
+        }
 
-        // create-instance only registers the received webhook; register the rest.
-        $this->setupWebhooks($connection, $webhookUrl);
+        try {
+            $tokenData = $this->partner->instanceToken($instance->provider_instance_id);
+        } catch (ApiwayPartnerException $e) {
+            Log::error('API Way instance token fetch failed', ['instance' => $instance->id, 'error' => $e->getMessage()]);
+            throw new AppConnectionException('Não foi possível obter as credenciais da instância. Tente novamente.', 502);
+        }
 
-        return $connection;
+        $token = $tokenData['token'] ?? null;
+
+        if (! $token) {
+            throw new AppConnectionException('A instância não possui token de API disponível.', 502);
+        }
+
+        $this->registerWebhook($connection, $instance);
+
+        DB::transaction(function () use ($connection, $instance, $token) {
+            $instance->update(['connection_id' => $connection->id]);
+
+            $connection->update([
+                'status' => Status::Pending,
+                'credentials' => [
+                    'instance_id' => $instance->provider_instance_id,
+                    'token' => $token,
+                    'is_managed' => true,
+                    'apiway_instance_id' => $instance->id,
+                ],
+            ]);
+        });
+
+        $connection->refresh();
     }
 
-    private function setupWebhooks(Connection $connection, string $webhookUrl): void
+    /**
+     * Point the instance's webhook at our chat endpoint via the partner
+     * console. Failures are non-fatal at link time (retried on reconnect),
+     * but without it inbound messages never arrive — hence the loud log.
+     */
+    private function registerWebhook(Connection $connection, ApiwayInstance $instance): void
     {
-        foreach (self::WEBHOOK_EVENTS as $event) {
-            $endpoint = $this->base() . '/v1/instance/update-webhook-' . $event . '?instanceId=' . $connection->credentials['instance_id'];
+        $webhookUrl = route('webhook.chat', ['id' => $connection->id]);
+
+        try {
+            $current = [];
 
             try {
-                Http::withHeaders([
-                    'Authorization' => 'Bearer ' . $connection->credentials['token'],
-                ])->connectTimeout(15)
-                    ->timeout(30)
-                    ->retry(2, 500)
-                    ->put($endpoint, ['value' => $webhookUrl]);
-            } catch (\Throwable $th) {
-                Log::warning('WhatsApp API Way webhook setup failed', ['event' => $event, 'connection' => $connection->id, 'error' => $th->getMessage()]);
+                $current = $this->partner->getInstanceWebhook($instance->provider_instance_id);
+            } catch (\Throwable) {
+                // available_events unknown — register with the default set.
             }
+
+            $this->partner->setInstanceWebhook(
+                $instance->provider_instance_id,
+                $webhookUrl,
+                $current['available_events'] ?? [],
+            );
+        } catch (\Throwable $th) {
+            Log::error('API Way webhook registration failed — inbound messages will not arrive until reconnect', [
+                'connection' => $connection->id,
+                'instance' => $instance->id,
+                'error' => $th->getMessage(),
+            ]);
         }
     }
 
@@ -251,20 +240,13 @@ class WhatsappApiwayChannel implements ChannelInterface
         ]);
     }
 
-    public function deleteManagedInstance(Connection $connection): void
+    /**
+     * Return the linked instance to the tenant's pool. The purchased asset
+     * (and its ProxyBR subscription) stays alive — cancelling is a separate,
+     * explicit action on the Instances page.
+     */
+    public function releaseInstance(Connection $connection): void
     {
-        if (empty($connection->credentials['instance_id'])) {
-            return;
-        }
-
-        try {
-            Http::withHeaders([
-                'Authorization' => 'Bearer ' . $this->integratorToken(),
-            ])->connectTimeout(15)
-                ->timeout(20)
-                ->delete($this->base() . '/v1/delete-instance?instanceId=' . $connection->credentials['instance_id']);
-        } catch (\Throwable $th) {
-            Log::warning('Error deleting API Way managed instance, continuing', ['connection' => $connection->id, 'error' => $th->getMessage()]);
-        }
+        ApiwayInstance::where('connection_id', $connection->id)->update(['connection_id' => null]);
     }
 }

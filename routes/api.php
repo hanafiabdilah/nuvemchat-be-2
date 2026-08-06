@@ -11,10 +11,14 @@ use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentT
 use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
+use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
+use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
+use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
+use App\Http\Controllers\Api\Admin\AdminApiwayController;
 use App\Http\Controllers\Api\Admin\AdminInvoiceController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
@@ -88,7 +92,6 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/invoices', [BillingController::class, 'invoices'])->middleware('permission:billing.view')->name('invoices');
         Route::get('/invoices/{invoice}/status', [BillingController::class, 'invoiceStatus'])->middleware('permission:billing.view')->name('invoice-status');
         Route::post('/subscribe', [BillingController::class, 'subscribe'])->middleware('permission:billing.manage')->name('subscribe');
-        Route::post('/quantity', [BillingController::class, 'changeQuantity'])->middleware('permission:billing.manage')->name('quantity');
         Route::post('/pix/refresh', [BillingController::class, 'refreshPix'])->middleware('permission:billing.manage')->name('pix-refresh');
         Route::post('/cancel', [BillingController::class, 'cancel'])->middleware('permission:billing.manage')->name('cancel');
         // Abandon an unpaid checkout (frees the tenant to pick another plan).
@@ -96,6 +99,21 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/invoices/{invoice}/cancel', [BillingController::class, 'cancelInvoice'])->middleware('permission:billing.manage')->name('invoice-cancel');
     });
     Route::get('/plans', [BillingController::class, 'plans'])->middleware('permission:billing.view')->name('plans.index');
+
+    // API Way instances (purchased assets via ProxyBR partner API). The
+    // `apiway.` name prefix is exempt from the subscription.active gate — a
+    // tenant with no plan can own and manage unit-purchased instances.
+    Route::prefix('apiway')->name('apiway.')->group(function () {
+        Route::get('/catalog', [ApiwayCatalogController::class, 'catalog'])->name('catalog');
+        Route::post('/quote', [ApiwayCatalogController::class, 'quote'])->name('quote');
+        Route::get('/instances', [ApiwayInstanceController::class, 'index'])->name('instances.index');
+        Route::post('/instances', [ApiwayInstanceController::class, 'store'])->middleware('permission:billing.manage')->name('instances.store');
+        Route::get('/instances/{instance}/qr', [ApiwayInstanceController::class, 'qr'])->middleware('permission:connections.connect')->name('instances.qr');
+        Route::get('/instances/{instance}/status', [ApiwayInstanceController::class, 'status'])->name('instances.status');
+        Route::post('/instances/{instance}/token/reveal', [ApiwayInstanceController::class, 'revealToken'])->middleware('permission:connections.connect')->name('instances.token');
+        Route::post('/subscriptions/{subscription}/renew-invoice', [ApiwaySubscriptionController::class, 'renewInvoice'])->middleware('permission:billing.manage')->name('subscriptions.renew-invoice');
+        Route::post('/subscriptions/{subscription}/cancel', [ApiwaySubscriptionController::class, 'cancel'])->middleware('permission:billing.manage')->name('subscriptions.cancel');
+    });
 
     Route::middleware('feature:' . Feature::Chat->value)->group(function () {
         Route::get('/messages', [MessageController::class, 'index']);
@@ -323,6 +341,9 @@ Route::prefix('admin')->group(function () {
             Route::get('/settings', [AdminSettingsController::class, 'show']);
             Route::put('/settings', [AdminSettingsController::class, 'update']);
 
+            // ProxyBR partner catalog — doubles as the "test connection" probe.
+            Route::get('/apiway/catalog', [AdminApiwayController::class, 'catalog']);
+
             // WhatsApp message logs + issued OTPs (monitoring).
             Route::get('/whatsapp-logs', [AdminWhatsappLogController::class, 'index']);
             Route::get('/otps', [AdminOtpController::class, 'index']);
@@ -339,6 +360,7 @@ Route::prefix('admin')->group(function () {
         // Billing — subscriptions + manual (comp) assignment
         Route::middleware('permission:bo.subscriptions.manage')->group(function () {
             Route::get('/subscriptions', [AdminSubscriptionController::class, 'index']);
+            Route::get('/apiway/subscriptions', [AdminApiwayController::class, 'subscriptions']);
             Route::get('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'show']);
             Route::post('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'assign']);
             Route::delete('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'cancel']);

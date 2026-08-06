@@ -67,9 +67,11 @@ class ConnectionService
             ]);
         }
 
-        // API Way instances are always managed — delete the instance on API Way.
+        // API Way instances are purchased assets: deleting the connection only
+        // returns the instance to the tenant's pool. Cancelling the ProxyBR
+        // subscription is a separate, explicit action on the Instances page.
         if ($connection->channel === Channel::WhatsappApiway) {
-            (new \App\Services\Connection\Channels\WhatsappApiwayChannel())->deleteManagedInstance($connection);
+            (new \App\Services\Connection\Channels\WhatsappApiwayChannel())->releaseInstance($connection);
         }
 
         // Delete the connection

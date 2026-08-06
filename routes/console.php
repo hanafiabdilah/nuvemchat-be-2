@@ -83,3 +83,18 @@ Schedule::command('billing:reconcile')
     ->dailyAt('03:00')
     ->timezone('America/Sao_Paulo')
     ->onFailure(fn () => logger()->error('Billing reconciliation failed'));
+
+// --- API Way (ProxyBR partner) -------------------------------------------
+
+// ProxyBR has NO grace period: renew included subscriptions free and invoice
+// unit ones a few days ahead. Runs after billing:pix-generate.
+Schedule::command('apiway:renew --days-before=3')
+    ->dailyAt('08:30')
+    ->timezone('America/Sao_Paulo')
+    ->onFailure(fn () => logger()->error('API Way renewal pass failed'));
+
+// Mirror ProxyBR's hourly revoke cron (runs at :20, after theirs likely fired):
+// expire overdue rows, release connections, reconcile partner state.
+Schedule::command('apiway:sync')
+    ->hourlyAt(20)
+    ->onFailure(fn () => logger()->error('API Way sync failed'));
