@@ -112,6 +112,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/instances/{instance}/status', [ApiwayInstanceController::class, 'status'])->name('instances.status');
         Route::post('/instances/{instance}/token/reveal', [ApiwayInstanceController::class, 'revealToken'])->middleware('permission:connections.connect')->name('instances.token');
         Route::post('/subscriptions/{subscription}/renew-invoice', [ApiwaySubscriptionController::class, 'renewInvoice'])->middleware('permission:billing.manage')->name('subscriptions.renew-invoice');
+        Route::post('/subscriptions/{subscription}/abandon', [ApiwaySubscriptionController::class, 'abandon'])->middleware('permission:billing.manage')->name('subscriptions.abandon');
         Route::post('/subscriptions/{subscription}/cancel', [ApiwaySubscriptionController::class, 'cancel'])->middleware('permission:billing.manage')->name('subscriptions.cancel');
     });
 

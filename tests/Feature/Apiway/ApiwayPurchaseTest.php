@@ -8,7 +8,6 @@ use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Jobs\ProvisionApiwaySubscription;
-use App\Models\ApiwayInstance;
 use App\Models\ApiwaySubscription;
 use App\Models\Invoice;
 use App\Models\Plan;
@@ -259,6 +258,89 @@ test('a capacity failure marks the row failed and flags a refund for unit purcha
     $row->refresh();
     expect($row->status)->toBe(ApiwaySubscriptionStatus::Failed)
         ->and($row->meta['needs_refund'])->toBeTrue();
+});
+
+// --- Included with explicit location ---------------------------------------
+
+test('an included instance can pick its location', function () {
+    fakePartnerCreate();
+    $tenant = apiwayTenant();
+    apiwayPlanSubscription($tenant, ['included_instances' => 1]);
+
+    $row = app(ApiwayService::class)->createIncludedInstance($tenant, 'us');
+
+    expect($row->location_code)->toBe('us');
+
+    Http::assertSent(fn ($request) => str_contains($request->url(), '/subscriptions')
+        && $request['location_code'] === 'us');
+});
+
+// --- Abandoned checkouts ----------------------------------------------------
+
+test('abandoning an unpaid purchase voids the pix charge and deletes the row', function () {
+    Http::fake([
+        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
+            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
+        ]]),
+        'api.mercadopago.com/v1/payments/557' => Http::response(['status' => 'cancelled']),
+        'api.mercadopago.com/v1/payments' => Http::response([
+            'id' => 557, 'status' => 'pending',
+            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
+        ]),
+    ]);
+
+    $tenant = apiwayTenant();
+    $result = app(ApiwayService::class)->startUnitPurchase($tenant, 1, 'mensal', 'br', PaymentMethod::Pix);
+    $row = $result['subscription'];
+    $invoice = $result['invoice'];
+
+    expect(app(ApiwayService::class)->abandonPendingPurchase($row))->toBeTrue()
+        ->and(ApiwaySubscription::find($row->id))->toBeNull()
+        ->and($invoice->fresh()->status)->toBe(InvoiceStatus::Cancelled)
+        ->and($invoice->fresh()->apiway_subscription_id)->toBeNull();
+});
+
+test('a purchase that settled meanwhile refuses to be abandoned', function () {
+    Http::fake([
+        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
+            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
+        ]]),
+        'api.mercadopago.com/v1/payments' => Http::response([
+            'id' => 558, 'status' => 'pending',
+            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
+        ]),
+    ]);
+
+    $tenant = apiwayTenant();
+    $result = app(ApiwayService::class)->startUnitPurchase($tenant, 1, 'mensal', 'br', PaymentMethod::Pix);
+    $row = $result['subscription'];
+
+    // Pix approved before the user closed the modal.
+    app(BillingService::class)->applyPaymentUpdate(['id' => '558', 'status' => 'approved']);
+
+    expect(app(ApiwayService::class)->abandonPendingPurchase($row->fresh()))->toBeFalse()
+        ->and($row->fresh()->status)->toBe(ApiwaySubscriptionStatus::Provisioning);
+});
+
+test('pending_payment purchases are hidden from the instance list', function () {
+    Http::fake([
+        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
+            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
+        ]]),
+        'api.mercadopago.com/v1/payments' => Http::response([
+            'id' => 559, 'status' => 'pending',
+            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
+        ]),
+    ]);
+
+    $tenant = apiwayTenant();
+    app(ApiwayService::class)->startUnitPurchase($tenant, 1, 'mensal', 'br', PaymentMethod::Pix);
+
+    Sanctum::actingAs($tenant->user()->first());
+
+    $this->getJson('/api/apiway/instances')
+        ->assertOk()
+        ->assertJsonCount(0, 'pending_subscriptions');
 });
 
 test('provision is idempotent for an already-active row', function () {

@@ -69,6 +69,25 @@ class ApiwaySubscriptionController extends Controller
     }
 
     /**
+     * Abandon an UNPAID purchase: voids the Pix charge and deletes the local
+     * row, so a closed checkout never leaves a pending card behind. 409 when
+     * the payment settled meanwhile (the purchase then proceeds normally).
+     */
+    public function abandon(Request $request, int $subscription)
+    {
+        $row = $this->findSubscription($request, $subscription);
+
+        if (! $this->apiway->abandonPendingPurchase($row)) {
+            return response()->json([
+                'message' => 'O pagamento já foi confirmado — a instância será provisionada.',
+                'data' => new ApiwaySubscriptionResource($row->fresh()->load('instances')),
+            ], 409);
+        }
+
+        return response()->json(['deleted' => true]);
+    }
+
+    /**
      * Cancel = permanent revoke at ProxyBR. Requires typed confirmation.
      */
     public function cancel(Request $request, int $subscription)

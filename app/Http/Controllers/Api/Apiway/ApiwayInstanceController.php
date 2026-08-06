@@ -44,11 +44,12 @@ class ApiwayInstanceController extends Controller
             ->orderByDesc('id')
             ->get();
 
-        // Purchases that have no instances yet (paying / provisioning / failed)
-        // still need to show up so the tenant sees what they're waiting for.
+        // Purchases that have no instances yet (provisioning / failed) still
+        // show up so the tenant sees what they're waiting for. pending_payment
+        // rows are deliberately hidden: an abandoned checkout is deleted (see
+        // abandon()), never surfaced as a lingering card.
         $pendingSubscriptions = $tenant->apiwaySubscriptions()
             ->whereIn('status', [
-                ApiwaySubscriptionStatus::PendingPayment->value,
                 ApiwaySubscriptionStatus::Provisioning->value,
                 ApiwaySubscriptionStatus::Failed->value,
             ])
@@ -73,7 +74,7 @@ class ApiwayInstanceController extends Controller
             'mode' => ['required', 'in:included,unit'],
             'quantity' => ['required_if:mode,unit', 'integer', 'min:1', 'max:100'],
             'cycle' => ['required_if:mode,unit', 'in:mensal,anual'],
-            'location_code' => ['required_if:mode,unit', 'string', 'max:20'],
+            'location_code' => ['required_if:mode,unit', 'nullable', 'string', 'max:20'],
             'method' => ['required_if:mode,unit', 'in:pix,card'],
             'card_token_id' => ['required_if:method,card', 'nullable', 'string'],
             'payer_email' => ['nullable', 'email'],
@@ -83,7 +84,7 @@ class ApiwayInstanceController extends Controller
 
         try {
             if ($validated['mode'] === 'included') {
-                $subscription = $this->apiway->createIncludedInstance($tenant);
+                $subscription = $this->apiway->createIncludedInstance($tenant, $validated['location_code'] ?? null);
 
                 return response()->json([
                     'data' => new ApiwaySubscriptionResource($subscription->load('instances')),

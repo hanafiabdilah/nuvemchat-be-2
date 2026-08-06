@@ -92,9 +92,10 @@ class ApiwayService
     /**
      * Provision an instance covered by the plan's `included_instances` quota.
      * No charge — the cost is part of the plan price. Renewed for free while
-     * the plan subscription stays usable.
+     * the plan subscription stays usable. The tenant still picks the location
+     * (an invalid one is refused by the partner quote/create).
      */
-    public function createIncludedInstance(Tenant $tenant): ApiwaySubscription
+    public function createIncludedInstance(Tenant $tenant, ?string $locationCode = null): ApiwaySubscription
     {
         if (! $tenant->currentSubscription?->isUsable()) {
             throw ValidationException::withMessages([
@@ -115,7 +116,7 @@ class ApiwayService
             'status' => ApiwaySubscriptionStatus::Provisioning,
             'quantity' => 1,
             'cycle' => $this->cycleForBillingCycle($tenant->currentSubscription->billing_cycle),
-            'location_code' => $this->defaultLocationCode(),
+            'location_code' => $locationCode ?: $this->defaultLocationCode(),
         ]);
 
         try {
@@ -456,6 +457,46 @@ class ApiwayService
     }
 
     /**
+     * Drop an unpaid purchase entirely: void its open charges (killing the Pix
+     * QR at MercadoPago), cancel the preapproval and DELETE the local row —
+     * abandoned checkouts must never linger in the instance list.
+     *
+     * @return bool False when the purchase settled meanwhile (caller → 409):
+     *              a paid row moves on to provisioning and must survive.
+     */
+    public function abandonPendingPurchase(ApiwaySubscription $row): bool
+    {
+        if ($row->status !== ApiwaySubscriptionStatus::PendingPayment) {
+            return false;
+        }
+
+        if ($row->mp_preapproval_id) {
+            try {
+                $this->billing->mercadoPago()->cancelPreapproval($row->mp_preapproval_id);
+            } catch (\Throwable $e) {
+                Log::warning('Failed to cancel preapproval while abandoning apiway purchase', [
+                    'apiway_subscription_id' => $row->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // cancelInvoice() re-reads settled charges — a Pix paid seconds ago is
+        // applied instead of voided, which flips this row to provisioning.
+        $this->voidOpenInvoices($row);
+        $row->refresh();
+
+        if ($row->status !== ApiwaySubscriptionStatus::PendingPayment) {
+            return false;
+        }
+
+        // Invoices keep their audit trail (FK nulls out on delete).
+        $row->delete();
+
+        return true;
+    }
+
+    /**
      * Cancel = permanent revoke at ProxyBR (instances deleted, proxies
      * released). Linked connections are deactivated and released.
      */
@@ -508,6 +549,15 @@ class ApiwayService
      */
     public function syncStatuses(?Tenant $tenant = null): array
     {
+        // Hygiene: abandoned checkouts (never paid) are dropped after a day —
+        // their Pix QR has long expired and the FE never shows them anyway.
+        ApiwaySubscription::query()
+            ->where('status', ApiwaySubscriptionStatus::PendingPayment->value)
+            ->where('created_at', '<', now()->subDay())
+            ->when($tenant, fn ($q) => $q->where('tenant_id', $tenant->id))
+            ->get()
+            ->each(fn (ApiwaySubscription $stale) => $this->abandonPendingPurchase($stale));
+
         $expired = 0;
 
         $query = ApiwaySubscription::query()
