@@ -24,6 +24,9 @@ use Illuminate\Support\Facades\Log;
  */
 class WhatsappApiwayChannel implements ChannelInterface
 {
+    /** Core webhook slots, all pointed at the same chat endpoint ('received' is the inbound-message one). */
+    private const WEBHOOK_EVENTS = ['received', 'connected', 'disconnected', 'delivery', 'status', 'presence'];
+
     public function __construct(
         private readonly ApiwayPartnerClient $partner = new ApiwayPartnerClient(),
     ) {}
@@ -40,6 +43,10 @@ class WhatsappApiwayChannel implements ChannelInterface
         } else {
             $this->checkInstanceStatus($connection);
         }
+
+        // Re-asserted on every connect (link or QR/status refresh) so a failed
+        // or stale registration heals itself the next time the wizard opens.
+        $this->registerWebhook($connection);
 
         // Opt-in to importing the chat list once the instance pairs.
         if (array_key_exists('import_history', $data)) {
@@ -62,7 +69,8 @@ class WhatsappApiwayChannel implements ChannelInterface
 
     /**
      * Link an owned, available instance to this connection: fetch its API
-     * token via the partner console, point its webhook at us, persist.
+     * token via the partner console and persist. Webhook registration happens
+     * in connect(), straight on the core, once credentials are stored.
      */
     private function linkInstance(Connection $connection, array $data): void
     {
@@ -102,8 +110,6 @@ class WhatsappApiwayChannel implements ChannelInterface
             throw new AppConnectionException('A instância não possui token de API disponível.', 502);
         }
 
-        $this->registerWebhook($connection, $instance);
-
         DB::transaction(function () use ($connection, $instance, $token) {
             $instance->update(['connection_id' => $connection->id]);
 
@@ -122,43 +128,41 @@ class WhatsappApiwayChannel implements ChannelInterface
     }
 
     /**
-     * Point the instance's webhook at our chat endpoint via the partner
-     * console. Failures are non-fatal at link time (retried on reconnect),
-     * but without it inbound messages never arrive — hence the loud log.
+     * Point the instance's webhooks at our chat endpoint, straight on the core
+     * with the instance token — the partner route proved unreliable (accepted
+     * the PUT but the webhook never took effect). Same per-event endpoints the
+     * pre-partner channel used. Failures are non-fatal (registration re-runs on
+     * every connect), but without `received` inbound messages never arrive —
+     * hence the loud log.
      */
-    private function registerWebhook(Connection $connection, ApiwayInstance $instance): void
+    private function registerWebhook(Connection $connection): void
     {
         $webhookUrl = route('webhook.chat', ['id' => $connection->id]);
+        $instanceId = $connection->credentials['instance_id'];
+        $token = $connection->credentials['token'];
 
-        try {
-            $current = [];
+        foreach (self::WEBHOOK_EVENTS as $event) {
+            // Legacy core builds read {value}; newer ones read {url, events}.
+            // Send both shapes in one body — each parser picks its own field.
+            $body = ['value' => $webhookUrl, 'url' => $webhookUrl];
 
-            try {
-                $current = $this->partner->getInstanceWebhook($instance->provider_instance_id);
-            } catch (\Throwable) {
-                // available_events unknown — register with the default set.
+            if ($event === 'received') {
+                $body['events'] = ['Message', 'Receipt', 'ReadReceipt', 'Connected', 'Disconnected', 'LoggedOut'];
             }
 
-            // available_events comes back as [{value, label}, ...] but the PUT
-            // expects plain event names — sending the raw objects fails the
-            // partner's validation (400 invalid_body) and leaves the webhook
-            // unset, so inbound messages never arrive.
-            $events = array_values(array_filter(array_map(
-                fn ($event) => is_array($event) ? ($event['value'] ?? null) : $event,
-                $current['available_events'] ?? [],
-            )));
-
-            $this->partner->setInstanceWebhook(
-                $instance->provider_instance_id,
-                $webhookUrl,
-                $events,
-            );
-        } catch (\Throwable $th) {
-            Log::error('API Way webhook registration failed — inbound messages will not arrive until reconnect', [
-                'connection' => $connection->id,
-                'instance' => $instance->id,
-                'error' => $th->getMessage(),
-            ]);
+            try {
+                Http::withToken($token)
+                    ->connectTimeout(15)
+                    ->timeout(30)
+                    ->retry(2, 500)
+                    ->put($this->base() . '/v1/instance/update-webhook-' . $event . '?instanceId=' . $instanceId, $body);
+            } catch (\Throwable $th) {
+                Log::log($event === 'received' ? 'error' : 'warning', 'API Way webhook registration failed', [
+                    'event' => $event,
+                    'connection' => $connection->id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
         }
     }
 

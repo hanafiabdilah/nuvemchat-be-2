@@ -75,13 +75,9 @@ function fakeLinkSurface(string $instanceUuid): void
         "portal.proxybr.com.br/api/partner/v1/apiway/instances/{$instanceUuid}/token" => Http::response([
             'data' => ['token' => 'instance-token-1', 'masked' => 'inst***1'],
         ]),
-        // available_events uses the partner's real shape: objects, not strings.
-        "portal.proxybr.com.br/api/partner/v1/apiway/instances/{$instanceUuid}/webhook" => Http::response([
-            'data' => ['url' => null, 'events' => [], 'available_events' => [
-                ['value' => 'Message', 'label' => 'Mensagem recebida'],
-                ['value' => 'Receipt', 'label' => 'Status de entrega'],
-            ]],
-        ]),
+        // Webhooks register straight on the core (per-event endpoints), not
+        // through the partner console.
+        'whats-api.ipbr.pro/v1/instance/update-webhook-*' => Http::response(['success' => true]),
         'whats-api.ipbr.pro/v1/instance/qr-code*' => Http::response([
             'success' => true, 'data' => ['qrcode' => 'data:image/png;base64,QR'],
         ]),
@@ -111,15 +107,19 @@ test('connect links an owned instance: partner token fetched, webhook registered
         ->and($connection->credentials['import_history'])->toBeTrue()
         ->and($connection->credentials['qr_code'])->toBe('data:image/png;base64,QR');
 
-    // The webhook PUT carried our chat endpoint + the available events as
-    // plain names — the partner validates events.* as strings, so sending
-    // the raw {value, label} objects would 400 and leave the webhook unset.
+    // The inbound-message webhook was registered straight on the core with the
+    // instance token, carrying both body shapes (legacy {value} + new {url}).
     Http::assertSent(function ($request) use ($connection) {
-        return str_contains($request->url(), '/webhook')
+        return str_contains($request->url(), 'whats-api.ipbr.pro/v1/instance/update-webhook-received')
             && $request->method() === 'PUT'
-            && $request['url'] === route('webhook.chat', ['id' => $connection->id])
-            && $request['events'] === ['Message', 'Receipt'];
+            && $request->hasHeader('Authorization', 'Bearer instance-token-1')
+            && $request['value'] === route('webhook.chat', ['id' => $connection->id])
+            && $request['url'] === route('webhook.chat', ['id' => $connection->id]);
     });
+
+    // Nothing webhook-related went through the partner console.
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), 'portal.proxybr.com.br')
+        && str_contains($request->url(), '/webhook'));
 });
 
 test('an instance owned by another connection cannot be linked', function () {
