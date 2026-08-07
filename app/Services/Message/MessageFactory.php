@@ -3,6 +3,7 @@
 namespace App\Services\Message;
 
 use App\Enums\Connection\Channel;
+use App\Services\Message\Handlers\DiscordHandler;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\Handlers\InstagramHandler;
 use App\Services\Message\Handlers\LiveChatWidgetHandler;
@@ -20,6 +21,7 @@ class MessageFactory
         return match($channel){
             Channel::Instagram => new InstagramHandler(),
             Channel::Messenger => new MessengerHandler(),
+            Channel::Discord => new DiscordHandler(),
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
             Channel::Telegram => new TelegramHandler(),
             Channel::TikTok => new TikTokHandler(),

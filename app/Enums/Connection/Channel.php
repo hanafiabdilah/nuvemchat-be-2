@@ -14,4 +14,5 @@ enum Channel: string
     case Email = 'email';
     case TikTok = 'tiktok';
     case Messenger = 'messenger';
+    case Discord = 'discord';
 }

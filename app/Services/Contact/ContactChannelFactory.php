@@ -3,6 +3,7 @@
 namespace App\Services\Contact;
 
 use App\Enums\Connection\Channel;
+use App\Services\Contact\Channels\DiscordChannel;
 use App\Services\Contact\Channels\InstagramChannel;
 use App\Services\Contact\Channels\LiveChatWidgetChannel;
 use App\Services\Contact\Channels\MessengerChannel;
@@ -20,6 +21,7 @@ class ContactChannelFactory
             Channel::WhatsappOfficial => new WhatsappOfficialChannel(),
             Channel::Instagram => new InstagramChannel(),
             Channel::Messenger => new MessengerChannel(),
+            Channel::Discord => new DiscordChannel(),
             Channel::Telegram => new TelegramChannel(),
             Channel::TikTok => new TikTokChannel(),
             Channel::LiveChatWidget => new LiveChatWidgetChannel(),

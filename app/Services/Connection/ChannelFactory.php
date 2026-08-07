@@ -3,6 +3,7 @@
 namespace App\Services\Connection;
 
 use App\Enums\Connection\Channel;
+use App\Services\Connection\Channels\DiscordChannel;
 use App\Services\Connection\Channels\InstagramChannel;
 use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\Channels\LiveChatWidgetChannel;
@@ -20,6 +21,7 @@ class ChannelFactory
         return match($channel) {
             Channel::Instagram => new InstagramChannel(),
             Channel::Messenger => new MessengerChannel(),
+            Channel::Discord => new DiscordChannel(),
             Channel::Telegram => new TelegramChannel(),
             Channel::TikTok => new TikTokChannel(),
             Channel::WhatsappOfficial => new WhatsappOfficialChannel(),
