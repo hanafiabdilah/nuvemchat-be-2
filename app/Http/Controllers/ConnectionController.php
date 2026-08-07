@@ -883,10 +883,21 @@ class ConnectionController extends Controller
                 'access_token' => $userToken,
             ]);
 
+            // debug_token's granular_scopes lists the exact Page ids inside the
+            // token's pages_show_list scope — empty target_ids means the opt-in
+            // never registered, populated target_ids with an empty /me/accounts
+            // means Graph is filtering the response (app role / access level).
+            $debugToken = Http::get('https://graph.facebook.com/v25.0/debug_token', [
+                'input_token' => $userToken,
+                'access_token' => FacebookConfig::appId() . '|' . FacebookConfig::appSecret(),
+            ]);
+
             Log::warning('Messenger OAuth: /me/accounts returned no pages', [
                 'connection_id' => $connection->id,
+                'me' => $me->json(),
                 'accounts_response' => $pagesResponse->json(),
                 'permissions' => $permissions->json(),
+                'debug_token' => $debugToken->json()['data'] ?? $debugToken->json(),
             ]);
 
             return redirect($resultUrl . '?status=error&message=' . urlencode('No Facebook Pages were shared with this app. Try again and, on the Facebook screen, tap "Edit access" and select at least one Page. If the app is in development mode, the Facebook user also needs a role on the app.'));
