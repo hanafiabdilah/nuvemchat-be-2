@@ -104,7 +104,11 @@ class EmailInboxSynchronizer
             // Phase 1 — tail: mail that arrived after the newest message
             // already imported, in arrival order. Runs first so a live inbox
             // stays current even while a long backfill is still draining.
-            if ((int) $connection->last_seen_uid > 0) {
+            // A finished backfill with the cursor still at 0 means the mailbox
+            // was empty on the first pass — without the backfill_done escape,
+            // the first message to ever arrive would be skipped by both phases
+            // forever (each pass a no-op reporting sync_remaining=1).
+            if ((int) $connection->last_seen_uid > 0 || $connection->backfill_done) {
                 $tail = $client->uidsAfter((int) $connection->last_seen_uid);
 
                 if (count($tail) > $budget) {

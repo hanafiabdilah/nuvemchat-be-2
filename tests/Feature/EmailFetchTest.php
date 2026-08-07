@@ -378,6 +378,32 @@ test('a completed pass reports idle with no backlog left', function () {
         ->and($connection->last_synced_at)->not->toBeNull();
 });
 
+test('a mailbox that was empty on the first pass still imports its first message', function () {
+    Event::fake([MessageReceived::class, ConversationUpdated::class]);
+    $connection = emailFetchConnection();
+
+    // First pass: the mailbox is empty — the backfill finishes immediately
+    // with the tail cursor still pinned at 0.
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory([]));
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    expect($connection->refresh()->backfill_done)->toBeTrue()
+        ->and($connection->last_seen_uid)->toBe(0)
+        ->and($connection->sync_remaining)->toBe(0);
+
+    // The first message ever arrives. Both phases used to skip it (tail
+    // required a cursor > 0, backfill was done), leaving every pass a no-op
+    // stuck reporting sync_remaining=1.
+    app()->instance(EmailInboxClientFactory::class, new FakeEmailInboxClientFactory([
+        inboundEmail(['uid' => 1, 'messageId' => 'first@example.com']),
+    ]));
+    $this->artisan('email:fetch --sync')->assertSuccessful();
+
+    expect(Message::where('external_id', 'first@example.com')->exists())->toBeTrue()
+        ->and($connection->refresh()->last_seen_uid)->toBe(1)
+        ->and($connection->sync_remaining)->toBe(0);
+});
+
 test('a large mailbox is imported in bounded batches and reports the backlog', function () {
     Event::fake([MessageReceived::class, ConversationUpdated::class]);
     $connection = emailFetchConnection();
