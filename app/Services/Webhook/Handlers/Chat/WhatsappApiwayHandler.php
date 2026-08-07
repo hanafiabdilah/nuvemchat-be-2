@@ -12,6 +12,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Conversation\GroupConversationService;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
@@ -54,12 +55,6 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
         if ($isMessage) {
             $info = $event['Info'] ?? [];
 
-            if ($info['IsGroup'] ?? false) {
-                Log::info('WhatsappApiwayHandler: skipping group message');
-
-                return;
-            }
-
             // WhatsApp device-level control traffic (disappearing-message sync,
             // app-state/history sync, key exchange). It carries no body, so
             // persisting it would only add blank "unsupported" rows. This
@@ -70,6 +65,12 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
                     'protocol_type' => $event['Message']['protocolMessage']['type'] ?? null,
                     'message_id' => $info['ID'] ?? null,
                 ]);
+
+                return;
+            }
+
+            if ($info['IsGroup'] ?? false) {
+                $this->handleGroupMessage($connection, $event);
 
                 return;
             }
@@ -87,6 +88,14 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
 
         if ($isReceipt) {
             $this->handleReceipt($connection, $event);
+
+            return;
+        }
+
+        // Group metadata events: GroupInfo (subject changed) and JoinedGroup
+        // (this phone entered a group, carries the current subject).
+        if (in_array($type, ['GroupInfo', 'JoinedGroup'], true)) {
+            $this->handleGroupMetadata($connection, $event);
 
             return;
         }
@@ -241,6 +250,140 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation));
         }
+    }
+
+    /**
+     * Message posted in a WhatsApp group. Follows the channel-agnostic model in
+     * GroupConversationService: conversation keyed by the full group JID
+     * (…@g.us), the group itself is an is_group contact, and each incoming
+     * message records its real sender (phone from SenderAlt — identities use
+     * LID addressing) plus a conversation_participants row. Flows never run.
+     *
+     * whatsmeow Message events carry no group subject and the core exposes no
+     * group-metadata endpoint yet, so new groups get the JID local part as a
+     * placeholder name — corrected later by GroupInfo/JoinedGroup events or a
+     * manual rename (name_locked).
+     */
+    private function handleGroupMessage(Connection $connection, array $event): void
+    {
+        $info = $event['Info'] ?? [];
+        $groupJid = $info['Chat'] ?? null;
+        $messageId = $info['ID'] ?? null;
+        $messageType = $this->getMessageType($event);
+        $isFromMe = $info['IsFromMe'] ?? false;
+
+        if (! $messageId || ! $groupJid) {
+            Log::warning('WhatsappApiwayHandler: missing required group fields', [
+                'message_id' => $messageId,
+                'group_jid' => $groupJid,
+            ]);
+
+            return;
+        }
+
+        $senderPhone = null;
+        $senderName = null;
+
+        if (! $isFromMe) {
+            $senderPhone = $this->extractPhone($info['SenderAlt'] ?? null)
+                ?? $this->extractPhone($info['Sender'] ?? null);
+
+            if (! $senderPhone) {
+                Log::warning('WhatsappApiwayHandler: group message without sender', ['message_id' => $messageId]);
+
+                return;
+            }
+
+            $senderName = ($info['PushName'] ?? null) ?: $senderPhone;
+        }
+
+        $message = DB::transaction(function () use ($connection, $event, $groupJid, $messageId, $messageType, $isFromMe, $senderPhone, $senderName) {
+            $conversation = GroupConversationService::resolveConversation(
+                $connection,
+                $groupJid,
+                $this->groupFallbackTitle($groupJid),
+                renameIfChanged: false,
+            );
+
+            if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
+                Log::info('WhatsappApiwayHandler: duplicate group message ignored', ['message_id' => $messageId]);
+
+                return null;
+            }
+
+            if ($isFromMe) {
+                // Echo of a message sent from the phone (or already saved via
+                // our API — caught by the duplicate check above).
+                return $conversation->messages()->create([
+                    'external_id' => $messageId,
+                    'sender_type' => SenderType::Outgoing,
+                    'message_type' => $messageType,
+                    'body' => $this->getMessageBody($event),
+                    'sent_at' => $this->getMessageSentAt($event),
+                    'meta' => $event,
+                ]);
+            }
+
+            $sender = Contact::createFromExternalData($connection, $senderPhone, $senderName, $senderPhone);
+            GroupConversationService::addParticipant($conversation, $sender);
+
+            return $conversation->messages()->create([
+                'external_id' => $messageId,
+                'contact_id' => $sender->id,
+                'sender_type' => SenderType::Incoming,
+                'message_type' => $messageType,
+                'body' => $this->getMessageBody($event),
+                'sent_at' => $this->getMessageSentAt($event),
+                'delivery_at' => $this->getMessageSentAt($event),
+                'meta' => $event,
+            ]);
+        });
+
+        if (! $message) {
+            return;
+        }
+
+        if (in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Audio, MessageType::Document, MessageType::Sticker], true)) {
+            $this->handleMediaMessage($message, $event, $messageType);
+        }
+
+        broadcast(new MessageReceived($message));
+        broadcast(new ConversationUpdated($message->conversation->load('contact')));
+
+        // No flow automation in groups (also guarded in FlowExecutor).
+    }
+
+    /**
+     * GroupInfo (subject changed) / JoinedGroup (we entered a group) events —
+     * the only places whatsmeow surfaces the group subject. Shapes differ:
+     * GroupInfo nests the new subject under Name.Name; JoinedGroup embeds
+     * types.GroupName so Name is a flat string.
+     */
+    private function handleGroupMetadata(Connection $connection, array $event): void
+    {
+        $groupJid = $event['JID'] ?? null;
+
+        $name = $event['Name'] ?? null;
+        $title = is_array($name) ? ($name['Name'] ?? null) : (is_string($name) ? $name : null);
+
+        if (! $groupJid || ! $title) {
+            return;
+        }
+
+        $conversation = GroupConversationService::rename($connection, $groupJid, $title);
+
+        if ($conversation) {
+            broadcast(new ConversationUpdated($conversation->load('contact')));
+        }
+    }
+
+    /**
+     * Placeholder name for a group we only know by JID:
+     * "555491607349-1623173607@g.us" → "555491607349-1623173607".
+     */
+    private function groupFallbackTitle(string $groupJid): string
+    {
+        return explode('@', $groupJid)[0];
     }
 
     /**

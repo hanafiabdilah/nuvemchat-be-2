@@ -27,8 +27,14 @@ class GroupConversationService
     /**
      * Find-or-create the contact row that represents the group itself.
      * Renames follow the group title unless an admin locked the name.
+     *
+     * $renameIfChanged distinguishes how much the caller trusts $title:
+     * Telegram sends the authoritative title on every message (true), while
+     * WhatsApp message events carry no subject — callers pass a derived
+     * fallback that must only be used at creation, never to overwrite a real
+     * name learned later (false).
      */
-    public static function resolveGroupContact(Connection $connection, string $externalId, ?string $title): Contact
+    public static function resolveGroupContact(Connection $connection, string $externalId, ?string $title, bool $renameIfChanged = true): Contact
     {
         $contact = Contact::firstOrCreate([
             'external_id' => $externalId,
@@ -46,7 +52,7 @@ class GroupConversationService
                 $updates['is_group'] = true;
             }
 
-            if ($title && !$contact->name_locked && $contact->name !== $title) {
+            if ($renameIfChanged && $title && !$contact->name_locked && $contact->name !== $title) {
                 $updates['name'] = $title;
             }
 
@@ -63,9 +69,9 @@ class GroupConversationService
      * private-chat behaviour: a Resolved conversation stays closed and a new
      * message opens a fresh Pending conversation.
      */
-    public static function resolveConversation(Connection $connection, string $externalId, ?string $title, bool &$isNew = false): Conversation
+    public static function resolveConversation(Connection $connection, string $externalId, ?string $title, bool &$isNew = false, bool $renameIfChanged = true): Conversation
     {
-        $contact = self::resolveGroupContact($connection, $externalId, $title);
+        $contact = self::resolveGroupContact($connection, $externalId, $title, $renameIfChanged);
 
         $conversation = Conversation::where('connection_id', $connection->id)
             ->where('external_id', $externalId)
