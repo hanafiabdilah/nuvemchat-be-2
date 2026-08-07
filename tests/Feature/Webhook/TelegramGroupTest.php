@@ -221,6 +221,19 @@ test('editing a group message updates the right chat-scoped message', function (
         ->and(Message::first()->edited_at)->not->toBeNull();
 });
 
+test('a non-owner agent without assignment cannot access a pending group conversation (no 500)', function () {
+    Event::fake();
+    $connection = telegramGroupConnection();
+
+    (new TelegramHandler)->handle($connection, telegramGroupMessage());
+
+    // Regression: isAccessibleBy used to read Eloquent's internal
+    // connection-name string and crash on ->channel for non-owner agents.
+    $agent = User::factory()->create(['tenant_id' => $connection->tenant_id]);
+
+    expect(Conversation::first()->isAccessibleBy($agent))->toBeFalse();
+});
+
 test('a private message still creates a private conversation without a per-message sender', function () {
     Event::fake();
     $connection = telegramGroupConnection();

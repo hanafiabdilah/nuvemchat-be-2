@@ -114,7 +114,10 @@ class Conversation extends Model
             return true;
         }
 
-        $connection = $this->connection;
+        // NB: inside the model, $this->connection resolves Eloquent's internal
+        // connection-name string ("mysql"), NOT the connection() relation —
+        // go through the relation explicitly.
+        $connection = $this->getRelationValue('connection');
         if ($connection && $connection->channel === Channel::Email) {
             return $connection->users->contains($user->id);
         }
