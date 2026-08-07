@@ -65,11 +65,6 @@ class ApiwayPartnerClient
         return ['data' => $json['data'], 'meta' => $json['meta'] ?? []];
     }
 
-    public function getSubscription(int $providerId): array
-    {
-        return $this->unwrap($this->request()->get($this->url("/subscriptions/{$providerId}")));
-    }
-
     public function listSubscriptions(array $query = []): array
     {
         return $this->decode($this->request()->get($this->url('/subscriptions'), $query));
@@ -91,58 +86,16 @@ class ApiwayPartnerClient
         return $this->unwrap($this->request(timeout: 90)->post($this->url("/subscriptions/{$providerId}/cancel")));
     }
 
-    // --- Instance console (id = core UUID) ---
+    // --- Instance token (id = core UUID) ---
 
-    public function instanceDetail(string $instanceId): array
-    {
-        return $this->unwrap($this->request()->get($this->url("/instances/{$instanceId}")));
-    }
-
-    public function instanceStatus(string $instanceId): array
-    {
-        return $this->unwrap($this->request()->get($this->url("/instances/{$instanceId}/status")));
-    }
-
-    /** QR pairing: `qr_code` is base64 PNG; qr_pending_reason=qr_not_emitted_yet means keep polling. */
-    public function instanceQr(string $instanceId): array
-    {
-        return $this->unwrap($this->request()->get($this->url("/instances/{$instanceId}/qr")));
-    }
-
-    /** Instance API token (plaintext + masked) used against the public core. */
+    /**
+     * Instance API token (plaintext + masked) used against the public core.
+     * The only /instances/* endpoint left on the partner surface — every other
+     * console operation goes straight to the core with this token.
+     */
     public function instanceToken(string $instanceId): array
     {
         return $this->unwrap($this->request()->get($this->url("/instances/{$instanceId}/token")));
-    }
-
-    public function getInstanceWebhook(string $instanceId): array
-    {
-        return $this->unwrap($this->request()->get($this->url("/instances/{$instanceId}/webhook")));
-    }
-
-    public function setInstanceWebhook(string $instanceId, string $webhookUrl, array $events = []): array
-    {
-        $payload = ['url' => $webhookUrl];
-
-        // events must be a subset of available_events; omitting it keeps the
-        // partner default (all events) when we couldn't read the catalog.
-        if ($events !== []) {
-            $payload['events'] = $events;
-        }
-
-        return $this->unwrap($this->request()->put($this->url("/instances/{$instanceId}/webhook"), $payload));
-    }
-
-    public function reconnectSession(string $instanceId): array
-    {
-        return $this->unwrap($this->request()->post($this->url("/instances/{$instanceId}/session/reconnect")));
-    }
-
-    public function disconnectSession(string $instanceId): array
-    {
-        return $this->unwrap($this->request()->post($this->url("/instances/{$instanceId}/session/disconnect"), [
-            'confirm' => 'DESCONECTAR',
-        ]));
     }
 
     // --- Plumbing ---

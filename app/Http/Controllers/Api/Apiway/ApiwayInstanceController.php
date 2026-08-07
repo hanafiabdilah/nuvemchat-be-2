@@ -11,17 +11,14 @@ use App\Http\Resources\Apiway\ApiwaySubscriptionResource;
 use App\Http\Resources\Billing\InvoiceResource;
 use App\Models\ApiwayInstance;
 use App\Models\AuditLog;
-use App\Services\Connection\Apiway\ApiwayPartnerClient;
 use App\Services\Connection\Apiway\ApiwayService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class ApiwayInstanceController extends Controller
 {
     public function __construct(
         private readonly ApiwayService $apiway,
-        private readonly ApiwayPartnerClient $partner,
     ) {}
 
     /**
@@ -115,67 +112,16 @@ class ApiwayInstanceController extends Controller
     }
 
     /**
-     * Pairing QR for an instance that is NOT linked to a connection yet
-     * (linked ones pair through the connection connect/check-status flow).
-     */
-    public function qr(Request $request, int $instance)
-    {
-        $instance = $this->findInstance($request, $instance);
-
-        try {
-            // Micro-cache: the SPA polls every few seconds and the partner
-            // throttle (120/min) is shared by the entire platform.
-            $data = Cache::remember(
-                "apiway:qr:{$instance->provider_instance_id}",
-                3,
-                fn () => $this->partner->instanceQr($instance->provider_instance_id),
-            );
-        } catch (ApiwayPartnerException $e) {
-            return $this->partnerError($e);
-        }
-
-        $qr = $data['qr_code'] ?? null;
-
-        return response()->json([
-            'data' => [
-                'status' => $data['status'] ?? null,
-                'connected' => $data['connected'] ?? false,
-                'logged_in' => $data['logged_in'] ?? false,
-                'qr_code' => $qr && ! str_starts_with($qr, 'data:') ? 'data:image/png;base64,'.$qr : $qr,
-                'qr_pending_reason' => $data['qr_pending_reason'] ?? null,
-            ],
-        ]);
-    }
-
-    public function status(Request $request, int $instance)
-    {
-        $instance = $this->findInstance($request, $instance);
-
-        try {
-            $data = Cache::remember(
-                "apiway:status:{$instance->provider_instance_id}",
-                3,
-                fn () => $this->partner->instanceStatus($instance->provider_instance_id),
-            );
-        } catch (ApiwayPartnerException $e) {
-            return $this->partnerError($e);
-        }
-
-        $instance->update(['status' => $data['status'] ?? $instance->status]);
-
-        return response()->json(['data' => $data]);
-    }
-
-    /**
      * Reveal the instance API token (used by the tenant's own integrations
-     * against the public core). Audited.
+     * against the public core). Stored locally after the first partner fetch.
+     * Audited.
      */
     public function revealToken(Request $request, int $instance)
     {
         $instance = $this->findInstance($request, $instance);
 
         try {
-            $data = $this->partner->instanceToken($instance->provider_instance_id);
+            $token = $this->apiway->instanceCoreToken($instance);
         } catch (ApiwayPartnerException $e) {
             return $this->partnerError($e);
         }
@@ -184,8 +130,8 @@ class ApiwayInstanceController extends Controller
 
         return response()->json([
             'data' => [
-                'token' => $data['token'] ?? null,
-                'masked' => $data['masked'] ?? null,
+                'token' => $token,
+                'masked' => substr($token, 0, 10).str_repeat('*', 18).substr($token, -4),
             ],
         ]);
     }

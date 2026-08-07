@@ -54,6 +54,29 @@ class ApiwayService
 
     // --- Catalog -----------------------------------------------------------
 
+    /**
+     * The instance's core API token: stored locally, fetched once from the
+     * partner console when missing — the only instance operation ProxyBR
+     * still mediates; everything else goes straight to the core with it.
+     */
+    public function instanceCoreToken(ApiwayInstance $instance): string
+    {
+        if ($instance->token) {
+            return $instance->token;
+        }
+
+        $data = $this->partner->instanceToken($instance->provider_instance_id);
+        $token = trim((string) ($data['token'] ?? ''));
+
+        if ($token === '') {
+            throw new ApiwayPartnerException('A instância não possui token de API disponível.', errorCode: 'token_missing', httpStatus: 422);
+        }
+
+        $instance->update(['token' => $token]);
+
+        return $token;
+    }
+
     /** Partner catalog with a short cache (price tiers, locations, settings). */
     public function catalog(bool $fresh = false): array
     {

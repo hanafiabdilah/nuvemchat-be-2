@@ -100,6 +100,7 @@ test('connect links an owned instance: partner token fetched, webhook registered
     $instance->refresh();
 
     expect($instance->connection_id)->toBe($connection->id)
+        ->and($instance->token)->toBe('instance-token-1')
         ->and($connection->status)->toBe(ConnectionStatus::Pending)
         ->and($connection->credentials['instance_id'])->toBe($instance->provider_instance_id)
         ->and($connection->credentials['token'])->toBe('instance-token-1')

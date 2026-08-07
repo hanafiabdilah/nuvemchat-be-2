@@ -7,7 +7,7 @@ use App\Exceptions\ApiwayPartnerException;
 use App\Exceptions\ConnectionException as AppConnectionException;
 use App\Models\ApiwayInstance;
 use App\Models\Connection;
-use App\Services\Connection\Apiway\ApiwayPartnerClient;
+use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\ChannelInterface;
 use App\Services\Connection\Proxy\ApiwayConfig;
 use Illuminate\Support\Facades\DB;
@@ -18,18 +18,14 @@ use Illuminate\Support\Facades\Log;
  * WhatsApp API Way channel. Instances are PURCHASED assets provisioned by
  * ProxyBR (see ApiwayService); connecting links one owned, unused instance to
  * this Connection. Deleting/disconnecting never destroys the instance — it
- * returns to the tenant's pool. Runtime traffic (QR, status, send) stays on
- * the core with the per-instance token; the partner API is only used at link
- * time (token fetch + webhook registration).
+ * returns to the tenant's pool. Everything here talks straight to the core
+ * with the per-instance token; the partner API only hands that token over
+ * (once — it's stored on the ApiwayInstance row afterwards).
  */
 class WhatsappApiwayChannel implements ChannelInterface
 {
     /** Core webhook slots, all pointed at the same chat endpoint ('received' is the inbound-message one). */
     private const WEBHOOK_EVENTS = ['received', 'connected', 'disconnected', 'delivery', 'status', 'presence'];
-
-    public function __construct(
-        private readonly ApiwayPartnerClient $partner = new ApiwayPartnerClient(),
-    ) {}
 
     private function base(): string
     {
@@ -98,16 +94,15 @@ class WhatsappApiwayChannel implements ChannelInterface
         }
 
         try {
-            $tokenData = $this->partner->instanceToken($instance->provider_instance_id);
+            $token = app(ApiwayService::class)->instanceCoreToken($instance);
         } catch (ApiwayPartnerException $e) {
             Log::error('API Way instance token fetch failed', ['instance' => $instance->id, 'error' => $e->getMessage()]);
-            throw new AppConnectionException('Não foi possível obter as credenciais da instância. Tente novamente.', 502);
-        }
-
-        $token = $tokenData['token'] ?? null;
-
-        if (! $token) {
-            throw new AppConnectionException('A instância não possui token de API disponível.', 502);
+            throw new AppConnectionException(
+                $e->getErrorCode() === 'token_missing'
+                    ? $e->getMessage()
+                    : 'Não foi possível obter as credenciais da instância. Tente novamente.',
+                502,
+            );
         }
 
         DB::transaction(function () use ($connection, $instance, $token) {

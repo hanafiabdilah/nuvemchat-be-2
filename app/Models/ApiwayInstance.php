@@ -15,11 +15,16 @@ class ApiwayInstance extends Model
         'tenant_id',
         'apiway_subscription_id',
         'provider_instance_id',
+        'token',
         'name',
         'ip_address',
         'status',
         'connection_id',
     ];
+
+    protected $hidden = ['token'];
+
+    protected $casts = ['token' => 'encrypted'];
 
     public function tenant()
     {
