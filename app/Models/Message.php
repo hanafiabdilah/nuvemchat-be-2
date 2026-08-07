@@ -12,6 +12,7 @@ class Message extends Model
     protected $fillable = [
         'external_id',
         'conversation_id',
+        'contact_id', // sender contact (group conversations)
         'sender_type',
         'sent_by_user_id',
         'sent_by_flow_id',
@@ -54,6 +55,15 @@ class Message extends Model
     public function conversation()
     {
         return $this->belongsTo(Conversation::class);
+    }
+
+    /**
+     * The contact that sent this message. Filled for incoming messages in
+     * group conversations, where the sender varies per message.
+     */
+    public function contact()
+    {
+        return $this->belongsTo(Contact::class);
     }
 
     public function repliedMessage()

@@ -15,6 +15,7 @@ class Contact extends Model
         'channel',
         'name',
         'name_locked',
+        'is_group',
         'username',
         'photo_profile',
         'meta'
@@ -58,6 +59,7 @@ class Contact extends Model
     protected $casts = [
         'channel' => Channel::class,
         'name_locked' => 'boolean',
+        'is_group' => 'boolean',
     ];
 
     public function tenant()

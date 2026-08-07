@@ -22,6 +22,7 @@ class ConversationResource extends JsonResource
         return [
             'id' => $this->id,
             'connection_id' => $this->connection_id,
+            'type' => $this->type?->value ?? 'private',
             'status' => $this->status->value,
             'needs_human' => (bool) $this->needs_human,
             'handoff_reason' => $this->handoff_reason,
@@ -32,6 +33,7 @@ class ConversationResource extends JsonResource
             // pages) — the fallback query runs once per conversation otherwise.
             'unread' => $this->unread_count ?? $this->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->count(),
             'contact' => ContactResource::make($this->contact),
+            'participants' => ContactResource::collection($this->whenLoaded('participants')),
             'tags' => TagResource::collection($this->tags),
             'agent' => UserResource::make($this->agent),
             'flow_state' => $this->flowState ? new FlowStateResource($this->flowState) : null,

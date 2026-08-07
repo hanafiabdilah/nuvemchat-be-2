@@ -45,6 +45,11 @@ class FlowExecutor
      */
     public function startFlow(Conversation $conversation): void
     {
+        // Automation flows are 1:1 only — never run in group conversations.
+        if ($conversation->isGroup()) {
+            return;
+        }
+
         $connection = $conversation->connection;
 
         if (!$connection->flow_id) {
@@ -1016,6 +1021,11 @@ class FlowExecutor
      */
     public function resumeFlow(Conversation $conversation, string $userInput): void
     {
+        // Automation flows are 1:1 only — never run in group conversations.
+        if ($conversation->isGroup()) {
+            return;
+        }
+
         // Only resume flow for flow-eligible conversations (Pending queue or active AI turn)
         if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             Log::info('FlowExecutor: Cannot resume flow, conversation is not flow-eligible', [

@@ -78,17 +78,31 @@ class MessageResource extends JsonResource
 
     /**
      * Resolve who/what sent this message.
-     * Outgoing only: returns null for incoming messages.
      *
      * source values:
      *   - human       → sent by a logged-in agent via the UI/API
      *   - ai_flow     → sent by an AI Agent node inside a flow
      *   - static_flow → sent by a non-AI flow node (Message/Response/validation)
      *   - external    → outgoing but no tracked sender (e.g. V1 SendMessage API or legacy)
+     *   - contact     → incoming message with a per-message sender (group conversations)
      */
     private function getSenderInfo(): ?array
     {
         if ($this->sender_type !== SenderType::Outgoing) {
+            // Incoming: only group messages track a per-message sender; in a
+            // private conversation the sender is the conversation's contact.
+            if ($this->contact_id) {
+                $contact = $this->contact;
+                return [
+                    'source' => 'contact',
+                    'contact' => $contact ? [
+                        'id' => $contact->id,
+                        'name' => $contact->name,
+                        'username' => $contact->username,
+                    ] : null,
+                ];
+            }
+
             return null;
         }
 

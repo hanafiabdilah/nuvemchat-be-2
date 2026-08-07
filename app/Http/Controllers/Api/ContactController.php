@@ -18,7 +18,10 @@ class ContactController extends Controller
         $search = $request->query('search');
         $channel = $request->query('channel');
 
+        // Group contacts represent group chats, not people — keep them out of
+        // the contact book (and out of the new-conversation picker).
         $contacts = Contact::where('tenant_id', $request->user()->tenant_id)
+            ->where('is_group', false)
             ->when($search, function ($query, $search) {
                 $query->where('name', 'like', "%{$search}%")
                       ->orWhere('username', 'like', "%{$search}%");

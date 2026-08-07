@@ -48,6 +48,7 @@ class ConversationController extends Controller
                 'flowState.currentNode',
                 'lastMessage.repliedMessage',
                 'lastMessage.reactions',
+                'lastMessage.contact',
                 'lastMessage.sentByUser',
                 'lastMessage.sentByFlow',
                 'lastMessage.sentByAiHubAgent',
@@ -370,7 +371,7 @@ class ConversationController extends Controller
         })->findOrFail($id);
 
         $messages = $conversation->messages()
-            ->with(['sentByUser', 'sentByFlow', 'sentByAiHubAgent'])
+            ->with(['contact', 'sentByUser', 'sentByFlow', 'sentByAiHubAgent'])
             ->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->get();
 
         return MessageResource::collection($messages)->response();

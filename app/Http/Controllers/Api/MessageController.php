@@ -23,6 +23,7 @@ class MessageController extends Controller
         $query = Message::with([
             'repliedMessage',
             'reactions',
+            'contact',
             'sentByUser',
             'sentByFlow',
             'sentByAiHubAgent',

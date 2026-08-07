@@ -11,6 +11,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Conversation\GroupConversationService;
 use App\Services\V1\SendMessage\SendMessageHandlerInterface;
 use Carbon\Carbon;
 use Exception;
@@ -92,25 +93,36 @@ class TelegramHandler implements SendMessageHandlerInterface
                 }
             }
             $contactUsername = $responseArray['chat']['username'] ?? null;
+            $isGroup = in_array($responseArray['chat']['type'] ?? null, ['group', 'supergroup'], true);
 
-            $message = DB::transaction(function() use ($connection, $conversationId, $messageId, $messageText, $sentAt, $contactExternalId, $contactName, $contactUsername, $responseArray) {
-                // Create or find contact
-                $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
+            $message = DB::transaction(function() use ($connection, $conversationId, $messageId, $messageText, $sentAt, $contactExternalId, $contactName, $contactUsername, $isGroup, $responseArray) {
+                if ($isGroup) {
+                    // Group chats never map to a person contact — resolve the
+                    // group conversation (keyed by chat id, contact = the group).
+                    $conversation = GroupConversationService::resolveConversation(
+                        $connection,
+                        (string) $conversationId,
+                        $responseArray['chat']['title'] ?? null,
+                    );
+                } else {
+                    // Create or find contact
+                    $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
 
-                // Find or create conversation
-                $conversation = Conversation::where('external_id', $conversationId)
-                    ->where('contact_id', $contact->id)
-                    ->where('connection_id', $connection->id)
-                    ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
-                    ->first();
+                    // Find or create conversation
+                    $conversation = Conversation::where('external_id', $conversationId)
+                        ->where('contact_id', $contact->id)
+                        ->where('connection_id', $connection->id)
+                        ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
+                        ->first();
 
-                if (!$conversation) {
-                    $conversation = Conversation::create([
-                        'contact_id'    => $contact->id,
-                        'connection_id' => $connection->id,
-                        'external_id'   => $conversationId,
-                        'status'        => Status::Pending,
-                    ]);
+                    if (!$conversation) {
+                        $conversation = Conversation::create([
+                            'contact_id'    => $contact->id,
+                            'connection_id' => $connection->id,
+                            'external_id'   => $conversationId,
+                            'status'        => Status::Pending,
+                        ]);
+                    }
                 }
 
                 // Create outgoing message

@@ -19,6 +19,7 @@ class ContactResource extends JsonResource
             'id' => $this->id,
             'channel' => $this->channel,
             'name' => $this->name,
+            'is_group' => (bool) $this->is_group,
             'username' => $this->username,
             'photo_profile_url' => $this->photo_profile ? Storage::disk('local')->temporaryUrl($this->photo_profile, now()->addMonths(6)) : null,
         ];

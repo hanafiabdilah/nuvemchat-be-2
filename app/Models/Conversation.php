@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status;
+use App\Enums\Conversation\Type;
 use Illuminate\Database\Eloquent\Model;
 
 class Conversation extends Model
@@ -13,6 +14,7 @@ class Conversation extends Model
         'external_id',
         'connection_id',
         'user_id', // agent
+        'type',
         'status',
         'needs_human',
         'handoff_reason',
@@ -21,11 +23,21 @@ class Conversation extends Model
     ];
 
     protected $casts = [
+        'type' => Type::class,
         'status' => Status::class,
         'needs_human' => 'boolean',
         'handoff_at' => 'datetime',
         'last_message_at' => 'datetime',
     ];
+
+    protected $attributes = [
+        'type' => Type::Private->value,
+    ];
+
+    public function isGroup(): bool
+    {
+        return $this->type === Type::Group;
+    }
 
     // Eager-loadable variant of last_message (one query per page instead of one
     // per conversation). Same ordering as the accessor below.
@@ -46,6 +58,15 @@ class Conversation extends Model
     public function contact()
     {
         return $this->belongsTo(Contact::class);
+    }
+
+    /**
+     * Contacts that have spoken in this conversation. Only meaningful for
+     * group conversations; the group contact itself is never listed here.
+     */
+    public function participants()
+    {
+        return $this->belongsToMany(Contact::class, 'conversation_participants')->withTimestamps();
     }
 
     public function connection()
