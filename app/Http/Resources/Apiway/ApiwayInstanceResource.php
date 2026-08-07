@@ -20,6 +20,7 @@ class ApiwayInstanceResource extends JsonResource
                 'id' => $this->connection->id,
                 'name' => $this->connection->name,
                 'status' => $this->connection->status,
+                'phone_number' => $this->connection->credentials['phone_number'] ?? null,
             ] : null),
             'subscription' => new ApiwaySubscriptionResource($this->whenLoaded('subscription')),
             'created_at' => $this->created_at,

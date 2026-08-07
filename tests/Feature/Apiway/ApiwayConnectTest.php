@@ -123,6 +123,36 @@ test('connect links an owned instance: partner token fetched, webhook registered
         && str_contains($request->url(), '/webhook'));
 });
 
+test('a logged-in status persists the paired WhatsApp number from the session jid', function () {
+    $tenant = connectTenant();
+    $connection = apiwayConnection($tenant);
+    $instance = ownedInstance($tenant, ['connection_id' => $connection->id]);
+    $connection->update(['credentials' => [
+        'instance_id' => $instance->provider_instance_id,
+        'token' => 'instance-token-1',
+        'apiway_instance_id' => $instance->id,
+    ]]);
+
+    Http::fake([
+        'whats-api.ipbr.pro/v1/instance/status-instance*' => Http::response([
+            'success' => true,
+            'data' => ['connected' => true, 'loggedIn' => true, 'jid' => '5511999999999:73@s.whatsapp.net'],
+        ]),
+        'whats-api.ipbr.pro/v1/instance/disconnect*' => Http::response(['success' => true]),
+    ]);
+
+    (new WhatsappApiwayChannel)->checkStatus($connection);
+    $connection->refresh();
+
+    expect($connection->status)->toBe(ConnectionStatus::Active)
+        ->and($connection->credentials['phone_number'])->toBe('5511999999999');
+
+    // Disconnect drops it — a new pairing may bring a different number.
+    (new WhatsappApiwayChannel)->disconnect($connection);
+
+    expect($connection->fresh()->credentials['phone_number'])->toBeNull();
+});
+
 test('an instance owned by another connection cannot be linked', function () {
     $tenant = connectTenant();
     $other = apiwayConnection($tenant);

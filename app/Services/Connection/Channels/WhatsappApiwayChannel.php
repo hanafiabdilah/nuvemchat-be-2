@@ -209,13 +209,36 @@ class WhatsappApiwayChannel implements ChannelInterface
         $data = $statusJson['data'] ?? $statusJson;
         $isActive = ($data['connected'] ?? false) === true && ($data['loggedIn'] ?? false) === true;
 
-        $connection->update([
-            'status' => $isActive ? Status::Active : Status::Inactive,
-        ]);
+        $updates = ['status' => $isActive ? Status::Active : Status::Inactive];
+
+        // The paired number comes from the session JID; keep it on the
+        // credentials so the SPA can show which WhatsApp number this is.
+        if ($isActive && ($phone = $this->phoneFromJid($data['jid'] ?? null))) {
+            $updates['credentials'] = array_merge($connection->credentials, ['phone_number' => $phone]);
+        }
+
+        $connection->update($updates);
 
         \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
 
         return $connection;
+    }
+
+    /**
+     * Bare phone from a whatsmeow session JID:
+     * "5511999999999:73@s.whatsapp.net" → "5511999999999".
+     */
+    private function phoneFromJid(?string $jid): ?string
+    {
+        if (! $jid) {
+            return null;
+        }
+
+        $user = explode('@', $jid)[0];   // strip server
+        $user = explode(':', $user)[0];  // strip device id
+        $user = explode('.', $user)[0];  // strip any agent suffix
+
+        return $user !== '' ? $user : null;
     }
 
     public function checkStatus(Connection $connection): void
@@ -244,7 +267,8 @@ class WhatsappApiwayChannel implements ChannelInterface
 
         $connection->update([
             'status' => Status::Inactive,
-            'credentials' => array_merge($connection->credentials, ['qr_code' => null]),
+            // A fresh pairing may be a different number — drop the stale one.
+            'credentials' => array_merge($connection->credentials, ['qr_code' => null, 'phone_number' => null]),
         ]);
     }
 
