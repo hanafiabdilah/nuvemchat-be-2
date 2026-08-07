@@ -609,21 +609,31 @@ class ConnectionController extends Controller
 
         $appId = FacebookConfig::appId();
         $redirectUri = urlencode(FacebookConfig::redirectUri());
-        // pages_show_list → /me/accounts, pages_messaging → Send API,
-        // pages_manage_metadata → /{page}/subscribed_apps.
-        $scope = urlencode('pages_show_list,pages_messaging,pages_manage_metadata');
 
         // auth_type=rerequest: once a user has completed this app's login,
         // Facebook silently skips the "choose the Pages" screen on later
         // logins — anyone who opted in zero Pages would be stuck with an
         // empty /me/accounts forever. rerequest re-shows that screen so the
         // user can add the missing Page(s).
-        return 'https://www.facebook.com/v25.0/dialog/oauth'
+        $url = 'https://www.facebook.com/v25.0/dialog/oauth'
             . "?client_id={$appId}"
             . "&redirect_uri={$redirectUri}"
             . '&response_type=code'
             . '&auth_type=rerequest'
-            . "&scope={$scope}"
             . '&state=' . urlencode($state);
+
+        // Business-type apps use Facebook Login for Business: the dialog takes
+        // a login configuration (config_id) and IGNORES the classic scope
+        // param — without it the token carries no page permissions at all.
+        // The configuration must grant pages_show_list + pages_messaging +
+        // pages_manage_metadata over the Pages asset (user access token).
+        if ($messengerConfigId = FacebookConfig::messengerConfigId()) {
+            return $url . '&config_id=' . urlencode($messengerConfigId);
+        }
+
+        // Consumer-type apps: classic scope-based request.
+        // pages_show_list → /me/accounts, pages_messaging → Send API,
+        // pages_manage_metadata → /{page}/subscribed_apps.
+        return $url . '&scope=' . urlencode('pages_show_list,pages_messaging,pages_manage_metadata');
     }
 }

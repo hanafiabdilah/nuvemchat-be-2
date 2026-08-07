@@ -15,6 +15,7 @@ class FacebookConfig
     public const KEY_APP_SECRET = 'facebook.app_secret';
     public const KEY_WEBHOOK_VERIFY_TOKEN = 'facebook.webhook_verify_token';
     public const KEY_CONFIG_ID = 'facebook.config_id';
+    public const KEY_MESSENGER_CONFIG_ID = 'facebook.messenger_config_id';
 
     public static function appId(): ?string
     {
@@ -35,6 +36,18 @@ class FacebookConfig
     public static function configId(): ?string
     {
         return Setting::get(self::KEY_CONFIG_ID);
+    }
+
+    /**
+     * Facebook Login for Business configuration ID for the Messenger popup
+     * flow. Business-type Meta apps IGNORE the classic `scope` param on the
+     * OAuth dialog — permissions must come from a login configuration, or the
+     * token ends up with zero page permissions (empty /me/accounts). Separate
+     * from KEY_CONFIG_ID, which is the WhatsApp Embedded Signup config.
+     */
+    public static function messengerConfigId(): ?string
+    {
+        return Setting::get(self::KEY_MESSENGER_CONFIG_ID);
     }
 
     /**

@@ -61,6 +61,7 @@ class SettingSeeder extends Seeder
             FacebookConfig::KEY_APP_SECRET => env('FACEBOOK_APP_SECRET'),
             FacebookConfig::KEY_WEBHOOK_VERIFY_TOKEN => env('FACEBOOK_WEBHOOK_VERIFY_TOKEN'),
             FacebookConfig::KEY_CONFIG_ID => env('FACEBOOK_CONFIG_ID'),
+            FacebookConfig::KEY_MESSENGER_CONFIG_ID => env('FACEBOOK_MESSENGER_CONFIG_ID'),
 
             TikTokConfig::KEY_APP_ID => env('TIKTOK_APP_ID'),
             TikTokConfig::KEY_APP_SECRET => env('TIKTOK_APP_SECRET'),
