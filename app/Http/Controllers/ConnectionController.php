@@ -875,7 +875,21 @@ class ConnectionController extends Controller
         $pages = $pagesResponse->json()['data'] ?? [];
 
         if (empty($pages)) {
-            return redirect($resultUrl . '?status=error&message=' . urlencode('No Facebook Pages available on this account. Grant access to at least one Page during login.'));
+            // 200 + empty data means the token is fine but zero Pages were
+            // opted in during login (granular permissions), or the FB user has
+            // no role on the app while it is in development mode. Snapshot the
+            // granted permissions so the log tells those cases apart.
+            $permissions = Http::get('https://graph.facebook.com/v25.0/me/permissions', [
+                'access_token' => $userToken,
+            ]);
+
+            Log::warning('Messenger OAuth: /me/accounts returned no pages', [
+                'connection_id' => $connection->id,
+                'accounts_response' => $pagesResponse->json(),
+                'permissions' => $permissions->json(),
+            ]);
+
+            return redirect($resultUrl . '?status=error&message=' . urlencode('No Facebook Pages were shared with this app. Try again and, on the Facebook screen, tap "Edit access" and select at least one Page. If the app is in development mode, the Facebook user also needs a role on the app.'));
         }
 
         if (count($pages) === 1) {

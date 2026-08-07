@@ -613,10 +613,16 @@ class ConnectionController extends Controller
         // pages_manage_metadata → /{page}/subscribed_apps.
         $scope = urlencode('pages_show_list,pages_messaging,pages_manage_metadata');
 
+        // auth_type=rerequest: once a user has completed this app's login,
+        // Facebook silently skips the "choose the Pages" screen on later
+        // logins — anyone who opted in zero Pages would be stuck with an
+        // empty /me/accounts forever. rerequest re-shows that screen so the
+        // user can add the missing Page(s).
         return 'https://www.facebook.com/v25.0/dialog/oauth'
             . "?client_id={$appId}"
             . "&redirect_uri={$redirectUri}"
             . '&response_type=code'
+            . '&auth_type=rerequest'
             . "&scope={$scope}"
             . '&state=' . urlencode($state);
     }
