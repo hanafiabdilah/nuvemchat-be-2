@@ -130,6 +130,25 @@ test('a group title change renames the group contact without creating a message'
         ->and(Contact::where('is_group', true)->first()->name)->toBe('Suporte N2');
 });
 
+test('a my_chat_member update (bot added to a group) is acknowledged without throwing', function () {
+    Event::fake();
+    $connection = telegramGroupConnection();
+
+    (new TelegramHandler)->handle($connection, [
+        'update_id' => 900000003,
+        'my_chat_member' => [
+            'chat' => ['id' => TG_GROUP_ID, 'title' => 'Time de Suporte', 'type' => 'supergroup'],
+            'from' => ['id' => TG_ALICE_ID, 'is_bot' => false, 'first_name' => 'Alice'],
+            'date' => 1754500000,
+            'old_chat_member' => ['user' => ['id' => 42, 'is_bot' => true], 'status' => 'left'],
+            'new_chat_member' => ['user' => ['id' => 42, 'is_bot' => true], 'status' => 'member'],
+        ],
+    ]);
+
+    expect(Message::count())->toBe(0)
+        ->and(Conversation::count())->toBe(0);
+});
+
 test('member join/leave service messages are ignored', function () {
     Event::fake();
     $connection = telegramGroupConnection();

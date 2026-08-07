@@ -106,7 +106,14 @@ class TelegramHandler implements ChatHandlerInterface
                 $this->handleEdited($connection, $payload);
                 break;
             default:
-                throw new \Exception('Unsupported Telegram event type');
+                // Other update types (my_chat_member when the bot is added to /
+                // removed from a group, channel_post, …) must be acknowledged,
+                // not thrown: a non-200 makes Telegram retry the update and
+                // hold every later update behind it — messages stop arriving.
+                Log::info('TelegramHandler: Ignoring unsupported update type', [
+                    'connection_id' => $connection->id,
+                    'update_keys' => array_keys($payload),
+                ]);
                 break;
         }
 
