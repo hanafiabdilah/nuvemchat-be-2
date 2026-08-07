@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
 use App\Events\ConnectionUpdated;
 use App\Jobs\DeauthorizeRevokedWhatsAppConnections;
@@ -507,6 +508,16 @@ class ConnectionController extends Controller
      */
     public function facebookCallback(Request $request)
     {
+        // The Messenger popup flow marks itself via state.channel; everything
+        // else on this route is WhatsApp Embedded Signup (JSON responses).
+        if ($state = $request->input('state')) {
+            $stateData = json_decode(base64_decode($state), true) ?: [];
+
+            if (($stateData['channel'] ?? null) === Channel::Messenger->value) {
+                return $this->messengerCallback($request, $stateData);
+            }
+        }
+
         $error = $request->input('error');
         if ($error) {
             Log::error('Facebook OAuth error', [
@@ -757,10 +768,160 @@ class ConnectionController extends Controller
         }
     }
 
+    /**
+     * Messenger leg of the shared /oauth/facebook/callback route. This is a
+     * browser redirect flow (OAuth popup, like Instagram/TikTok), so every
+     * outcome redirects to the SPA's /oauth/result page — never JSON.
+     */
+    private function messengerCallback(Request $request, array $stateData)
+    {
+        $resultUrl = config('app.frontend_url') . '/oauth/result';
+
+        if ($error = $request->input('error')) {
+            Log::error('Messenger OAuth error', [
+                'error' => $error,
+                'error_reason' => $request->input('error_reason'),
+                'error_description' => $request->input('error_description'),
+            ]);
+
+            return redirect($resultUrl . '?status=error&message=' . urlencode('Facebook OAuth error: ' . ($request->input('error_description') ?: $error)));
+        }
+
+        $code = $request->input('code');
+        $connectionId = $stateData['connection_id'] ?? null;
+
+        if (!$code || !$connectionId) {
+            Log::error('Missing code or connection_id in Messenger callback');
+
+            return redirect($resultUrl . '?status=error&message=' . urlencode('Invalid Facebook callback: missing code or state parameter'));
+        }
+
+        try {
+            $connection = Connection::findOrFail($connectionId);
+
+            // Unlike Embedded Signup, this code was issued against a redirect
+            // URI, so the exchange must repeat the exact same one.
+            $response = Http::asForm()->post('https://graph.facebook.com/v25.0/oauth/access_token', [
+                'client_id' => FacebookConfig::appId(),
+                'client_secret' => FacebookConfig::appSecret(),
+                'redirect_uri' => FacebookConfig::redirectUri(),
+                'code' => $code,
+            ]);
+
+            if (!$response->successful()) {
+                Log::error('Failed to exchange Messenger code for token', [
+                    'response' => $response->json(),
+                    'status' => $response->status(),
+                ]);
+                throw new \Exception('Failed to obtain access token: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+            }
+
+            $accessToken = $response->json()['access_token'] ?? null;
+            if (!$accessToken) {
+                throw new \Exception('Invalid response from Facebook OAuth.');
+            }
+
+            return $this->handleMessengerCallback($connection, $accessToken);
+        } catch (\Throwable $th) {
+            Log::error('Error processing Messenger callback', [
+                'error' => $th->getMessage(),
+                'trace' => $th->getTraceAsString(),
+            ]);
+
+            return redirect($resultUrl . '?status=error&message=' . urlencode('Failed to connect Facebook Page: ' . $th->getMessage()));
+        }
+    }
+
     private function handleMessengerCallback(Connection $connection, string $accessToken)
     {
-        // Placeholder for future Messenger implementation
-        throw new \Exception('Messenger integration is not yet implemented');
+        $resultUrl = config('app.frontend_url') . '/oauth/result';
+
+        // Long-lived user token (~60 days). Page tokens minted from it do not
+        // expire, so nothing needs a refresh scheduler afterwards.
+        $exchange = Http::get('https://graph.facebook.com/v25.0/oauth/access_token', [
+            'grant_type' => 'fb_exchange_token',
+            'client_id' => FacebookConfig::appId(),
+            'client_secret' => FacebookConfig::appSecret(),
+            'fb_exchange_token' => $accessToken,
+        ]);
+
+        if ($exchange->successful()) {
+            $userToken = $exchange->json()['access_token'] ?? $accessToken;
+        } else {
+            Log::warning('Failed to get long-lived Facebook user token, using short-lived token', [
+                'response' => $exchange->json(),
+            ]);
+            $userToken = $accessToken;
+        }
+
+        // App-scoped user id (ASID) — the id Meta sends in deauth/data-deletion
+        // signed_requests, persisted to match those callbacks back to this row.
+        $me = Http::get('https://graph.facebook.com/v25.0/me', [
+            'fields' => 'id,name',
+            'access_token' => $userToken,
+        ]);
+        $fbUserId = $me->successful() ? ($me->json()['id'] ?? null) : null;
+
+        // Pages this user granted access to (pages_show_list).
+        $pagesResponse = Http::get('https://graph.facebook.com/v25.0/me/accounts', [
+            'fields' => 'id,name,access_token',
+            'access_token' => $userToken,
+        ]);
+
+        if (!$pagesResponse->successful()) {
+            throw new \Exception('Failed to list Facebook Pages: ' . ($pagesResponse->json()['error']['message'] ?? 'Unknown error'));
+        }
+
+        $pages = $pagesResponse->json()['data'] ?? [];
+
+        if (empty($pages)) {
+            return redirect($resultUrl . '?status=error&message=' . urlencode('No Facebook Pages available on this account. Grant access to at least one Page during login.'));
+        }
+
+        if (count($pages) === 1) {
+            $page = $pages[0];
+
+            $this->connectionService->connect($connection, [
+                'page_id' => (string) $page['id'],
+                'page_name' => $page['name'] ?? null,
+                'access_token' => $page['access_token'] ?? null,
+                'user_access_token' => $userToken,
+                'fb_user_id' => $fbUserId,
+            ]);
+
+            broadcast(new ConnectionUpdated($connection->fresh()));
+
+            Log::info('Messenger page connected successfully', [
+                'connection_id' => $connection->id,
+                'page_id' => $page['id'],
+            ]);
+
+            return redirect($resultUrl . '?status=success&message=' . urlencode('Facebook Page connected successfully!'));
+        }
+
+        // Multiple Pages: stash the choice list (ids + names only — page tokens
+        // are re-fetched with the user token at connect time). The SPA renders
+        // a picker and finishes via POST /connections/{id}/connect {page_id}.
+        $connection->update([
+            'status' => Status::Pending,
+            'credentials' => [
+                'user_access_token' => $userToken,
+                'fb_user_id' => $fbUserId,
+                'pending_pages' => collect($pages)
+                    ->map(fn ($page) => ['id' => (string) $page['id'], 'name' => $page['name'] ?? ''])
+                    ->values()
+                    ->all(),
+            ],
+        ]);
+
+        broadcast(new ConnectionUpdated($connection->fresh()));
+
+        Log::info('Messenger OAuth authorized; awaiting page selection', [
+            'connection_id' => $connection->id,
+            'page_count' => count($pages),
+        ]);
+
+        return redirect($resultUrl . '?status=success&message=' . urlencode('Authorized! Now choose which Page to connect.'));
     }
 
     /**

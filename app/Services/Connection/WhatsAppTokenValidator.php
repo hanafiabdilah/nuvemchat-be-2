@@ -124,7 +124,9 @@ class WhatsAppTokenValidator
      */
     public function deauthorizeByFacebookUserId(string $facebookUserId): Collection
     {
-        $connections = Connection::where('channel', Channel::WhatsappOfficial)
+        // Messenger connections store the same app-scoped user id: revoking the
+        // Facebook app kills the Page token too, so both channels deactivate.
+        $connections = Connection::whereIn('channel', [Channel::WhatsappOfficial, Channel::Messenger])
             ->where('credentials->fb_user_id', $facebookUserId)
             ->get();
 
@@ -155,7 +157,7 @@ class WhatsAppTokenValidator
      */
     public function deleteDataByFacebookUserId(string $facebookUserId): array
     {
-        $connections = Connection::where('channel', Channel::WhatsappOfficial)
+        $connections = Connection::whereIn('channel', [Channel::WhatsappOfficial, Channel::Messenger])
             ->where('credentials->fb_user_id', $facebookUserId)
             ->get();
 

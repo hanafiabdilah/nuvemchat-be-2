@@ -5,6 +5,7 @@ namespace App\Services\Webhook\Factories;
 use App\Enums\Connection\Channel;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Handlers\Chat\InstagramHandler;
+use App\Services\Webhook\Handlers\Chat\MessengerHandler;
 use App\Services\Webhook\Handlers\Chat\TelegramHandler;
 use App\Services\Webhook\Handlers\Chat\TikTokHandler;
 use App\Services\Webhook\Handlers\Chat\WhatsappOfficialHandler;
@@ -19,6 +20,7 @@ class ChatFactory
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
             Channel::WhatsappApiway => new WhatsappApiwayHandler(),
             Channel::Instagram => new InstagramHandler(),
+            Channel::Messenger => new MessengerHandler(),
             Channel::TikTok => new TikTokHandler(),
             Channel::Email => throw new \InvalidArgumentException('Email channel not supported for this operation yet'),
             default => throw new \InvalidArgumentException('Unsupported channel type for chat handler.'),

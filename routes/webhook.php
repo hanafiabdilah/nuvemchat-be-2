@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Webhook\ChatController;
+use App\Http\Controllers\Webhook\FacebookController;
 use App\Http\Controllers\Webhook\InstagramController;
 use App\Http\Controllers\Webhook\MercadoPagoWebhookController;
 use App\Http\Controllers\Webhook\TikTokController;
@@ -16,6 +17,10 @@ Route::post('/webhook/instagram', [InstagramController::class, 'handle'])->name(
 
 Route::get('/webhook/whatsapp', [WhatsAppController::class, 'verify'])->name('webhook.whatsapp.verify');
 Route::post('/webhook/whatsapp', [WhatsAppController::class, 'handle'])->name('webhook.whatsapp.handle');
+
+// Messenger (Facebook Page) events — object=page, connection resolved by page_id.
+Route::get('/webhook/facebook', [FacebookController::class, 'verify'])->name('webhook.facebook.verify');
+Route::post('/webhook/facebook', [FacebookController::class, 'handle'])->name('webhook.facebook.handle');
 
 // TikTok Business Messaging: one app-level callback URL (registered via
 // TikTokAuthClient::updateWebhookCallback), connection resolved by user_openid.

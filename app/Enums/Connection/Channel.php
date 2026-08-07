@@ -13,4 +13,5 @@ enum Channel: string
     case LiveChatWidget = 'live_chat_widget';
     case Email = 'email';
     case TikTok = 'tiktok';
+    case Messenger = 'messenger';
 }

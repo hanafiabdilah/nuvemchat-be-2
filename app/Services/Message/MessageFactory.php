@@ -6,6 +6,7 @@ use App\Enums\Connection\Channel;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\Handlers\InstagramHandler;
 use App\Services\Message\Handlers\LiveChatWidgetHandler;
+use App\Services\Message\Handlers\MessengerHandler;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
 use App\Services\Message\Handlers\TelegramHandler;
 use App\Services\Message\Handlers\TikTokHandler;
@@ -18,6 +19,7 @@ class MessageFactory
     {
         return match($channel){
             Channel::Instagram => new InstagramHandler(),
+            Channel::Messenger => new MessengerHandler(),
             Channel::WhatsappOfficial => new WhatsappOfficialHandler(),
             Channel::Telegram => new TelegramHandler(),
             Channel::TikTok => new TikTokHandler(),

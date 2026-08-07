@@ -17,6 +17,7 @@ use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
 use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\ConnectionService;
+use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\TikTok\TikTokAuthClient;
 use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
@@ -408,9 +409,10 @@ class ConnectionController extends Controller
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
-        // Instagram and TikTok use OAuth URL generation (WhatsApp uses embedded signup in frontend)
+        // Instagram, Messenger and TikTok use OAuth URL generation (WhatsApp uses embedded signup in frontend)
         $oauthUrl = match ($connection->channel) {
             Channel::Instagram => $this->instagramOauth($connection),
+            Channel::Messenger => $this->messengerOauth($connection),
             Channel::TikTok => $this->tiktokOauth($connection),
             default => null,
         };
@@ -593,5 +595,29 @@ class ConnectionController extends Controller
         ]));
 
         return TikTokAuthClient::authorizeUrl($state);
+    }
+
+    private function messengerOauth(Connection $connection): string
+    {
+        // channel marks the state so the shared /oauth/facebook/callback route
+        // can tell this popup flow apart from WhatsApp Embedded Signup.
+        $state = base64_encode(json_encode([
+            'connection_id' => $connection->id,
+            'channel' => Channel::Messenger->value,
+            'timestamp' => time(),
+        ]));
+
+        $appId = FacebookConfig::appId();
+        $redirectUri = urlencode(FacebookConfig::redirectUri());
+        // pages_show_list → /me/accounts, pages_messaging → Send API,
+        // pages_manage_metadata → /{page}/subscribed_apps.
+        $scope = urlencode('pages_show_list,pages_messaging,pages_manage_metadata');
+
+        return 'https://www.facebook.com/v25.0/dialog/oauth'
+            . "?client_id={$appId}"
+            . "&redirect_uri={$redirectUri}"
+            . '&response_type=code'
+            . "&scope={$scope}"
+            . '&state=' . urlencode($state);
     }
 }

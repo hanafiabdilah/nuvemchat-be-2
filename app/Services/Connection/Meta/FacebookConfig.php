@@ -36,4 +36,17 @@ class FacebookConfig
     {
         return Setting::get(self::KEY_CONFIG_ID);
     }
+
+    /**
+     * OAuth redirect URI for the Messenger popup flow — always this backend's
+     * own callback route (whitelist it in the Meta App dashboard). Deliberately
+     * NOT a setting: a configurable facebook.redirect_uri was removed once
+     * (see FacebookRedirectUriRemovedTest) because WhatsApp Embedded Signup
+     * must never send one, and there is nothing else to configure — the code
+     * can only ever land here.
+     */
+    public static function redirectUri(): string
+    {
+        return route('oauth.facebook.callback');
+    }
 }
