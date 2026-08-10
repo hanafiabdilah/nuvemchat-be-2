@@ -9,6 +9,7 @@ class MessageReaction extends Model
 {
     protected $fillable = [
         'message_id',
+        'contact_id',
         'emoji',
         'sender_type',
     ];
@@ -20,5 +21,14 @@ class MessageReaction extends Model
     public function message()
     {
         return $this->belongsTo(Message::class);
+    }
+
+    /**
+     * Which group member reacted. Null in a private chat, where sender_type
+     * already identifies the two possible reactors.
+     */
+    public function contact()
+    {
+        return $this->belongsTo(Contact::class);
     }
 }

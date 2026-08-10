@@ -281,3 +281,124 @@ test('status posts and broadcast lists never become conversations', function () 
     expect(Conversation::count())->toBe(1)
         ->and(Conversation::first()->external_id)->toBe(APW_GROUP_JID);
 });
+
+/**
+ * Verbatim shape of the reaction whatsmeow sent for group
+ * 555491607349-1623173607@g.us. `key.ID` is the message being reacted to;
+ * `key.participant` is who *sent* that message, not who reacted.
+ */
+function apiwayReaction(string $targetId, string $emoji, array $infoOverrides = []): array
+{
+    $payload = apiwayGroupMessage(array_merge(['ID' => 'REACT-'.$targetId.'-'.md5($emoji), 'Type' => 'reaction'], $infoOverrides));
+
+    $payload['event']['Message'] = [
+        'reactionMessage' => [
+            'key' => [
+                'ID' => $targetId,
+                'fromMe' => false,
+                'participant' => '9359337734267@lid',
+                'remoteJID' => APW_GROUP_JID,
+            ],
+            'senderTimestampMS' => 1786343613105,
+            'text' => $emoji,
+        ],
+    ];
+
+    return $payload;
+}
+
+test('a group reaction attaches to the target message instead of becoming an unsupported bubble', function () {
+    Event::fake();
+    $connection = apiwayGroupConnection();
+    $handler = new WhatsappApiwayHandler;
+
+    $handler->handle($connection, apiwayGroupMessage(['ID' => 'TARGET-1'], ['conversation' => 'Blz']));
+    $handler->handle($connection, apiwayReaction('TARGET-1', '👍🏻'));
+
+    $target = Message::where('external_id', 'TARGET-1')->first();
+
+    expect(Message::count())->toBe(1) // the reaction is not a message of its own
+        ->and(Message::where('message_type', \App\Enums\Message\MessageType::Unsupported)->count())->toBe(0)
+        ->and($target->reactions)->toHaveCount(1)
+        ->and($target->reactions->first()->emoji)->toBe('👍🏻');
+});
+
+test('several group members can react to the same message without overwriting each other', function () {
+    Event::fake();
+    $connection = apiwayGroupConnection();
+    $handler = new WhatsappApiwayHandler;
+
+    $handler->handle($connection, apiwayGroupMessage(['ID' => 'TARGET-2'], ['conversation' => 'Blz']));
+
+    $handler->handle($connection, apiwayReaction('TARGET-2', '👍🏻'));
+    $handler->handle($connection, apiwayReaction('TARGET-2', '❤️', [
+        'Sender' => '44226083565660@lid',
+        'SenderAlt' => APW_BOB_PHONE.'@s.whatsapp.net',
+        'PushName' => 'Bob',
+    ]));
+
+    $target = Message::where('external_id', 'TARGET-2')->first();
+    $emojis = $target->reactions()->pluck('emoji')->all();
+
+    // Under the old (message_id, sender_type) key Bob's ❤️ overwrote Alice's 👍🏻.
+    expect($target->reactions()->count())->toBe(2)
+        ->and($emojis)->toContain('👍🏻')
+        ->and($emojis)->toContain('❤️')
+        ->and($target->reactions()->pluck('contact_id')->filter()->unique())->toHaveCount(2);
+});
+
+test('a member changing their reaction replaces only their own', function () {
+    Event::fake();
+    $connection = apiwayGroupConnection();
+    $handler = new WhatsappApiwayHandler;
+
+    $handler->handle($connection, apiwayGroupMessage(['ID' => 'TARGET-3'], ['conversation' => 'Blz']));
+
+    // Alice reacts, Bob reacts, then Alice changes her mind.
+    $handler->handle($connection, apiwayReaction('TARGET-3', '👍🏻'));
+    $handler->handle($connection, apiwayReaction('TARGET-3', '❤️', [
+        'Sender' => '44226083565660@lid',
+        'SenderAlt' => APW_BOB_PHONE.'@s.whatsapp.net',
+        'PushName' => 'Bob',
+    ]));
+    $handler->handle($connection, apiwayReaction('TARGET-3', '😂'));
+
+    $target = Message::where('external_id', 'TARGET-3')->first();
+    $emojis = $target->reactions()->pluck('emoji')->sort()->values()->all();
+
+    expect($target->reactions()->count())->toBe(2)
+        ->and($emojis)->toContain('😂')
+        ->and($emojis)->toContain('❤️')
+        ->and($emojis)->not->toContain('👍🏻');
+});
+
+test('an empty reaction text removes that member reaction only', function () {
+    Event::fake();
+    $connection = apiwayGroupConnection();
+    $handler = new WhatsappApiwayHandler;
+
+    $handler->handle($connection, apiwayGroupMessage(['ID' => 'TARGET-4'], ['conversation' => 'Blz']));
+    $handler->handle($connection, apiwayReaction('TARGET-4', '👍🏻'));
+    $handler->handle($connection, apiwayReaction('TARGET-4', '❤️', [
+        'Sender' => '44226083565660@lid',
+        'SenderAlt' => APW_BOB_PHONE.'@s.whatsapp.net',
+        'PushName' => 'Bob',
+    ]));
+
+    $handler->handle($connection, apiwayReaction('TARGET-4', '')); // Alice un-reacts
+
+    $target = Message::where('external_id', 'TARGET-4')->first();
+
+    expect($target->reactions()->count())->toBe(1)
+        ->and($target->reactions()->first()->emoji)->toBe('❤️');
+});
+
+test('a reaction to an unknown message is ignored', function () {
+    Event::fake();
+    $connection = apiwayGroupConnection();
+
+    (new WhatsappApiwayHandler)->handle($connection, apiwayReaction('NEVER-SEEN', '👍🏻'));
+
+    expect(Message::count())->toBe(0)
+        ->and(Conversation::count())->toBe(0);
+});

@@ -12,6 +12,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\MessageReaction;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -108,6 +109,14 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
                     'chat' => $info['Chat'] ?? null,
                     'message_id' => $info['ID'] ?? null,
                 ]);
+
+                return;
+            }
+
+            // A reaction is not a message of its own — it decorates one that
+            // already exists, in a private chat or a group alike.
+            if (isset($event['Message']['reactionMessage'])) {
+                $this->handleReaction($connection, $event);
 
                 return;
             }
@@ -429,6 +438,88 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
         broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
         // No flow automation in groups (also guarded in FlowExecutor).
+    }
+
+    /**
+     * A 👍 on an existing message. `Message.reactionMessage` carries the target
+     * in `key.ID` and the emoji in `text`; an **empty** `text` is WhatsApp's
+     * "reaction removed".
+     *
+     * `key.participant` names who sent the *target* message, not who reacted —
+     * the reactor is in Info.Sender/SenderAlt, same as any other event.
+     */
+    private function handleReaction(Connection $connection, array $event): void
+    {
+        $info = $event['Info'] ?? [];
+        $reaction = $event['Message']['reactionMessage'] ?? [];
+        $targetExternalId = $reaction['key']['ID'] ?? null;
+        $emoji = $reaction['text'] ?? '';
+        $isFromMe = $info['IsFromMe'] ?? false;
+
+        if (! $targetExternalId) {
+            Log::warning('WhatsappApiwayHandler: reaction without a target', [
+                'connection_id' => $connection->id,
+                'message_id' => $info['ID'] ?? null,
+            ]);
+
+            return;
+        }
+
+        $target = Message::whereHas('conversation', fn ($q) => $q->where('connection_id', $connection->id))
+            ->where('external_id', $targetExternalId)
+            ->first();
+
+        if (! $target) {
+            // Reacting to a message older than this connection's history.
+            Log::info('WhatsappApiwayHandler: reaction target not found', [
+                'connection_id' => $connection->id,
+                'target_external_id' => $targetExternalId,
+            ]);
+
+            return;
+        }
+
+        $senderType = $isFromMe ? SenderType::Outgoing : SenderType::Incoming;
+        $reactor = null;
+
+        // In a group the reactor has to be part of the key: several members
+        // react to the same message, and keying on sender_type alone would
+        // make each new reaction overwrite the previous member's.
+        if (! $isFromMe && $target->conversation->isGroup()) {
+            $senderJids = [$info['SenderAlt'] ?? null, $info['Sender'] ?? null];
+            $reactorPhone = $this->resolvePhoneFromJids($connection, $senderJids);
+
+            if (! $reactorPhone) {
+                Log::warning('WhatsappApiwayHandler: group reaction without an identifiable sender', [
+                    'target_external_id' => $targetExternalId,
+                    'lid' => $this->lidFromJids($senderJids),
+                ]);
+
+                return;
+            }
+
+            $reactor = Contact::createFromExternalData(
+                $connection,
+                $reactorPhone,
+                ($info['PushName'] ?? null) ?: $reactorPhone,
+                $reactorPhone,
+            );
+            $this->rememberLid($reactor, $this->lidFromJids($senderJids));
+        }
+
+        $key = [
+            'message_id' => $target->id,
+            'sender_type' => $senderType,
+            'contact_id' => $reactor?->id,
+        ];
+
+        if ($emoji === '' || $emoji === null) {
+            MessageReaction::where($key)->delete();
+        } else {
+            MessageReaction::updateOrCreate($key, ['emoji' => $emoji]);
+        }
+
+        broadcast(new MessageUpdated($target->fresh()->load('reactions')));
     }
 
     /**
