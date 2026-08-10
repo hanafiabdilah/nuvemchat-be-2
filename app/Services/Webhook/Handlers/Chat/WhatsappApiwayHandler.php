@@ -156,14 +156,29 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
     {
         $info = $event['Info'] ?? [];
         $messageId = $info['ID'] ?? null;
-        $phone = $this->getContactExternalId($event);
+        $lid = $this->getContactLid($event);
+        $phone = $this->resolvePhoneFromJids($connection, $this->partnerJids($event));
         $contactName = $this->getContactName($event) ?: $phone;
         $messageType = $this->getMessageType($event);
 
         if (! $messageId || ! $phone) {
+            // An unresolvable @lid means a re-delivery for someone we have
+            // never seen with a phone. Keying a contact off the @lid would
+            // create an unrepliable ghost thread, so drop it instead.
             Log::warning('WhatsappApiwayHandler: missing required fields', [
                 'message_id' => $messageId,
                 'phone' => $phone,
+                'lid' => $lid,
+                'unavailable_request_id' => $event['UnavailableRequestID'] ?? null,
+            ]);
+
+            return;
+        }
+
+        if ($this->alreadyStored($connection, $messageId)) {
+            Log::info('WhatsappApiwayHandler: message already stored on this connection', [
+                'message_id' => $messageId,
+                'unavailable_request_id' => $event['UnavailableRequestID'] ?? null,
             ]);
 
             return;
@@ -172,8 +187,9 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
         $isNewConversation = false;
         $conversationForWelcome = null;
 
-        $message = DB::transaction(function () use ($connection, $event, $messageId, $phone, $contactName, $messageType, &$isNewConversation, &$conversationForWelcome) {
+        $message = DB::transaction(function () use ($connection, $event, $messageId, $phone, $lid, $contactName, $messageType, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $phone, $contactName, $phone);
+            $this->rememberLid($contact, $lid);
 
             $conversation = Conversation::where('external_id', $phone)
                 ->where('contact_id', $contact->id)
@@ -248,17 +264,18 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
     {
         $info = $event['Info'] ?? [];
         $messageId = $info['ID'] ?? null;
-        $phone = $this->getContactExternalId($event);
+        $lid = $this->getContactLid($event);
+        $phone = $this->resolvePhoneFromJids($connection, $this->partnerJids($event));
 
         if (! $messageId || ! $phone) {
             return;
         }
 
-        if (Message::where('external_id', $messageId)->exists()) {
-            return; // already recorded (e.g. sent via our API)
+        if ($this->alreadyStored($connection, $messageId)) {
+            return; // already recorded (e.g. sent via our API, or re-delivered)
         }
 
-        $message = DB::transaction(function () use ($connection, $event, $messageId, $phone) {
+        $message = DB::transaction(function () use ($connection, $event, $messageId, $phone, $lid) {
             $conversation = Conversation::where('connection_id', $connection->id)
                 ->where('external_id', $phone)
                 ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending, ConversationStatus::AiHandling])
@@ -266,6 +283,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
 
             if (! $conversation) {
                 $contact = Contact::createFromExternalData($connection, $phone, $phone, $phone);
+                $this->rememberLid($contact, $lid);
                 $conversation = Conversation::create([
                     'contact_id' => $contact->id,
                     'connection_id' => $connection->id,
@@ -326,13 +344,19 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
 
         $senderPhone = null;
         $senderName = null;
+        $senderLid = null;
 
         if (! $isFromMe) {
-            $senderPhone = $this->extractPhone($info['SenderAlt'] ?? null)
-                ?? $this->extractPhone($info['Sender'] ?? null);
+            // Sender JIDs only — Chat is the group here, never the member.
+            $senderJids = [$info['SenderAlt'] ?? null, $info['Sender'] ?? null];
+            $senderLid = $this->lidFromJids($senderJids);
+            $senderPhone = $this->resolvePhoneFromJids($connection, $senderJids);
 
             if (! $senderPhone) {
-                Log::warning('WhatsappApiwayHandler: group message without sender', ['message_id' => $messageId]);
+                Log::warning('WhatsappApiwayHandler: group message without an identifiable sender', [
+                    'message_id' => $messageId,
+                    'lid' => $senderLid,
+                ]);
 
                 return;
             }
@@ -340,9 +364,17 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             $senderName = ($info['PushName'] ?? null) ?: $senderPhone;
         }
 
+        if ($this->alreadyStored($connection, $messageId)) {
+            Log::info('WhatsappApiwayHandler: group message already stored on this connection', [
+                'message_id' => $messageId,
+            ]);
+
+            return;
+        }
+
         // Locked around the transaction, not inside it: concurrent webhooks for
         // this group must not each create their own conversation row.
-        $message = GroupConversationService::lockChat($connection, $groupJid, fn () => DB::transaction(function () use ($connection, $event, $groupJid, $messageId, $messageType, $isFromMe, $senderPhone, $senderName) {
+        $message = GroupConversationService::lockChat($connection, $groupJid, fn () => DB::transaction(function () use ($connection, $event, $groupJid, $messageId, $messageType, $isFromMe, $senderPhone, $senderName, $senderLid) {
             $conversation = GroupConversationService::resolveConversation(
                 $connection,
                 $groupJid,
@@ -370,6 +402,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             }
 
             $sender = Contact::createFromExternalData($connection, $senderPhone, $senderName, $senderPhone);
+            $this->rememberLid($sender, $senderLid);
             GroupConversationService::addParticipant($conversation, $sender);
 
             return $conversation->messages()->create([
@@ -569,21 +602,104 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
 
     public function getContactExternalId(array $event): ?string
     {
+        return $this->phoneFromJids($this->partnerJids($event));
+    }
+
+    /**
+     * The partner's `@lid`, normalised to `<user>@lid` (device id stripped) so
+     * it matches how `contacts.lid` stores the alias.
+     */
+    public function getContactLid(array $event): ?string
+    {
+        return $this->lidFromJids($this->partnerJids($event));
+    }
+
+    /**
+     * The conversation partner's JIDs, best identity first. Direction matters:
+     * incoming (IsFromMe=false) → the sender, phone in SenderAlt; outgoing
+     * (IsFromMe=true) → the recipient, phone in RecipientAlt.
+     */
+    private function partnerJids(array $event): array
+    {
         $info = $event['Info'] ?? [];
 
-        // The conversation partner depends on direction:
-        //  - incoming (IsFromMe=false): the sender  → phone is in SenderAlt
-        //  - outgoing (IsFromMe=true):  the recipient → phone is in RecipientAlt
-        // Keying by the real phone (not the @lid) keeps both directions in the
-        // same conversation and lets the send handler reach the right number.
         if ($info['IsFromMe'] ?? false) {
-            return $this->extractPhone($info['RecipientAlt'] ?? null)
-                ?? $this->extractPhone($info['Chat'] ?? null);
+            return [$info['RecipientAlt'] ?? null, $info['Chat'] ?? null];
         }
 
-        return $this->extractPhone($info['SenderAlt'] ?? null)
-            ?? $this->extractPhone($info['Sender'] ?? null)
-            ?? $this->extractPhone($info['Chat'] ?? null);
+        return [$info['SenderAlt'] ?? null, $info['Sender'] ?? null, $info['Chat'] ?? null];
+    }
+
+    /**
+     * The first candidate that is a real phone JID. A bare `@lid` is skipped:
+     * it is an opaque handle, not a number, so it can neither key an identity
+     * nor be used as a send target.
+     */
+    private function phoneFromJids(array $jids): ?string
+    {
+        foreach ($jids as $jid) {
+            if (! $this->isLidJid($jid) && ($phone = $this->extractPhone($jid)) !== null) {
+                return $phone;
+            }
+        }
+
+        return null;
+    }
+
+    private function lidFromJids(array $jids): ?string
+    {
+        foreach ($jids as $jid) {
+            if ($this->isLidJid($jid) && ($user = $this->extractPhone($jid)) !== null) {
+                return $user.'@lid';
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The partner's phone number — the only identity a conversation may be
+     * keyed by, since it doubles as the send target.
+     *
+     * whatsmeow re-delivers a message it first failed to decrypt (the event
+     * carries `UnavailableRequestID`) with a STRIPPED Info block: no
+     * SenderAlt, no PushName, no Type — only the `@lid`. Taking that `@lid` as
+     * an identity forked the customer into a second contact and a second,
+     * unrepliable conversation, minutes after the good copy had already
+     * landed (prod 19445/19446, 19525/19526, 19560/19562). So a `@lid`-only
+     * event is resolved through the alias recorded when both were visible.
+     */
+    private function resolvePhoneFromJids(Connection $connection, array $jids): ?string
+    {
+        if (($phone = $this->phoneFromJids($jids)) !== null) {
+            return $phone;
+        }
+
+        $lid = $this->lidFromJids($jids);
+
+        if ($lid === null) {
+            return null;
+        }
+
+        return Contact::where('tenant_id', $connection->tenant_id)
+            ->where('lid', $lid)
+            ->value('external_id');
+    }
+
+    /**
+     * Record the `@lid` alias the first time an event shows both identities,
+     * so a later `@lid`-only re-delivery still resolves to this contact.
+     */
+    private function rememberLid(Contact $contact, ?string $lid): void
+    {
+        if ($lid !== null && $contact->lid !== $lid) {
+            $contact->update(['lid' => $lid]);
+        }
+    }
+
+    private function isLidJid(?string $jid): bool
+    {
+        return $jid !== null && str_ends_with($jid, '@lid');
     }
 
     /**
@@ -601,6 +717,18 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
         $user = explode('.', $user)[0];  // strip any agent suffix
 
         return $user !== '' ? $user : null;
+    }
+
+    /**
+     * Has this message already been stored on this connection? whatsmeow can
+     * re-deliver one message minutes later, and the copies need not resolve to
+     * the same conversation — so this check cannot be conversation-scoped.
+     */
+    private function alreadyStored(Connection $connection, string $messageId): bool
+    {
+        return Message::whereHas('conversation', fn ($q) => $q->where('connection_id', $connection->id))
+            ->where('external_id', $messageId)
+            ->exists();
     }
 
     // --- Media -------------------------------------------------------------
