@@ -18,6 +18,7 @@ class Contact extends Model
         'is_group',
         'username',
         'photo_profile',
+        'photo_synced_at',
         'meta'
     ];
 
@@ -60,6 +61,7 @@ class Contact extends Model
         'channel' => Channel::class,
         'name_locked' => 'boolean',
         'is_group' => 'boolean',
+        'photo_synced_at' => 'datetime',
     ];
 
     public function tenant()

@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -223,6 +224,8 @@ class InstagramHandler implements ChatHandlerInterface
             if($contact->wasRecentlyCreated) {
                 $this->updateContactInfo($contact, $connection, $contactExternalId, $isOutgoing);
             }
+
+            SyncContactPhoto::dispatchIfStale($contact, $connection);
 
             $conversation = Conversation::where('external_id', $conversationId)
                 ->where('contact_id', $contact->id)
@@ -673,7 +676,7 @@ class InstagramHandler implements ChatHandlerInterface
             // Fetch user info from Instagram API
             // Use the IGID (Instagram User ID) to query user information
             $response = Http::get("https://graph.instagram.com/v25.0/{$instagramUserId}", [
-                'fields' => 'name,username,profile_pic',
+                'fields' => 'name,username',
                 'access_token' => $accessToken,
             ]);
 
@@ -684,11 +687,6 @@ class InstagramHandler implements ChatHandlerInterface
                     'name' => $userInfo['name'] ?? $userInfo['username'] ?? $instagramUserId,
                     'username' => $userInfo['username'] ?? null,
                 ]);
-
-                // Download and save profile picture if available
-                if (!empty($userInfo['profile_pic'])) {
-                    $this->downloadProfilePicture($contact, $userInfo['profile_pic']);
-                }
 
                 Log::info('InstagramHandler: Contact info updated', [
                     'contact_id' => $contact->id,
@@ -729,47 +727,6 @@ class InstagramHandler implements ChatHandlerInterface
                 'is_outgoing' => $isOutgoing,
                 'error' => $th->getMessage(),
                 'trace' => $th->getTraceAsString(),
-            ]);
-        }
-    }
-
-    private function downloadProfilePicture(Contact $contact, string $profilePicUrl)
-    {
-        try {
-            // Download profile picture from Instagram CDN
-            $response = Http::get($profilePicUrl);
-
-            if (!$response->successful()) {
-                Log::warning('InstagramHandler: Failed to download profile picture', [
-                    'contact_id' => $contact->id,
-                    'url' => $profilePicUrl,
-                    'status' => $response->status(),
-                ]);
-                return;
-            }
-
-            // Determine extension from mime type or default to jpg
-            $mimeType = $response->header('Content-Type');
-            $extension = $this->getExtensionFromMimeType($mimeType) ?? 'jpg';
-
-            // Save profile photo
-            $photoPath = 'profile_photos/' . $contact->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($photoPath, $response->body());
-
-            $contact->update([
-                'photo_profile' => $photoPath,
-            ]);
-
-            Log::info('InstagramHandler: Profile picture downloaded successfully', [
-                'contact_id' => $contact->id,
-                'photo_path' => $photoPath,
-            ]);
-
-        } catch (\Throwable $th) {
-            Log::error('InstagramHandler: Error downloading profile picture', [
-                'contact_id' => $contact->id,
-                'url' => $profilePicUrl,
-                'error' => $th->getMessage(),
             ]);
         }
     }

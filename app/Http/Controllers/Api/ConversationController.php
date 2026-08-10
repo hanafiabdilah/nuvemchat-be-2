@@ -12,6 +12,7 @@ use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
+use App\Http\Resources\ContactResource;
 use App\Http\Resources\ConversationResource;
 use App\Http\Resources\MessageResource;
 use App\Models\Connection;
@@ -327,6 +328,36 @@ class ConversationController extends Controller
 
         return response()->json([
             'data' => $conversation->toResource(ConversationResource::class),
+        ]);
+    }
+
+    /**
+     * The members of a group conversation, for the contact-details panel.
+     *
+     * Sourced from conversation_participants, which records everyone who has
+     * sent a message here — silent members are therefore absent. That is a
+     * deliberate trade: it behaves identically on every channel and costs no
+     * external call, whereas only WhatsApp exposes a real roster endpoint.
+     *
+     * Served on its own route rather than folded into ConversationResource so
+     * a 500-row sync page doesn't drag every group's membership with it.
+     */
+    public function participants(int $id)
+    {
+        $conversation = Conversation::whereHas('connection', function ($q) {
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        if (! $conversation->isGroup()) {
+            return response()->json(['data' => []]);
+        }
+
+        $participants = $conversation->participants()
+            ->orderBy('name')
+            ->get();
+
+        return response()->json([
+            'data' => ContactResource::collection($participants),
         ]);
     }
 

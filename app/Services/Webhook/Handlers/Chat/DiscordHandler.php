@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -228,9 +229,7 @@ class DiscordHandler implements ChatHandlerInterface
                 $this->getContactUsername($payload),
             );
 
-            if ($contact->wasRecentlyCreated) {
-                $this->downloadAvatar($contact, $payload);
-            }
+            SyncContactPhoto::dispatchIfStale($contact, $connection);
 
             $conversation = Conversation::where('external_id', $conversationId)
                 ->where('contact_id', $contact->id)
@@ -431,38 +430,6 @@ class DiscordHandler implements ChatHandlerInterface
         } catch (\Throwable $th) {
             Log::error('DiscordHandler: Failed to handle media message', [
                 'message_id' => $message->id,
-                'error' => $th->getMessage(),
-            ]);
-        }
-    }
-
-    private function downloadAvatar(Contact $contact, array $payload)
-    {
-        $author = $payload['d']['author'] ?? [];
-        $avatarHash = $author['avatar'] ?? null;
-        $userId = $author['id'] ?? null;
-
-        if (!$avatarHash || !$userId) {
-            return;
-        }
-
-        try {
-            $url = "https://cdn.discordapp.com/avatars/{$userId}/{$avatarHash}.png?size=256";
-            $response = Http::get($url);
-
-            if (!$response->successful()) {
-                return;
-            }
-
-            $photoPath = 'profile_photos/' . $contact->id . '_' . uniqid() . '.png';
-            Storage::disk('local')->put($photoPath, $response->body());
-
-            $contact->update([
-                'photo_profile' => $photoPath,
-            ]);
-        } catch (\Throwable $th) {
-            Log::warning('DiscordHandler: Failed to download avatar', [
-                'contact_id' => $contact->id,
                 'error' => $th->getMessage(),
             ]);
         }

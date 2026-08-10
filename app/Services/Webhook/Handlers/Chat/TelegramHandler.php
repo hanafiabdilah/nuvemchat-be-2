@@ -8,11 +8,13 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\AutomatedMessageService;
+use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Message\MessageService;
@@ -155,7 +157,7 @@ class TelegramHandler implements ChatHandlerInterface
 
         $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
-            if($contact->wasRecentlyCreated) $this->savePhotoProfile($contact, $connection, $payload);
+            SyncContactPhoto::dispatchIfStale($contact, $connection);
 
             $conversation = Conversation::where('external_id', $conversationId)
                 ->where('contact_id', $contact->id)
@@ -289,14 +291,19 @@ class TelegramHandler implements ChatHandlerInterface
         $message = GroupConversationService::lockChat($connection, (string) $chatId, fn () => DB::transaction(function () use ($connection, $payload, $chatId, $messageId, $messageType, $groupTitle, $senderChat, $senderExternalId) {
             $conversation = GroupConversationService::resolveConversation($connection, (string) $chatId, $groupTitle);
 
+            // The group's own avatar lives on its Contact row, same as a
+            // person's — getChat is what reads it (see TelegramPhotoResolver).
+            SyncContactPhoto::dispatchIfStale($conversation->contact, $connection);
+
             if ($senderChat) {
                 $senderName = $senderChat['title'] ?? ($groupTitle ?? (string) $senderExternalId);
                 $sender = GroupConversationService::resolveGroupContact($connection, (string) $senderExternalId, $senderName);
             } else {
                 $senderName = $this->getContactName($payload) ?: (string) $senderExternalId;
                 $sender = Contact::createFromExternalData($connection, (string) $senderExternalId, $senderName, $this->getContactUsername($payload));
-                if ($sender->wasRecentlyCreated) $this->savePhotoProfile($sender, $connection, $payload);
             }
+
+            SyncContactPhoto::dispatchIfStale($sender, $connection);
 
             GroupConversationService::addParticipant($conversation, $sender);
 
@@ -354,8 +361,24 @@ class TelegramHandler implements ChatHandlerInterface
             return true;
         }
 
+        // Telegram announces a picture change but sends only the new sizes, not
+        // a file the group contact can be keyed to — re-read it through getChat
+        // instead of trusting the payload, which keeps one code path for both
+        // this event and the TTL refresh.
+        if (!empty($message['new_chat_photo'])) {
+            $group = GroupConversationService::resolveGroupContact($connection, $chatId, $message['chat']['title'] ?? null);
+            SyncContactPhoto::dispatchForced($group, $connection);
+            return true;
+        }
+
+        if (!empty($message['delete_chat_photo'])) {
+            $group = GroupConversationService::resolveGroupContact($connection, $chatId, $message['chat']['title'] ?? null);
+            app(ContactPhotoSyncer::class)->clear($group);
+            return true;
+        }
+
         $serviceKeys = [
-            'new_chat_members', 'left_chat_member', 'new_chat_photo', 'delete_chat_photo',
+            'new_chat_members', 'left_chat_member',
             'group_chat_created', 'supergroup_chat_created', 'migrate_from_chat_id',
             'message_auto_delete_timer_changed', 'pinned_message',
             'video_chat_scheduled', 'video_chat_started', 'video_chat_ended', 'video_chat_participants_invited',
@@ -458,70 +481,6 @@ class TelegramHandler implements ChatHandlerInterface
 
         $message->update([
             'attachment' => $mediaPath,
-        ]);
-    }
-
-    private function savePhotoProfile(Contact $contact, Connection $connection, array $payload)
-    {
-        $response = Http::get("https://api.telegram.org/bot{$connection->credentials['token']}/getUserProfilePhotos", [
-            'user_id' => $contact->external_id,
-        ]);
-
-        if ($response->failed()){
-            Log::warning('TelegramHandler: Failed to fetch profile photos', [
-                'contact_id' => $contact->id,
-                'response_status' => $response->status(),
-                'response_body' => $response->body(),
-            ]);
-
-            return;
-        }
-
-        $photos = $response->json('result.photos');
-
-        if (empty($photos)) {
-            Log::info('TelegramHandler: No profile photos found for contact', [
-                'contact_id' => $contact->id,
-            ]);
-
-            return;
-        }
-
-        $photo = $photos[0][count($photos[0]) - 1]; // Get the highest resolution photo
-
-        $fileResponse = Http::get("https://api.telegram.org/bot{$connection->credentials['token']}/getFile", [
-            'file_id' => $photo['file_id'],
-        ]);
-
-        if ($fileResponse->failed()){
-            Log::warning('TelegramHandler: Failed to fetch profile photo file info', [
-                'contact_id' => $contact->id,
-                'response_status' => $fileResponse->status(),
-                'response_body' => $fileResponse->body(),
-            ]);
-
-            return;
-        }
-
-        $filePath = $fileResponse->json('result.file_path');
-        $fileUrl = "https://api.telegram.org/file/bot{$connection->credentials['token']}/{$filePath}";
-        $extension = $this->getExtensionFromFilePath($filePath);
-
-        if(!$fileUrl || !$extension) {
-            Log::warning('TelegramHandler: Invalid file URL or extension for profile photo', [
-                'contact_id' => $contact->id,
-                'file_url' => $fileUrl,
-                'extension' => $extension,
-            ]);
-
-            return;
-        }
-
-        $photoPath = 'profile_photos/' . $contact->id . '_' . uniqid() . '.' . $extension;
-        Storage::disk('local')->put($photoPath, Http::get($fileUrl)->body());
-
-        $contact->update([
-            'photo_profile' => $photoPath,
         ]);
     }
 

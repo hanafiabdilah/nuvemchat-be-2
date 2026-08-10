@@ -8,11 +8,13 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
+use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -152,6 +154,14 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             return;
         }
 
+        // whatsmeow's Picture event covers a person's avatar and a group's
+        // photo alike; Remove distinguishes a change from a deletion.
+        if ($type === 'Picture') {
+            $this->handlePictureChange($connection, $event);
+
+            return;
+        }
+
         // Presence / connection / unknown events — connection status is handled by
         // polling status-instance, so just log to capture new event types.
         Log::info('WhatsappApiwayHandler: unhandled event', [
@@ -199,6 +209,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
         $message = DB::transaction(function () use ($connection, $event, $messageId, $phone, $lid, $contactName, $messageType, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $phone, $contactName, $phone);
             $this->rememberLid($contact, $lid);
+            SyncContactPhoto::dispatchIfStale($contact, $connection);
 
             $conversation = Conversation::where('external_id', $phone)
                 ->where('contact_id', $contact->id)
@@ -391,6 +402,11 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
                 renameIfChanged: false,
             );
 
+            // whatsmeow never carries the group's picture on a message event —
+            // the core's profile-picture endpoint takes the @g.us JID, so the
+            // group contact resolves through the same path as a person.
+            SyncContactPhoto::dispatchIfStale($conversation->contact, $connection);
+
             if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
                 Log::info('WhatsappApiwayHandler: duplicate group message ignored', ['message_id' => $messageId]);
 
@@ -412,6 +428,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
 
             $sender = Contact::createFromExternalData($connection, $senderPhone, $senderName, $senderPhone);
             $this->rememberLid($sender, $senderLid);
+            SyncContactPhoto::dispatchIfStale($sender, $connection);
             GroupConversationService::addParticipant($conversation, $sender);
 
             return $conversation->messages()->create([
@@ -544,6 +561,50 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
         if ($conversation) {
             broadcast(new ConversationUpdated($conversation->load('contact')));
         }
+    }
+
+    /**
+     * whatsmeow announces avatar changes with a Picture event carrying the
+     * subject's JID and a Remove flag — for a person, a group, or our own
+     * number. The new image itself is not included, so a change means re-read
+     * it through the resolver; a removal is applied straight away.
+     *
+     * Only contacts we already know are touched: a Picture event is no reason
+     * to materialise a contact we have never exchanged a message with.
+     */
+    private function handlePictureChange(Connection $connection, array $event): void
+    {
+        $jid = $event['JID'] ?? null;
+
+        if (! $jid) {
+            return;
+        }
+
+        if (str_ends_with($jid, '@g.us')) {
+            $externalId = $jid;
+        } else {
+            $externalId = $this->resolvePhoneFromJids($connection, [$jid]);
+        }
+
+        if (! $externalId) {
+            return;
+        }
+
+        $contact = Contact::where('tenant_id', $connection->tenant_id)
+            ->where('external_id', $externalId)
+            ->first();
+
+        if (! $contact) {
+            return;
+        }
+
+        if ($event['Remove'] ?? false) {
+            app(ContactPhotoSyncer::class)->clear($contact);
+
+            return;
+        }
+
+        SyncContactPhoto::dispatchForced($contact, $connection);
     }
 
     /**

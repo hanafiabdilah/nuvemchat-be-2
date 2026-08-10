@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -231,6 +232,8 @@ class MessengerHandler implements ChatHandlerInterface
             if ($contact->wasRecentlyCreated) {
                 $this->updateContactInfo($contact, $connection, $contactExternalId);
             }
+
+            SyncContactPhoto::dispatchIfStale($contact, $connection);
 
             $conversation = Conversation::where('external_id', $conversationId)
                 ->where('contact_id', $contact->id)
@@ -515,7 +518,7 @@ class MessengerHandler implements ChatHandlerInterface
 
             // PSIDs only expose the basic profile fields to the page token.
             $response = Http::get(self::GRAPH_BASE . "/{$psid}", [
-                'fields' => 'first_name,last_name,name,profile_pic',
+                'fields' => 'first_name,last_name,name',
                 'access_token' => $accessToken,
             ]);
 
@@ -528,10 +531,6 @@ class MessengerHandler implements ChatHandlerInterface
                 $contact->update([
                     'name' => $name ?: $psid,
                 ]);
-
-                if (!empty($userInfo['profile_pic'])) {
-                    $this->downloadProfilePicture($contact, $userInfo['profile_pic']);
-                }
             } else {
                 Log::warning('MessengerHandler: Failed to fetch user info from Facebook', [
                     'contact_id' => $contact->id,
@@ -546,36 +545,6 @@ class MessengerHandler implements ChatHandlerInterface
                 'contact_id' => $contact->id,
                 'connection_id' => $connection->id,
                 'psid' => $psid,
-                'error' => $th->getMessage(),
-            ]);
-        }
-    }
-
-    private function downloadProfilePicture(Contact $contact, string $profilePicUrl)
-    {
-        try {
-            $response = Http::get($profilePicUrl);
-
-            if (!$response->successful()) {
-                Log::warning('MessengerHandler: Failed to download profile picture', [
-                    'contact_id' => $contact->id,
-                    'status' => $response->status(),
-                ]);
-                return;
-            }
-
-            $mimeType = $response->header('Content-Type');
-            $extension = $this->getExtensionFromMimeType($mimeType, 'jpg');
-
-            $photoPath = 'profile_photos/' . $contact->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($photoPath, $response->body());
-
-            $contact->update([
-                'photo_profile' => $photoPath,
-            ]);
-        } catch (\Throwable $th) {
-            Log::error('MessengerHandler: Error downloading profile picture', [
-                'contact_id' => $contact->id,
                 'error' => $th->getMessage(),
             ]);
         }

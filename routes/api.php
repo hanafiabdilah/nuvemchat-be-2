@@ -122,6 +122,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/conversations/compose-email', [ConversationController::class, 'composeEmail']);
         Route::get('/conversations/{id}', [ConversationController::class, 'show']);
         Route::get('/conversations/{id}/variables', [ConversationController::class, 'variables']);
+        Route::get('/conversations/{id}/participants', [ConversationController::class, 'participants']);
         // Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
         Route::post('/conversations/{id}/send-message', [ConversationController::class, 'sendMessage']);
         Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
