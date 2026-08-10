@@ -99,6 +99,13 @@ class MessageResource extends JsonResource
                         'id' => $contact->id,
                         'name' => $contact->name,
                         'username' => $contact->username,
+                        // The chat thread shows each member's avatar beside
+                        // their first message in a run, so the sender carries
+                        // its own photo — the conversation's contact is the
+                        // group, not the person who wrote this.
+                        'photo_profile_url' => $contact->photo_profile
+                            ? Storage::disk('local')->temporaryUrl($contact->photo_profile, Carbon::now()->addMonths(6))
+                            : null,
                     ] : null,
                 ];
             }
