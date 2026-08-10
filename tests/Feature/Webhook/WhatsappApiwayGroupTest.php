@@ -202,3 +202,82 @@ test('protocol messages inside groups are dropped', function () {
     expect(Message::count())->toBe(0)
         ->and(Conversation::count())->toBe(0);
 });
+
+/**
+ * Production shape (conversation 19210/19211): whatsmeow announced the group
+ * sender key under the same message ID it later used for the text. The node
+ * holds no content at all — no `conversation`, no media.
+ */
+function apiwaySenderKeyEvent(string $messageId): array
+{
+    $payload = apiwayGroupMessage(['ID' => $messageId]);
+
+    $payload['event']['Message'] = [
+        'messageContextInfo' => [
+            'deviceListMetadata' => ['recipientKeyHash' => 'b2dWXTpxqI4GKw==', 'senderKeyHash' => 'SLF5f5hJYd/aIQ=='],
+            'deviceListMetadataVersion' => 2,
+        ],
+        'senderKeyDistributionMessage' => [
+            'axolotlSenderKeyDistributionMessage' => 'MwjOqbyyBBAAGiCmaIbvzajtOuUnXRvg0muq',
+            'groupID' => APW_GROUP_JID,
+        ],
+    ];
+
+    return $payload;
+}
+
+test('the sender-key distribution event that precedes a group message is dropped', function () {
+    Event::fake();
+    $connection = apiwayGroupConnection();
+
+    (new WhatsappApiwayHandler)->handle($connection, apiwaySenderKeyEvent('MSG-SKDM-1'));
+
+    expect(Message::count())->toBe(0)
+        ->and(Conversation::count())->toBe(0);
+});
+
+test('a sender-key event and the content event for one message yield a single conversation and message', function () {
+    Event::fake();
+    $connection = apiwayGroupConnection();
+    $handler = new WhatsappApiwayHandler;
+
+    // Both events carry the same ID; only the second one has a body.
+    $handler->handle($connection, apiwaySenderKeyEvent('3B2E18EDC15939093EFE'));
+    $handler->handle($connection, apiwayGroupMessage(['ID' => '3B2E18EDC15939093EFE'], ['conversation' => 'weee']));
+
+    // …and the group keeps taking later messages in that same conversation.
+    $handler->handle($connection, apiwayGroupMessage(['ID' => '3BF2D0F890F0B99E885B'], ['conversation' => 'wew']));
+
+    expect(Conversation::count())->toBe(1)
+        ->and(Message::count())->toBe(2)
+        ->and(Message::pluck('body')->all())->toBe(['weee', 'wew'])
+        ->and(Message::where('message_type', \App\Enums\Message\MessageType::Unsupported)->count())->toBe(0);
+});
+
+test('status posts and broadcast lists never become conversations', function () {
+    Event::fake();
+    $connection = apiwayGroupConnection();
+    $handler = new WhatsappApiwayHandler;
+
+    // Other people's Stories — whatsmeow flags these IsGroup.
+    $handler->handle($connection, apiwayGroupMessage([
+        'ID' => 'MSG-STATUS-1',
+        'Chat' => 'status@broadcast',
+    ], ['conversation' => 'minha story']));
+
+    // Sender-side echo of a broadcast-list send.
+    $handler->handle($connection, apiwayGroupMessage([
+        'ID' => 'MSG-BCAST-1',
+        'Chat' => '1623173607@broadcast',
+        'IsFromMe' => true,
+    ], ['conversation' => 'promo']));
+
+    expect(Conversation::count())->toBe(0)
+        ->and(Message::count())->toBe(0);
+
+    // A real group on the same connection is unaffected.
+    $handler->handle($connection, apiwayGroupMessage());
+
+    expect(Conversation::count())->toBe(1)
+        ->and(Conversation::first()->external_id)->toBe(APW_GROUP_JID);
+});

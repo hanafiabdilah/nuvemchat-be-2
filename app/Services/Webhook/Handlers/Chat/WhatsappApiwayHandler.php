@@ -35,6 +35,17 @@ use Illuminate\Support\Facades\Storage;
  */
 class WhatsappApiwayHandler implements ChatHandlerInterface
 {
+    /**
+     * The Message fields that are encryption/session plumbing rather than
+     * content: the group sender-key hand-out, and the context envelope holding
+     * the device list and message secret. A node made up of nothing but these
+     * has no body to render.
+     */
+    private const ENVELOPE_KEYS = [
+        'messageContextInfo',
+        'senderKeyDistributionMessage',
+    ];
+
     public function handle(Connection $connection, array $payload)
     {
         // API Way wraps each whatsmeow event as:
@@ -63,6 +74,38 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
                 Log::info('WhatsappApiwayHandler: skipping protocol message', [
                     'connection_id' => $connection->id,
                     'protocol_type' => $event['Message']['protocolMessage']['type'] ?? null,
+                    'message_id' => $info['ID'] ?? null,
+                ]);
+
+                return;
+            }
+
+            // In a group whatsmeow delivers each message TWICE, under the same
+            // ID: first the sender-key distribution (encryption plumbing, no
+            // body), then the real content. Storing the first one produced a
+            // blank "unsupported" bubble, and — racing the second — a duplicate
+            // conversation, because both events missed the same find-or-create
+            // SELECT. Envelope-only events carry nothing, so they are dropped.
+            if ($this->isEnvelopeOnly($event['Message'] ?? [])) {
+                Log::info('WhatsappApiwayHandler: skipping envelope-only message', [
+                    'connection_id' => $connection->id,
+                    'message_id' => $info['ID'] ?? null,
+                    'keys' => array_keys($event['Message'] ?? []),
+                ]);
+
+                return;
+            }
+
+            // `status@broadcast` (other people's Stories) and broadcast-list
+            // JIDs are one-to-many pseudo-chats, not conversations — whatsmeow
+            // flags them IsGroup, so without this they were landing in the
+            // inbox as group threads. Recipients of a broadcast list still get
+            // the message as a normal 1:1 chat, so nothing is lost by dropping
+            // the sender-side echo.
+            if ($this->isBroadcastChat($info['Chat'] ?? null)) {
+                Log::info('WhatsappApiwayHandler: skipping broadcast chat', [
+                    'connection_id' => $connection->id,
+                    'chat' => $info['Chat'] ?? null,
                     'message_id' => $info['ID'] ?? null,
                 ]);
 
@@ -297,7 +340,9 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             $senderName = ($info['PushName'] ?? null) ?: $senderPhone;
         }
 
-        $message = DB::transaction(function () use ($connection, $event, $groupJid, $messageId, $messageType, $isFromMe, $senderPhone, $senderName) {
+        // Locked around the transaction, not inside it: concurrent webhooks for
+        // this group must not each create their own conversation row.
+        $message = GroupConversationService::lockChat($connection, $groupJid, fn () => DB::transaction(function () use ($connection, $event, $groupJid, $messageId, $messageType, $isFromMe, $senderPhone, $senderName) {
             $conversation = GroupConversationService::resolveConversation(
                 $connection,
                 $groupJid,
@@ -337,7 +382,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
                 'delivery_at' => $this->getMessageSentAt($event),
                 'meta' => $event,
             ]);
-        });
+        }));
 
         if (! $message) {
             return;
@@ -375,6 +420,26 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
         if ($conversation) {
             broadcast(new ConversationUpdated($conversation->load('contact')));
         }
+    }
+
+    /**
+     * Status posts (`status@broadcast`) and broadcast lists (`<id>@broadcast`)
+     * both live on the `@broadcast` server.
+     */
+    private function isBroadcastChat(?string $chatJid): bool
+    {
+        return $chatJid !== null && str_ends_with($chatJid, '@broadcast');
+    }
+
+    /**
+     * True when the Message node holds only the keys in self::ENVELOPE_KEYS —
+     * no conversation, media, location or any other renderable node.
+     */
+    private function isEnvelopeOnly(array $message): bool
+    {
+        $present = array_keys(array_filter($message, fn ($node) => $node !== null));
+
+        return array_diff($present, self::ENVELOPE_KEYS) === [];
     }
 
     /**

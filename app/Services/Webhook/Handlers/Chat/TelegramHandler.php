@@ -284,7 +284,9 @@ class TelegramHandler implements ChatHandlerInterface
             return;
         }
 
-        $message = DB::transaction(function () use ($connection, $payload, $chatId, $messageId, $messageType, $groupTitle, $senderChat, $senderExternalId) {
+        // Locked around the transaction, not inside it: concurrent updates for
+        // this group must not each create their own conversation row.
+        $message = GroupConversationService::lockChat($connection, (string) $chatId, fn () => DB::transaction(function () use ($connection, $payload, $chatId, $messageId, $messageType, $groupTitle, $senderChat, $senderExternalId) {
             $conversation = GroupConversationService::resolveConversation($connection, (string) $chatId, $groupTitle);
 
             if ($senderChat) {
@@ -319,7 +321,7 @@ class TelegramHandler implements ChatHandlerInterface
                 'delivery_at' => $this->getMessageSentAt($payload),
                 'meta' => $payload,
             ]);
-        });
+        }));
 
         if ($message) {
             if (in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
