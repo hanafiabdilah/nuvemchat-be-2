@@ -75,11 +75,49 @@ class WhatsappApiwayHandler implements MessageHandlerInterface
 
         return $message;
     }
+    /**
+     * The id the WhatsApp node assigned to a message we just sent.
+     *
+     * This is load-bearing far beyond bookkeeping: delivery/read receipts,
+     * edit, delete and — the reason this got hardened — inbound *reactions*
+     * all locate a message by `messages.external_id`. An outgoing row saved
+     * without one can never be reacted to, ticked, edited or deleted, and the
+     * only symptom is a "target not found" line in the log.
+     *
+     * The core wraps its response as `{ success, data }` and passes the node's
+     * payload through verbatim, so `data` has been seen both as an object and
+     * as a bare id string; the published collection types it as opaque. Rather
+     * than bet on one shape, try the plausible ones and shout when none match,
+     * so the real field shows up in the logs instead of a silent empty id.
+     */
     public function getMessageId(array $payload): string
     {
-        // API Way wraps the send response as { success, data: { id, status } };
-        // fall back to the flat messageId for safety.
-        return $payload['data']['id'] ?? $payload['messageId'] ?? '';
+        $data = $payload['data'] ?? null;
+
+        $candidates = [
+            is_array($data) ? ($data['id'] ?? null) : null,
+            is_array($data) ? ($data['messageId'] ?? null) : null,
+            is_array($data) ? ($data['key']['id'] ?? $data['key']['ID'] ?? null) : null,
+            is_string($data) && $data !== '' ? $data : null,
+            $payload['messageId'] ?? null,
+            $payload['id'] ?? null,
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && $candidate !== '') {
+                return $candidate;
+            }
+
+            if (is_int($candidate)) {
+                return (string) $candidate;
+            }
+        }
+
+        Log::warning('WhatsappApiwayHandler: send response carried no message id — receipts, edits, deletes and reactions cannot match this message', [
+            'response' => $payload,
+        ]);
+
+        return '';
     }
 
     public function getMessageSentAt(array $payload): Carbon

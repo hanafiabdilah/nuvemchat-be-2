@@ -4,7 +4,6 @@ namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Illuminate\Support\Facades\Storage;
 
 class ContactResource extends JsonResource
 {
@@ -21,7 +20,7 @@ class ContactResource extends JsonResource
             'name' => $this->name,
             'is_group' => (bool) $this->is_group,
             'username' => $this->username,
-            'photo_profile_url' => $this->photo_profile ? Storage::disk('local')->temporaryUrl($this->photo_profile, now()->addMonths(6)) : null,
+            'photo_profile_url' => $this->photo_profile_url,
         ];
     }
 }

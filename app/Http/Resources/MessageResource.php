@@ -39,13 +39,23 @@ class MessageResource extends JsonResource
                     ? self::resolveAttachmentUrl($this->repliedMessage->attachment)
                     : null,
             ]),
-            'reactions' => $this->when($this->reactions, fn() =>
-                $this->reactions->map(fn($reaction) => [
-                    'emoji' => $reaction->emoji,
-                    'sender_type' => $reaction->sender_type,
-                    'created_at' => $reaction->created_at->timestamp,
-                ])
-            ),
+            // The chat panel lets a reader open a reaction to see who left it
+            // and when, so each one is emitted individually rather than
+            // pre-aggregated by emoji — the grouping is a presentation choice.
+            // `contact` is only ever set in a group, where several members can
+            // react to the same message; in a private chat `sender_type`
+            // already names the only two possible reactors.
+            'reactions' => $this->reactions->map(fn ($reaction) => [
+                'id' => $reaction->id,
+                'emoji' => $reaction->emoji,
+                'sender_type' => $reaction->sender_type,
+                'created_at' => $reaction->created_at->timestamp,
+                'contact' => $reaction->contact ? [
+                    'id' => $reaction->contact->id,
+                    'name' => $reaction->contact->name,
+                    'photo_profile_url' => $reaction->contact->photo_profile_url,
+                ] : null,
+            ]),
             'sent_at' => $this->sent_at,
             'delivery_at' => $this->delivery_at,
             'read_at' => $this->read_at,
@@ -103,9 +113,7 @@ class MessageResource extends JsonResource
                         // their first message in a run, so the sender carries
                         // its own photo — the conversation's contact is the
                         // group, not the person who wrote this.
-                        'photo_profile_url' => $contact->photo_profile
-                            ? Storage::disk('local')->temporaryUrl($contact->photo_profile, Carbon::now()->addMonths(6))
-                            : null,
+                        'photo_profile_url' => $contact->photo_profile_url,
                     ] : null,
                 ];
             }

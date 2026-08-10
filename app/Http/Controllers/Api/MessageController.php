@@ -22,7 +22,7 @@ class MessageController extends Controller
         // into hundreds of queries.
         $query = Message::with([
             'repliedMessage',
-            'reactions',
+            'reactions.contact',
             'contact',
             'sentByUser',
             'sentByFlow',

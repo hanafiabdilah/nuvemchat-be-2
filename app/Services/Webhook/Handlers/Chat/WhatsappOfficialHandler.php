@@ -366,7 +366,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
                 ]);
             }
 
-            broadcast(new MessageUpdated($targetMessage->fresh()));
+            broadcast(new MessageUpdated($targetMessage->fresh()->load('reactions.contact')));
         } catch (\Throwable $th) {
             Log::error('WhatsappOfficialHandler: Failed to handle reaction', [
                 'error' => $th->getMessage(),

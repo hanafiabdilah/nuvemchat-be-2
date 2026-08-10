@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\Connection\Channel;
 use App\Events\ContactCreated;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Storage;
 
 class Contact extends Model
 {
@@ -72,5 +73,21 @@ class Contact extends Model
     public function conversations()
     {
         return $this->hasMany(Conversation::class);
+    }
+
+    /**
+     * Signed URL for the stored avatar, or null when there is none.
+     *
+     * `photo_profile` holds a path on the private disk, never a URL — three
+     * resources now render the same contact (the contact itself, a group
+     * message's sender, a reaction's author), so the signing lives here rather
+     * than being copy-pasted per resource. Deliberately not in $appends: it
+     * signs on every read and only the resources should pay for it.
+     */
+    public function getPhotoProfileUrlAttribute(): ?string
+    {
+        return $this->photo_profile
+            ? Storage::disk('local')->temporaryUrl($this->photo_profile, now()->addMonths(6))
+            : null;
     }
 }

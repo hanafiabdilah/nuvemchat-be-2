@@ -48,7 +48,7 @@ class ConversationController extends Controller
                 'agent',
                 'flowState.currentNode',
                 'lastMessage.repliedMessage',
-                'lastMessage.reactions',
+                'lastMessage.reactions.contact',
                 'lastMessage.contact',
                 'lastMessage.sentByUser',
                 'lastMessage.sentByFlow',

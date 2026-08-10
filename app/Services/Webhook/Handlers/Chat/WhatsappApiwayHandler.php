@@ -536,7 +536,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             MessageReaction::updateOrCreate($key, ['emoji' => $emoji]);
         }
 
-        broadcast(new MessageUpdated($target->fresh()->load('reactions')));
+        broadcast(new MessageUpdated($target->fresh()->load('reactions.contact')));
     }
 
     /**

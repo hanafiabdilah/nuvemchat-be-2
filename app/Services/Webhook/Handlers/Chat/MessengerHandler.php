@@ -371,7 +371,7 @@ class MessengerHandler implements ChatHandlerInterface
                 );
             }
 
-            broadcast(new MessageUpdated($targetMessage->fresh()));
+            broadcast(new MessageUpdated($targetMessage->fresh()->load('reactions.contact')));
         } catch (\Throwable $th) {
             Log::error('MessengerHandler: Failed to handle reaction', [
                 'error' => $th->getMessage(),
