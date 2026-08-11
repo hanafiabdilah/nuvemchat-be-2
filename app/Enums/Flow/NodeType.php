@@ -13,6 +13,7 @@ enum NodeType: string
     case Action = 'action';
     case AIAgent = 'ai_agent';
     case HttpRequest = 'http_request';
+    case Interactive = 'interactive';
 
     public function data(): array
     {
@@ -60,6 +61,19 @@ enum NodeType: string
                 //   handoff_in_hours    = AI handles, then hands a human the chat within service hours
                 //   human_only_in_hours = within service hours skip AI entirely → human queue; AI otherwise
                 'service_hours_behavior' => 'always_ai',
+            ],
+            // WhatsApp Official only — reply buttons / a list menu, where every
+            // option is its own outgoing branch (edge condition_value = option id).
+            self::Interactive => [
+                'interactive_type' => 'button', // button | list
+                'header' => '',
+                'body' => '',
+                'footer' => '',
+                // [{ 'id' => 'btn_ab12', 'title' => 'Yes' }] — max 3
+                'buttons' => [],
+                'button_label' => '', // list opener label
+                // [{ 'title' => 'Section', 'rows' => [{ 'id' => 'row_ab12', 'title' => '', 'description' => '' }] }]
+                'sections' => [],
             ],
             self::HttpRequest => [
                 'method' => 'GET', // GET, POST, PUT, PATCH, DELETE

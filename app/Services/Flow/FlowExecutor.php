@@ -154,6 +154,10 @@ class FlowExecutor
                 $this->executeHttpNode($flowState, $node);
                 break;
 
+            case NodeType::Interactive:
+                $this->executeInteractiveNode($flowState, $node);
+                break;
+
             default:
                 Log::warning('FlowExecutor: Unsupported node type', [
                     'node_type' => $node->type->value,
@@ -254,6 +258,191 @@ class FlowExecutor
                 'error' => $th->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Execute an Interactive node — send WhatsApp reply buttons / a list menu
+     * and WAIT, exactly like a Response node. Each option is its own outgoing
+     * branch, so the customer's pick decides which edge the flow takes; that
+     * happens in handleInteractiveNodeInput() once the reply arrives.
+     */
+    protected function executeInteractiveNode(FlowState $flowState, FlowNode $node): void
+    {
+        $conversation = $flowState->conversation;
+        $data = $this->interpolateInteractiveData($node->data ?? [], $flowState);
+        $options = InteractiveNodes::options($data);
+
+        if ($options === [] || trim((string) ($data['body'] ?? '')) === '') {
+            Log::warning('FlowExecutor: Interactive node has no body or no options, skipping', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+            ]);
+
+            // Nothing to ask, so nothing to branch on: fall through the first
+            // edge rather than stranding the conversation on a silent node.
+            $this->moveToNextNode($flowState, $node);
+            return;
+        }
+
+        try {
+            $isWhatsappOfficial = $conversation->connection->channel === InteractiveNodes::CHANNEL;
+
+            $message = $isWhatsappOfficial
+                ? $this->messageService->sendInteractive($conversation, InteractiveNodes::sendPayload($data))
+                : $this->sendInteractiveAsPlainText($conversation, $data, $options);
+
+            if (!$message) {
+                Log::error('FlowExecutor: Failed to send interactive message', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $conversation->id,
+                ]);
+                return;
+            }
+
+            $message->update(['sent_by_flow_id' => $flowState->flow_id]);
+            broadcast(new MessageReceived($message));
+
+            // Mark the prompt as sent and stay put — the next inbound message
+            // is the answer, routed back here through resumeFlow().
+            $stateData = $flowState->state_data ?? [];
+            $stateData["_interactive_sent_{$node->id}"] = true;
+            $flowState->update(['state_data' => $stateData]);
+
+            Log::info('FlowExecutor: Interactive message sent, waiting for selection', [
+                'node_id' => $node->id,
+                'message_id' => $message->id,
+                'conversation_id' => $conversation->id,
+                'options' => count($options),
+                'as_plain_text' => !$isWhatsappOfficial,
+            ]);
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing interactive node', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Route the customer's selection to the matching branch.
+     *
+     * The tap arrives as an inbound `interactive` message whose reply id is the
+     * option id we sent; typed answers are matched by title or by position.
+     * An answer that matches nothing leaves the flow on this node, so the
+     * customer can simply tap again.
+     */
+    protected function handleInteractiveNodeInput(FlowState $flowState, FlowNode $node, string $userInput): void
+    {
+        // Interpolated the same way as when it was sent, so a title built from
+        // a variable still matches what the customer actually saw.
+        $data = $this->interpolateInteractiveData($node->data ?? [], $flowState);
+        $replyId = $this->latestInteractiveReplyId($flowState->conversation);
+        $optionId = InteractiveNodes::matchOption($data, $replyId, $userInput);
+
+        if ($optionId === null) {
+            Log::info('FlowExecutor: Interactive reply matched no option, waiting for another', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+                'reply_id' => $replyId,
+                'input' => mb_substr($userInput, 0, 50),
+            ]);
+            return;
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        unset($stateData["_interactive_sent_{$node->id}"]);
+        $flowState->update(['state_data' => $stateData]);
+
+        Log::info('FlowExecutor: Interactive option selected', [
+            'node_id' => $node->id,
+            'option_id' => $optionId,
+            'conversation_id' => $flowState->conversation_id,
+        ]);
+
+        $this->moveToNextNodeByBranch($flowState, $node, $optionId);
+    }
+
+    /**
+     * The reply id from the conversation's latest inbound interactive message —
+     * WhatsApp Cloud stores the raw webhook entry in `meta`, and the tapped
+     * button / row id lives inside it.
+     */
+    protected function latestInteractiveReplyId(Conversation $conversation): ?string
+    {
+        $meta = Message::where('conversation_id', $conversation->id)
+            ->where('sender_type', SenderType::Incoming)
+            ->latest('id')
+            ->value('meta');
+
+        $interactive = $meta['changes'][0]['value']['messages'][0]['interactive'] ?? null;
+
+        return $interactive['button_reply']['id'] ?? $interactive['list_reply']['id'] ?? null;
+    }
+
+    /**
+     * Fallback for a flow whose connection is not WhatsApp Official — which
+     * validation prevents, but a connection can be re-pointed after the fact.
+     * The options go out as a numbered list so replying "2" still picks branch 2.
+     */
+    protected function sendInteractiveAsPlainText(Conversation $conversation, array $data, array $options): ?Message
+    {
+        Log::warning('FlowExecutor: Interactive node on a non-WhatsApp-Official channel, sending plain text', [
+            'conversation_id' => $conversation->id,
+            'channel' => $conversation->connection->channel->value,
+        ]);
+
+        $lines = array_filter([
+            trim((string) ($data['header'] ?? '')),
+            trim((string) ($data['body'] ?? '')),
+        ]);
+
+        foreach ($options as $i => $option) {
+            $lines[] = ($i + 1) . '. ' . $option['title'];
+        }
+
+        if ($footer = trim((string) ($data['footer'] ?? ''))) {
+            $lines[] = $footer;
+        }
+
+        return $this->messageService->sendMessage($conversation, [
+            'message' => implode("\n", $lines),
+        ]);
+    }
+
+    /**
+     * Resolve {{variable}} tokens in every customer-visible string of an
+     * interactive node — the texts, the option titles and their descriptions.
+     */
+    protected function interpolateInteractiveData(array $data, FlowState $flowState): array
+    {
+        foreach (['header', 'body', 'footer', 'button_label'] as $key) {
+            if (isset($data[$key]) && is_string($data[$key])) {
+                $data[$key] = $this->interpolateVariables($data[$key], $flowState);
+            }
+        }
+
+        foreach ((array) ($data['buttons'] ?? []) as $i => $button) {
+            if (isset($button['title']) && is_string($button['title'])) {
+                $data['buttons'][$i]['title'] = $this->interpolateVariables($button['title'], $flowState);
+            }
+        }
+
+        foreach ((array) ($data['sections'] ?? []) as $si => $section) {
+            if (isset($section['title']) && is_string($section['title'])) {
+                $data['sections'][$si]['title'] = $this->interpolateVariables($section['title'], $flowState);
+            }
+
+            foreach ((array) ($section['rows'] ?? []) as $ri => $row) {
+                foreach (['title', 'description'] as $key) {
+                    if (isset($row[$key]) && is_string($row[$key])) {
+                        $data['sections'][$si]['rows'][$ri][$key] = $this->interpolateVariables($row[$key], $flowState);
+                    }
+                }
+            }
+        }
+
+        return $data;
     }
 
     /**
@@ -1102,6 +1291,20 @@ class FlowExecutor
 
             // Prompt already sent - handle user input
             $this->handleResponseNodeInput($flowState, $currentNode, $userInput);
+            return;
+        }
+
+        // Interactive nodes wait the same way: send once, then treat the next
+        // inbound message as the customer's pick.
+        if ($currentNode->type === NodeType::Interactive) {
+            $stateData = $flowState->state_data ?? [];
+
+            if (!isset($stateData["_interactive_sent_{$currentNode->id}"])) {
+                $this->executeInteractiveNode($flowState, $currentNode);
+                return;
+            }
+
+            $this->handleInteractiveNodeInput($flowState, $currentNode, $userInput);
             return;
         }
 

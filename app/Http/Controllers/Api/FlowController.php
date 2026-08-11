@@ -8,6 +8,7 @@ use App\Http\Resources\FlowResource;
 use App\Models\Flow;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
+use App\Services\Flow\InteractiveNodes;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -18,10 +19,14 @@ use Illuminate\Validation\ValidationException;
 class FlowController extends Controller
 {
     /** Allowed node types (frontend must stay in sync). */
-    private const NODE_TYPES = ['start', 'message', 'response', 'status', 'tagging', 'condition', 'action', 'ai_agent', 'http_request'];
+    private const NODE_TYPES = ['start', 'message', 'response', 'status', 'tagging', 'condition', 'action', 'ai_agent', 'http_request', 'interactive'];
 
-    /** Allowed edge branch values: condition (true/false) + http_request (success/error). */
-    private const BRANCH_VALUES = ['true', 'false', 'success', 'error'];
+    /**
+     * Edge branch values: the fixed pair per branching node — condition
+     * (true/false), http_request (success/error) — plus an interactive node's
+     * option ids, which are authored per node and so can only be pattern-checked.
+     */
+    private const BRANCH_VALUE_PATTERN = 'regex:/^[A-Za-z0-9_\-]{1,64}$/';
 
     /** Portable export envelope identifiers. */
     private const EXPORT_FORMAT = 'nuvemchat.flow';
@@ -133,11 +138,15 @@ class FlowController extends Controller
             'edges' => ['required', 'array'],
             'edges.*.source_node_id' => ['required', 'string'], // Frontend node ID
             'edges.*.target_node_id' => ['required', 'string'], // Frontend node ID
-            'edges.*.condition_value' => ['nullable', 'string', Rule::in(self::BRANCH_VALUES)], // condition (true/false) & http_request (success/error) branches
+            'edges.*.condition_value' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
         ]);
 
         // Validate each node's data based on its type
         $this->validateNodesData($validated['nodes']);
+
+        // Interactive nodes only run on WhatsApp Official, so a flow that uses
+        // one cannot stay wired to any other channel.
+        $this->assertInteractiveNodesAllowed($flow, $validated['nodes']);
 
         DB::transaction(function () use ($flow, $validated) {
             // Get all existing nodes for this flow
@@ -294,7 +303,7 @@ class FlowController extends Controller
             'flow.edges' => ['present', 'array'],
             'flow.edges.*.source_key' => ['required', 'string'],
             'flow.edges.*.target_key' => ['required', 'string'],
-            'flow.edges.*.condition_value' => ['nullable', 'string', Rule::in(self::BRANCH_VALUES)],
+            'flow.edges.*.condition_value' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
         ], [
             'format.in' => 'This file is not a valid Nuvemchat flow export.',
             'version.max' => 'This flow export was created by a newer version and cannot be imported.',
@@ -367,6 +376,33 @@ class FlowController extends Controller
             'message' => 'Flow imported successfully',
             'data' => new FlowResource($flow),
         ], 201);
+    }
+
+    /**
+     * Refuse a flow that mixes interactive nodes with connections that cannot
+     * run them. Reply buttons and list menus exist only on the WhatsApp Cloud
+     * API, so the moment a flow uses one it is a WhatsApp-Official-only flow.
+     * The mirror check lives in ConnectionController, which refuses to point a
+     * non-official connection at such a flow.
+     */
+    private function assertInteractiveNodesAllowed(Flow $flow, array $nodes): void
+    {
+        if (!InteractiveNodes::payloadUsesInteractive($nodes)) {
+            return;
+        }
+
+        $conflicting = InteractiveNodes::conflictingConnections($flow);
+
+        if ($conflicting->isEmpty()) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'nodes' => [
+                'This flow uses WhatsApp buttons or a list menu, which only work on WhatsApp Official. '
+                . 'Unlink it from these connections first: ' . InteractiveNodes::describeConnections($conflicting) . '.',
+            ],
+        ]);
     }
 
     /**
@@ -453,6 +489,26 @@ class FlowController extends Controller
                 ],
                 'welcoming_message' => ['required', 'string', 'max:4000'],
                 'store_summary_to_variable' => ['nullable', 'string', 'alpha_dash'],
+            ],
+            // Lengths mirror the WhatsApp Cloud API limits so the builder warns
+            // long before a send fails. Texts stay nullable (like http_request)
+            // so auto-save never fights a half-finished node; the executor skips
+            // a node with no body or no options at runtime.
+            'interactive' => [
+                'interactive_type' => ['required', 'string', Rule::in(['button', 'list'])],
+                'header' => ['nullable', 'string', 'max:60'],
+                'body' => ['nullable', 'string', 'max:1024'],
+                'footer' => ['nullable', 'string', 'max:60'],
+                'buttons' => ['nullable', 'array', 'max:3'],
+                'buttons.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
+                'buttons.*.title' => ['nullable', 'string', 'max:20'],
+                'button_label' => ['nullable', 'string', 'max:20'],
+                'sections' => ['nullable', 'array', 'max:10'],
+                'sections.*.title' => ['nullable', 'string', 'max:24'],
+                'sections.*.rows' => ['nullable', 'array', 'max:10'],
+                'sections.*.rows.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
+                'sections.*.rows.*.title' => ['nullable', 'string', 'max:24'],
+                'sections.*.rows.*.description' => ['nullable', 'string', 'max:72'],
             ],
             'http_request' => [
                 'method' => ['required', 'string', Rule::in(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])],
