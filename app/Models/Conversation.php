@@ -19,6 +19,7 @@ class Conversation extends Model
         'needs_human',
         'handoff_reason',
         'handoff_at',
+        'muted_at',
         'last_message_at',
     ];
 
@@ -27,6 +28,7 @@ class Conversation extends Model
         'status' => Status::class,
         'needs_human' => 'boolean',
         'handoff_at' => 'datetime',
+        'muted_at' => 'datetime',
         'last_message_at' => 'datetime',
     ];
 
@@ -37,6 +39,12 @@ class Conversation extends Model
     public function isGroup(): bool
     {
         return $this->type === Type::Group;
+    }
+
+    /** Muted threads still collect messages; they just raise no toast or sound. */
+    public function isMuted(): bool
+    {
+        return $this->muted_at !== null;
     }
 
     // Eager-loadable variant of last_message (one query per page instead of one

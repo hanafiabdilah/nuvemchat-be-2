@@ -27,6 +27,9 @@ class ConversationResource extends JsonResource
             'needs_human' => (bool) $this->needs_human,
             'handoff_reason' => $this->handoff_reason,
             'handoff_at' => $this->handoff_at?->timestamp,
+            // Muted threads keep syncing and keep their unread badge; they just
+            // raise no toast and play no sound.
+            'muted' => $this->muted_at !== null,
             'last_message' => $message,
             'last_message_at' => $this->last_message_at?->timestamp,
             // Prefer the withCount aggregate when the query provided it (sync

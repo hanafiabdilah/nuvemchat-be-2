@@ -135,6 +135,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/conversations/bulk-status', [ConversationController::class, 'bulkUpdateStatus']);
         Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
         Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);
+        // Mute silences notifications for a thread; any tenant member may
+        // toggle it, including on an unassigned group nobody owns yet.
+        Route::post('/conversations/{id}/mute', [ConversationController::class, 'mute']);
+        Route::delete('/conversations/{id}/mute', [ConversationController::class, 'unmute']);
         Route::get('/conversations/{id}/transfer-targets', [ConversationController::class, 'transferTargets']);
         Route::post('/conversations/{id}/transfer', [ConversationController::class, 'transfer']);
         // Suggestions run on the tenant's AI Hub agents, so the plan must

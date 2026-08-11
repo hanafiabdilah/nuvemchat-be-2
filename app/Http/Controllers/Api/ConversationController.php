@@ -779,6 +779,42 @@ class ConversationController extends Controller
     }
 
     /**
+     * Silence a conversation: it keeps arriving and keeps its unread badge, but
+     * raises no toast and plays no sound in anyone's inbox.
+     *
+     * Deliberately NOT gated on isAccessibleBy: the thread most worth muting is
+     * a busy unassigned group, which no agent "owns" yet. Muting destroys
+     * nothing and any tenant member can undo it.
+     */
+    public function mute(int $id)
+    {
+        return $this->setMuted($id, true);
+    }
+
+    public function unmute(int $id)
+    {
+        return $this->setMuted($id, false);
+    }
+
+    private function setMuted(int $id, bool $muted)
+    {
+        $conversation = Conversation::whereHas('connection', function($q){
+            $q->where('tenant_id', Auth::user()->tenant_id);
+        })->findOrFail($id);
+
+        $conversation->update(['muted_at' => $muted ? now() : null]);
+
+        // Every tab and every agent follows the same flag, so the bell in the
+        // header flips everywhere at once.
+        broadcast(new ConversationUpdated($conversation->fresh()->load('contact')));
+
+        return response()->json([
+            'message' => $muted ? 'Conversation muted' : 'Conversation unmuted',
+            'data' => new ConversationResource($conversation->fresh()),
+        ]);
+    }
+
+    /**
      * Agents the current conversation can be transferred to: every user of the
      * tenant except the current assignee. Only someone who can act on the
      * conversation (owner / assignee / email-inbox member) may list them.
