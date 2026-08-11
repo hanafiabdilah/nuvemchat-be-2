@@ -80,4 +80,28 @@ class UserController extends Controller
             'user' => $user->toResource(UserResource::class),
         ]);
     }
+
+    /**
+     * Per-user UI preferences: which theme preset the app renders and whether it
+     * follows light/dark/system. Cosmetic only — kept apart from update() so the
+     * frontend can persist a single click without resending the whole profile.
+     */
+    public function updatePreferences(Request $request)
+    {
+        $user = Auth::user();
+
+        $validated = $request->validate([
+            // Unknown/retired theme ids are rejected here rather than stored and
+            // silently ignored by the frontend fallback.
+            'theme' => ['sometimes', 'string', Rule::in(['classic', 'studio'])],
+            'appearance' => ['sometimes', 'string', Rule::in(['light', 'dark', 'system'])],
+        ]);
+
+        $user->ui_preferences = array_merge($user->ui_preferences ?? [], $validated);
+        $user->save();
+
+        return response()->json([
+            'ui_preferences' => $user->ui_preferences,
+        ]);
+    }
 }

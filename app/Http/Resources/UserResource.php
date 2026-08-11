@@ -21,6 +21,9 @@ class UserResource extends JsonResource
             'tenant_id' => $this->tenant_id,
             'whatsapp_number' => $this->whatsapp_number,
             'whatsapp_verified' => $this->whatsapp_verified_at !== null,
+            // Cosmetic UI state (theme preset + appearance) so a user's chosen
+            // theme follows them to any browser/device, not just the one that set it.
+            'ui_preferences' => $this->ui_preferences ?: null,
             'roles' => $this->whenLoaded('roles', function() {
                 return $this->roles->pluck('name');
             }),

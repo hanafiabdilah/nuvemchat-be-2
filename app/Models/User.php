@@ -26,6 +26,7 @@ class User extends Authenticatable
         'password',
         'whatsapp_number',
         'whatsapp_verified_at',
+        'ui_preferences',
     ];
 
     /**
@@ -52,6 +53,7 @@ class User extends Authenticatable
             'whatsapp_verified_at' => 'datetime',
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
+            'ui_preferences' => 'array',
         ];
     }
 

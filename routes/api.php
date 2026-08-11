@@ -84,6 +84,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
 
     Route::get('/user', [UserController::class, 'index']);
     Route::put('/user', [UserController::class, 'update']);
+    // Cosmetic per-user UI state (theme preset + appearance). Separate from the
+    // profile update so the frontend can persist a click without resending
+    // name/email/password.
+    Route::put('/user/preferences', [UserController::class, 'updatePreferences']);
 
     // Billing (tenant-side). Exempt from the subscription.active gate so a
     // suspended tenant can still load the page and pay (see EnsureSubscriptionActive).
