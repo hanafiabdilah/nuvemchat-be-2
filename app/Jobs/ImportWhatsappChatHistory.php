@@ -8,6 +8,7 @@ use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
+use App\Exceptions\ChatListNotReadyException;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -33,9 +34,14 @@ use Illuminate\Support\Facades\Log;
  *     endpoint to fetch a chat's message backlog, so only the chat list
  *     (+ last-message preview when present) can be imported, never the full
  *     history.
- *   - API Way currently answers fetch-chats with 501 not_supported_yet
- *     ("em breve"); the job detects that and marks the import "unsupported",
- *     and starts working as soon as the endpoint ships.
+ *   - fetch-chats went live on API Way in Aug 2026 (it used to answer 501
+ *     not_supported_yet, which the job still detects and marks "unsupported").
+ *     It answers {"success":true,"data":[{chatId, lastMessageTime}, …]} — an
+ *     entry carries no contact name and no last-message preview.
+ *   - For the first moments after an instance pairs, that same call answers
+ *     with no list at all (success, but "data" is not an array) because the
+ *     core has not indexed the chats yet. That is a wait, not a failure, so
+ *     the job re-queues itself instead of burning its one-shot run.
  *
  * Limits (deliberate): newest MAX_CHATS chats only, none older than
  * MAX_AGE_DAYS, individual chats only (groups/broadcast/newsletter skipped),
@@ -53,7 +59,15 @@ class ImportWhatsappChatHistory implements ShouldQueue
     public const MAX_CHATS = 50;
     public const MAX_AGE_DAYS = 30;
 
-    public function __construct(public int $connectionId)
+    /**
+     * How long to wait for the core to index the chats, and how many times.
+     * A fixed minute keeps the wait predictable; the whole point is to cover
+     * the warm-up right after pairing, not to poll indefinitely.
+     */
+    public const READY_RETRY_SECONDS = 60;
+    public const MAX_READY_ATTEMPTS = 5;
+
+    public function __construct(public int $connectionId, public int $attempt = 1)
     {
     }
 
@@ -138,6 +152,8 @@ class ImportWhatsappChatHistory implements ShouldQueue
                 'imported' => $imported,
                 'skipped' => $skipped,
             ]);
+        } catch (ChatListNotReadyException $th) {
+            $this->waitForChatList($connection, $th->getMessage());
         } catch (\Throwable $th) {
             Log::error('ImportWhatsappChatHistory: failed', [
                 'connection_id' => $connection->id,
@@ -154,8 +170,53 @@ class ImportWhatsappChatHistory implements ShouldQueue
     }
 
     /**
+     * The core has not indexed the chats yet: hand the run back to the queue
+     * and try again shortly. The state goes back to "queued" so the guard in
+     * dispatchIfPending() keeps a concurrent status flip from dispatching a
+     * second run while we wait.
+     */
+    protected function waitForChatList(Connection $connection, string $reason): void
+    {
+        if ($this->attempt >= self::MAX_READY_ATTEMPTS) {
+            Log::warning('ImportWhatsappChatHistory: chat list never became readable', [
+                'connection_id' => $connection->id,
+                'attempts' => $this->attempt,
+            ]);
+
+            // Still "failed" rather than terminal: a later reconnect re-queues
+            // it, by which time the core will have indexed the chats.
+            $this->setState($connection, [
+                'status' => 'failed',
+                'error' => 'Chat list not ready after ' . self::MAX_READY_ATTEMPTS . ' attempts: ' . $reason,
+                'finished_at' => now()->toIso8601String(),
+            ]);
+
+            return;
+        }
+
+        $next = $this->attempt + 1;
+
+        $this->setState($connection, [
+            'status' => 'queued',
+            'attempt' => $next,
+            'error' => null,
+        ]);
+
+        self::dispatch($connection->id, $next)
+            ->delay(now()->addSeconds(self::READY_RETRY_SECONDS));
+
+        Log::info('ImportWhatsappChatHistory: chat list not ready, retrying', [
+            'connection_id' => $connection->id,
+            'attempt' => $this->attempt,
+            'next_attempt' => $next,
+            'retry_in_seconds' => self::READY_RETRY_SECONDS,
+        ]);
+    }
+
+    /**
      * Fetch and normalize the provider's chat list. Returns null when the
-     * provider does not support the endpoint (yet).
+     * provider does not support the endpoint (yet), and throws
+     * ChatListNotReadyException when it supports it but has nothing indexed.
      */
     protected function fetchChats(Connection $connection): ?array
     {
@@ -200,6 +261,14 @@ class ImportWhatsappChatHistory implements ShouldQueue
             ?? (is_array($json) && array_is_list($json) ? $json : null);
 
         if (!is_array($list) || !array_is_list($list)) {
+            // A success envelope carrying no list at all is the core telling us
+            // it has not indexed this instance's chats yet — normal in the first
+            // moments after pairing, and worth waiting for. An empty list is a
+            // real answer ("no chats") and falls through to a clean run.
+            if ($list === null && ($json['success'] ?? null) === true) {
+                throw new ChatListNotReadyException('fetch-chats returned no chat list yet');
+            }
+
             Log::warning('ImportWhatsappChatHistory: unexpected fetch-chats shape', [
                 'connection_id' => $connection->id,
                 'top_keys' => is_array($json) ? array_keys($json) : gettype($json),
@@ -304,9 +373,22 @@ class ImportWhatsappChatHistory implements ShouldQueue
 
         $timestamp = null;
         foreach (['lastMessageTime', 'messageTimestamp', 'conversationTimestamp', 'timestamp', 't'] as $key) {
-            if (isset($chat[$key]) && is_numeric($chat[$key])) {
-                $timestamp = (int) $chat[$key];
+            $raw = $chat[$key] ?? null;
+
+            if (is_numeric($raw)) {
+                $timestamp = (int) $raw;
                 break;
+            }
+
+            // API Way sends an ISO-8601 string ("2026-08-11T08:28:57.41129Z"),
+            // not an epoch — without this the age cutoff never applies.
+            if (is_string($raw) && $raw !== '') {
+                try {
+                    $timestamp = Carbon::parse($raw)->timestamp;
+                    break;
+                } catch (\Throwable) {
+                    // Not a date after all; keep looking at the other keys.
+                }
             }
         }
         if ($timestamp !== null && $timestamp > 100000000000) {
