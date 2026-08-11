@@ -21,6 +21,7 @@ class Contact extends Model
         'photo_profile',
         'photo_synced_at',
         'group_synced_at',
+        'group_removed_at',
         'meta'
     ];
 
@@ -65,6 +66,7 @@ class Contact extends Model
         'is_group' => 'boolean',
         'photo_synced_at' => 'datetime',
         'group_synced_at' => 'datetime',
+        'group_removed_at' => 'datetime',
     ];
 
     public function tenant()
@@ -75,6 +77,16 @@ class Contact extends Model
     public function conversations()
     {
         return $this->hasMany(Conversation::class);
+    }
+
+    /**
+     * A group whose inbound messages are dropped at ingest. The contact itself
+     * keeps being maintained — name and photo still follow the channel — so
+     * restoring it later brings back a group that is still correctly labelled.
+     */
+    public function isRemovedGroup(): bool
+    {
+        return $this->is_group && $this->group_removed_at !== null;
     }
 
     /**

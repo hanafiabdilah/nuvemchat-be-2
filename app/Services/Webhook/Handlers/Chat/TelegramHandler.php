@@ -286,14 +286,28 @@ class TelegramHandler implements ChatHandlerInterface
             return;
         }
 
+        // Telegram sends the authoritative title on every message, so a removed
+        // group is still renamed here — it just never reaches a conversation.
+        // The group's own avatar lives on its Contact row, same as a person's
+        // (getChat is what reads it, see TelegramPhotoResolver), and that keeps
+        // being refreshed too.
+        $groupContact = GroupConversationService::resolveGroupContact($connection, (string) $chatId, $groupTitle);
+        SyncContactPhoto::dispatchIfStale($groupContact, $connection);
+
+        if ($groupContact->isRemovedGroup()) {
+            Log::info('TelegramHandler: dropping message from a removed group', [
+                'connection_id' => $connection->id,
+                'chat_id' => $chatId,
+                'message_id' => $messageId,
+            ]);
+
+            return;
+        }
+
         // Locked around the transaction, not inside it: concurrent updates for
         // this group must not each create their own conversation row.
         $message = GroupConversationService::lockChat($connection, (string) $chatId, fn () => DB::transaction(function () use ($connection, $payload, $chatId, $messageId, $messageType, $groupTitle, $senderChat, $senderExternalId) {
             $conversation = GroupConversationService::resolveConversation($connection, (string) $chatId, $groupTitle);
-
-            // The group's own avatar lives on its Contact row, same as a
-            // person's — getChat is what reads it (see TelegramPhotoResolver).
-            SyncContactPhoto::dispatchIfStale($conversation->contact, $connection);
 
             if ($senderChat) {
                 $senderName = $senderChat['title'] ?? ($groupTitle ?? (string) $senderExternalId);

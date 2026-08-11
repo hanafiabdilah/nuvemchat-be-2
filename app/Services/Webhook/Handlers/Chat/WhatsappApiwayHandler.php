@@ -394,6 +394,31 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             return;
         }
 
+        // The group's own contact is resolved (and refreshed) before anything
+        // else, because a removed group must keep its identity: whatsmeow never
+        // carries the group's picture on a message event, and the subject comes
+        // from /v1/group/group-metadata — both keep running while the messages
+        // are dropped.
+        $groupContact = GroupConversationService::resolveGroupContact(
+            $connection,
+            $groupJid,
+            $this->groupFallbackTitle($groupJid),
+            renameIfChanged: false,
+        );
+
+        SyncContactPhoto::dispatchIfStale($groupContact, $connection);
+        SyncGroupMetadata::dispatchIfStale($groupContact, $connection);
+
+        if ($groupContact->isRemovedGroup()) {
+            Log::info('WhatsappApiwayHandler: dropping message from a removed group', [
+                'connection_id' => $connection->id,
+                'group_jid' => $groupJid,
+                'message_id' => $messageId,
+            ]);
+
+            return;
+        }
+
         // Locked around the transaction, not inside it: concurrent webhooks for
         // this group must not each create their own conversation row.
         $message = GroupConversationService::lockChat($connection, $groupJid, fn () => DB::transaction(function () use ($connection, $event, $groupJid, $messageId, $messageType, $isFromMe, $senderPhone, $senderName, $senderLid) {
@@ -403,15 +428,6 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
                 $this->groupFallbackTitle($groupJid),
                 renameIfChanged: false,
             );
-
-            // whatsmeow never carries the group's picture on a message event —
-            // the core's profile-picture endpoint takes the @g.us JID, so the
-            // group contact resolves through the same path as a person.
-            SyncContactPhoto::dispatchIfStale($conversation->contact, $connection);
-
-            // Nor the subject: /v1/group/group-metadata is where the real name
-            // comes from, which is what turns the JID placeholder into a title.
-            SyncGroupMetadata::dispatchIfStale($conversation->contact, $connection);
 
             if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
                 Log::info('WhatsappApiwayHandler: duplicate group message ignored', ['message_id' => $messageId]);

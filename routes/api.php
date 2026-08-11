@@ -42,6 +42,7 @@ use App\Http\Controllers\Api\ImpersonationController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\FlowController;
+use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\MessageTemplateController;
 use App\Http\Controllers\Api\PermissionController;
@@ -139,6 +140,12 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // toggle it, including on an unassigned group nobody owns yet.
         Route::post('/conversations/{id}/mute', [ConversationController::class, 'mute']);
         Route::delete('/conversations/{id}/mute', [ConversationController::class, 'unmute']);
+
+        // Removing a group drops its inbound messages at ingest; the group's
+        // contact (name, photo) carries on being maintained either way.
+        Route::get('/groups/removed', [GroupController::class, 'removed']);
+        Route::post('/groups/{id}/remove', [GroupController::class, 'remove']);
+        Route::delete('/groups/{id}/remove', [GroupController::class, 'restore']);
         Route::get('/conversations/{id}/transfer-targets', [ConversationController::class, 'transferTargets']);
         Route::post('/conversations/{id}/transfer', [ConversationController::class, 'transfer']);
         // Suggestions run on the tenant's AI Hub agents, so the plan must

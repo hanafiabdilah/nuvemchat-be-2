@@ -65,6 +65,12 @@ class ConversationController extends Controller
             // that was opened but the visitor never typed) — they would otherwise show
             // as empty rows with a null "1970" date in the list.
             ->whereHas('messages')
+            // Removed groups stay on disk (restoring brings their history back)
+            // but never appear in the panel. Written as "doesn't have a removed
+            // contact" so conversations without a contact are unaffected.
+            ->whereDoesntHave('contact', function ($q) {
+                $q->whereNotNull('group_removed_at');
+            })
             // Ordered by id (not last_message_at) so the `before` cursor is a plain
             // unique key — the client sorts by lastMessageAt locally from IndexedDB.
             ->orderBy('id', 'DESC');
