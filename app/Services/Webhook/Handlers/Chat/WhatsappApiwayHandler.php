@@ -9,6 +9,7 @@ use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
 use App\Jobs\SyncContactPhoto;
+use App\Jobs\SyncGroupMetadata;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -340,10 +341,11 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
      * message records its real sender (phone from SenderAlt — identities use
      * LID addressing) plus a conversation_participants row. Flows never run.
      *
-     * whatsmeow Message events carry no group subject and the core exposes no
-     * group-metadata endpoint yet, so new groups get the JID local part as a
-     * placeholder name — corrected later by GroupInfo/JoinedGroup events or a
-     * manual rename (name_locked).
+     * whatsmeow Message events carry no group subject, so a new group is created
+     * with the JID local part as a placeholder and SyncGroupMetadata reads the
+     * real subject from the core straight after (GroupInfo/JoinedGroup webhooks
+     * only ever fire on a rename or a join, never for groups that predate the
+     * connection). A manual rename (name_locked) still wins over both.
      */
     private function handleGroupMessage(Connection $connection, array $event): void
     {
@@ -406,6 +408,10 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             // the core's profile-picture endpoint takes the @g.us JID, so the
             // group contact resolves through the same path as a person.
             SyncContactPhoto::dispatchIfStale($conversation->contact, $connection);
+
+            // Nor the subject: /v1/group/group-metadata is where the real name
+            // comes from, which is what turns the JID placeholder into a title.
+            SyncGroupMetadata::dispatchIfStale($conversation->contact, $connection);
 
             if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
                 Log::info('WhatsappApiwayHandler: duplicate group message ignored', ['message_id' => $messageId]);

@@ -15,8 +15,18 @@ use App\Models\User;
 use App\Services\Webhook\Handlers\Chat\WhatsappApiwayHandler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Http;
 
 uses(RefreshDatabase::class);
+
+/**
+ * Ingesting a group message queues two core lookups (profile picture, group
+ * subject) and the test queue runs sync — without this every test in the file
+ * made real requests to the API Way core, seconds apiece. The catch-all answers
+ * 200 with no data: no picture, no subject, so the placeholder-name assertions
+ * below still exercise the real behaviour.
+ */
+beforeEach(fn () => Http::fake());
 
 const APW_GROUP_JID = '555491607349-1623173607@g.us';
 const APW_ALICE_LID = '45148847243518@lid';

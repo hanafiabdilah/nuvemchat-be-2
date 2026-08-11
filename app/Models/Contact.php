@@ -20,6 +20,7 @@ class Contact extends Model
         'username',
         'photo_profile',
         'photo_synced_at',
+        'group_synced_at',
         'meta'
     ];
 
@@ -63,6 +64,7 @@ class Contact extends Model
         'name_locked' => 'boolean',
         'is_group' => 'boolean',
         'photo_synced_at' => 'datetime',
+        'group_synced_at' => 'datetime',
     ];
 
     public function tenant()

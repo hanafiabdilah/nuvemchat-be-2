@@ -20,11 +20,13 @@ use RuntimeException;
  * string, sometimes whatsmeow's ProfilePictureInfo object.
  *
  * NB: this endpoint is documented in the API Way collection but has not been
- * exercised against the live core — the neighbouring /v1/group/* family was
- * found to 404 there. Hence every non-2xx (404 included) is reported as a
- * failure rather than "this chat has no picture": a routing 404 must not be
- * allowed to delete photos. A chat that genuinely has none comes back 200
+ * exercised against the live core, so every non-2xx (404 included) is reported
+ * as a failure rather than "this chat has no picture": a routing 404 must not
+ * be allowed to delete photos. A chat that genuinely has none comes back 200
  * with an empty `data`, which extractUrl() reads as null.
+ * (An earlier note here claimed the neighbouring /v1/group/* family 404s — it
+ * does not: /v1/group/group-metadata answers 401 without a token, i.e. the
+ * route exists. See ApiwayGroupClient.)
  */
 class WhatsappApiwayPhotoResolver implements PhotoResolver
 {
