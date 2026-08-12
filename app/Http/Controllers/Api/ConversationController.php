@@ -23,6 +23,7 @@ use App\Services\AutomatedMessageService;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
@@ -34,10 +35,22 @@ class ConversationController extends Controller
 {
     public function index(Request $request)
     {
-        $since = $request->input('since');
+        // Parsed, not passed through as the ISO-8601 string the client sends: the
+        // bound value has to be in the driver's own datetime format, or the
+        // comparison below is a plain text comparison that never matches.
+        $since = rescue(
+            fn () => filled($request->input('since')) ? Carbon::parse($request->input('since')) : null,
+            null,
+            report: false,
+        );
         $before = $request->input('before');
         $limit = (int) $request->input('limit', 100);
         $limit = max(1, min($limit, 500));
+
+        // Stamped before the queries run, not after: anything that changes while
+        // this request is being served then falls after the cursor and is picked
+        // up by the next delta (a re-sent row is harmless — the client upserts).
+        $serverTime = now()->toIso8601String();
 
         // Eager-load everything ConversationResource touches (incl. the nested
         // MessageResource on last_message) — without this a 500-row sync page
@@ -76,7 +89,7 @@ class ConversationController extends Controller
             ->orderBy('id', 'DESC');
 
         // Delta sync: only conversations touched since the last sync.
-        if ($since !== null && $since !== '') {
+        if ($since !== null) {
             $query->where('updated_at', '>', $since);
         }
 
@@ -93,10 +106,50 @@ class ConversationController extends Controller
 
         return response()->json([
             'data' => ConversationResource::collection($conversations),
+            'removed_ids' => $this->removedGroupConversationIds($since, $before),
             'has_more' => $hasMore,
             'next_before' => $hasMore ? $conversations->last()?->id : null,
-            'server_time' => now()->toIso8601String(),
+            'server_time' => $serverTime,
         ]);
+    }
+
+    /**
+     * Conversations the client must drop: they belong to a group that was removed
+     * from the inbox.
+     *
+     * The rows stay on disk (restoring brings the history back), so the delta
+     * above — which only ever adds — can never tell a client about a removal.
+     * The live `group-removed` event does that for whoever is connected at the
+     * time; this is how everyone else finds out. Without it a panel that was
+     * closed during the removal keeps the dead thread forever, since IndexedDB
+     * survives the reload and the next sync only adds to it.
+     *
+     * @return array<int, string>
+     */
+    private function removedGroupConversationIds(?Carbon $since, ?string $before): array
+    {
+        // Only on the first page — the client applies these once per sync, after
+        // every page has landed.
+        if ($before !== null && $before !== '') {
+            return [];
+        }
+
+        return Conversation::query()
+            ->whereHas('connection', function ($q) {
+                $q->where('tenant_id', Auth::user()->tenant_id);
+            })
+            ->whereHas('contact', function ($q) use ($since) {
+                $q->whereNotNull('group_removed_at');
+
+                // Same cursor as the delta: a removal the client has already
+                // seen doesn't need repeating on every sync.
+                if ($since !== null) {
+                    $q->where('group_removed_at', '>', $since);
+                }
+            })
+            ->pluck('id')
+            ->map(fn ($id) => (string) $id)
+            ->all();
     }
 
     public function store(Request $request)

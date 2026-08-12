@@ -173,6 +173,65 @@ test('a removed group disappears from the conversation list and comes back on re
     $this->actingAs($user, 'sanctum')->getJson('/api/conversations')->assertOk()->assertJsonCount(1, 'data');
 });
 
+test('an agent who missed the broadcast is told to drop the thread by the next delta sync', function () {
+    Event::fake();
+    $user = removeGroupUser();
+    $connection = removeGroupConnection($user, Channel::Telegram);
+
+    (new TelegramHandler)->handle($connection, telegramRemoveGroupPayload());
+    $group = Contact::where('is_group', true)->firstOrFail();
+    $conversation = Conversation::firstOrFail();
+
+    // This agent's panel synced before the removal, so it holds the thread in
+    // IndexedDB. The delta only ever adds rows — without removed_ids nothing
+    // would ever take it off their list, not even a reload.
+    $firstSync = $this->actingAs($user, 'sanctum')->getJson('/api/conversations')->assertOk();
+    $lastSync = $firstSync->json('server_time');
+
+    $this->travel(2)->seconds();
+    $this->actingAs($user, 'sanctum')->postJson("/api/groups/{$group->id}/remove")->assertOk();
+
+    $delta = $this->actingAs($user, 'sanctum')
+        ->getJson('/api/conversations?since=' . urlencode($lastSync))
+        ->assertOk()
+        ->assertJsonCount(0, 'data')
+        ->assertJsonPath('removed_ids', [(string) $conversation->id]);
+
+    // Once applied it is not repeated: the next delta starts after the removal.
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/conversations?since=' . urlencode($delta->json('server_time')))
+        ->assertOk()
+        ->assertJsonPath('removed_ids', []);
+
+    // And a restore brings it back through the same delta.
+    $this->travel(2)->seconds();
+    $this->actingAs($user, 'sanctum')->deleteJson("/api/groups/{$group->id}/remove")->assertOk();
+
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/conversations?since=' . urlencode($delta->json('server_time')))
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.id', $conversation->id)
+        ->assertJsonPath('removed_ids', []);
+});
+
+test('a fresh panel is never handed removals it has no rows for', function () {
+    Event::fake();
+    $user = removeGroupUser();
+    $connection = removeGroupConnection($user, Channel::Telegram);
+
+    (new TelegramHandler)->handle($connection, telegramRemoveGroupPayload());
+    $group = Contact::where('is_group', true)->firstOrFail();
+    $this->actingAs($user, 'sanctum')->postJson("/api/groups/{$group->id}/remove")->assertOk();
+
+    // A first sync (epoch cursor) still lists it — harmless, the client has
+    // nothing to delete — but the thread itself must not come down.
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/conversations?since=' . urlencode('1970-01-01T00:00:00Z'))
+        ->assertOk()
+        ->assertJsonCount(0, 'data');
+});
+
 test('a restored group receives messages again', function () {
     Event::fake();
     $user = removeGroupUser();
