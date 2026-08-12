@@ -167,6 +167,14 @@ class MessageResource extends JsonResource
      */
     private function getProcessedMeta(): ?array
     {
+        // A system note belongs to the platform, not to a channel: its code +
+        // params travel the same way on every connection.
+        if ($this->message_type === MessageType::Info) {
+            $info = $this->meta['info'] ?? null;
+
+            return is_array($info) ? ['info' => $info] : null;
+        }
+
         $channel = $this->conversation->connection->channel ?? null;
 
         if (!$channel) {

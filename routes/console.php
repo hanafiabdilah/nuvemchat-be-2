@@ -50,6 +50,17 @@ Schedule::command('email:fetch')
         logger()->error('Email inbox fetch failed');
     });
 
+// Close conversations whose channel reply window has run out (WhatsApp Official
+// 24h, TikTok 48h): they leave an info note in the thread and move to Resolved,
+// so the Active column only holds work an agent can actually answer. Capped per
+// pass — the first run on an old inbox has a lot to catch up on.
+Schedule::command('conversations:close-expired-windows')
+    ->hourly()
+    ->withoutOverlapping(10)
+    ->onFailure(function () {
+        logger()->error('Expired messaging window sweep failed');
+    });
+
 // --- Billing -------------------------------------------------------------
 
 // Generate fresh Pix charges a few days before period end (pix isn't auto-debited).

@@ -123,6 +123,19 @@ class ConversationController extends Controller
             ], 403);
         }
 
+        // Channels where only the customer can open a conversation. Sending
+        // first is refused outright rather than left to the session-window
+        // guard: even inside an open window this endpoint would be starting a
+        // second thread on a channel that never grants the business the first
+        // word. WhatsApp Official re-engages through an approved template
+        // instead (POST /api/templates/send).
+        if (!$connection->channel->canStartConversation()) {
+            return response()->json([
+                'message' => 'This channel does not allow starting a conversation — the customer has to message first.',
+                'code' => 'channel_cannot_start_conversation',
+            ], 422);
+        }
+
         // Check if an open conversation (active / pending / AI-handling) already exists
         $existingConversation = Conversation::where('contact_id', $contact->id)
             ->where('connection_id', $connection->id)

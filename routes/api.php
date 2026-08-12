@@ -129,12 +129,17 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/conversations/{id}/variables', [ConversationController::class, 'variables']);
         Route::get('/conversations/{id}/participants', [ConversationController::class, 'participants']);
         // Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
-        Route::post('/conversations/{id}/send-message', [ConversationController::class, 'sendMessage']);
-        Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
-        Route::post('/conversations/{id}/send-audio', [ConversationController::class, 'sendAudio']);
-        Route::post('/conversations/{id}/send-video', [ConversationController::class, 'sendVideo']);
-        Route::post('/conversations/{id}/send-document', [ConversationController::class, 'sendDocument']);
-        Route::post('/conversations/{id}/send-interactive', [ConversationController::class, 'sendInteractive']);
+        // Every outbound path is gated on the channel's session window: on
+        // WhatsApp Official / TikTok a late message is refused here instead of
+        // being stored and silently dropped by the platform.
+        Route::middleware('messaging.window')->group(function () {
+            Route::post('/conversations/{id}/send-message', [ConversationController::class, 'sendMessage']);
+            Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
+            Route::post('/conversations/{id}/send-audio', [ConversationController::class, 'sendAudio']);
+            Route::post('/conversations/{id}/send-video', [ConversationController::class, 'sendVideo']);
+            Route::post('/conversations/{id}/send-document', [ConversationController::class, 'sendDocument']);
+            Route::post('/conversations/{id}/send-interactive', [ConversationController::class, 'sendInteractive']);
+        });
         Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
         Route::post('/conversations/{id}/typing', [ConversationController::class, 'typing']);
         Route::post('/conversations/bulk-status', [ConversationController::class, 'bulkUpdateStatus']);

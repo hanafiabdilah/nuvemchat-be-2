@@ -48,6 +48,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'subscription.active' => \App\Http\Middleware\EnsureSubscriptionActive::class,
             'feature' => \App\Http\Middleware\EnsureFeatureEnabled::class,
             'whatsapp.verified' => \App\Http\Middleware\EnsureWhatsAppVerified::class,
+            'messaging.window' => \App\Http\Middleware\EnsureMessagingWindowIsOpen::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
