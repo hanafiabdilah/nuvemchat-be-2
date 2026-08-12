@@ -30,6 +30,11 @@ class MessageResource extends JsonResource
             'attachment_url' => $this->when(!$this->withoutAttachmentUrl, fn() =>
                 self::resolveAttachmentUrl($this->attachment)
             ),
+            // Only set while the file is still being fetched off the channel
+            // (or after that gave up) — see App\Jobs\DownloadInboundMedia. The
+            // chat panel reads it to draw a placeholder instead of a bubble
+            // pointing at nothing.
+            'attachment_status' => $this->attachment_status,
             'replied_message' => $this->when($this->repliedMessage, fn() => [
                 'id' => $this->repliedMessage->id,
                 'sender_type' => $this->repliedMessage->sender_type,

@@ -17,6 +17,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Inbound Media Queue
+    |--------------------------------------------------------------------------
+    |
+    | Which queue DownloadInboundMedia lands on. It ships pointing at the
+    | default queue so media is fetched with no deployment step at all — but a
+    | 16MB video download sitting in front of the broadcast jobs delays the
+    | very realtime it was moved off the webhook to protect. Once the
+    | `queue-media` worker exists (docs/media-worker.md), set MEDIA_QUEUE=media
+    | to give downloads their own lane.
+    |
+    */
+
+    'media' => env('MEDIA_QUEUE', 'default'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Queue Connections
     |--------------------------------------------------------------------------
     |

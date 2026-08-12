@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\DownloadInboundMedia;
 use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
@@ -17,14 +18,26 @@ use App\Models\MessageReaction;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
+use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class InstagramHandler implements ChatHandlerInterface
+class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
+    /** Message types whose bytes are fetched after the message is broadcast. */
+    private const MEDIA_TYPES = [
+        MessageType::Image,
+        MessageType::Video,
+        MessageType::Document,
+        MessageType::Audio,
+    ];
+
+    /** Attachment kinds that are a shared post rather than a plain file. */
+    private const SHARE_TYPES = ['share', 'ig_post', 'ig_reel'];
+
     public function getConversationId(array $payload): ?string
     {
         // For echo messages (outgoing), use recipient's ID as conversation identifier
@@ -278,21 +291,11 @@ class InstagramHandler implements ChatHandlerInterface
         });
 
         if($message){
-            // Handle media messages (including ephemeral)
-            if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
-                $this->handleMediaMessage($message, $payload, $messageType);
-            }
-
-            // Handle Instagram share/post/reel to fetch permalink
-            $messaging = $payload['messaging'][0] ?? [];
-            $messageData = $messaging['message'] ?? [];
-            if (isset($messageData['attachments'][0])) {
-                $attachment = $messageData['attachments'][0];
-                $attachmentType = $attachment['type'] ?? null;
-
-                if (in_array($attachmentType, ['share', 'ig_post', 'ig_reel'])) {
-                    $this->handleInstagramShare($message, $attachment, $connection);
-                }
+            // Both the plain media download and the shared-post fetch are CDN
+            // round-trips; they run off the queue so the bubble (and its
+            // caption) reaches the dashboard first. See downloadMedia().
+            if(self::hasDownloadableMedia($payload, $messageType)) {
+                DownloadInboundMedia::dispatchFor($message);
             }
 
             broadcast(new MessageReceived($message));
@@ -589,6 +592,39 @@ class InstagramHandler implements ChatHandlerInterface
                 'error' => $th->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Queue-side entry point. Instagram has two kinds of media in one webhook
+     * shape: a plain attachment (image/video/audio/file), and a shared post,
+     * reel or story whose CDN copy is mirrored locally and linked from the
+     * body. Both are fetched here, off the request.
+     */
+    public function downloadMedia(Message $message): void
+    {
+        $payload = $message->meta ?? [];
+
+        if (in_array($message->message_type, self::MEDIA_TYPES)) {
+            $this->handleMediaMessage($message, $payload, $message->message_type);
+        }
+
+        $attachment = $payload['messaging'][0]['message']['attachments'][0] ?? null;
+
+        if ($attachment && in_array($attachment['type'] ?? null, self::SHARE_TYPES)) {
+            $this->handleInstagramShare($message, $attachment, $message->conversation->connection);
+        }
+    }
+
+    /** True when this message has anything worth a download job. */
+    private static function hasDownloadableMedia(array $payload, MessageType $messageType): bool
+    {
+        if (in_array($messageType, self::MEDIA_TYPES)) {
+            return true;
+        }
+
+        $attachmentType = $payload['messaging'][0]['message']['attachments'][0]['type'] ?? null;
+
+        return in_array($attachmentType, self::SHARE_TYPES);
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)

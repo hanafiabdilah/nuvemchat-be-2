@@ -7,6 +7,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
+use App\Jobs\DownloadInboundMedia;
 use App\Events\MessageUpdated;
 use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
@@ -15,6 +16,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
+use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -29,8 +31,16 @@ use Illuminate\Support\Facades\Storage;
  * privileged MESSAGE_CONTENT intent. The DM channel id is the conversation's
  * external_id; the Discord user id is the contact's external_id.
  */
-class DiscordHandler implements ChatHandlerInterface
+class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
+    /** Message types whose bytes are fetched after the message is broadcast. */
+    private const MEDIA_TYPES = [
+        MessageType::Image,
+        MessageType::Video,
+        MessageType::Document,
+        MessageType::Audio,
+    ];
+
     public function getConversationId(array $payload): ?string
     {
         return isset($payload['d']['channel_id']) ? (string) $payload['d']['channel_id'] : null;
@@ -208,8 +218,8 @@ class DiscordHandler implements ChatHandlerInterface
                 'meta' => $payload,
             ]);
 
-            if (in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
-                $this->handleMediaMessage($message, $payload);
+            if (in_array($messageType, self::MEDIA_TYPES)) {
+                DownloadInboundMedia::dispatchFor($message);
             }
 
             broadcast(new MessageReceived($message));
@@ -276,8 +286,8 @@ class DiscordHandler implements ChatHandlerInterface
         });
 
         if ($message) {
-            if (in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
-                $this->handleMediaMessage($message, $payload);
+            if (in_array($messageType, self::MEDIA_TYPES)) {
+                DownloadInboundMedia::dispatchFor($message);
             }
 
             broadcast(new MessageReceived($message));
@@ -393,6 +403,15 @@ class DiscordHandler implements ChatHandlerInterface
                 'error' => $th->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Queue-side entry point: the gateway event was stored on the message, and
+     * its attachment URL is a pre-signed CDN link good for hours.
+     */
+    public function downloadMedia(Message $message): void
+    {
+        $this->handleMediaMessage($message, $message->meta ?? []);
     }
 
     private function handleMediaMessage(Message $message, array $payload)

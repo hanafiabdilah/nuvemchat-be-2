@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\DownloadInboundMedia;
 use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
@@ -19,14 +20,23 @@ use App\Services\Conversation\GroupConversationService;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
+use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class TelegramHandler implements ChatHandlerInterface
+class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
+    /** Message types whose bytes are fetched after the message is broadcast. */
+    private const MEDIA_TYPES = [
+        MessageType::Audio,
+        MessageType::Image,
+        MessageType::Video,
+        MessageType::Document,
+    ];
+
     public function getConversationId(array $payload): ?string
     {
         return $payload['message']['chat']['id'] ?? null;
@@ -209,8 +219,8 @@ class TelegramHandler implements ChatHandlerInterface
         });
 
         if($message){
-            if(in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
-                $this->handleMediaMessage($message, $payload, $messageType);
+            if(in_array($messageType, self::MEDIA_TYPES)) {
+                DownloadInboundMedia::dispatchFor($message);
             }
 
             broadcast(new MessageReceived($message));
@@ -345,8 +355,8 @@ class TelegramHandler implements ChatHandlerInterface
         }));
 
         if ($message) {
-            if (in_array($messageType, [MessageType::Audio, MessageType::Image, MessageType::Video, MessageType::Document])) {
-                $this->handleMediaMessage($message, $payload, $messageType);
+            if (in_array($messageType, self::MEDIA_TYPES)) {
+                DownloadInboundMedia::dispatchFor($message);
             }
 
             broadcast(new MessageReceived($message));
@@ -451,6 +461,15 @@ class TelegramHandler implements ChatHandlerInterface
         if($message->conversation->last_message->id == $message->id) {
             broadcast(new ConversationUpdated($message->conversation));
         }
+    }
+
+    /**
+     * Queue-side entry point: the update that carried the file_id was stored
+     * on the message, so getFile can still be replayed from it.
+     */
+    public function downloadMedia(Message $message): void
+    {
+        $this->handleMediaMessage($message, $message->meta ?? [], $message->message_type);
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)

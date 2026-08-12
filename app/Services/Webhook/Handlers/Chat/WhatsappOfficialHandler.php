@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\DownloadInboundMedia;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -17,14 +18,23 @@ use App\Services\Flow\FlowExecutor;
 use App\Services\Flow\InteractiveNodes;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
+use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class WhatsappOfficialHandler implements ChatHandlerInterface
+class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
+    /** Message types whose bytes are fetched after the message is broadcast. */
+    private const MEDIA_TYPES = [
+        MessageType::Image,
+        MessageType::Video,
+        MessageType::Document,
+        MessageType::Audio,
+    ];
+
     public function getConversationId(array $payload): ?string
     {
         // Get wa_id from contacts or messages (for different webhook types)
@@ -259,9 +269,10 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
         });
 
         if($message){
-            // Handle media messages
-            if(in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
-                $this->handleMediaMessage($message, $payload, $messageType);
+            // Media is fetched off the queue: the caption and the bubble reach
+            // the dashboard now, the file follows over message-updated.
+            if(in_array($messageType, self::MEDIA_TYPES)) {
+                DownloadInboundMedia::dispatchFor($message);
             }
 
             broadcast(new MessageReceived($message));
@@ -473,6 +484,16 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
                 ]);
             }
         }
+    }
+
+    /**
+     * Queue-side entry point: the raw webhook entry was stored on the message,
+     * so the media id and token are still reachable long after the request
+     * that carried them was answered.
+     */
+    public function downloadMedia(Message $message): void
+    {
+        $this->handleMediaMessage($message, $message->meta ?? [], $message->message_type);
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)

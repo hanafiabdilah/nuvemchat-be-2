@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\DownloadInboundMedia;
 use App\Jobs\SyncContactPhoto;
 use App\Jobs\SyncGroupMetadata;
 use App\Models\Connection;
@@ -19,6 +20,7 @@ use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
+use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -37,8 +39,17 @@ use Illuminate\Support\Facades\Storage;
  * Identities use LID addressing; the real phone number is in `SenderAlt`
  * (e.g. `6282122787699:73@s.whatsapp.net`).
  */
-class WhatsappApiwayHandler implements ChatHandlerInterface
+class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
+    /** Message types whose bytes are fetched after the message is broadcast. */
+    private const MEDIA_TYPES = [
+        MessageType::Image,
+        MessageType::Video,
+        MessageType::Audio,
+        MessageType::Document,
+        MessageType::Sticker,
+    ];
+
     /**
      * The Message fields that are encryption/session plumbing rather than
      * content: the group sender-key hand-out, and the context envelope holding
@@ -250,8 +261,8 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             return;
         }
 
-        if (in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Audio, MessageType::Document, MessageType::Sticker], true)) {
-            $this->handleMediaMessage($message, $event, $messageType);
+        if (in_array($messageType, self::MEDIA_TYPES, true)) {
+            DownloadInboundMedia::dispatchFor($message);
         }
 
         broadcast(new MessageReceived($message));
@@ -326,8 +337,8 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
         });
 
         if ($message) {
-            if (in_array($message->message_type, [MessageType::Image, MessageType::Video, MessageType::Audio, MessageType::Document, MessageType::Sticker], true)) {
-                $this->handleMediaMessage($message, $event, $message->message_type);
+            if (in_array($message->message_type, self::MEDIA_TYPES, true)) {
+                DownloadInboundMedia::dispatchFor($message);
             }
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation));
@@ -469,8 +480,8 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
             return;
         }
 
-        if (in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Audio, MessageType::Document, MessageType::Sticker], true)) {
-            $this->handleMediaMessage($message, $event, $messageType);
+        if (in_array($messageType, self::MEDIA_TYPES, true)) {
+            DownloadInboundMedia::dispatchFor($message);
         }
 
         broadcast(new MessageReceived($message));
@@ -913,6 +924,16 @@ class WhatsappApiwayHandler implements ChatHandlerInterface
      * media scheme. Everything needed is in the payload, so this doesn't depend
      * on API Way's (undocumented) download-media response shape.
      */
+    /**
+     * Queue-side entry point: the whatsmeow event was stored on the message,
+     * and it carries the CDN URL plus the media key — everything the decrypt
+     * needs, with no second call to API Way.
+     */
+    public function downloadMedia(Message $message): void
+    {
+        $this->handleMediaMessage($message, $message->meta ?? [], $message->message_type);
+    }
+
     private function handleMediaMessage(Message $message, array $event, MessageType $type): void
     {
         $node = $this->getMediaNode($event, $type);

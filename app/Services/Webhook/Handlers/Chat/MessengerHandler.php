@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\DownloadInboundMedia;
 use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
@@ -16,6 +17,7 @@ use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
+use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -28,8 +30,16 @@ use Illuminate\Support\Facades\Storage;
  * Instagram uses, with two Messenger-specific twists: read/delivery receipts
  * are watermark-based (no mid), and button postbacks arrive as `postback`.
  */
-class MessengerHandler implements ChatHandlerInterface
+class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
+    /** Message types whose bytes are fetched after the message is broadcast. */
+    private const MEDIA_TYPES = [
+        MessageType::Image,
+        MessageType::Video,
+        MessageType::Document,
+        MessageType::Audio,
+    ];
+
     private const GRAPH_BASE = 'https://graph.facebook.com/v25.0';
 
     public function getConversationId(array $payload): ?string
@@ -282,8 +292,8 @@ class MessengerHandler implements ChatHandlerInterface
         });
 
         if ($message) {
-            if (in_array($messageType, [MessageType::Image, MessageType::Video, MessageType::Document, MessageType::Audio])) {
-                $this->handleMediaMessage($message, $payload, $messageType);
+            if (in_array($messageType, self::MEDIA_TYPES)) {
+                DownloadInboundMedia::dispatchFor($message);
             }
 
             broadcast(new MessageReceived($message));
@@ -451,6 +461,15 @@ class MessengerHandler implements ChatHandlerInterface
                 'error' => $th->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Queue-side entry point: the webhook entry was stored on the message, so
+     * the attachment's CDN URL survives the request that delivered it.
+     */
+    public function downloadMedia(Message $message): void
+    {
+        $this->handleMediaMessage($message, $message->meta ?? [], $message->message_type);
     }
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Services\Broadcast\OptOutDetector;
@@ -21,6 +22,7 @@ class Message extends Model
         'message_type',
         'body',
         'attachment',
+        'attachment_status',
         'replied_message_id',
         'sent_at',
         'delivery_at',
@@ -34,6 +36,7 @@ class Message extends Model
     protected $casts = [
         'sender_type' => SenderType::class,
         'message_type' => MessageType::class,
+        'attachment_status' => AttachmentStatus::class,
         'sent_at' => 'timestamp',
         'delivery_at' => 'timestamp',
         'read_at' => 'timestamp',

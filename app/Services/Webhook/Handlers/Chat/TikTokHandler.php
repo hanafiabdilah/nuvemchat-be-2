@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
+use App\Jobs\DownloadInboundMedia;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -15,6 +16,7 @@ use App\Models\Message;
 use App\Services\Connection\TikTok\TikTokMessagingClient;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
+use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -27,7 +29,7 @@ use Illuminate\Support\Facades\Storage;
  * of business → user, whether sent via our API or the TikTok app directly),
  * im_mark_read_msg (user read the conversation).
  */
-class TikTokHandler implements ChatHandlerInterface
+class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
     public function getConversationId(array $payload): ?string
     {
@@ -199,7 +201,7 @@ class TikTokHandler implements ChatHandlerInterface
 
         if($message){
             if($messageType === MessageType::Image) {
-                $this->handleMediaMessage($message, $connection, $payload);
+                DownloadInboundMedia::dispatchFor($message);
             }
 
             broadcast(new MessageReceived($message));
@@ -286,6 +288,15 @@ class TikTokHandler implements ChatHandlerInterface
             broadcast(new MessageUpdated($updated->sortByDesc('sent_at')->first()));
             broadcast(new ConversationUpdated($conversation));
         }
+    }
+
+    /**
+     * Queue-side entry point: the event envelope was stored on the message, so
+     * the download URL can still be minted from its media id.
+     */
+    public function downloadMedia(Message $message): void
+    {
+        $this->handleMediaMessage($message, $message->conversation->connection, $message->meta ?? []);
     }
 
     private function handleMediaMessage(Message $message, Connection $connection, array $payload)
