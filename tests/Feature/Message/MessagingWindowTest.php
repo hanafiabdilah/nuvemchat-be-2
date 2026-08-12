@@ -99,7 +99,11 @@ test('an expired window resolves the conversation and leaves an info note', func
 
     $this->actingAs($user, 'sanctum')
         ->postJson("/api/conversations/{$conversation->id}/send-message", ['message' => 'Olá?'])
-        ->assertStatus(422);
+        ->assertStatus(422)
+        // The refusal carries the resulting state, so the tab that sent it can
+        // close the thread without waiting on the broadcast.
+        ->assertJsonPath('conversation_id', $conversation->id)
+        ->assertJsonPath('conversation_status', 'resolved');
 
     expect($conversation->fresh()->status)->toBe(ConversationStatus::Resolved);
 
@@ -140,7 +144,10 @@ test('a thread still waiting for its first inbound message is blocked but stays 
     $this->actingAs($user, 'sanctum')
         ->postJson("/api/conversations/{$conversation->id}/send-message", ['message' => 'Olá?'])
         ->assertStatus(422)
-        ->assertJsonPath('code', 'messaging_window_closed');
+        ->assertJsonPath('code', 'messaging_window_closed')
+        // Still Active: nothing to close, the customer's first reply is what
+        // opens the window, and it may yet arrive.
+        ->assertJsonPath('conversation_status', 'active');
 
     expect($conversation->fresh()->status)->toBe(ConversationStatus::Active)
         ->and($conversation->messages()->where('message_type', MessageType::Info)->exists())->toBeFalse();

@@ -17,6 +17,12 @@ use Illuminate\Support\Facades\Storage;
 
 class WhatsappApiwayHandler implements MessageHandlerInterface
 {
+    /** Keys that may carry the node's message id in a send response (matched case-insensitively). */
+    private const ID_KEYS = ['id', 'messageid', 'message_id', 'msgid'];
+
+    /** Envelope keys worth descending into; anything else is payload, not wrapper. */
+    private const ID_WRAPPERS = ['data', 'key', 'result', 'response'];
+
     private function base(): string
     {
         return \App\Services\Connection\Proxy\ApiwayConfig::baseUrl();
@@ -85,32 +91,21 @@ class WhatsappApiwayHandler implements MessageHandlerInterface
      * only symptom is a "target not found" line in the log.
      *
      * The core wraps its response as `{ success, data }` and passes the node's
-     * payload through verbatim, so `data` has been seen both as an object and
-     * as a bare id string; the published collection types it as opaque. Rather
-     * than bet on one shape, try the plausible ones and shout when none match,
-     * so the real field shows up in the logs instead of a silent empty id.
+     * payload through verbatim, so the id keeps moving: it has been seen as a
+     * bare string in `data`, at `data.id`, and — the shape the current build
+     * returns — one envelope deeper and capitalised, at
+     * `data.data.Id` (`{success, data:{code, success, data:{Details, Id, Timestamp}}}`).
+     * Betting on a fixed path is what left every panel-sent message with an
+     * empty `external_id`, so instead walk the envelope and match id-ish keys
+     * case-insensitively, and shout when none match so the real field shows up
+     * in the logs instead of a silent empty id.
      */
     public function getMessageId(array $payload): string
     {
-        $data = $payload['data'] ?? null;
+        $id = $this->findMessageId($payload);
 
-        $candidates = [
-            is_array($data) ? ($data['id'] ?? null) : null,
-            is_array($data) ? ($data['messageId'] ?? null) : null,
-            is_array($data) ? ($data['key']['id'] ?? $data['key']['ID'] ?? null) : null,
-            is_string($data) && $data !== '' ? $data : null,
-            $payload['messageId'] ?? null,
-            $payload['id'] ?? null,
-        ];
-
-        foreach ($candidates as $candidate) {
-            if (is_string($candidate) && $candidate !== '') {
-                return $candidate;
-            }
-
-            if (is_int($candidate)) {
-                return (string) $candidate;
-            }
+        if ($id !== null) {
+            return $id;
         }
 
         Log::warning('WhatsappApiwayHandler: send response carried no message id — receipts, edits, deletes and reactions cannot match this message', [
@@ -118,6 +113,45 @@ class WhatsappApiwayHandler implements MessageHandlerInterface
         ]);
 
         return '';
+    }
+
+    /**
+     * Depth-first hunt for the node id: id-ish keys at this level first, then
+     * down the known envelope wrappers. `data` alone may also *be* the id.
+     */
+    private function findMessageId(array $payload, int $depth = 0): ?string
+    {
+        foreach ($payload as $key => $value) {
+            if (! in_array(strtolower((string) $key), self::ID_KEYS, true)) {
+                continue;
+            }
+
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+
+            if (is_int($value)) {
+                return (string) $value;
+            }
+        }
+
+        if ($depth >= 4) {
+            return null;
+        }
+
+        foreach (self::ID_WRAPPERS as $wrapper) {
+            $nested = $payload[$wrapper] ?? null;
+
+            if ($wrapper === 'data' && is_string($nested) && $nested !== '') {
+                return $nested;
+            }
+
+            if (is_array($nested) && ($found = $this->findMessageId($nested, $depth + 1)) !== null) {
+                return $found;
+            }
+        }
+
+        return null;
     }
 
     public function getMessageSentAt(array $payload): Carbon

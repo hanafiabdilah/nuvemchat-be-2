@@ -44,6 +44,12 @@ class EnsureMessagingWindowIsOpen
             'message' => $this->explain($channel, $hours),
             // Machine-readable so the SPA can react without matching on prose.
             'code' => 'messaging_window_closed',
+            'conversation_id' => $conversation->id,
+            // The status this refusal leaves behind (Resolved when the window
+            // had expired, Active when it never opened). Sent so the tab that
+            // asked can settle immediately instead of waiting for the
+            // conversation-updated broadcast to travel queue → Reverb → Echo.
+            'conversation_status' => $conversation->status->value,
             'window' => [
                 'channel' => $channel,
                 'hours' => $hours,
