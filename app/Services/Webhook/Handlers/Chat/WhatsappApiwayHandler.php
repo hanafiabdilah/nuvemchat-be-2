@@ -61,6 +61,9 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         'senderKeyDistributionMessage',
     ];
 
+    /** waE2E.ProtocolMessage_REVOKE — "delete for everyone". */
+    private const PROTOCOL_TYPE_REVOKE = 0;
+
     public function handle(Connection $connection, array $payload)
     {
         // API Way wraps each whatsmeow event as:
@@ -83,12 +86,23 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
 
             // WhatsApp device-level control traffic (disappearing-message sync,
             // app-state/history sync, key exchange). It carries no body, so
-            // persisting it would only add blank "unsupported" rows. This
-            // channel acts on no protocol type, so every one of them is dropped.
+            // persisting it would only add blank "unsupported" rows — every
+            // type but REVOKE is dropped.
             if (isset($event['Message']['protocolMessage'])) {
+                $protocol = $event['Message']['protocolMessage'];
+
+                // "Delete for everyone" is not an event of its own: it arrives
+                // as a plain message whose only payload is a REVOKE protocol
+                // node naming the victim in key.ID.
+                if ($this->isRevoke($protocol)) {
+                    $this->handleRevoke($connection, $event, $protocol);
+
+                    return;
+                }
+
                 Log::info('WhatsappApiwayHandler: skipping protocol message', [
                     'connection_id' => $connection->id,
-                    'protocol_type' => $event['Message']['protocolMessage']['type'] ?? null,
+                    'protocol_type' => $protocol['type'] ?? null,
                     'message_id' => $info['ID'] ?? null,
                 ]);
 
@@ -488,6 +502,97 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
         // No flow automation in groups (also guarded in FlowExecutor).
+    }
+
+    /**
+     * REVOKE — "delete for everyone", from the customer or from the connected
+     * phone alike. Nothing is removed on our side: the row is stamped
+     * `unsend_at`, which is what every other channel does and what the panel
+     * renders as "this message was deleted".
+     *
+     * The event is keyed on the *victim's* id (`key.ID`), not on `Info.ID` —
+     * the revoke carries an id of its own that we never store.
+     */
+    private function handleRevoke(Connection $connection, array $event, array $protocol): void
+    {
+        $info = $event['Info'] ?? [];
+        $targetExternalId = $this->messageKeyId($protocol['key'] ?? []);
+
+        if (! $targetExternalId) {
+            Log::warning('WhatsappApiwayHandler: revoke without a target', [
+                'connection_id' => $connection->id,
+                'message_id' => $info['ID'] ?? null,
+            ]);
+
+            return;
+        }
+
+        $message = Message::whereHas('conversation', fn ($q) => $q->where('connection_id', $connection->id))
+            ->where('external_id', $targetExternalId)
+            ->first();
+
+        if (! $message) {
+            // Deleting a message older than this connection's history, or one
+            // that was dropped on the way in (broadcast chat, removed group).
+            Log::info('WhatsappApiwayHandler: revoke target not found', [
+                'connection_id' => $connection->id,
+                'target_external_id' => $targetExternalId,
+            ]);
+
+            return;
+        }
+
+        // A re-delivered revoke must not push the deletion time forward, but it
+        // still gets re-broadcast: the first one may have raced a panel that
+        // was offline.
+        if ($message->unsend_at === null) {
+            $message->update([
+                'unsend_at' => $this->parseTimestamp($info['Timestamp'] ?? null),
+                'meta' => array_merge($message->meta ?? [], ['delete_payload' => $event]),
+            ]);
+        }
+
+        broadcast(new MessageUpdated($message));
+
+        // The list preview still shows the deleted text until the conversation
+        // row is refreshed too.
+        if ($message->conversation->last_message?->id === $message->id) {
+            broadcast(new ConversationUpdated($message->conversation->load('contact')));
+        }
+    }
+
+    /**
+     * whatsmeow marshals the proto enum as its *number* in production payloads
+     * (REVOKE is 0) and as its name in some builds, so both are accepted. A
+     * marshaller that omits zero values leaves REVOKE with no `type` at all —
+     * hence the last resort: a protocol node holding nothing but another
+     * message's key is a revoke and nothing else.
+     */
+    private function isRevoke(array $protocol): bool
+    {
+        $type = $protocol['type'] ?? null;
+
+        if (is_string($type)) {
+            return strtoupper($type) === 'REVOKE';
+        }
+
+        if (is_int($type)) {
+            return $type === self::PROTOCOL_TYPE_REVOKE;
+        }
+
+        return $type === null
+            && array_keys(array_filter($protocol, fn ($node) => $node !== null)) === ['key'];
+    }
+
+    /**
+     * The id inside a proto MessageKey. whatsmeow names the field `ID`; the
+     * lowercase spellings are there in case a build marshals it differently.
+     */
+    private function messageKeyId(array $key): ?string
+    {
+        $id = $key['ID'] ?? $key['id'] ?? $key['Id'] ?? null;
+
+        return is_string($id) && $id !== '' ? $id : null;
     }
 
     /**
