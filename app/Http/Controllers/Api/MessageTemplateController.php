@@ -36,23 +36,57 @@ class MessageTemplateController extends Controller
     }
 
     /**
-     * Create a template on the WABA. Meta returns it in a PENDING review state.
+     * Create a template on one or more WhatsApp Business Accounts. Meta returns
+     * each in a PENDING review state.
+     *
+     * A template belongs to a WABA, not to a phone number, so every connection
+     * under the same WABA already shares it — see resolveTargetConnections().
+     * One WABA failing (a duplicate name, a rejected component) must not lose
+     * the others, so each is reported separately instead of aborting the call.
      */
     public function store(Request $request)
     {
         $data = $request->validate([
             'connection_id' => 'nullable|integer',
+            'connection_ids' => 'nullable|array',
+            'connection_ids.*' => 'integer',
             'name' => 'required|string|max:512',
             'category' => 'required|string', // MARKETING | UTILITY | AUTHENTICATION
             'language' => 'required|string',
             'components' => 'required|array|min:1',
+            // Lets Meta re-file the template if it disagrees with the category,
+            // instead of rejecting it outright.
+            'allow_category_change' => 'nullable|boolean',
+            // Whether variables are numbered ({{1}}) or named ({{order_id}}).
+            'parameter_format' => 'nullable|in:POSITIONAL,NAMED',
         ]);
 
-        $connection = $this->resolveConnection($request);
+        $results = [];
+        $created = 0;
+
+        foreach ($this->resolveTargetConnections($request) as $connection) {
+            try {
+                $results[] = [
+                    'connection_id' => $connection->id,
+                    'connection_name' => $connection->name,
+                    'status' => 'created',
+                    'template' => $this->templates->create($connection, $data),
+                ];
+                $created++;
+            } catch (\Throwable $e) {
+                $results[] = [
+                    'connection_id' => $connection->id,
+                    'connection_name' => $connection->name,
+                    'status' => 'failed',
+                    'message' => $e->getMessage(),
+                ];
+            }
+        }
 
         return response()->json([
-            'data' => $this->templates->create($connection, $data),
-        ], 201);
+            'data' => $results,
+            'created' => $created,
+        ], $created > 0 ? 201 : 422);
     }
 
     /**
@@ -65,9 +99,10 @@ class MessageTemplateController extends Controller
         $request->validate([
             'connection_id' => 'nullable|integer',
             // Meta's own ceiling for a template header sample is 5 MB for
-            // images and 16 MB for video; the wider one is enforced here and
-            // Meta rejects anything past its own limit with a clear message.
-            'file' => 'required|file|mimes:jpeg,jpg,png,mp4|max:16384',
+            // images, 16 MB for video and 100 MB for a document; the widest
+            // that is sane to proxy is enforced here and Meta rejects anything
+            // past its own limit with a clear message.
+            'file' => 'required|file|mimes:jpeg,jpg,png,mp4,pdf|max:16384',
         ]);
 
         $connection = $this->resolveConnection($request);
@@ -169,6 +204,44 @@ class MessageTemplateController extends Controller
         return response()->json([
             'data' => new MessageResource($message),
         ]);
+    }
+
+    /**
+     * The connections a create should actually reach, one per WhatsApp Business
+     * Account.
+     *
+     * Templates live on the WABA, so two phone numbers under the same one see
+     * the same template list; submitting twice would only earn a duplicate-name
+     * error from Meta. Selecting several connections is therefore a way of
+     * saying "put this on each of their WABAs", and connections that turn out to
+     * share a WABA collapse into one call.
+     *
+     * @return array<int, Connection>
+     */
+    private function resolveTargetConnections(Request $request): array
+    {
+        $ids = array_filter((array) $request->input('connection_ids', []));
+
+        if ($ids === []) {
+            return [$this->resolveConnection($request)];
+        }
+
+        $connections = Connection::where('tenant_id', $request->user()->tenant_id)
+            ->where('channel', Channel::WhatsappOfficial)
+            ->whereIn('id', $ids)
+            ->get();
+
+        if ($connections->isEmpty()) {
+            abort(404, 'No WhatsApp Official connection found');
+        }
+
+        return $connections
+            // A connection with no WABA id cannot host a template at all; keying
+            // those by their own id keeps them in the list so the caller gets a
+            // per-connection error rather than a silent disappearance.
+            ->unique(fn (Connection $connection) => $connection->credentials['business_account_id'] ?? 'connection:' . $connection->id)
+            ->values()
+            ->all();
     }
 
     /**

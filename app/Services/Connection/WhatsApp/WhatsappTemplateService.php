@@ -31,7 +31,10 @@ class WhatsappTemplateService
 
         $response = GraphApi::retry(fn () => Http::withToken($token)
             ->get(self::GRAPH_BASE . "/{$wabaId}/message_templates", [
-                'fields' => 'name,status,category,language,components,quality_score',
+                // parameter_format tells the send form whether a template's
+                // variables are numbered or named — the two take different
+                // parameter shapes on the Cloud API.
+                'fields' => 'name,status,category,language,components,quality_score,parameter_format',
                 'limit' => 200,
             ]));
 
@@ -45,20 +48,34 @@ class WhatsappTemplateService
     /**
      * Create a template on the WABA. Meta returns it in a PENDING review state.
      *
-     * @param  array{name:string,category:string,language:string,components:array}  $data
+     * @param  array{name:string,category:string,language:string,components:array,allow_category_change?:bool,parameter_format?:string}  $data
      * @return array<string, mixed>
      */
     public function create(Connection $connection, array $data): array
     {
         [$wabaId, $token] = $this->credentials($connection);
 
+        $payload = [
+            'name' => $data['name'],
+            'category' => $data['category'],
+            'language' => $data['language'],
+            'components' => $data['components'],
+        ];
+
+        // Sent only when asked for: Meta reads the absent flag as "keep my
+        // category and reject if you disagree", which is the stricter default.
+        if (!empty($data['allow_category_change'])) {
+            $payload['allow_category_change'] = true;
+        }
+
+        // Omitted for POSITIONAL, which is what Meta assumes anyway — sending
+        // it would only pin older templates to a format they never declared.
+        if (($data['parameter_format'] ?? null) === 'NAMED') {
+            $payload['parameter_format'] = 'NAMED';
+        }
+
         $response = GraphApi::retry(fn () => Http::withToken($token)
-            ->post(self::GRAPH_BASE . "/{$wabaId}/message_templates", [
-                'name' => $data['name'],
-                'category' => $data['category'],
-                'language' => $data['language'],
-                'components' => $data['components'],
-            ]));
+            ->post(self::GRAPH_BASE . "/{$wabaId}/message_templates", $payload));
 
         if (!$response->successful()) {
             $this->fail('create', $response);
