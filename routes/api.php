@@ -180,6 +180,9 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // supports re-engaging outside the 24h window (existing conv or new number).
         Route::get('/templates', [MessageTemplateController::class, 'index'])->middleware('permission:templates.view');
         Route::post('/templates', [MessageTemplateController::class, 'store'])->middleware('permission:templates.create');
+        // Media headers (incl. carousel cards) are created from an uploaded
+        // sample, not a URL — this returns the handle `store` then references.
+        Route::post('/templates/media', [MessageTemplateController::class, 'media'])->middleware('permission:templates.create');
         Route::delete('/templates/{name}', [MessageTemplateController::class, 'destroy'])->middleware('permission:templates.delete');
         Route::post('/templates/send', [MessageTemplateController::class, 'send'])->middleware('permission:templates.send');
     });

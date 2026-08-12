@@ -62,18 +62,28 @@ enum NodeType: string
                 //   human_only_in_hours = within service hours skip AI entirely → human queue; AI otherwise
                 'service_hours_behavior' => 'always_ai',
             ],
-            // WhatsApp Official only — reply buttons / a list menu, where every
-            // option is its own outgoing branch (edge condition_value = option id).
+            // WhatsApp Official only — reply buttons / a list menu / a media
+            // carousel, where every option is its own outgoing branch (edge
+            // condition_value = option id).
             self::Interactive => [
-                'interactive_type' => 'button', // button | list
-                'header' => '',
+                'interactive_type' => 'button', // button | list | carousel
+                'header' => '', // not used by carousel — the Cloud API rejects one
                 'body' => '',
-                'footer' => '',
+                'footer' => '', // ditto
                 // [{ 'id' => 'btn_ab12', 'title' => 'Yes' }] — max 3
                 'buttons' => [],
                 'button_label' => '', // list opener label
                 // [{ 'title' => 'Section', 'rows' => [{ 'id' => 'row_ab12', 'title' => '', 'description' => '' }] }]
                 'sections' => [],
+                // Carousel: the button shape is picked once for the whole strip
+                // (Meta requires every card to match), so it lives here.
+                'card_button_type' => 'quick_reply', // quick_reply | cta_url
+                // 2–10 cards: [{
+                //   'header_type' => 'image'|'video', 'header_url' => '', 'body' => '',
+                //   'buttons' => [{ 'id' => 'card_ab12', 'title' => '' }],  // quick_reply
+                //   'button_label' => '', 'button_url' => '',               // cta_url
+                // }]
+                'cards' => [],
             ],
             self::HttpRequest => [
                 'method' => 'GET', // GET, POST, PUT, PATCH, DELETE

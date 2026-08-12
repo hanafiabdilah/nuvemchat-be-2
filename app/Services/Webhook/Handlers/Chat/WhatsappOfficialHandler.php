@@ -14,6 +14,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\InteractiveNodes;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use Carbon\Carbon;
@@ -49,11 +50,12 @@ class WhatsappOfficialHandler implements ChatHandlerInterface
             MessageType::Video => $messages['video']['caption'] ?? null,
             MessageType::Document => $messages['document']['caption'] ?? $messages['document']['filename'] ?? null,
             MessageType::Audio => null,
-            // When a customer taps a reply button / list row, store the chosen
-            // title as the body so agents (and the flow engine) read the choice.
-            MessageType::Interactive => $messages['interactive']['button_reply']['title']
-                ?? $messages['interactive']['list_reply']['title']
-                ?? null,
+            // When a customer taps a reply button / list row / carousel button,
+            // store the chosen title as the body so agents (and the flow engine)
+            // read the choice.
+            MessageType::Interactive => InteractiveNodes::replyFromWebhook(
+                $messages['interactive'] ?? null
+            )['title'] ?? null,
             default => null,
         };
     }

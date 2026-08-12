@@ -56,6 +56,36 @@ class MessageTemplateController extends Controller
     }
 
     /**
+     * Upload a sample image/video and return the handle a media header (or a
+     * carousel card) is created with. Meta wants the bytes at creation time,
+     * not a URL, so this has to happen before the template is submitted.
+     */
+    public function media(Request $request)
+    {
+        $request->validate([
+            'connection_id' => 'nullable|integer',
+            // Meta's own ceiling for a template header sample is 5 MB for
+            // images and 16 MB for video; the wider one is enforced here and
+            // Meta rejects anything past its own limit with a clear message.
+            'file' => 'required|file|mimes:jpeg,jpg,png,mp4|max:16384',
+        ]);
+
+        $connection = $this->resolveConnection($request);
+        $file = $request->file('file');
+
+        return response()->json([
+            'data' => [
+                'handle' => $this->templates->uploadHandle(
+                    $connection,
+                    file_get_contents($file->getRealPath()),
+                    $file->getMimeType(),
+                    $file->getClientOriginalName(),
+                ),
+            ],
+        ]);
+    }
+
+    /**
      * Delete a template by name (all language variants of that name).
      */
     public function destroy(Request $request, string $name)

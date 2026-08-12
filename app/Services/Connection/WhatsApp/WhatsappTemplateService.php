@@ -3,6 +3,7 @@
 namespace App\Services\Connection\WhatsApp;
 
 use App\Models\Connection;
+use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\GraphApi;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
@@ -64,6 +65,67 @@ class WhatsappTemplateService
         }
 
         return $response->json() ?? [];
+    }
+
+    /**
+     * Upload a sample media asset and return the opaque handle a template's
+     * media header is created with.
+     *
+     * Templates cannot reference a media id or a URL at creation time — Meta
+     * wants the bytes up front, through the Resumable Upload API, and hands
+     * back a handle that stands for them. Two calls: open a session against the
+     * Meta app, then push the whole file at offset 0 (our ceiling is well under
+     * the point where resuming would earn its keep).
+     *
+     * Note the second call authenticates with `OAuth`, not `Bearer` — the
+     * upload host is particular about it.
+     */
+    public function uploadHandle(Connection $connection, string $contents, string $mimeType, string $fileName): string
+    {
+        [, $token] = $this->credentials($connection);
+        $appId = FacebookConfig::appId();
+
+        if (!$appId) {
+            throw new RuntimeException(
+                'Facebook App ID is not configured — set it in Back Office → Integrations before uploading template media.'
+            );
+        }
+
+        $session = GraphApi::retry(fn () => Http::withToken($token)
+            ->post(self::GRAPH_BASE . "/{$appId}/uploads", [
+                'file_name' => $fileName,
+                'file_length' => strlen($contents),
+                'file_type' => $mimeType,
+            ]));
+
+        if (!$session->successful()) {
+            $this->fail('open an upload session for', $session);
+        }
+
+        $sessionId = $session->json('id');
+
+        if (!$sessionId) {
+            throw new RuntimeException('WhatsApp upload session did not return an id');
+        }
+
+        $upload = GraphApi::retry(fn () => Http::withHeaders([
+            'Authorization' => 'OAuth ' . $token,
+            'file_offset' => '0',
+            'Content-Type' => 'application/octet-stream',
+        ])->withBody($contents, 'application/octet-stream')
+            ->post(self::GRAPH_BASE . "/{$sessionId}"));
+
+        if (!$upload->successful()) {
+            $this->fail('upload template media for', $upload);
+        }
+
+        $handle = $upload->json('h');
+
+        if (!$handle) {
+            throw new RuntimeException('WhatsApp upload did not return a media handle');
+        }
+
+        return $handle;
     }
 
     /**

@@ -261,10 +261,14 @@ class FlowExecutor
     }
 
     /**
-     * Execute an Interactive node — send WhatsApp reply buttons / a list menu
-     * and WAIT, exactly like a Response node. Each option is its own outgoing
-     * branch, so the customer's pick decides which edge the flow takes; that
-     * happens in handleInteractiveNodeInput() once the reply arrives.
+     * Execute an Interactive node — send WhatsApp reply buttons, a list menu or
+     * a media carousel and WAIT, exactly like a Response node. Each option is
+     * its own outgoing branch, so the customer's pick decides which edge the
+     * flow takes; that happens in handleInteractiveNodeInput() once the reply
+     * arrives.
+     *
+     * A link-out carousel is the one shape with nothing to wait for: its cards
+     * open a browser rather than reply, so the flow sends and carries on.
      */
     protected function executeInteractiveNode(FlowState $flowState, FlowNode $node): void
     {
@@ -272,10 +276,11 @@ class FlowExecutor
         $data = $this->interpolateInteractiveData($node->data ?? [], $flowState);
         $options = InteractiveNodes::options($data);
 
-        if ($options === [] || trim((string) ($data['body'] ?? '')) === '') {
-            Log::warning('FlowExecutor: Interactive node has no body or no options, skipping', [
+        if (!InteractiveNodes::isSendable($data)) {
+            Log::warning('FlowExecutor: Interactive node is incomplete, skipping', [
                 'node_id' => $node->id,
                 'conversation_id' => $conversation->id,
+                'interactive_type' => InteractiveNodes::type($data),
             ]);
 
             // Nothing to ask, so nothing to branch on: fall through the first
@@ -302,19 +307,24 @@ class FlowExecutor
             $message->update(['sent_by_flow_id' => $flowState->flow_id]);
             broadcast(new MessageReceived($message));
 
-            // Mark the prompt as sent and stay put — the next inbound message
-            // is the answer, routed back here through resumeFlow().
-            $stateData = $flowState->state_data ?? [];
-            $stateData["_interactive_sent_{$node->id}"] = true;
-            $flowState->update(['state_data' => $stateData]);
-
-            Log::info('FlowExecutor: Interactive message sent, waiting for selection', [
+            Log::info('FlowExecutor: Interactive message sent', [
                 'node_id' => $node->id,
                 'message_id' => $message->id,
                 'conversation_id' => $conversation->id,
                 'options' => count($options),
                 'as_plain_text' => !$isWhatsappOfficial,
             ]);
+
+            if (!InteractiveNodes::awaitsReply($data)) {
+                $this->moveToNextNode($flowState, $node);
+                return;
+            }
+
+            // Mark the prompt as sent and stay put — the next inbound message
+            // is the answer, routed back here through resumeFlow().
+            $stateData = $flowState->state_data ?? [];
+            $stateData["_interactive_sent_{$node->id}"] = true;
+            $flowState->update(['state_data' => $stateData]);
         } catch (\Throwable $th) {
             Log::error('FlowExecutor: Error executing interactive node', [
                 'node_id' => $node->id,
@@ -377,7 +387,7 @@ class FlowExecutor
 
         $interactive = $meta['changes'][0]['value']['messages'][0]['interactive'] ?? null;
 
-        return $interactive['button_reply']['id'] ?? $interactive['list_reply']['id'] ?? null;
+        return InteractiveNodes::replyFromWebhook(is_array($interactive) ? $interactive : null)['id'] ?? null;
     }
 
     /**
@@ -392,16 +402,34 @@ class FlowExecutor
             'channel' => $conversation->connection->channel->value,
         ]);
 
+        $isCarousel = InteractiveNodes::type($data) === 'carousel';
+
         $lines = array_filter([
-            trim((string) ($data['header'] ?? '')),
+            $isCarousel ? '' : trim((string) ($data['header'] ?? '')),
             trim((string) ($data['body'] ?? '')),
         ]);
+
+        // A carousel has no plain-text equivalent, so each card is spelled out:
+        // its caption, then wherever its button would have taken the customer.
+        if ($isCarousel) {
+            foreach (InteractiveNodes::cards($data) as $card) {
+                $lines[] = '— ' . ($card['body'] !== '' ? $card['body'] : $card['header_url']);
+
+                if (($card['button_url'] ?? '') !== '') {
+                    $lines[] = '  ' . $card['button_label'] . ': ' . $card['button_url'];
+                }
+            }
+
+            if ($options !== []) {
+                $lines[] = '';
+            }
+        }
 
         foreach ($options as $i => $option) {
             $lines[] = ($i + 1) . '. ' . $option['title'];
         }
 
-        if ($footer = trim((string) ($data['footer'] ?? ''))) {
+        if (!$isCarousel && $footer = trim((string) ($data['footer'] ?? ''))) {
             $lines[] = $footer;
         }
 
@@ -412,13 +440,28 @@ class FlowExecutor
 
     /**
      * Resolve {{variable}} tokens in every customer-visible string of an
-     * interactive node — the texts, the option titles and their descriptions.
+     * interactive node — the texts, the option titles and their descriptions,
+     * and a carousel's per-card captions, links and buttons.
      */
     protected function interpolateInteractiveData(array $data, FlowState $flowState): array
     {
         foreach (['header', 'body', 'footer', 'button_label'] as $key) {
             if (isset($data[$key]) && is_string($data[$key])) {
                 $data[$key] = $this->interpolateVariables($data[$key], $flowState);
+            }
+        }
+
+        foreach ((array) ($data['cards'] ?? []) as $ci => $card) {
+            foreach (['header_url', 'body', 'button_label', 'button_url'] as $key) {
+                if (isset($card[$key]) && is_string($card[$key])) {
+                    $data['cards'][$ci][$key] = $this->interpolateVariables($card[$key], $flowState);
+                }
+            }
+
+            foreach ((array) ($card['buttons'] ?? []) as $bi => $button) {
+                if (isset($button['title']) && is_string($button['title'])) {
+                    $data['cards'][$ci]['buttons'][$bi]['title'] = $this->interpolateVariables($button['title'], $flowState);
+                }
             }
         }
 

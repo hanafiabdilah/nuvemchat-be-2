@@ -495,7 +495,7 @@ class FlowController extends Controller
             // so auto-save never fights a half-finished node; the executor skips
             // a node with no body or no options at runtime.
             'interactive' => [
-                'interactive_type' => ['required', 'string', Rule::in(['button', 'list'])],
+                'interactive_type' => ['required', 'string', Rule::in(InteractiveNodes::TYPES)],
                 'header' => ['nullable', 'string', 'max:60'],
                 'body' => ['nullable', 'string', 'max:1024'],
                 'footer' => ['nullable', 'string', 'max:60'],
@@ -509,6 +509,19 @@ class FlowController extends Controller
                 'sections.*.rows.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
                 'sections.*.rows.*.title' => ['nullable', 'string', 'max:24'],
                 'sections.*.rows.*.description' => ['nullable', 'string', 'max:72'],
+                // Carousel. The card floor is Meta's, but it is not enforced
+                // here: a node grows one card at a time and auto-save fires in
+                // between. The executor skips a carousel that never got there.
+                'card_button_type' => ['nullable', 'string', Rule::in(['quick_reply', 'cta_url'])],
+                'cards' => ['nullable', 'array', 'max:' . InteractiveNodes::CAROUSEL_MAX_CARDS],
+                'cards.*.header_type' => ['nullable', 'string', Rule::in(['image', 'video'])],
+                'cards.*.header_url' => ['nullable', 'string', 'max:2000'],
+                'cards.*.body' => ['nullable', 'string', 'max:160'],
+                'cards.*.buttons' => ['nullable', 'array', 'max:2'],
+                'cards.*.buttons.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
+                'cards.*.buttons.*.title' => ['nullable', 'string', 'max:20'],
+                'cards.*.button_label' => ['nullable', 'string', 'max:20'],
+                'cards.*.button_url' => ['nullable', 'string', 'max:2000'],
             ],
             'http_request' => [
                 'method' => ['required', 'string', Rule::in(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])],

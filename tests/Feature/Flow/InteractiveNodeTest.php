@@ -153,6 +153,51 @@ test('every option becomes its own branch id, reused for the send payload', func
         ->and($payload['sections'][0]['rows'][1]['id'])->toBe('row_1_2');
 });
 
+test('a carousel node saves, and its card buttons come back as branch values', function () {
+    $user = interactiveTestUser();
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Ofertas']);
+    interactiveConnection($user, Channel::WhatsappOfficial, $flow);
+
+    $payload = interactiveSavePayload($flow);
+    $payload['nodes'][1]['data'] = [
+        'interactive_type' => 'carousel',
+        'body' => 'Ofertas pra você',
+        'card_button_type' => 'quick_reply',
+        'cards' => [
+            [
+                'header_type' => 'image',
+                'header_url' => 'https://cdn.example.com/1.jpg',
+                'body' => 'Categoria queridinha',
+                'buttons' => [['id' => 'card_a1', 'title' => 'Ver ofertas']],
+            ],
+            [
+                'header_type' => 'image',
+                'header_url' => 'https://cdn.example.com/2.jpg',
+                'body' => '40% off',
+                'buttons' => [['id' => 'card_b1', 'title' => 'Ver ofertas']],
+            ],
+        ],
+    ];
+    // A card button id is a branch value, so it must survive the save as one.
+    $payload['edges'][] = [
+        'source_node_id' => 'node-1',
+        'target_node_id' => (string) $payload['nodes'][0]['id'],
+        'condition_value' => 'card_b1',
+    ];
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/save", $payload)
+        ->assertOk();
+
+    $node = FlowNode::where('flow_id', $flow->id)->where('type', NodeType::Interactive)->first();
+
+    expect($node->data['cards'])->toHaveCount(2)
+        ->and(InteractiveNodes::options($node->data))->toBe([
+            ['id' => 'card_a1', 'title' => 'Ver ofertas'],
+            ['id' => 'card_b1', 'title' => 'Ver ofertas'],
+        ]);
+});
+
 test('a reply is matched by id, then title, then position', function () {
     $data = [
         'interactive_type' => 'button',

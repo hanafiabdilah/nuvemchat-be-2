@@ -8,6 +8,7 @@ use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
+use App\Services\Flow\InteractiveNodes;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -153,28 +154,13 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     }
 
     /**
-     * Send an interactive message (reply buttons or a list menu). The customer's
-     * tap comes back inbound as an `interactive` message whose selected title is
-     * stored as the reply body.
+     * Send an interactive message (reply buttons, a list menu, or a media
+     * carousel). The customer's tap comes back inbound as an `interactive`
+     * message whose selected title is stored as the reply body.
      */
     public function handleSendInteractive(Conversation $conversation, array $data): ?Message
     {
-        validator($data, [
-            'interactive_type' => 'required|in:button,list',
-            'body' => 'required|string|max:1024',
-            'header' => 'nullable|string|max:60',
-            'footer' => 'nullable|string|max:60',
-            'buttons' => 'required_if:interactive_type,button|array|min:1|max:3',
-            'buttons.*.id' => 'nullable|string',
-            'buttons.*.title' => 'required_with:buttons|string|max:20',
-            'button_label' => 'required_if:interactive_type,list|string|max:20',
-            'sections' => 'required_if:interactive_type,list|array|min:1|max:10',
-            'sections.*.title' => 'nullable|string|max:24',
-            'sections.*.rows' => 'required|array|min:1',
-            'sections.*.rows.*.id' => 'nullable|string',
-            'sections.*.rows.*.title' => 'required|string|max:24',
-            'sections.*.rows.*.description' => 'nullable|string|max:72',
-        ])->validate();
+        validator($data, $this->interactiveRules($data))->validate();
 
         $connection = $conversation->connection;
         $interactive = $this->buildInteractivePayload($data);
@@ -222,10 +208,61 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
     }
 
     /**
+     * Validation rules for one interactive kind.
+     *
+     * A carousel shares almost nothing with buttons and lists — no header, no
+     * footer, cards instead of options — so it gets its own set rather than a
+     * thicket of required_if on a single one. Limits are Meta's.
+     */
+    private function interactiveRules(array $data): array
+    {
+        if (($data['interactive_type'] ?? null) !== 'carousel') {
+            return [
+                'interactive_type' => 'required|in:button,list',
+                'body' => 'required|string|max:1024',
+                'header' => 'nullable|string|max:60',
+                'footer' => 'nullable|string|max:60',
+                'buttons' => 'required_if:interactive_type,button|array|min:1|max:3',
+                'buttons.*.id' => 'nullable|string',
+                'buttons.*.title' => 'required_with:buttons|string|max:20',
+                'button_label' => 'required_if:interactive_type,list|string|max:20',
+                'sections' => 'required_if:interactive_type,list|array|min:1|max:10',
+                'sections.*.title' => 'nullable|string|max:24',
+                'sections.*.rows' => 'required|array|min:1',
+                'sections.*.rows.*.id' => 'nullable|string',
+                'sections.*.rows.*.title' => 'required|string|max:24',
+                'sections.*.rows.*.description' => 'nullable|string|max:72',
+            ];
+        }
+
+        $isLinkOut = ($data['card_button_type'] ?? 'quick_reply') === 'cta_url';
+
+        return [
+            'interactive_type' => 'required|in:button,list,carousel',
+            'body' => 'required|string|max:1024',
+            'card_button_type' => 'nullable|in:quick_reply,cta_url',
+            'cards' => 'required|array|min:' . InteractiveNodes::CAROUSEL_MIN_CARDS
+                . '|max:' . InteractiveNodes::CAROUSEL_MAX_CARDS,
+            'cards.*.header_type' => 'required|in:image,video',
+            'cards.*.header_url' => 'required|url|max:2000',
+            'cards.*.body' => 'nullable|string|max:160',
+            'cards.*.buttons' => ($isLinkOut ? 'nullable' : 'required') . '|array|min:1|max:2',
+            'cards.*.buttons.*.id' => 'nullable|string|max:256',
+            'cards.*.buttons.*.title' => 'required|string|max:20',
+            'cards.*.button_label' => ($isLinkOut ? 'required' : 'nullable') . '|string|max:20',
+            'cards.*.button_url' => ($isLinkOut ? 'required' : 'nullable') . '|url|max:2000',
+        ];
+    }
+
+    /**
      * Translate the flat request payload into the Cloud API `interactive` object.
      */
     private function buildInteractivePayload(array $data): array
     {
+        if ($data['interactive_type'] === 'carousel') {
+            return $this->buildCarouselPayload($data);
+        }
+
         $interactive = [
             'type' => $data['interactive_type'],
             'body' => ['text' => $data['body']],
@@ -264,6 +301,64 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
         }
 
         return $interactive;
+    }
+
+    /**
+     * The Cloud API `interactive` object for a media carousel — a body plus a
+     * scrollable strip of cards.
+     *
+     * Every card is typed `cta_url` whatever its buttons are: Meta uses that one
+     * value for both link-out and quick-reply cards. Media travels by public
+     * URL (carousels take no media id), card_index is the position in the strip,
+     * and the button shape has to be identical on every card, which is why the
+     * choice is made once for the whole message.
+     */
+    private function buildCarouselPayload(array $data): array
+    {
+        $isLinkOut = ($data['card_button_type'] ?? 'quick_reply') === 'cta_url';
+
+        $cards = array_map(function (array $card, int $index) use ($isLinkOut) {
+            $headerType = ($card['header_type'] ?? 'image') === 'video' ? 'video' : 'image';
+
+            $built = [
+                'card_index' => $index,
+                'type' => 'cta_url',
+                'header' => [
+                    'type' => $headerType,
+                    $headerType => ['link' => $card['header_url']],
+                ],
+            ];
+
+            if (trim((string) ($card['body'] ?? '')) !== '') {
+                $built['body'] = ['text' => $card['body']];
+            }
+
+            $built['action'] = $isLinkOut
+                ? [
+                    'name' => 'cta_url',
+                    'parameters' => [
+                        'display_text' => $card['button_label'],
+                        'url' => $card['button_url'],
+                    ],
+                ]
+                : [
+                    'buttons' => array_map(fn ($button, $i) => [
+                        'type' => 'quick_reply',
+                        'quick_reply' => [
+                            'id' => $button['id'] ?? ('card_' . ($index + 1) . '_btn_' . ($i + 1)),
+                            'title' => $button['title'],
+                        ],
+                    ], $card['buttons'], array_keys($card['buttons'])),
+                ];
+
+            return $built;
+        }, array_values($data['cards']), array_keys(array_values($data['cards'])));
+
+        return [
+            'type' => 'carousel',
+            'body' => ['text' => $data['body']],
+            'action' => ['cards' => $cards],
+        ];
     }
 
     public function handleSendImage(Conversation $conversation, array $data): ?Message
