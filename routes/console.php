@@ -109,3 +109,16 @@ Schedule::command('apiway:renew --days-before=3')
 Schedule::command('apiway:sync')
     ->hourlyAt(20)
     ->onFailure(fn () => logger()->error('API Way sync failed'));
+
+// --- Broadcasts ----------------------------------------------------------
+
+// Start campaigns whose scheduled time has come, and revive any whose pump job
+// died with its worker (the pump does not retry — a retried batch would re-send
+// messages people already got, so recovery has to be deliberate).
+// withoutOverlapping is capped at 5 minutes for the same reason email:fetch is:
+// a run killed mid-flight must not hold the lock for the default 24 hours and
+// silently freeze every campaign on the platform.
+Schedule::command('broadcasts:tick')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('Broadcast tick failed'));

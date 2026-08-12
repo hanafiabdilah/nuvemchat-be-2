@@ -81,6 +81,14 @@ class RoleAndPermissionSeeder extends Seeder
             'templates.create',
             'templates.delete',
             'templates.send',
+
+            // Broadcast campaigns. `send` is split from `create` on purpose:
+            // drafting a blast and firing it at thousands of customers are
+            // different levels of trust.
+            'broadcasts.view',
+            'broadcasts.create',
+            'broadcasts.send',
+            'broadcasts.delete',
         ];
 
         foreach ($permissions as $permission) {

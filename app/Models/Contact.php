@@ -22,6 +22,7 @@ class Contact extends Model
         'photo_synced_at',
         'group_synced_at',
         'group_removed_at',
+        'broadcast_opted_out_at',
         'meta'
     ];
 
@@ -67,6 +68,7 @@ class Contact extends Model
         'photo_synced_at' => 'datetime',
         'group_synced_at' => 'datetime',
         'group_removed_at' => 'datetime',
+        'broadcast_opted_out_at' => 'datetime',
     ];
 
     public function tenant()
@@ -87,6 +89,16 @@ class Contact extends Model
     public function isRemovedGroup(): bool
     {
         return $this->is_group && $this->group_removed_at !== null;
+    }
+
+    /**
+     * Asked not to receive campaigns. Agents may still reply by hand and
+     * automations still run — this only gates broadcasts, which is the scope
+     * the opt-out was given in.
+     */
+    public function hasOptedOutOfBroadcasts(): bool
+    {
+        return $this->broadcast_opted_out_at !== null;
     }
 
     /**

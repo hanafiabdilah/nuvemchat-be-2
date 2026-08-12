@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Services\Broadcast\OptOutDetector;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Model;
 
@@ -49,6 +50,12 @@ class Message extends Model
             $message->conversation->update([
                 'last_message_at' => Carbon::createFromTimestamp($message->sent_at),
             ]);
+
+            // A customer replying "PARAR" is the only opt-out signal WhatsApp
+            // gives us — there is no unsubscribe webhook to receive — so it has
+            // to be read off the message itself. Cheap: anything that is not a
+            // plain inbound text returns on the first comparison.
+            OptOutDetector::noteInboundMessage($message);
         });
     }
 

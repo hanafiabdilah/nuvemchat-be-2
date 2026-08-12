@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Connection\Channel;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ContactResource;
 use App\Models\Connection;
@@ -17,6 +18,7 @@ class ContactController extends Controller
         $per_page = $request->query('per_page', 50);
         $search = $request->query('search');
         $channel = $request->query('channel');
+        $addressType = $request->query('address_type');
 
         // Group contacts represent group chats, not people — keep them out of
         // the contact book (and out of the new-conversation picker).
@@ -24,15 +26,37 @@ class ContactController extends Controller
             ->where('is_group', false)
             ->when($search, function ($query, $search) {
                 $query->where('name', 'like', "%{$search}%")
-                      ->orWhere('username', 'like', "%{$search}%");
+                      ->orWhere('username', 'like', "%{$search}%")
+                      ->orWhere('external_id', 'like', "%{$search}%");
             })
             ->when($channel, function ($query, $channel) {
                 $query->where('channel', $channel);
+            })
+            // Broader than `channel`, for the broadcast recipient picker: a
+            // contact saved under API Way is reachable by a WhatsApp Official
+            // campaign too, because both address people by phone number.
+            ->when($addressType, function ($query, $addressType) {
+                $query->whereIn('channel', $this->channelsAddressedBy($addressType));
             })
             ->orderBy('created_at', 'desc')
             ->paginate($per_page);
 
         return ContactResource::collection($contacts);
+    }
+
+    /**
+     * Channels whose contacts share an address shape, so a campaign on one can
+     * reach contacts saved under another.
+     *
+     * @return array<int, string>
+     */
+    private function channelsAddressedBy(string $addressType): array
+    {
+        return collect(Channel::cases())
+            ->filter(fn (Channel $channel) => $channel->broadcastAddressType()->value === $addressType)
+            ->map(fn (Channel $channel) => $channel->value)
+            ->values()
+            ->all();
     }
 
     public function store(Request $request)
@@ -67,6 +91,10 @@ class ContactController extends Controller
     {
         $validated = $request->validate([
             'name' => ['sometimes', 'string', 'max:255'],
+            // Campaign opt-out. Usually set by the customer replying "PARAR"
+            // (see OptOutDetector), but an agent has to be able to record a
+            // request that came in by phone, and to undo a false positive.
+            'broadcast_opted_out' => ['sometimes', 'boolean'],
         ]);
 
         $contact = Contact::where('id', $id)
@@ -75,6 +103,11 @@ class ContactController extends Controller
 
         if (array_key_exists('name', $validated)) {
             $validated['name_locked'] = true;
+        }
+
+        if (array_key_exists('broadcast_opted_out', $validated)) {
+            $validated['broadcast_opted_out_at'] = $validated['broadcast_opted_out'] ? now() : null;
+            unset($validated['broadcast_opted_out']);
         }
 
         $contact->update($validated);

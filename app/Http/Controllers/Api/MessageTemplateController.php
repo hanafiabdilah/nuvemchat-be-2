@@ -13,6 +13,7 @@ use App\Models\Conversation;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Services\Connection\WhatsApp\WhatsappTemplateService;
+use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Message\MessageService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -21,6 +22,7 @@ class MessageTemplateController extends Controller
 {
     public function __construct(
         private WhatsappTemplateService $templates,
+        private OutboundConversationResolver $conversations,
     ) {}
 
     /**
@@ -168,23 +170,14 @@ class MessageTemplateController extends Controller
 
             $contact = Contact::createFromExternalData($connection, $phone, $data['contact_name'] ?? $phone);
 
-            $conversation = Conversation::where('connection_id', $connection->id)
-                ->where('contact_id', $contact->id)
-                ->whereIn('status', [
-                    ConversationStatus::Active,
-                    ConversationStatus::Pending,
-                    ConversationStatus::AiHandling,
-                ])
-                ->first();
+            // Cannot come back null here: the resolver addresses WhatsApp by the
+            // contact's own phone number, which we just created it with.
+            $conversation = $this->conversations
+                ->resolve($connection, $contact, assignedUserId: $user->id)
+                ?->conversation;
 
             if (!$conversation) {
-                $conversation = Conversation::create([
-                    'contact_id' => $contact->id,
-                    'connection_id' => $connection->id,
-                    'external_id' => $phone,
-                    'status' => ConversationStatus::Active,
-                    'user_id' => $user->id,
-                ]);
+                abort(422, 'Could not open a conversation for this number');
             }
         }
 

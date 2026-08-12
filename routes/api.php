@@ -34,6 +34,7 @@ use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\Admin\WhatsappLogController as AdminWhatsappLogController;
 use App\Http\Controllers\Api\Admin\OtpController as AdminOtpController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\BroadcastController;
 use App\Http\Controllers\Api\OtpController;
 use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\Billing\BillingController;
@@ -190,6 +191,21 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/templates/media', [MessageTemplateController::class, 'media'])->middleware('permission:templates.create');
         Route::delete('/templates/{name}', [MessageTemplateController::class, 'destroy'])->middleware('permission:templates.delete');
         Route::post('/templates/send', [MessageTemplateController::class, 'send'])->middleware('permission:templates.send');
+
+        // Broadcast campaigns. Sending is a separate permission from creating:
+        // drafting a blast and actually firing it at thousands of customers are
+        // very different levels of trust.
+        Route::get('/broadcasts', [BroadcastController::class, 'index'])->middleware('permission:broadcasts.view');
+        Route::post('/broadcasts', [BroadcastController::class, 'store'])->middleware('permission:broadcasts.create');
+        Route::get('/broadcasts/{id}', [BroadcastController::class, 'show'])->middleware('permission:broadcasts.view');
+        Route::get('/broadcasts/{id}/recipients', [BroadcastController::class, 'recipients'])->middleware('permission:broadcasts.view');
+        Route::put('/broadcasts/{id}', [BroadcastController::class, 'update'])->middleware('permission:broadcasts.create');
+        Route::delete('/broadcasts/{id}', [BroadcastController::class, 'destroy'])->middleware('permission:broadcasts.delete');
+        Route::post('/broadcasts/{id}/start', [BroadcastController::class, 'start'])->middleware('permission:broadcasts.send');
+        Route::post('/broadcasts/{id}/pause', [BroadcastController::class, 'pause'])->middleware('permission:broadcasts.send');
+        Route::post('/broadcasts/{id}/resume', [BroadcastController::class, 'resume'])->middleware('permission:broadcasts.send');
+        Route::post('/broadcasts/{id}/cancel', [BroadcastController::class, 'cancel'])->middleware('permission:broadcasts.send');
+        Route::post('/broadcasts/{id}/retry-failed', [BroadcastController::class, 'retryFailed'])->middleware('permission:broadcasts.send');
     });
 
     Route::get('/connections', [ConnectionController::class, 'index']);

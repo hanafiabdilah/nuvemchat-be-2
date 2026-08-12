@@ -20,13 +20,13 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Tag;
 use App\Services\AutomatedMessageService;
+use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -255,35 +255,14 @@ class ConversationController extends Controller
 
         $contact = Contact::createFromExternalData($connection, $recipient, $recipient);
 
-        // Thread key mirrors EmailInboxSynchronizer::conversationExternalId so a later reply
-        // on the same subject reuses this conversation.
-        $externalId = 'email:' . sha1($contact->id . '|' . $this->normalizeEmailSubject($subject));
-
         // Reuse an open thread with the same recipient+subject instead of always
         // creating a new one — composing twice must not fork the conversation
-        // (the inbound sync threads replies into a single external_id too).
-        $conversation = Conversation::where('external_id', $externalId)
-            ->where('contact_id', $contact->id)
-            ->where('connection_id', $connection->id)
-            ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
-            ->latest('id')
-            ->first();
-        $createdConversation = $conversation === null;
+        // (the inbound sync threads replies into a single external_id too). The
+        // resolver owns that key; see OutboundConversationResolver.
+        $resolved = (new OutboundConversationResolver())->resolve($connection, $contact, emailSubject: $subject);
 
-        if ($conversation) {
-            $conversation->update([
-                'status' => Status::Active,
-                'last_message_at' => now(),
-            ]);
-        } else {
-            $conversation = Conversation::create([
-                'contact_id' => $contact->id,
-                'connection_id' => $connection->id,
-                'external_id' => $externalId,
-                'status' => Status::Active,
-                'last_message_at' => now(),
-            ]);
-        }
+        $conversation = $resolved->conversation;
+        $createdConversation = $resolved->wasCreated;
 
         try {
             $message = (new EmailHandler())->sendNewEmail(
@@ -325,18 +304,6 @@ class ConversationController extends Controller
             'data' => new ConversationResource($conversation->load('contact')),
             'sent_message' => new MessageResource($message),
         ], 201);
-    }
-
-    private function normalizeEmailSubject(?string $subject): string
-    {
-        $subject = trim((string) $subject);
-
-        do {
-            $previous = $subject;
-            $subject = preg_replace('/^\s*(re|fw|fwd)\s*:\s*/i', '', $subject) ?? $subject;
-        } while ($subject !== $previous);
-
-        return Str::of($subject)->squish()->lower()->toString();
     }
 
     public function show(int $id)

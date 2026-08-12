@@ -21,6 +21,11 @@ class ContactResource extends JsonResource
             'is_group' => (bool) $this->is_group,
             'username' => $this->username,
             'photo_profile_url' => $this->photo_profile_url,
+            // The address a campaign would reach them at, and whether they have
+            // asked not to be reached. Both are what the recipient picker needs
+            // to show a contact honestly.
+            'external_id' => $this->external_id,
+            'broadcast_opted_out' => $this->broadcast_opted_out_at !== null,
         ];
     }
 }
