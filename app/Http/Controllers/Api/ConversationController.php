@@ -106,7 +106,7 @@ class ConversationController extends Controller
 
         return response()->json([
             'data' => ConversationResource::collection($conversations),
-            'removed_ids' => $this->removedGroupConversationIds($since, $before),
+            'removed_ids' => $this->removedGroupConversationIds($before),
             'has_more' => $hasMore,
             'next_before' => $hasMore ? $conversations->last()?->id : null,
             'server_time' => $serverTime,
@@ -124,9 +124,16 @@ class ConversationController extends Controller
      * closed during the removal keeps the dead thread forever, since IndexedDB
      * survives the reload and the next sync only adds to it.
      *
+     * Deliberately NOT filtered by the `since` cursor: this is the complete list
+     * of what must not be in the panel, so a client converges on it no matter how
+     * far its own bookkeeping has drifted — including one that synced straight
+     * past a removal before this existed. It stays small (it is bounded by the
+     * groups a tenant has removed, which is a handful), and the client applies it
+     * to rows it mostly doesn't have, which costs nothing.
+     *
      * @return array<int, string>
      */
-    private function removedGroupConversationIds(?Carbon $since, ?string $before): array
+    private function removedGroupConversationIds(?string $before): array
     {
         // Only on the first page — the client applies these once per sync, after
         // every page has landed.
@@ -138,14 +145,8 @@ class ConversationController extends Controller
             ->whereHas('connection', function ($q) {
                 $q->where('tenant_id', Auth::user()->tenant_id);
             })
-            ->whereHas('contact', function ($q) use ($since) {
+            ->whereHas('contact', function ($q) {
                 $q->whereNotNull('group_removed_at');
-
-                // Same cursor as the delta: a removal the client has already
-                // seen doesn't need repeating on every sync.
-                if ($since !== null) {
-                    $q->where('group_removed_at', '>', $since);
-                }
             })
             ->pluck('id')
             ->map(fn ($id) => (string) $id)

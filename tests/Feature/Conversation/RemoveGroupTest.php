@@ -197,13 +197,8 @@ test('an agent who missed the broadcast is told to drop the thread by the next d
         ->assertJsonCount(0, 'data')
         ->assertJsonPath('removed_ids', [(string) $conversation->id]);
 
-    // Once applied it is not repeated: the next delta starts after the removal.
-    $this->actingAs($user, 'sanctum')
-        ->getJson('/api/conversations?since=' . urlencode($delta->json('server_time')))
-        ->assertOk()
-        ->assertJsonPath('removed_ids', []);
-
-    // And a restore brings it back through the same delta.
+    // A restore takes it back off the list, and the thread returns through the
+    // ordinary delta.
     $this->travel(2)->seconds();
     $this->actingAs($user, 'sanctum')->deleteJson("/api/groups/{$group->id}/remove")->assertOk();
 
@@ -215,21 +210,35 @@ test('an agent who missed the broadcast is told to drop the thread by the next d
         ->assertJsonPath('removed_ids', []);
 });
 
-test('a fresh panel is never handed removals it has no rows for', function () {
+test('the removal list is the whole truth, not a delta, so a panel that synced past a removal still converges', function () {
     Event::fake();
     $user = removeGroupUser();
     $connection = removeGroupConnection($user, Channel::Telegram);
 
     (new TelegramHandler)->handle($connection, telegramRemoveGroupPayload());
     $group = Contact::where('is_group', true)->firstOrFail();
+    $conversation = Conversation::firstOrFail();
+
     $this->actingAs($user, 'sanctum')->postJson("/api/groups/{$group->id}/remove")->assertOk();
 
-    // A first sync (epoch cursor) still lists it — harmless, the client has
-    // nothing to delete — but the thread itself must not come down.
+    // The cursor is already past the removal — the case of a panel that kept
+    // syncing (and advancing it) while it still held the dead thread. Cutting
+    // the list at `since` would hand it nothing here, forever.
+    $this->travel(2)->seconds();
+
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/conversations?since=' . urlencode(now()->toIso8601String()))
+        ->assertOk()
+        ->assertJsonCount(0, 'data')
+        ->assertJsonPath('removed_ids', [(string) $conversation->id]);
+
+    // A first sync (epoch cursor) gets it too — the client has nothing to delete,
+    // and the thread itself still must not come down.
     $this->actingAs($user, 'sanctum')
         ->getJson('/api/conversations?since=' . urlencode('1970-01-01T00:00:00Z'))
         ->assertOk()
-        ->assertJsonCount(0, 'data');
+        ->assertJsonCount(0, 'data')
+        ->assertJsonPath('removed_ids', [(string) $conversation->id]);
 });
 
 test('a restored group receives messages again', function () {
