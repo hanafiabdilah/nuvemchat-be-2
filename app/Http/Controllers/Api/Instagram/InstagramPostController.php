@@ -13,6 +13,7 @@ use App\Services\Instagram\InstagramGraphClientFactory;
 use App\Services\Instagram\InstagramMediaPreparer;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -65,18 +66,42 @@ class InstagramPostController extends Controller
             ->orderByDesc('id')
             ->get();
 
-        $feed = $this->clients->for($connection)->media(
-            (int) $request->integer('limit', 24),
-            $request->string('after')->toString() ?: null,
-        );
+        $client = $this->clients->for($connection);
+        $after = $request->string('after')->toString() ?: null;
+
+        $feed = $client->media((int) $request->integer('limit', 24), $after);
 
         return response()->json([
             'pending' => InstagramPostResource::collection($pending)->resolve(),
             'published' => $feed['data'] ?? [],
+            // Stories live on their own edge and are never in `media`, so they
+            // need a second call. Skipped when paging: the strip belongs to the
+            // first screen, and re-fetching it per page would be a Graph call
+            // per "Load more" for a list that has not changed.
+            'stories' => $after ? [] : $this->stories($client),
             // Instagram pages by cursor, not by page number. Null means the end.
             'next_cursor' => $feed['paging']['cursors']['after'] ?? null,
             'has_more' => isset($feed['paging']['next']),
         ]);
+    }
+
+    /**
+     * Stories, best-effort.
+     *
+     * Deliberately swallowed on failure: the feed call above runs first and is
+     * what reports a dead token or a missing scope, so letting this one raise
+     * would replace a working grid with an error over a strip that is empty
+     * most of the day anyway.
+     */
+    private function stories(\App\Services\Instagram\InstagramGraphClient $client): array
+    {
+        try {
+            return $client->stories()['data'] ?? [];
+        } catch (\Throwable $e) {
+            Log::warning('Could not read Instagram stories', ['error' => $e->getMessage()]);
+
+            return [];
+        }
     }
 
     public function show(Request $request, string $id)

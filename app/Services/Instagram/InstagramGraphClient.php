@@ -99,6 +99,22 @@ class InstagramGraphClient
         ]));
     }
 
+    /**
+     * The account's live stories.
+     *
+     * A separate call because Meta keeps them on a separate edge: the `media`
+     * edge does not return story media at all. Without this, a story published
+     * from here would vanish from the grid the moment it went live — its
+     * scheduled tile would disappear and nothing would replace it.
+     *
+     * Only the last 24 hours exist to be returned; expired stories are gone at
+     * Meta, not merely filtered.
+     */
+    public function stories(): array
+    {
+        return $this->get($this->accountId() . '/stories', ['fields' => self::MEDIA_FIELDS]);
+    }
+
     public function mediaDetail(string $mediaId): array
     {
         return $this->get($mediaId, ['fields' => self::MEDIA_FIELDS]);

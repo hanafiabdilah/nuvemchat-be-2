@@ -101,6 +101,32 @@ ke Messenger Platform (tulis ulang handler inbox Instagram), tenant wajib punya
 Page yang ter-link, dan **semua koneksi Instagram harus reconnect**. Itu keputusan
 produk, bukan refactor.
 
+## Grid = jendela ke Instagram, bukan cermin DB
+
+Bagian "published" **tidak pernah** dibaca dari tabel kita — selalu live dari
+`GET /me/media`. Konsekuensinya (semua diinginkan):
+
+- Akun yang baru di-connect langsung menampilkan **seluruh arsip lamanya**.
+- Post yang dibuat **langsung dari app Instagram** ikut muncul, dan komentarnya
+  bisa dimoderasi — endpoint komentar memakai IG media id, tidak terikat record
+  kita.
+- Post yang dihapus orang dari app langsung hilang dari grid.
+
+`instagram_posts` hanya menyimpan yang Instagram tidak punya konsepnya: draft,
+jadwal, dan alasan gagal.
+
+⚠️ **Stories ada di edge terpisah.** `/media` **tidak pernah** mengembalikan
+story media — harus `GET /{ig-id}/stories` (hanya 24 jam terakhir; yang lewat
+sudah tidak ada di Meta, bukan sekadar difilter). Tanpa panggilan kedua itu,
+story yang di-publish dari sini akan *lenyap* dari grid tepat saat tayang: tile
+terjadwalnya pergi dan tidak ada penggantinya. Panggilan stories di-skip saat
+paging (strip itu milik layar pertama) dan kegagalannya sengaja ditelan — feed
+call yang jalan duluan sudah melaporkan token mati / scope kurang, jadi
+menggagalkan grid demi strip yang mayoritas hari kosong tidak sepadan.
+
+Grid juga menyegarkan diri saat tab kembali terlihat (throttle 60 dtk) dan punya
+tombol Refresh, karena akun ini diedit dari luar dashboard.
+
 ## Batas kuota
 
 100 post per 24 jam **rolling, per akun Instagram** — dihitung Meta, bukan kita,

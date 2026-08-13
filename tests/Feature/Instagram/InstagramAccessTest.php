@@ -117,6 +117,60 @@ test('the account list counts what is still waiting to go out', function () {
         ->assertJsonPath('data.0.scheduled_count', 2);
 });
 
+test('stories are fetched separately, because the media edge never returns them', function () {
+    Http::fake(function ($request) {
+        if (str_contains($request->url(), '/stories')) {
+            return Http::response(['data' => [['id' => 'story-1', 'media_type' => 'IMAGE']]]);
+        }
+
+        return Http::response(['data' => [['id' => 'ig-1', 'media_type' => 'IMAGE']]]);
+    });
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$connection->id}/posts")
+        ->assertOk()
+        ->assertJsonPath('stories.0.id', 'story-1')
+        ->assertJsonPath('published.0.id', 'ig-1');
+});
+
+test('paging does not re-fetch the stories strip', function () {
+    Http::fake(fn () => Http::response(['data' => []]));
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$connection->id}/posts?after=CURSOR")
+        ->assertOk()
+        ->assertJsonPath('stories', []);
+
+    // The strip belongs to the first screen; asking for it on every "Load more"
+    // would be a Graph call per page for a list that has not changed.
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), '/stories'));
+});
+
+test('a stories failure does not take the grid down with it', function () {
+    Http::fake(function ($request) {
+        if (str_contains($request->url(), '/stories')) {
+            return Http::response(['error' => ['message' => 'Something went wrong', 'code' => 1]], 500);
+        }
+
+        return Http::response(['data' => [['id' => 'ig-1', 'media_type' => 'IMAGE']]]);
+    });
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$connection->id}/posts")
+        ->assertOk()
+        ->assertJsonPath('stories', [])
+        ->assertJsonPath('published.0.id', 'ig-1');
+});
+
 test('the grid returns what is waiting alongside what is live', function () {
     Http::fake(fn () => Http::response([
         'data' => [['id' => 'ig-1', 'media_type' => 'IMAGE', 'permalink' => 'https://instagram.com/p/1']],
