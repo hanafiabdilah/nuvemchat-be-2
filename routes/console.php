@@ -134,3 +134,12 @@ Schedule::command('broadcasts:tick')
     ->everyMinute()
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('Broadcast tick failed'));
+
+// Fire Instagram posts whose scheduled time has come, and re-dispatch any whose
+// publish chain died mid-flight. Both halves are idempotent: the job claims the
+// post before doing anything, and the publisher reuses containers it already
+// created rather than building new ones.
+Schedule::command('instagram:publish-scheduled')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('Instagram scheduled publish failed'));

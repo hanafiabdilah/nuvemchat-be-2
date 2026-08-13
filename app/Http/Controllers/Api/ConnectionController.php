@@ -594,7 +594,17 @@ class ConnectionController extends Controller
 
         $clientId = InstagramConfig::clientId();
         $redirectUri = InstagramConfig::redirectUri(); // Tidak di-encode
-        $scope = urlencode('instagram_business_basic,instagram_business_manage_messages'); // Di-encode
+        // Scopes are baked into the token at authorization time, so an account
+        // connected before publishing existed holds a token without those two
+        // permissions and cannot be upgraded in place — it has to come back
+        // through here. That is why the post grid surfaces a "reconnect" prompt
+        // on Meta's permission errors rather than just reporting them.
+        $scope = urlencode(implode(',', [
+            'instagram_business_basic',
+            'instagram_business_manage_messages',
+            'instagram_business_content_publish',
+            'instagram_business_manage_comments',
+        ])); // Di-encode
 
         Log::info('Generating Instagram OAuth URL', [
             'connection_id' => $connection->id,

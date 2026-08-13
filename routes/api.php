@@ -40,6 +40,9 @@ use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\Billing\BillingController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ImpersonationController;
+use App\Http\Controllers\Api\Instagram\InstagramAccountController;
+use App\Http\Controllers\Api\Instagram\InstagramCommentController;
+use App\Http\Controllers\Api\Instagram\InstagramPostController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\FlowController;
@@ -206,6 +209,38 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/broadcasts/{id}/resume', [BroadcastController::class, 'resume'])->middleware('permission:broadcasts.send');
         Route::post('/broadcasts/{id}/cancel', [BroadcastController::class, 'cancel'])->middleware('permission:broadcasts.send');
         Route::post('/broadcasts/{id}/retry-failed', [BroadcastController::class, 'retryFailed'])->middleware('permission:broadcasts.send');
+
+        // Instagram publishing. Two id spaces meet here and are kept apart by
+        // the path: `/instagram/posts/{post}` is one of our rows (a draft or a
+        // schedule), `/instagram/accounts/{connection}/media/{mediaId}` is a
+        // post that already lives on Instagram. Everything about a live post
+        // needs the connection, because the account's token is what authorises
+        // the call.
+        Route::prefix('instagram')->group(function () {
+            Route::get('/accounts', [InstagramAccountController::class, 'index'])->middleware('permission:instagram-posts.view');
+            Route::get('/accounts/{connection}', [InstagramAccountController::class, 'show'])->middleware('permission:instagram-posts.view');
+
+            Route::get('/accounts/{connection}/posts', [InstagramPostController::class, 'index'])->middleware('permission:instagram-posts.view');
+            Route::post('/accounts/{connection}/posts', [InstagramPostController::class, 'store'])->middleware('permission:instagram-posts.create');
+            // Media has to exist at a public URL before a post can reference it
+            // — Meta fetches images, it does not accept them.
+            Route::post('/accounts/{connection}/uploads', [InstagramPostController::class, 'upload'])->middleware('permission:instagram-posts.create');
+
+            Route::get('/posts/{post}', [InstagramPostController::class, 'show'])->middleware('permission:instagram-posts.view');
+            Route::put('/posts/{post}', [InstagramPostController::class, 'update'])->middleware('permission:instagram-posts.create');
+            Route::delete('/posts/{post}', [InstagramPostController::class, 'destroy'])->middleware('permission:instagram-posts.delete');
+            Route::post('/posts/{post}/publish', [InstagramPostController::class, 'publish'])->middleware('permission:instagram-posts.publish');
+
+            // Comment moderation on a live post. Read is bundled with viewing
+            // posts; every write needs the moderation permission.
+            Route::get('/accounts/{connection}/media/{media}/comments', [InstagramCommentController::class, 'index'])->middleware('permission:instagram-posts.view');
+            Route::middleware('permission:instagram-comments.manage')->group(function () {
+                Route::post('/accounts/{connection}/comments/{comment}/replies', [InstagramCommentController::class, 'reply']);
+                Route::patch('/accounts/{connection}/comments/{comment}', [InstagramCommentController::class, 'update']);
+                Route::delete('/accounts/{connection}/comments/{comment}', [InstagramCommentController::class, 'destroy']);
+                Route::patch('/accounts/{connection}/media/{media}/comments', [InstagramCommentController::class, 'setCommentsEnabled']);
+            });
+        });
     });
 
     Route::get('/connections', [ConnectionController::class, 'index']);

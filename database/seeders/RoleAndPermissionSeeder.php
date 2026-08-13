@@ -89,6 +89,15 @@ class RoleAndPermissionSeeder extends Seeder
             'broadcasts.create',
             'broadcasts.send',
             'broadcasts.delete',
+
+            // Instagram publishing. `delete` covers our own drafts and
+            // schedules only — Instagram Login has no endpoint for removing a
+            // post that is already live.
+            'instagram-posts.view',
+            'instagram-posts.create',
+            'instagram-posts.publish',
+            'instagram-posts.delete',
+            'instagram-comments.manage',
         ];
 
         foreach ($permissions as $permission) {

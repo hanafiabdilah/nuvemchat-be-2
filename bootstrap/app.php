@@ -63,5 +63,20 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // Meta's refusals are worth passing through verbatim — "The submitted
+        // image is not a valid JPEG" tells the user exactly what to fix, and
+        // nothing we could write in its place would be as useful. The `code`
+        // separates the one failure the UI can offer a remedy for (the account
+        // was connected before publishing existed and needs re-authorizing)
+        // from the ones it can only report.
+        $exceptions->render(function (\App\Exceptions\InstagramApiException $e, \Illuminate\Http\Request $request) {
+            if (! $request->expectsJson()) {
+                return null;
+            }
+
+            return response()->json([
+                'message' => $e->getMessage(),
+                'code' => $e->isPermissionError() ? 'instagram_permission_required' : 'instagram_error',
+            ], $e->httpStatus());
+        });
     })->create();
