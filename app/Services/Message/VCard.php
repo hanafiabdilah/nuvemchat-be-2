@@ -99,8 +99,8 @@ class VCard
     }
 
     /**
-     * The shared contact cards inside a whatsmeow `Message` node, in the order
-     * WhatsApp sent them.
+     * The shared contact cards inside a whatsmeow `Message` node (API Way), in
+     * the order WhatsApp sent them.
      *
      * Two payload shapes carry the same thing — `contactMessage` for a single
      * card, `contactsArrayMessage` for several — so both flatten to one list
@@ -110,13 +110,13 @@ class VCard
      *
      * @return array<int, array{name: string, phones: array, vcard: string}>
      */
-    public static function cardsFrom(array $message): array
+    public static function cardsFromWhatsmeow(array $message): array
     {
         if (isset($message['contactMessage'])) {
             $card = $message['contactMessage'];
 
             return isset($card['vcard'])
-                ? [self::toCard($card['displayName'] ?? null, $card['vcard'])]
+                ? [self::toCard($card['displayName'] ?? null, self::decode($card['vcard']))]
                 : [];
         }
 
@@ -127,8 +127,74 @@ class VCard
         }
 
         return array_values(array_map(
-            fn (array $card) => self::toCard($card['displayName'] ?? null, $card['vcard'] ?? ''),
+            fn (array $card) => self::toCard($card['displayName'] ?? null, self::decode($card['vcard'] ?? '')),
             array_filter($cards, fn ($card) => is_array($card) && isset($card['vcard'])),
         ));
+    }
+
+    /**
+     * The same cards from a Cloud API `messages[].contacts` array.
+     *
+     * Meta already sends the parts a bubble needs — `name.formatted_name` and
+     * `phones[]` with the wa_id split out — so the vCard is only the fallback
+     * for a card that arrived without them, and the parser above is what makes
+     * that fallback possible at all.
+     *
+     * @return array<int, array{name: string, phones: array, vcard: string}>
+     */
+    public static function cardsFromCloudApi(array $contacts): array
+    {
+        return array_values(array_map(function (array $card) {
+            $vcard = self::decode($card['vcard'] ?? '');
+            $parsed = self::parse($vcard);
+
+            $phones = array_values(array_map(
+                fn (array $phone) => [
+                    'number' => $phone['phone'],
+                    'wa_id' => $phone['wa_id'] ?? null,
+                ],
+                array_filter(
+                    $card['phones'] ?? [],
+                    fn ($phone) => is_array($phone) && ($phone['phone'] ?? '') !== '',
+                ),
+            ));
+
+            return [
+                'name' => self::cloudApiName($card['name'] ?? []) ?? $parsed['name'] ?? '',
+                'phones' => $phones !== [] ? $phones : $parsed['phones'],
+                'vcard' => $vcard,
+            ];
+        }, array_filter($contacts, 'is_array')));
+    }
+
+    /** Meta's own formatting when it sent one, the name's parts otherwise. */
+    private static function cloudApiName(array $name): ?string
+    {
+        if (($name['formatted_name'] ?? '') !== '') {
+            return $name['formatted_name'];
+        }
+
+        $parts = array_filter([$name['first_name'] ?? null, $name['last_name'] ?? null]);
+
+        return $parts === [] ? null : implode(' ', $parts);
+    }
+
+    /**
+     * The card as text, whether or not it arrived base64-encoded.
+     *
+     * Meta's own examples show a plain vCard, but real webhooks have delivered
+     * it base64'd — so this detects rather than assumes: decoding is only
+     * accepted when the result actually looks like a vCard, because running
+     * base64_decode over a plain card would quietly destroy it.
+     */
+    private static function decode(string $vcard): string
+    {
+        if ($vcard === '' || str_starts_with($vcard, 'BEGIN:VCARD')) {
+            return $vcard;
+        }
+
+        $decoded = base64_decode($vcard, true);
+
+        return ($decoded !== false && str_starts_with($decoded, 'BEGIN:VCARD')) ? $decoded : $vcard;
     }
 }

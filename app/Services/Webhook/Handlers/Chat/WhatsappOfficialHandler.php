@@ -17,6 +17,7 @@ use App\Models\MessageReaction;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Flow\InteractiveNodes;
 use App\Services\Message\MessageService;
+use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
@@ -66,8 +67,24 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             MessageType::Interactive => InteractiveNodes::replyFromWebhook(
                 $messages['interactive'] ?? null
             )['title'] ?? null,
+            // A shared contact card has no text of its own, but everything that
+            // reads a message as words — the conversation-list preview, a flow
+            // waiting on a reply, a copied thread, search — has only `body` to
+            // work with. The names on the card are the closest honest answer.
+            MessageType::Contact => $this->contactNames($messages['contacts'] ?? []),
             default => null,
         };
+    }
+
+    /** "Hanafi" for one shared card, "Hanafi, Jane Roe" for several. */
+    private function contactNames(array $contacts): ?string
+    {
+        $names = array_values(array_filter(array_column(
+            VCard::cardsFromCloudApi($contacts),
+            'name'
+        )));
+
+        return $names === [] ? null : implode(', ', $names);
     }
 
     public function getMessageType(array $payload): MessageType
@@ -82,7 +99,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             'interactive' => MessageType::Interactive,
             'sticker' => MessageType::Unsupported,
             'location' => MessageType::Unsupported,
-            'contacts' => MessageType::Unsupported,
+            'contacts' => MessageType::Contact,
             default => MessageType::Unsupported,
         };
     }

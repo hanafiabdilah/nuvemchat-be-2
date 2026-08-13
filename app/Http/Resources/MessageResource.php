@@ -276,10 +276,15 @@ class MessageResource extends JsonResource
      */
     private function getWhatsappOfficialMeta(): ?array
     {
-        if ($this->message_type !== MessageType::Interactive) {
-            return null;
-        }
+        return match($this->message_type) {
+            MessageType::Interactive => $this->getWhatsappOfficialInteractiveData(),
+            MessageType::Contact => $this->getWhatsappOfficialContactData(),
+            default => null,
+        };
+    }
 
+    private function getWhatsappOfficialInteractiveData(): ?array
+    {
         // Outbound: the sent payload is stored under meta.interactive.
         $outbound = $this->meta['interactive'] ?? null;
         // Inbound: the customer's reply lives in the raw webhook entry.
@@ -288,6 +293,25 @@ class MessageResource extends JsonResource
         $interactive = $outbound ?? $inboundReply;
 
         return $interactive ? ['interactive' => $interactive] : null;
+    }
+
+    /**
+     * Shared contact cards (vCard), parsed into something a bubble can render.
+     *
+     * Read off the stored webhook rather than kept in a column of its own, so
+     * a later fix to the parser applies to messages already in the table.
+     */
+    private function getWhatsappOfficialContactData(): ?array
+    {
+        $contacts = $this->meta['changes'][0]['value']['messages'][0]['contacts'] ?? null;
+
+        if (! is_array($contacts)) {
+            return null;
+        }
+
+        $cards = VCard::cardsFromCloudApi($contacts);
+
+        return $cards === [] ? null : ['contacts' => $cards];
     }
 
     /**
@@ -311,7 +335,7 @@ class MessageResource extends JsonResource
      */
     private function getWhatsappApiwayContactData(): ?array
     {
-        $cards = VCard::cardsFrom($this->apiwayMessageNode());
+        $cards = VCard::cardsFromWhatsmeow($this->apiwayMessageNode());
 
         return $cards === [] ? null : ['contacts' => $cards];
     }

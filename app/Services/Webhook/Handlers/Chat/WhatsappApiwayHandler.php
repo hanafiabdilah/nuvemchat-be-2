@@ -844,7 +844,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
      */
     private function contactNames(array $message): ?string
     {
-        $names = array_values(array_filter(array_column(VCard::cardsFrom($message), 'name')));
+        $names = array_values(array_filter(array_column(VCard::cardsFromWhatsmeow($message), 'name')));
 
         return $names === [] ? null : implode(', ', $names);
     }
