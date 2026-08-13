@@ -61,6 +61,18 @@ Schedule::command('conversations:close-expired-windows')
         logger()->error('Expired messaging window sweep failed');
     });
 
+// --- Media retention -----------------------------------------------------
+
+// Delete message media past its retention window (group 30d / private 90d by
+// default — config/media.php). Hourly rather than daily on purpose: each pass
+// is capped, so a large backlog drains steadily in the background instead of
+// one nightly run holding a worker for an hour. Once drained, a pass that
+// finds nothing costs two indexed queries.
+Schedule::command('media:purge')
+    ->hourlyAt(50)
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->error('Media purge failed'));
+
 // --- Billing -------------------------------------------------------------
 
 // Generate fresh Pix charges a few days before period end (pix isn't auto-debited).

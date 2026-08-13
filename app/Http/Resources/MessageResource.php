@@ -3,9 +3,11 @@
 namespace App\Http\Resources;
 
 use App\Enums\Connection\Channel;
+use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
-use Carbon\Carbon;
+use App\Models\Message;
+use App\Services\Media\MediaRetention;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Storage;
@@ -28,20 +30,23 @@ class MessageResource extends JsonResource
             'message_type' => $this->message_type,
             'body' => $this->body,
             'attachment_url' => $this->when(!$this->withoutAttachmentUrl, fn() =>
-                self::resolveAttachmentUrl($this->attachment)
+                $this->resolveAttachmentUrl($this->attachment)
             ),
             // Only set while the file is still being fetched off the channel
-            // (or after that gave up) — see App\Jobs\DownloadInboundMedia. The
-            // chat panel reads it to draw a placeholder instead of a bubble
-            // pointing at nothing.
-            'attachment_status' => $this->attachment_status,
+            // (or after that gave up) — see App\Jobs\DownloadInboundMedia —
+            // and once retention deleted it. The chat panel reads it to draw a
+            // placeholder instead of a bubble pointing at nothing.
+            'attachment_status' => $this->resolveAttachmentStatus(),
             'replied_message' => $this->when($this->repliedMessage, fn() => [
                 'id' => $this->repliedMessage->id,
                 'sender_type' => $this->repliedMessage->sender_type,
                 'message_type' => $this->repliedMessage->message_type,
                 'body' => $this->repliedMessage->body,
                 'attachment_url' => !$this->withoutAttachmentUrl
-                    ? self::resolveAttachmentUrl($this->repliedMessage->attachment)
+                    // The quoted message has its own age, so its own purge date:
+                    // a reply written today does not extend the life of the
+                    // photo it quotes.
+                    ? $this->resolveAttachmentUrl($this->repliedMessage->attachment, $this->repliedMessage)
                     : null,
             ]),
             // The chat panel lets a reader open a reaction to see who left it
@@ -77,18 +82,58 @@ class MessageResource extends JsonResource
      * Resolve an attachment reference into a URL the frontend can render.
      * External attachments (media sent by URL) are stored as absolute URLs and
      * returned as-is; local storage paths get a signed temporary URL.
+     *
+     * The signature expires on the file's purge date rather than at some fixed
+     * distance from now: the SPA caches this string in IndexedDB and never
+     * re-fetches it, so a URL that outlives its file would sit there pointing
+     * at a 403 with nothing to say why. See App\Services\Media\MediaRetention.
+     *
+     * $owner names the message the path belongs to — normally this one, but a
+     * quoted message when resolving `replied_message`.
      */
-    private static function resolveAttachmentUrl(?string $attachment): ?string
+    private function resolveAttachmentUrl(?string $attachment, ?Message $owner = null): ?string
     {
         if (!$attachment) {
             return null;
         }
 
-        if (str_starts_with($attachment, 'http://') || str_starts_with($attachment, 'https://')) {
+        if (MediaRetention::isExternal($attachment)) {
             return $attachment;
         }
 
-        return Storage::disk('local')->temporaryUrl($attachment, Carbon::now()->addMonths(6));
+        $owner ??= $this->resource;
+
+        // Between the purge date and the hourly sweep the file is still on
+        // disk; treating it as gone here keeps every client agreeing on when
+        // media stops being available.
+        if (MediaRetention::isExpired($owner, $this->conversation)) {
+            return null;
+        }
+
+        return Storage::disk('local')->temporaryUrl(
+            $attachment,
+            MediaRetention::urlExpiresAt($owner, $this->conversation),
+        );
+    }
+
+    /**
+     * The stored status, or `expired` for a file whose retention window has
+     * closed but which the sweep has not reached yet — the row says nothing
+     * for up to an hour, while the URL above already refuses to resolve.
+     */
+    private function resolveAttachmentStatus(): ?AttachmentStatus
+    {
+        if ($this->attachment_status !== null) {
+            return $this->attachment_status;
+        }
+
+        if ($this->attachment
+            && !MediaRetention::isExternal($this->attachment)
+            && MediaRetention::isExpired($this->resource, $this->conversation)) {
+            return AttachmentStatus::Expired;
+        }
+
+        return null;
     }
 
     /**
@@ -210,7 +255,7 @@ class MessageResource extends JsonResource
         if (!$this->withoutAttachmentUrl && !empty($email['attachments']) && is_array($email['attachments'])) {
             $email['attachments'] = array_map(function ($attachment) {
                 $path = $attachment['path'] ?? null;
-                $attachment['url'] = $path ? self::resolveAttachmentUrl($path) : null;
+                $attachment['url'] = $path ? $this->resolveAttachmentUrl($path) : null;
                 return $attachment;
             }, $email['attachments']);
         }
