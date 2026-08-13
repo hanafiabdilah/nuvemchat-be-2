@@ -26,7 +26,9 @@ test('broadcasts on the tenant channel with a stable event name', function () {
     $event = new TemplateStatusUpdated(42, []);
 
     expect($event->broadcastAs())->toBe('template-status-updated');
-    expect($event->broadcastOn()[0]->name)->toBe('tenant-channel.42');
+    // "private-" is the Pusher-protocol prefix a PrivateChannel carries on the
+    // wire; the client still subscribes with Echo.private('tenant-channel.42').
+    expect($event->broadcastOn()[0]->name)->toBe('private-tenant-channel.42');
 });
 
 test('tolerates a partial payload', function () {

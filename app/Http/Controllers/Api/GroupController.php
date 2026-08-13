@@ -46,11 +46,21 @@ class GroupController extends Controller
 
         $group->update(['group_removed_at' => now()]);
 
-        $conversationIds = Conversation::where('contact_id', $group->id)->pluck('id')->all();
-
         // Delta sync only ever adds rows, so an open panel would keep showing
         // the thread until a reload — this is what tells it to drop them.
-        broadcast(new GroupRemoved($group->tenant_id, $group->id, $conversationIds));
+        // One event per connection: the ids ride a connection-scoped channel,
+        // so a group with threads on two connections needs two of them.
+        Conversation::where('contact_id', $group->id)
+            ->get(['id', 'connection_id'])
+            ->groupBy('connection_id')
+            ->each(function ($conversations, $connectionId) use ($group) {
+                broadcast(new GroupRemoved(
+                    $group->tenant_id,
+                    (int) $connectionId,
+                    $group->id,
+                    $conversations->pluck('id')->all(),
+                ));
+            });
 
         return response()->json([
             'message' => 'Group removed',

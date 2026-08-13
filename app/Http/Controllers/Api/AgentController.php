@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Events\ConnectionAccessUpdated;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Http\Resources\UserResource;
@@ -124,11 +125,17 @@ class AgentController extends Controller
 
         // Verify all connections belong to the same tenant
         $connections = request()->user()->tenant->connections()
-            ->whereIn('id', $validated['connection_ids'])
+            ->whereIn('id', $validated['connection_ids'] ?? [])
             ->pluck('id');
 
         // Sync connections (will add new ones and remove old ones)
         $agent->connections()->sync($connections);
+
+        // Tell the agent's own session so the change lands now rather than at
+        // their next login — which matters most for a revoke, since their tab
+        // is still subscribed to the connection channel and still holds the
+        // history in IndexedDB until it is told to let go.
+        broadcast(new ConnectionAccessUpdated($agent->fresh()));
 
         return response()->json([
             'message' => 'Agent connections synchronized successfully',

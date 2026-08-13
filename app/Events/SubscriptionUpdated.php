@@ -2,9 +2,9 @@
 
 namespace App\Events;
 
+use App\Broadcasting\Channels;
 use App\Http\Resources\Billing\SubscriptionResource;
 use App\Models\Subscription;
-use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
@@ -26,7 +26,7 @@ class SubscriptionUpdated implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('tenant-channel.' . $this->subscription->tenant_id),
+            Channels::tenant($this->subscription->tenant_id),
         ];
     }
 

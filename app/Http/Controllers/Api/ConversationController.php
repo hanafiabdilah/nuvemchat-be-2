@@ -44,6 +44,7 @@ class ConversationController extends Controller
             report: false,
         );
         $before = $request->input('before');
+        $connectionId = $request->input('connection_id');
         $limit = (int) $request->input('limit', 100);
         $limit = max(1, min($limit, 500));
 
@@ -71,9 +72,7 @@ class ConversationController extends Controller
             ->withCount(['messages as unread_count' => function ($q) {
                 $q->where('sender_type', SenderType::Incoming)->whereNull('read_at');
             }])
-            ->whereHas('connection', function($q){
-                $q->where('tenant_id', Auth::user()->tenant_id);
-            })
+            ->visibleTo(Auth::user())
             // Skip conversations with no message yet (e.g. a Live Chat Widget session
             // that was opened but the visitor never typed) — they would otherwise show
             // as empty rows with a null "1970" date in the list.
@@ -93,6 +92,13 @@ class ConversationController extends Controller
             $query->where('updated_at', '>', $since);
         }
 
+        // Optional: restrict to one connection. The client uses this to pull
+        // the full history of a connection it was just granted access to,
+        // without resetting the delta cursor it holds for the others.
+        if (filled($connectionId)) {
+            $query->where('connection_id', $connectionId);
+        }
+
         // Cursor pagination. Client walks backwards by passing `before` =
         // smallest id it already holds, until has_more is false.
         if ($before !== null && $before !== '') {
@@ -107,10 +113,41 @@ class ConversationController extends Controller
         return response()->json([
             'data' => ConversationResource::collection($conversations),
             'removed_ids' => $this->removedGroupConversationIds($before),
+            // The connections this user may hold locally, so the client can
+            // drop the cache of any it no longer has. Sent on the first page
+            // only, like removed_ids, and for the same reason: it is a
+            // convergence statement about the whole cache, not a delta.
+            'connection_ids' => $this->accessibleConnectionIds($before),
             'has_more' => $hasMore,
             'next_before' => $hasMore ? $conversations->last()?->id : null,
             'server_time' => $serverTime,
         ]);
+    }
+
+    /**
+     * Every connection id this user is allowed to see, whether or not it has
+     * any conversations.
+     *
+     * The client mirrors messages into IndexedDB, and IndexedDB survives having
+     * access taken away — so revocation has to be an instruction the server
+     * sends, not something the client is trusted to infer from an absence of
+     * rows. Anything outside this list gets purged locally.
+     *
+     * @return array<int, string>|null  null on later pages (nothing to apply)
+     */
+    private function accessibleConnectionIds(?string $before): ?array
+    {
+        if ($before !== null && $before !== '') {
+            return null;
+        }
+
+        $user = Auth::user();
+
+        $ids = $user->canAccessAllConnections()
+            ? $user->tenant->connections()->pluck('id')->all()
+            : $user->accessibleConnectionIds();
+
+        return array_map('strval', $ids);
     }
 
     /**
@@ -142,9 +179,7 @@ class ConversationController extends Controller
         }
 
         return Conversation::query()
-            ->whereHas('connection', function ($q) {
-                $q->where('tenant_id', Auth::user()->tenant_id);
-            })
+            ->visibleTo(Auth::user())
             ->whereHas('contact', function ($q) {
                 $q->whereNotNull('group_removed_at');
             })
@@ -171,7 +206,7 @@ class ConversationController extends Controller
             ->where('tenant_id', Auth::user()->tenant_id)
             ->firstOrFail();
 
-        if(!Auth::user()->hasRole('owner') && !$connection->users->contains(Auth::id())){
+        if(!Auth::user()->canAccessConnection($connection)){
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -293,7 +328,7 @@ class ConversationController extends Controller
             ->where('channel', Channel::Email)
             ->firstOrFail();
 
-        if (!Auth::user()->hasRole('owner') && !$connection->users->contains(Auth::id())) {
+        if (!Auth::user()->canAccessConnection($connection)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -362,9 +397,7 @@ class ConversationController extends Controller
 
     public function show(int $id)
     {
-        $conversation = Conversation::with('contact')->whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::with('contact')->visibleTo(Auth::user())->findOrFail($id);
 
         return response()->json([
             'data' => $conversation->toResource(ConversationResource::class),
@@ -384,9 +417,7 @@ class ConversationController extends Controller
      */
     public function participants(int $id)
     {
-        $conversation = Conversation::whereHas('connection', function ($q) {
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if (! $conversation->isGroup()) {
             return response()->json(['data' => []]);
@@ -410,9 +441,7 @@ class ConversationController extends Controller
      */
     public function variables(int $id)
     {
-        $conversation = Conversation::with('contact')->whereHas('connection', function ($q) {
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::with('contact')->visibleTo(Auth::user())->findOrFail($id);
 
         // Latest flow run for this conversation (state is preserved after it ends).
         $flowState = $conversation->flowState()->latest('id')->first();
@@ -437,9 +466,7 @@ class ConversationController extends Controller
 
     public function messages(int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         $messages = $conversation->messages()
             ->with(['contact', 'sentByUser', 'sentByFlow', 'sentByAiHubAgent'])
@@ -456,9 +483,7 @@ class ConversationController extends Controller
      */
     public function emailHtml(int $id, int $message_id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json(['message' => 'Unauthorized'], 403);
@@ -478,9 +503,7 @@ class ConversationController extends Controller
 
     public function sendInteractive(Request $request, int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json(['message' => 'Unauthorized'], 403);
@@ -512,9 +535,7 @@ class ConversationController extends Controller
 
     public function read(int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         $conversation->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->update(['read_at' => now()]);
         broadcast(new ConversationUpdated($conversation));
@@ -542,9 +563,7 @@ class ConversationController extends Controller
      */
     public function typing(int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json(['message' => 'Unauthorized'], 403);
@@ -564,9 +583,7 @@ class ConversationController extends Controller
 
     public function sendMessage(Request $request, int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -614,9 +631,7 @@ class ConversationController extends Controller
 
     public function sendImage(Request $request, int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -654,9 +669,7 @@ class ConversationController extends Controller
 
     public function sendAudio(Request $request, int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -694,9 +707,7 @@ class ConversationController extends Controller
 
     public function sendVideo(Request $request, int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -734,9 +745,7 @@ class ConversationController extends Controller
 
     public function sendDocument(Request $request, int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -774,9 +783,7 @@ class ConversationController extends Controller
 
     public function accept(int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         // An agent can pick up a conversation from the unassigned Pending queue
         // or take it over from the AI while it is being handled.
@@ -795,9 +802,7 @@ class ConversationController extends Controller
 
     public function resolve(int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -838,9 +843,7 @@ class ConversationController extends Controller
 
     private function setMuted(int $id, bool $muted)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         $conversation->update(['muted_at' => $muted ? now() : null]);
 
@@ -855,15 +858,18 @@ class ConversationController extends Controller
     }
 
     /**
-     * Agents the current conversation can be transferred to: every user of the
-     * tenant except the current assignee. Only someone who can act on the
-     * conversation (owner / assignee / email-inbox member) may list them.
+     * Agents the current conversation can be transferred to: users of the
+     * tenant who can reach this conversation's connection, minus the current
+     * assignee. Only someone who can act on the conversation (owner / assignee
+     * / email-inbox member) may list them.
+     *
+     * Filtered by connection access because the alternative is a transfer that
+     * silently strands the thread: assigned to someone whose inbox will never
+     * show it.
      */
     public function transferTargets(int $id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -873,6 +879,11 @@ class ConversationController extends Controller
 
         $agents = Auth::user()->tenant->users()
             ->where('users.id', '!=', $conversation->user_id)
+            ->where(function ($q) use ($conversation) {
+                // Owners hold no connection_user rows — they qualify by role.
+                $q->whereHas('roles', fn ($r) => $r->where('name', 'owner'))
+                    ->orWhereHas('connections', fn ($c) => $c->where('connections.id', $conversation->connection_id));
+            })
             ->orderBy('name')
             ->get(['users.id', 'users.name', 'users.email']);
 
@@ -893,9 +904,7 @@ class ConversationController extends Controller
             'agent_id' => ['required', 'integer'],
         ]);
 
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -921,6 +930,15 @@ class ConversationController extends Controller
             return response()->json([
                 'message' => 'Conversation is already assigned to this agent',
             ], 400);
+        }
+
+        // Assigning to someone who cannot see the connection would park the
+        // thread in an inbox that never renders it.
+        if(!$target->canAccessConnection($conversation->connection)){
+            return response()->json([
+                'message' => 'That agent does not have access to this connection',
+                'code' => 'agent_missing_connection_access',
+            ], 422);
         }
 
         $conversation->user_id = $target->id;
@@ -1038,9 +1056,7 @@ class ConversationController extends Controller
         $target = Status::from($validated['status']);
 
         $conversations = Conversation::with('connection')
-            ->whereHas('connection', function ($q) {
-                $q->where('tenant_id', Auth::user()->tenant_id);
-            })
+            ->visibleTo(Auth::user())
             ->whereIn('id', $validated['ids'])
             ->get();
 
@@ -1092,9 +1108,7 @@ class ConversationController extends Controller
 
     public function syncTags(int $id, Request $request)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -1126,9 +1140,7 @@ class ConversationController extends Controller
 
     public function editMessage(int $id, int $message_id, Request $request)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([
@@ -1171,9 +1183,7 @@ class ConversationController extends Controller
 
     public function deleteMessage(int $id, int $message_id)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([

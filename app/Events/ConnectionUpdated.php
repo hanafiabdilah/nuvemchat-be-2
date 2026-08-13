@@ -2,9 +2,9 @@
 
 namespace App\Events;
 
+use App\Broadcasting\Channels;
 use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
-use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Broadcasting\PresenceChannel;
 use Illuminate\Broadcasting\PrivateChannel;
@@ -34,7 +34,7 @@ class ConnectionUpdated implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('tenant-channel.' . $this->conn->tenant_id),
+            Channels::connection($this->conn->tenant_id, $this->conn->id),
         ];
     }
 

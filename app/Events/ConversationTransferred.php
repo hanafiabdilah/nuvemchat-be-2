@@ -2,10 +2,10 @@
 
 namespace App\Events;
 
+use App\Broadcasting\Channels;
 use App\Http\Resources\ConversationResource;
 use App\Models\Conversation;
 use App\Models\User;
-use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
@@ -34,7 +34,10 @@ class ConversationTransferred implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('tenant-channel.' . $this->conversation->connection->tenant_id),
+            Channels::connection(
+                $this->conversation->connection->tenant_id,
+                $this->conversation->connection->id,
+            ),
         ];
     }
 

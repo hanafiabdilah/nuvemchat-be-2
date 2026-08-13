@@ -88,6 +88,10 @@ function emailReplyConversation(?User $user = null): Conversation
         ],
     ]);
 
+    // The e-mail inbox is shared through connection_user — isAccessibleBy()
+    // reads membership of the connection, not assignment of the thread.
+    $user->connections()->syncWithoutDetaching([$connection->id]);
+
     $contact = Contact::create([
         'tenant_id' => $tenant->id,
         'external_id' => 'customer@example.com',
@@ -206,7 +210,9 @@ test('composing twice with the same recipient and subject reuses the conversatio
     $user = User::factory()->create();
     $conversation = emailReplyConversation($user);
     $connection = $conversation->connection;
-    $connection->users()->attach($user->id);
+    // syncWithoutDetaching, not attach: the fixture already records the grant,
+    // and connection_user has a unique (connection_id, user_id) index.
+    $connection->users()->syncWithoutDetaching([$user->id]);
 
     Sanctum::actingAs($user);
 

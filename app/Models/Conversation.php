@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status;
 use App\Enums\Conversation\Type;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 class Conversation extends Model
@@ -103,10 +104,43 @@ class Conversation extends Model
     }
 
     /**
+     * Restrict a query to the conversations a user is allowed to *see*.
+     *
+     * This is the read-side counterpart of isAccessibleBy() (which answers for
+     * a single, already-loaded row) and every list/lookup endpoint has to go
+     * through it. Tenant scoping alone is not enough: agents are assigned
+     * individual connections via connection_user, and until this existed an
+     * agent with one connection could still pull the whole tenant's inbox from
+     * GET /conversations.
+     *
+     * A null user (unauthenticated context) matches nothing rather than
+     * everything — an empty result is a safe failure, a full one is not.
+     */
+    public function scopeVisibleTo(Builder $query, ?User $user): Builder
+    {
+        if (! $user) {
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->whereHas('connection', function ($q) use ($user) {
+            $q->where('tenant_id', $user->tenant_id);
+
+            // Owners hold no connection_user rows on purpose — see
+            // User::canAccessAllConnections().
+            if (! $user->canAccessAllConnections()) {
+                $q->whereIn('connections.id', $user->accessibleConnectionIds());
+            }
+        });
+    }
+
+    /**
      * Whether the given user may read/act on this conversation.
      *
-     * Rules (additive):
+     * Rules (additive, but all gated on connection access first):
      * - Owner can access everything.
+     * - Without access to the conversation's connection, nothing on it is
+     *   reachable — not even a thread still assigned to this agent, which is
+     *   what makes revoking a connection actually take effect.
      * - The assigned agent can access their own conversation.
      * - E-mail is a shared inbox: any agent with access to the e-mail
      *   connection can read and reply without the conversation being
@@ -114,11 +148,7 @@ class Conversation extends Model
      */
     public function isAccessibleBy(User $user): bool
     {
-        if ($user->hasRole('owner')) {
-            return true;
-        }
-
-        if ($this->user_id !== null && (int) $this->user_id === (int) $user->id) {
+        if ($user->canAccessAllConnections()) {
             return true;
         }
 
@@ -126,10 +156,17 @@ class Conversation extends Model
         // connection-name string ("mysql"), NOT the connection() relation —
         // go through the relation explicitly.
         $connection = $this->getRelationValue('connection');
-        if ($connection && $connection->channel === Channel::Email) {
-            return $connection->users->contains($user->id);
+
+        if (! $connection
+            || (int) $connection->tenant_id !== (int) $user->tenant_id
+            || ! $user->canAccessConnection($connection)) {
+            return false;
         }
 
-        return false;
+        if ($this->user_id !== null && (int) $this->user_id === (int) $user->id) {
+            return true;
+        }
+
+        return $connection->channel === Channel::Email;
     }
 }

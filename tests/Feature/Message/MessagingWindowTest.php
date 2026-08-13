@@ -44,6 +44,10 @@ function windowConversation(User $user, Channel $channel = Channel::WhatsappOffi
         ],
     ]);
 
+    // Agents reach an inbox through connection_user; a fixture that skips
+    // the grant describes an account the signup flow cannot produce.
+    $user->connections()->syncWithoutDetaching([$connection->id]);
+
     $contact = Contact::create([
         'tenant_id' => $user->tenant_id,
         'external_id' => '5511999999999',
@@ -175,9 +179,10 @@ test('a conversation cannot be started on WhatsApp Official', function () {
     Http::fake();
     $user = windowUser();
     $conversation = windowConversation($user);
-    // store() only lets an owner or an assigned agent through; assignment is
-    // what this test needs so the refusal it asserts is about the channel.
-    $conversation->connection->users()->attach($user->id);
+    // store() only lets an owner or an agent with connection access through;
+    // the fixture already granted it, so this is a no-op kept for intent
+    // (syncWithoutDetaching, since connection_user is uniquely indexed).
+    $conversation->connection->users()->syncWithoutDetaching([$user->id]);
 
     $this->actingAs($user, 'sanctum')
         ->postJson('/api/conversations', [

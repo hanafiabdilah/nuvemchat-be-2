@@ -20,9 +20,7 @@ class AiSuggestController extends Controller
      */
     public function suggest(int $id, AiSuggestService $service)
     {
-        $conversation = Conversation::whereHas('connection', function($q){
-            $q->where('tenant_id', Auth::user()->tenant_id);
-        })->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
         if(!$conversation->isAccessibleBy(Auth::user())){
             return response()->json([

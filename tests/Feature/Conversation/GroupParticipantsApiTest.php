@@ -28,13 +28,19 @@ function participantsTenantUser(): User
 
 function participantsConnection(User $user): Connection
 {
-    return Connection::create([
+    $connection = Connection::create([
         'tenant_id' => $user->tenant_id,
         'channel' => Channel::Telegram,
         'name' => 'Telegram',
         'status' => ConnectionStatus::Active,
         'credentials' => ['token' => 'test-token'],
     ]);
+
+    // Agents reach an inbox through connection_user; a fixture that skips the
+    // grant describes an account the signup flow cannot produce.
+    $user->connections()->syncWithoutDetaching([$connection->id]);
+
+    return $connection;
 }
 
 function participantsGroup(Connection $connection, ConversationType $type = ConversationType::Group): Conversation

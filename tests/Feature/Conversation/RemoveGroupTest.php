@@ -40,7 +40,7 @@ function removeGroupUser(): User
 
 function removeGroupConnection(User $user, Channel $channel): Connection
 {
-    return Connection::create([
+    $connection = Connection::create([
         'tenant_id' => $user->tenant_id,
         'channel' => $channel,
         'name' => $channel->value,
@@ -49,6 +49,12 @@ function removeGroupConnection(User $user, Channel $channel): Connection
             ? ['token' => 'test-token']
             : ['instance_id' => 'INST-1', 'token' => 'test-token'],
     ]);
+
+    // Agents reach an inbox through connection_user; a fixture that skips
+    // the grant describes an account the signup flow cannot produce.
+    $user->connections()->syncWithoutDetaching([$connection->id]);
+
+    return $connection;
 }
 
 function telegramRemoveGroupPayload(array $chatOverrides = [], int $messageId = 100): array

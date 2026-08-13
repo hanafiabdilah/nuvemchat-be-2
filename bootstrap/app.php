@@ -12,7 +12,11 @@ return Application::configure(basePath: dirname(__DIR__))
         web: __DIR__.'/../routes/web.php',
         api: __DIR__.'/../routes/api.php',
         commands: __DIR__.'/../routes/console.php',
-        channels: __DIR__.'/../routes/channels.php',
+        // channels: is deliberately NOT declared here — it would register
+        // /broadcasting/auth on the `web` middleware group, which authenticates
+        // from the session. The SPA holds a Sanctum Bearer token and sends no
+        // cookies, so every private-channel subscription would 403. See the
+        // explicit withBroadcasting() below.
         health: '/up',
         then: function (): void {
             // Widget routes are called cross-origin from third-party sites.
@@ -21,6 +25,13 @@ return Application::configure(basePath: dirname(__DIR__))
             \Illuminate\Support\Facades\Route::middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
                 ->group(__DIR__.'/../routes/widget.php');
         },
+    )
+    // Channel authorization runs on the API stack with the Sanctum guard, so
+    // Echo can authorize `private-*` subscriptions with the same Bearer token
+    // it already sends to /api. Endpoint: POST /api/broadcasting/auth.
+    ->withBroadcasting(
+        __DIR__.'/../routes/channels.php',
+        ['prefix' => 'api', 'middleware' => ['api', 'auth:sanctum']],
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);

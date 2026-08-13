@@ -154,10 +154,9 @@ class MessageTemplateController extends Controller
         $user = $request->user();
 
         if (!empty($data['conversation_id'])) {
-            $conversation = Conversation::whereHas('connection', function ($q) use ($user) {
-                $q->where('tenant_id', $user->tenant_id)
-                    ->where('channel', Channel::WhatsappOfficial);
-            })->findOrFail($data['conversation_id']);
+            $conversation = Conversation::visibleTo($user)
+                ->whereHas('connection', fn ($q) => $q->where('channel', Channel::WhatsappOfficial))
+                ->findOrFail($data['conversation_id']);
         } else {
             $connection = $this->resolveConnection($request);
             $phone = preg_replace('/\D+/', '', $data['phone_number']);

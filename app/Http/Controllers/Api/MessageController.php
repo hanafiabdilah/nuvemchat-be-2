@@ -14,8 +14,11 @@ class MessageController extends Controller
     {
         $since = $request->input('since');
         $before = $request->input('before');
+        $connectionId = $request->input('connection_id');
         $limit = (int) $request->input('limit', 100);
         $limit = max(1, min($limit, 500));
+
+        $user = Auth::user();
 
         // Eager-load everything MessageResource touches — without this, each
         // message lazy-loads its relations and a 500-row sync page explodes
@@ -28,10 +31,18 @@ class MessageController extends Controller
             'sentByFlow',
             'sentByAiHubAgent',
             'conversation.connection',
-        ])->whereHas('conversation', function($q){
-            $q->whereHas('connection', function($q){
-                $q->where('tenant_id', Auth::user()->tenant_id);
-            });
+        ])->whereHas('conversation', function ($q) use ($user, $connectionId) {
+            // visibleTo() is the tenant AND connection-access filter — plain
+            // tenant scoping here used to hand an agent the whole tenant's
+            // message history regardless of which connections they were given.
+            $q->visibleTo($user);
+
+            // Optional: restrict to one connection. Used by the client to
+            // backfill the history of a connection it was just granted,
+            // without re-pulling everything it already holds.
+            if (filled($connectionId)) {
+                $q->where('connection_id', $connectionId);
+            }
         })->orderBy('id', 'DESC');
 
         // Delta sync: only messages touched since the last sync (edits, new).

@@ -36,6 +36,10 @@ function muteTestConversation(User $user, ConversationType $type = ConversationT
         'status' => ConnectionStatus::Active,
     ]);
 
+    // Agents reach an inbox through connection_user; a fixture that skips
+    // the grant describes an account the signup flow cannot produce.
+    $user->connections()->syncWithoutDetaching([$connection->id]);
+
     $contact = Contact::create([
         'tenant_id' => $user->tenant_id,
         'external_id' => $type === ConversationType::Group ? '120363419920035031@g.us' : '5511999999999',
@@ -105,7 +109,13 @@ test('an unassigned pending thread is mutable by any tenant member', function ()
 
     // A plain agent: not the assignee (there is none), not an owner — exactly
     // the case that must still be able to silence a noisy group.
+    //
+    // They do hold the connection, which is the boundary mute respects now
+    // that channels are per-connection: silencing a thread whose notifications
+    // could never reach you is meaningless. What mute still does NOT require
+    // is the thread being accessible — i.e. assigned to you.
     $agent = User::factory()->create(['tenant_id' => $owner->tenant_id]);
+    $agent->connections()->syncWithoutDetaching([$conversation->connection_id]);
 
     expect($conversation->isAccessibleBy($agent))->toBeFalse();
 

@@ -2,8 +2,8 @@
 
 namespace App\Events;
 
+use App\Broadcasting\Channels;
 use App\Models\ApiwaySubscription;
-use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
@@ -30,7 +30,7 @@ class ApiwaySubscriptionUpdated implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('tenant-channel.' . $this->subscription->tenant_id),
+            Channels::tenant($this->subscription->tenant_id),
         ];
     }
 

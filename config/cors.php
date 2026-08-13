@@ -8,7 +8,11 @@ return [
     |
     | Live Chat Widget SDK di-embed di website pihak ketiga, jadi seluruh
     | endpoint /widget-api/* harus menerima request dari domain manapun.
-    | broadcasting/auth ikut diizinkan agar Echo bisa subscribe dari widget.
+    |
+    | Otorisasi channel Echo ada di /api/broadcasting/auth (lihat
+    | bootstrap/app.php) sehingga sudah tercakup oleh 'api/*'. Path lama
+    | 'broadcasting/auth' tidak pernah didaftarkan lagi; widget memakai channel
+    | publik dan tidak melakukan handshake auth sama sekali.
     |
     */
 
@@ -17,7 +21,6 @@ return [
         'sanctum/csrf-cookie',
         'widget-api/*',
         'widget-api',
-        'broadcasting/auth',
     ],
 
     'allowed_methods' => ['*'],

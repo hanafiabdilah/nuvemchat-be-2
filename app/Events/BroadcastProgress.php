@@ -2,8 +2,8 @@
 
 namespace App\Events;
 
+use App\Broadcasting\Channels;
 use App\Models\Broadcast;
-use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
@@ -37,7 +37,7 @@ class BroadcastProgress implements ShouldBroadcast
     public function broadcastOn(): array
     {
         return [
-            new Channel('tenant-channel.' . $this->broadcast->tenant_id),
+            Channels::tenant($this->broadcast->tenant_id),
         ];
     }
 
