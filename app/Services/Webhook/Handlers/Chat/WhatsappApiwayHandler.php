@@ -19,6 +19,7 @@ use App\Models\MessageReaction;
 use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
@@ -829,7 +830,23 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             ?? $m['videoMessage']['caption']
             ?? $m['documentMessage']['caption']
             ?? $m['documentWithCaptionMessage']['message']['documentMessage']['caption']
+            // A contact card has no text of its own, but everything that reads
+            // a message as words — the conversation-list preview, a flow
+            // waiting on a reply, a copied thread, search — has only `body` to
+            // work with. The names on the card are the closest honest answer.
+            ?? $this->contactNames($m)
             ?? null;
+    }
+
+    /**
+     * "John Doe" for one shared card, "John Doe, Jane Roe" for several. Null
+     * when this isn't a contact message at all.
+     */
+    private function contactNames(array $message): ?string
+    {
+        $names = array_values(array_filter(array_column(VCard::cardsFrom($message), 'name')));
+
+        return $names === [] ? null : implode(', ', $names);
     }
 
     public function getMessageType(array $event): MessageType
@@ -844,6 +861,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             isset($m['documentMessage']), isset($m['documentWithCaptionMessage']) => MessageType::Document,
             isset($m['stickerMessage']) => MessageType::Sticker,
             isset($m['locationMessage']) => MessageType::Location,
+            isset($m['contactMessage']), isset($m['contactsArrayMessage']) => MessageType::Contact,
             default => MessageType::Unsupported,
         };
     }

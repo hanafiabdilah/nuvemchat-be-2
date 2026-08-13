@@ -11,6 +11,12 @@ enum MessageType: string
     case Document = 'document';
     case Sticker = 'sticker';
     case Location = 'location';
+
+    /**
+     * A contact card (vCard). Not media: nothing is downloaded, the card's
+     * text arrives inside the webhook and is served from `meta.contacts`.
+     */
+    case Contact = 'contact';
     case Template = 'template';
     case Interactive = 'interactive';
     case Unsupported = 'unsupported';

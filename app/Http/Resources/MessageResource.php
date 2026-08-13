@@ -8,6 +8,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Message;
 use App\Services\Media\MediaRetention;
+use App\Services\Message\VCard;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Storage;
@@ -296,8 +297,38 @@ class MessageResource extends JsonResource
     {
         return match($this->message_type) {
             MessageType::Location => $this->getWhatsappApiwayLocationData(),
+            MessageType::Contact => $this->getWhatsappApiwayContactData(),
             default => null,
         };
+    }
+
+    /**
+     * Shared contact cards (vCard), parsed into something a bubble can render.
+     *
+     * The webhook is stored whole, so this is a read of what already arrived —
+     * no second call to the channel, and re-parsing an old row picks up any
+     * later fix to the parser.
+     */
+    private function getWhatsappApiwayContactData(): ?array
+    {
+        $cards = VCard::cardsFrom($this->apiwayMessageNode());
+
+        return $cards === [] ? null : ['contacts' => $cards];
+    }
+
+    /**
+     * The `Message` node of a stored API Way webhook.
+     *
+     * Two payload shapes are in the table: `Message` is what the whatsmeow
+     * webhook has sent since the channel moved to the native format, and
+     * `msgContent` is what rows written before that carry. Reading both keeps
+     * history rendering instead of turning into empty bubbles.
+     */
+    private function apiwayMessageNode(): array
+    {
+        $node = $this->meta['Message'] ?? $this->meta['msgContent'] ?? null;
+
+        return is_array($node) ? $node : [];
     }
 
     /**
@@ -305,7 +336,7 @@ class MessageResource extends JsonResource
      */
     private function getWhatsappApiwayLocationData(): ?array
     {
-        $location = $this->meta['msgContent']['locationMessage'] ?? null;
+        $location = $this->apiwayMessageNode()['locationMessage'] ?? null;
 
         if (!$location) {
             return null;
