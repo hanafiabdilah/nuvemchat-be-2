@@ -77,20 +77,49 @@ test('publish now overrides a leftover date so the post cannot go out twice', fu
             'publish_now' => true,
             'scheduled_at' => now()->addDay()->toIso8601String(),
         ]))
-        ->assertCreated();
+        ->assertCreated()
+        // The row the browser gets back must already say it is on its way.
+        // Reporting `draft` here made a successful send look like a no-op.
+        ->assertJsonPath('data.status', 'queued');
 
     $post = InstagramPost::firstOrFail();
 
     expect($post->scheduled_at)->toBeNull()
-        ->and($post->status)->toBe(PostStatus::Draft);
+        ->and($post->status)->toBe(PostStatus::Queued);
 
     Queue::assertPushed(PublishInstagramPost::class);
 
-    // And the scheduler must not find it a day later.
-    $this->travelTo(now()->addDays(2));
+    // And the scheduler must not find it due as well — that would be a second
+    // copy of the same post.
     Queue::fake();
     $this->artisan('instagram:publish-scheduled')->assertSuccessful();
     Queue::assertNothingPushed();
+});
+
+test('a post left queued by a dead worker is picked up again', function () {
+    Queue::fake();
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $post = InstagramPost::create([
+        'tenant_id' => $user->tenant_id,
+        'connection_id' => $connection->id,
+        'created_by' => $user->id,
+        'status' => PostStatus::Queued,
+        'media_type' => 'image',
+    ]);
+
+    // Fresh: whoever queued it moments ago still owns it.
+    $this->artisan('instagram:publish-scheduled')->assertSuccessful();
+    Queue::assertNothingPushed();
+
+    // Stale: the worker it was handed to never came back, and nothing else
+    // would ever move this post again.
+    $post->forceFill(['updated_at' => now()->subMinutes(10)])->saveQuietly();
+
+    $this->artisan('instagram:publish-scheduled')->assertSuccessful();
+    Queue::assertPushed(PublishInstagramPost::class);
 });
 
 test('a carousel needs between two and ten items', function () {

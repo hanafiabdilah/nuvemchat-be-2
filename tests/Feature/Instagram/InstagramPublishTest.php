@@ -42,9 +42,10 @@ function draftPost($user, $connection, array $attributes = [], array $items = []
     return $post->load('items');
 }
 
-test('a photo goes container → publish in a single pass', function () {
+test('a photo whose container is ready publishes in a single pass', function () {
     Http::fake(function ($request) {
         return match (true) {
+            str_contains($request->url(), 'status_code') => Http::response(['status_code' => 'FINISHED']),
             str_contains($request->url(), '/media_publish') => Http::response(['id' => 'ig-media-1']),
             str_contains($request->url(), '/media') && $request->method() === 'POST' => Http::response(['id' => 'container-1']),
             default => Http::response(['id' => 'ig-media-1', 'permalink' => 'https://instagram.com/p/abc']),
@@ -62,10 +63,31 @@ test('a photo goes container → publish in a single pass', function () {
         ->and($post->ig_media_id)->toBe('ig-media-1')
         ->and($post->permalink)->toBe('https://instagram.com/p/abc')
         ->and($post->published_at)->not->toBeNull();
+});
 
-    // An image is ready the moment the container exists, so the publisher must
-    // not have asked Meta whether it was finished.
-    Http::assertNotSent(fn ($request) => str_contains($request->url(), 'fields=status_code'));
+test('a photo Meta is still fetching is waited for, not published early', function () {
+    Queue::fake();
+
+    Http::fake(function ($request) {
+        return match (true) {
+            str_contains($request->url(), 'status_code') => Http::response(['status_code' => 'IN_PROGRESS']),
+            default => Http::response(['id' => 'container-1']),
+        };
+    });
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+    $post = draftPost($user, $connection);
+
+    publishPass($post);
+
+    // The regression this guards: photos used to skip the status check on the
+    // assumption that an image container is ready as soon as it is created.
+    // Meta downloads the image from our URL, so it is not — and publishing
+    // early is what produced "the media is not ready to be published".
+    expect($post->fresh()->status)->toBe(PostStatus::Publishing);
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), '/media_publish'));
+    Queue::assertPushed(PublishInstagramPost::class);
 });
 
 test('a reel waits for Meta and publishes on a later pass', function () {

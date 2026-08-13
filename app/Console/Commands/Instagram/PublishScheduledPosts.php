@@ -46,6 +46,11 @@ class PublishScheduledPosts extends Command
             ->orderBy('scheduled_at')
             ->get()
             ->each(function (InstagramPost $post) {
+                // Stamped before dispatching: a queue working through a backlog
+                // would otherwise leave the post Scheduled and due, and every
+                // tick would put another copy of the job behind it.
+                $post->update(['status' => PostStatus::Queued]);
+
                 PublishInstagramPost::dispatch($post->id);
                 $this->info("Dispatched scheduled Instagram post #{$post->id}");
             });
@@ -64,7 +69,10 @@ class PublishScheduledPosts extends Command
      */
     private function reviveStalled(): void
     {
-        InstagramPost::where('status', PostStatus::Publishing)
+        // Queued is swept too: a post stamped for the queue whose worker never
+        // arrived (or died before claiming it) is just as stuck as one abandoned
+        // mid-publish, and looks identical from the dashboard.
+        InstagramPost::whereIn('status', [PostStatus::Queued, PostStatus::Publishing])
             ->where('updated_at', '<', now()->subMinutes(self::STALE_MINUTES))
             ->get()
             ->each(function (InstagramPost $post) {

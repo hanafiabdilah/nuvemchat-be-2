@@ -2,7 +2,6 @@
 
 namespace App\Services\Instagram;
 
-use App\Enums\Instagram\PostMediaType;
 use App\Enums\Instagram\PostStatus;
 use App\Exceptions\InstagramApiException;
 use App\Models\InstagramPost;
@@ -68,9 +67,17 @@ class InstagramPostPublisher
             ]);
         }
 
-        // Step 2 — images are ready immediately; everything with a video track
-        // has to be waited on.
-        if ($post->media_type->isAsync() && ! $this->containerIsReady($post, $client)) {
+        // Step 2 — wait for Meta, whatever the media is.
+        //
+        // This used to skip the check for photos, on the assumption that an
+        // image container is ready as soon as it is created. It is not: Meta
+        // does not receive the image, it receives a URL and goes off to
+        // download it, so even a small JPEG spends a moment IN_PROGRESS. That
+        // assumption is what produced "A mídia não está pronta para ser
+        // publicada" on almost every photo — we were publishing a container
+        // Meta had not finished fetching. Usually the very first check already
+        // says FINISHED, so the happy path is still a single pass.
+        if (! $this->containerIsReady($post, $client)) {
             return false;
         }
 

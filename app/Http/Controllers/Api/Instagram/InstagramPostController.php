@@ -56,6 +56,7 @@ class InstagramPostController extends Controller
             ->whereIn('status', [
                 PostStatus::Draft,
                 PostStatus::Scheduled,
+                PostStatus::Queued,
                 PostStatus::Publishing,
                 PostStatus::Failed,
             ])
@@ -162,7 +163,10 @@ class InstagramPostController extends Controller
                 'tenant_id' => $connection->tenant_id,
                 'connection_id' => $connection->id,
                 'created_by' => $request->user()->id,
-                'status' => $publishNow ? PostStatus::Draft : $this->initialStatus($data),
+                // Queued, not Draft: the row goes back to the browser before
+                // the worker has touched it, and saying Draft there made a
+                // successful "Publish now" look like it had done nothing.
+                'status' => $publishNow ? PostStatus::Queued : $this->initialStatus($data),
                 'media_type' => $data['media_type'],
                 'caption' => $data['caption'] ?? null,
                 // "Post now" wins over any date left in the form: the row would
@@ -231,6 +235,11 @@ class InstagramPostController extends Controller
             throw new HttpException(422, 'This post is already on its way to Instagram.');
         }
 
+        // Stamped before the dispatch, so the response already says what is
+        // happening and a second press finds a post that is no longer
+        // publishable rather than queueing it twice.
+        $post->update(['status' => PostStatus::Queued, 'error' => null]);
+
         PublishInstagramPost::dispatch($post->id);
 
         return new InstagramPostResource($post->fresh(['items', 'creator']));
@@ -254,7 +263,7 @@ class InstagramPostController extends Controller
             throw new HttpException(422, 'Published posts can only be removed from the Instagram app.');
         }
 
-        if ($post->status === PostStatus::Publishing) {
+        if ($post->status->isInFlight()) {
             throw new HttpException(422, 'This post is being published right now. Wait for it to finish.');
         }
 

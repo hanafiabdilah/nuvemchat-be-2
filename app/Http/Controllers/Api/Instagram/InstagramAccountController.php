@@ -48,7 +48,7 @@ class InstagramAccountController extends Controller
         // One grouped count instead of a query per card.
         $pendingCounts = InstagramPost::query()
             ->whereIn('connection_id', $connections->pluck('id'))
-            ->whereIn('status', [PostStatus::Scheduled, PostStatus::Publishing])
+            ->whereIn('status', [PostStatus::Scheduled, PostStatus::Queued, PostStatus::Publishing])
             ->selectRaw('connection_id, count(*) as aggregate')
             ->groupBy('connection_id')
             ->pluck('aggregate', 'connection_id');

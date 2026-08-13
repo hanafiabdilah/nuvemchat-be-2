@@ -41,16 +41,6 @@ enum PostMediaType: string
         return $this !== self::Stories;
     }
 
-    /**
-     * Whether Meta builds this one asynchronously. Images are ready the moment
-     * the container call returns; anything with a video track has to be
-     * transcoded first, so the publisher polls status_code before publishing.
-     */
-    public function isAsync(): bool
-    {
-        return $this !== self::Image;
-    }
-
     /** How many media items this type accepts. */
     public function itemRange(): array
     {

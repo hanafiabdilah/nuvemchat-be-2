@@ -101,6 +101,41 @@ ke Messenger Platform (tulis ulang handler inbox Instagram), tenant wajib punya
 Page yang ter-link, dan **semua koneksi Instagram harus reconnect**. Itu keputusan
 produk, bukan refactor.
 
+## Dua jebakan di jalur publish (jangan "optimalkan" balik)
+
+**1. Container SELALU harus dicek statusnya — termasuk foto.**
+
+Godaannya jelas: gambar tidak perlu transcode, jadi kelihatannya bisa langsung
+`media_publish` setelah container dibuat. Salah. Meta **tidak menerima byte
+gambar** — ia menerima URL lalu pergi mengunduhnya, jadi container foto pun
+sempat `IN_PROGRESS`. Melewati pengecekan itu menghasilkan error Meta:
+
+> *A mídia não está pronta para ser publicada. Aguarde um momento.*
+
+`InstagramPostPublisher::attempt()` sekarang memanggil `containerIsReady()`
+untuk semua tipe. Biaya nol di jalur bahagia: pengecekan pertama biasanya sudah
+`FINISHED`, jadi foto tetap terbit dalam satu pass. Test yang menjaganya:
+*"a photo Meta is still fetching is waited for, not published early"*.
+
+**2. Status `queued` ada supaya dashboard tidak berbohong.**
+
+Antara user menekan tombol dan worker mengambil job, dulu baris-nya masih
+`draft` — jadi respons yang kembali ke browser bilang "rascunho" padahal
+pengiriman berhasil dimulai. Terlihat seperti tombol yang gagal diam-diam.
+
+Sekarang `store(publish_now)`, endpoint `publish`, dan scheduler semuanya
+men-*stamp* `PostStatus::Queued` **sebelum** dispatch. Tiga efek:
+
+- Respons langsung jujur ("Na fila"), FE menampilkan spinner.
+- Tekanan kedua pada tombol ditolak — `Queued` sengaja **bukan**
+  `isPublishable()`, jadi tidak bisa masuk antrean dua kali.
+- Scheduler berhenti men-dispatch ulang post yang sama tiap menit saat antrean
+  sedang padat (dulu status-nya tetap `Scheduled` + due sampai job jalan).
+
+`instagram:publish-scheduled` menyapu `queued` **dan** `publishing` yang basi
+(>5 menit): post yang worker-nya mati sebelum sempat mengklaim sama macetnya
+dengan yang ditinggal di tengah publish, dan dari dashboard keduanya identik.
+
 ## Grid = jendela ke Instagram, bukan cermin DB
 
 Bagian "published" **tidak pernah** dibaca dari tabel kita — selalu live dari

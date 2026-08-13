@@ -94,7 +94,10 @@ class PublishInstagramPost implements ShouldQueue
                 return null;
             }
 
-            if ($post->status->isPublishable()) {
+            // Queued is the normal entry point (the controller and the
+            // scheduler stamp it before dispatching); the publishable statuses
+            // are accepted too so a job dispatched directly still works.
+            if ($post->status->isPublishable() || $post->status === PostStatus::Queued) {
                 $post->update(['status' => PostStatus::Publishing, 'error' => null]);
 
                 return $post;
