@@ -14,6 +14,14 @@ return [
     | 'broadcasting/auth' tidak pernah didaftarkan lagi; widget memakai channel
     | publik dan tidak melakukan handshake auth sama sekali.
     |
+    | 'storage/*' = rute media (Storage::temporaryUrl disk local). Menampilkan
+    | gambar via <img> tak butuh CORS, tapi MEMBACA byte-nya dari JS butuh —
+    | dan itu satu-satunya cara menyimpan lampiran ke disk atau menyalinnya ke
+    | clipboard, karena atribut `download` diabaikan pada URL lintas-origin
+    | (SPA dan API beda domain). Tidak menambah paparan: URL-nya sudah signed +
+    | kedaluwarsa, dan siapa pun yang memegangnya sudah bisa mengambilnya tanpa
+    | browser. Tak ada cookie yang ikut ('supports_credentials' => false).
+    |
     */
 
     'paths' => [
@@ -21,6 +29,7 @@ return [
         'sanctum/csrf-cookie',
         'widget-api/*',
         'widget-api',
+        'storage/*',
     ],
 
     'allowed_methods' => ['*'],
