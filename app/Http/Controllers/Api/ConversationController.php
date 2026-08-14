@@ -1027,8 +1027,7 @@ class ConversationController extends Controller
             }
         }
 
-        $conversation->status = Status::Resolved;
-        $conversation->save();
+        $conversation->markResolved(Auth::id());
 
         broadcast(new ConversationUpdated($conversation));
 

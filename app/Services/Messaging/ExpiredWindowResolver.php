@@ -46,8 +46,8 @@ class ExpiredWindowResolver
 
         // After the note, so the broadcast carries the last_message_at the note
         // just bumped and every inbox row lands on its final state at once.
-        $conversation->status = Status::Resolved;
-        $conversation->save();
+        // No resolver id: nobody closed this, the window did.
+        $conversation->markResolved();
 
         broadcast(new ConversationUpdated($conversation));
 

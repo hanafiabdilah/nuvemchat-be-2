@@ -17,6 +17,8 @@ class Conversation extends Model
         'user_id', // agent
         'type',
         'status',
+        'resolved_at',
+        'resolved_by_user_id',
         'needs_human',
         'handoff_reason',
         'handoff_at',
@@ -27,6 +29,7 @@ class Conversation extends Model
     protected $casts = [
         'type' => Type::class,
         'status' => Status::class,
+        'resolved_at' => 'datetime',
         'needs_human' => 'boolean',
         'handoff_at' => 'datetime',
         'muted_at' => 'datetime',
@@ -102,6 +105,19 @@ class Conversation extends Model
     public function agent()
     {
         return $this->belongsTo(User::class, 'user_id');
+    }
+
+    /**
+     * Stamp the closure. Kept here rather than at each call site so every path
+     * that resolves a conversation (agent action, bulk update, expired window)
+     * records the same thing, and so statistics can trust the column.
+     */
+    public function markResolved(?int $byUserId = null): void
+    {
+        $this->status = Status::Resolved;
+        $this->resolved_at = now();
+        $this->resolved_by_user_id = $byUserId;
+        $this->save();
     }
 
     public function flowState()

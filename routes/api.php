@@ -318,9 +318,19 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // Permission list (read-only) - permissions are managed via seeders/migrations only
     Route::get('/permissions', [PermissionController::class, 'index']);
 
-    // Statistics - gated by the `statistics` plan feature
+    // Statistics - gated by the `statistics` plan feature. One route per
+    // section of the page; all of them take the same filter set.
     Route::middleware('feature:statistics')->group(function () {
-        Route::get('/statistics/tenant', [StatisticsController::class, 'tenant'])->middleware('permission:statistics.tenant.view');
+        Route::middleware('permission:statistics.tenant.view')->group(function () {
+            Route::get('/statistics/filters', [StatisticsController::class, 'filters']);
+            Route::get('/statistics/overview', [StatisticsController::class, 'overview']);
+            Route::get('/statistics/volume', [StatisticsController::class, 'volume']);
+            Route::get('/statistics/service', [StatisticsController::class, 'service']);
+            Route::get('/statistics/topics', [StatisticsController::class, 'topics']);
+            Route::get('/statistics/automation', [StatisticsController::class, 'automation']);
+            Route::get('/statistics/health', [StatisticsController::class, 'health']);
+        });
+
         Route::get('/statistics/agents', [StatisticsController::class, 'agents'])->middleware('permission:statistics.agents.view');
     });
 
