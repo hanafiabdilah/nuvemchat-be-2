@@ -88,6 +88,12 @@ class Conversation extends Model
         return $this->hasMany(Message::class);
     }
 
+    /** Internal notes about this thread — never sent anywhere. */
+    public function notes()
+    {
+        return $this->hasMany(ConversationNote::class);
+    }
+
     public function tags()
     {
         return $this->belongsToMany(Tag::class, 'conversation_tags');

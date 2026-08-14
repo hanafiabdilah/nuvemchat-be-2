@@ -35,6 +35,11 @@ class ConversationResource extends JsonResource
             // Prefer the withCount aggregate when the query provided it (sync
             // pages) — the fallback query runs once per conversation otherwise.
             'unread' => $this->unread_count ?? $this->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->count(),
+            // Same deal: counted by the sync page's query, counted per row on
+            // the single-conversation paths (a broadcast, an accept). Always a
+            // number — a key that disappeared on a broadcast would take the
+            // list's note marker with it until the next full sync.
+            'notes_count' => $this->resource->notes_count ?? $this->notes()->count(),
             'contact' => ContactResource::make($this->contact),
             'participants' => ContactResource::collection($this->whenLoaded('participants')),
             'tags' => TagResource::collection($this->tags),

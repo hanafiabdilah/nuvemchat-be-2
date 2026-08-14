@@ -71,7 +71,7 @@ class ConversationController extends Controller
             ])
             ->withCount(['messages as unread_count' => function ($q) {
                 $q->where('sender_type', SenderType::Incoming)->whereNull('read_at');
-            }])
+            }, 'notes'])
             ->visibleTo(Auth::user())
             // Skip conversations with no message yet (e.g. a Live Chat Widget session
             // that was opened but the visitor never typed) — they would otherwise show

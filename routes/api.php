@@ -45,6 +45,7 @@ use App\Http\Controllers\Api\Instagram\InstagramCommentController;
 use App\Http\Controllers\Api\Instagram\InstagramPostController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
+use App\Http\Controllers\Api\ConversationNoteController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\MessageController;
@@ -169,6 +170,14 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
         Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);
         Route::get('/conversations/{id}/messages/{message_id}/email-html', [ConversationController::class, 'emailHtml']);
+
+        // Internal notes about a thread. Never leave the dashboard; any member
+        // holding the connection may write one, only the author (or an owner)
+        // may change it.
+        Route::get('/conversations/{id}/notes', [ConversationNoteController::class, 'index']);
+        Route::post('/conversations/{id}/notes', [ConversationNoteController::class, 'store']);
+        Route::put('/conversations/{id}/notes/{note_id}', [ConversationNoteController::class, 'update']);
+        Route::delete('/conversations/{id}/notes/{note_id}', [ConversationNoteController::class, 'destroy']);
 
         // Starring bookmarks a message for the whole workspace. Like mute, any
         // member may toggle it — including on a thread nobody has accepted.
