@@ -29,6 +29,7 @@ class Message extends Model
         'read_at',
         'edited_at',
         'unsend_at',
+        'starred_at',
         'meta',
         'error',
     ];
@@ -42,6 +43,7 @@ class Message extends Model
         'read_at' => 'timestamp',
         'edited_at' => 'timestamp',
         'unsend_at' => 'timestamp',
+        'starred_at' => 'timestamp',
         'meta' => 'array',
     ];
 

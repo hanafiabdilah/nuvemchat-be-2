@@ -52,6 +52,7 @@ use App\Http\Controllers\Api\MessageTemplateController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\QuickMessageController;
 use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\StarredMessageController;
 use App\Http\Controllers\Api\StatisticsController;
 use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\UploadController;
@@ -168,6 +169,12 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::put('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'editMessage']);
         Route::delete('/conversations/{id}/messages/{message_id}', [ConversationController::class, 'deleteMessage']);
         Route::get('/conversations/{id}/messages/{message_id}/email-html', [ConversationController::class, 'emailHtml']);
+
+        // Starring bookmarks a message for the whole workspace. Like mute, any
+        // member may toggle it — including on a thread nobody has accepted.
+        Route::get('/starred-messages', [StarredMessageController::class, 'index']);
+        Route::post('/conversations/{id}/messages/{message_id}/star', [StarredMessageController::class, 'store']);
+        Route::delete('/conversations/{id}/messages/{message_id}/star', [StarredMessageController::class, 'destroy']);
 
         Route::get('/tags', [TagController::class, 'index']);
 

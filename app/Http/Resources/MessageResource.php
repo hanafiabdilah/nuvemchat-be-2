@@ -72,6 +72,7 @@ class MessageResource extends JsonResource
             'read_at' => $this->read_at,
             'edited_at' => $this->edited_at,
             'unsend_at' => $this->unsend_at,
+            'starred_at' => $this->starred_at,
             'sender' => $this->getSenderInfo(),
             'meta' => $this->getProcessedMeta(),
             'created_at' => $this->created_at->timestamp,
