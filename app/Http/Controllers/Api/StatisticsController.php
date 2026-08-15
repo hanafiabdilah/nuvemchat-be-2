@@ -144,6 +144,7 @@ class StatisticsController extends Controller
                     'previous_from' => $scope->previousFrom->toIso8601String(),
                     'previous_to' => $scope->previousTo->toIso8601String(),
                     'timezone' => $scope->timezone,
+                    'scope' => $scope->scope,
                 ],
                 ...$data,
             ],

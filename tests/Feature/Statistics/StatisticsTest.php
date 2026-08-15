@@ -226,6 +226,44 @@ it('filters by connection, channel and tag', function () {
         ->and($count(['tag_ids' => [$tag->id]]))->toBe(1);
 });
 
+it('measures chat and e-mail as separate inboxes', function () {
+    $user = statsOwner();
+    $chat = statsConnection($user);
+    $email = statsConnection($user, Channel::Email);
+    $at = Carbon::now()->subDay();
+
+    // Chat: answered in a minute.
+    $chatThread = statsConversation($chat, ['user_id' => $user->id]);
+    statsMessage($chatThread, SenderType::Incoming, $at);
+    statsMessage($chatThread, SenderType::Outgoing, $at->copy()->addMinute(), $user->id);
+
+    // E-mail: the shared inbox, answered four hours later. Averaged together
+    // with the chat thread neither number describes anything real.
+    $emailThread = statsConversation($email, ['status' => ConversationStatus::Active]);
+    statsMessage($emailThread, SenderType::Incoming, $at);
+    statsMessage($emailThread, SenderType::Outgoing, $at->copy()->addHours(4), $user->id);
+
+    $overview = fn (string $scope) => $this->actingAs($user)
+        ->getJson('/api/statistics/overview?scope=' . $scope)
+        ->assertOk()
+        ->json('data.current');
+
+    expect($overview('chat')['conversations'])->toBe(1)
+        ->and($overview('chat')['first_response_median_seconds'])->toBe(60)
+        ->and($overview('email')['conversations'])->toBe(1)
+        ->and($overview('email')['first_response_median_seconds'])->toBe(4 * 3600)
+        // Absent scope keeps the old "everything" behaviour for API callers.
+        ->and($overview('all')['conversations'])->toBe(2)
+        ->and($this->actingAs($user)->getJson('/api/statistics/overview')->json('data.current.conversations'))->toBe(2);
+
+    $channels = collect($this->actingAs($user)
+        ->getJson('/api/statistics/volume?scope=chat')
+        ->json('data.channels'))
+        ->pluck('channel');
+
+    expect($channels)->not->toContain(Channel::Email->value);
+});
+
 it('times resolution from the moment the conversation was closed', function () {
     $user = statsOwner();
     $connection = statsConnection($user);

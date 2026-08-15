@@ -51,7 +51,12 @@ $bruno = User::create(['name' => 'Bruno Lima', 'email' => 'bruno@example.com', '
 $carla = User::create(['name' => 'Carla Dias', 'email' => 'carla@example.com', 'password' => bcrypt('secret'), 'tenant_id' => $tenant->id]);
 
 $connections = [];
-foreach ([[Channel::WhatsappApiway, 'WhatsApp Vendas'], [Channel::Telegram, 'Telegram Suporte'], [Channel::Instagram, 'Instagram']] as [$channel, $name]) {
+foreach ([
+    [Channel::WhatsappApiway, 'WhatsApp Vendas'],
+    [Channel::Telegram, 'Telegram Suporte'],
+    [Channel::Instagram, 'Instagram'],
+    [Channel::Email, 'contato@empresa.com'],
+] as [$channel, $name]) {
     $connections[] = Connection::create([
         'tenant_id' => $tenant->id, 'channel' => $channel, 'name' => $name,
         'color' => '#22c55e', 'status' => ConnStatus::Active,
@@ -65,7 +70,7 @@ $agents = [$owner->id, $bruno->id, $carla->id];
 mt_srand(7);
 
 for ($i = 0; $i < 260; $i++) {
-    $connection = $connections[mt_rand(0, 2)];
+    $connection = $connections[mt_rand(0, 3)];
     // Weight toward business hours so the heatmap has a real shape.
     $openedAt = Carbon::now()
         ->subDays(mt_rand(0, 40))
@@ -111,7 +116,8 @@ for ($i = 0; $i < 260; $i++) {
     }
 
     $agentId = $agents[mt_rand(0, 2)];
-    $wait = match (true) {
+    $isEmail = $connection->channel === Channel::Email;
+    $wait = $isEmail ? mt_rand(1800, 60000) : match (true) {
         $roll <= 55 => mt_rand(10, 55),
         $roll <= 78 => mt_rand(60, 290),
         $roll <= 90 => mt_rand(300, 1700),
@@ -131,7 +137,11 @@ for ($i = 0; $i < 260; $i++) {
         $reply->forceFill(['error' => 'Message failed to send: (#131047) Re-engagement message'])->save();
     }
 
-    $conversation->forceFill(['user_id' => $agentId, 'status' => ConvStatus::Active])->save();
+    // E-mail threads stay unassigned: it is a shared inbox with no accept step.
+    $conversation->forceFill([
+        'user_id' => $isEmail ? null : $agentId,
+        'status' => ConvStatus::Active,
+    ])->save();
 
     if (mt_rand(0, 9) < 3) {
         $conversation->tags()->attach($tags[mt_rand(0, 2)]->id);

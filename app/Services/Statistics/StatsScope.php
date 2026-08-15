@@ -2,6 +2,7 @@
 
 namespace App\Services\Statistics;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Type;
 use App\Support\SqlDialect;
 use Carbon\Carbon;
@@ -21,6 +22,12 @@ use Illuminate\Support\Facades\DB;
  */
 class StatsScope
 {
+    public const SCOPE_ALL = 'all';
+
+    public const SCOPE_CHAT = 'chat';
+
+    public const SCOPE_EMAIL = 'email';
+
     public readonly Carbon $from;
 
     public readonly Carbon $to;
@@ -48,6 +55,17 @@ class StatsScope
 
     public readonly bool $includeGroups;
 
+    /**
+     * Which inbox this is about: 'chat', 'email', or 'all'.
+     *
+     * E-mail is a different job from chat and mixing them makes both unreadable
+     * — a shared inbox nobody is assigned to, answered in hours rather than
+     * seconds, drags every chat service metric down and hides its own. The SPA
+     * splits them the same way the conversation list does; 'all' stays the API
+     * default so any other caller keeps the behaviour it had.
+     */
+    public readonly string $scope;
+
     public function __construct(
         public readonly int $tenantId,
         Carbon $from,
@@ -58,6 +76,7 @@ class StatsScope
         array $agentIds = [],
         array $tagIds = [],
         bool $includeGroups = false,
+        string $scope = self::SCOPE_ALL,
     ) {
         $this->from = $from;
         $this->to = $to;
@@ -75,6 +94,7 @@ class StatsScope
         $this->agentIds = array_values($agentIds);
         $this->tagIds = array_values($tagIds);
         $this->includeGroups = $includeGroups;
+        $this->scope = $scope;
     }
 
     public static function fromRequest(Request $request, int $tenantId): self
@@ -92,6 +112,7 @@ class StatsScope
             'tag_ids' => ['nullable', 'array'],
             'tag_ids.*' => ['integer'],
             'include_groups' => ['nullable', 'boolean'],
+            'scope' => ['nullable', 'string', 'in:' . self::SCOPE_ALL . ',' . self::SCOPE_CHAT . ',' . self::SCOPE_EMAIL],
         ]);
 
         $timezone = $validated['timezone'] ?? config('app.timezone', 'UTC');
@@ -121,6 +142,7 @@ class StatsScope
             agentIds: $validated['agent_ids'] ?? [],
             tagIds: $validated['tag_ids'] ?? [],
             includeGroups: (bool) ($validated['include_groups'] ?? false),
+            scope: $validated['scope'] ?? self::SCOPE_ALL,
         );
     }
 
@@ -167,6 +189,14 @@ class StatsScope
 
     private function applyFilters(Builder $query): void
     {
+        // The chat/e-mail split comes first: it decides which inbox the page is
+        // about, and every other filter narrows within it.
+        if ($this->scope === self::SCOPE_CHAT) {
+            $query->where('connections.channel', '!=', Channel::Email->value);
+        } elseif ($this->scope === self::SCOPE_EMAIL) {
+            $query->where('connections.channel', Channel::Email->value);
+        }
+
         if ($this->channels) {
             $query->whereIn('connections.channel', $this->channels);
         }
