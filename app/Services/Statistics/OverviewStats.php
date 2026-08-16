@@ -149,13 +149,24 @@ class OverviewStats
         ];
     }
 
+    /**
+     * People who wrote for the first time: reached through the period's
+     * conversations, not counted straight off the contacts table.
+     *
+     * Counting rows in `contacts` was wrong twice over. It ignored the filter
+     * set entirely — the chat and e-mail views both reported the whole
+     * tenant's intake, which is what made the two inboxes look merged — and it
+     * counted contacts that never opened a conversation at all, so an import
+     * read as a week of new customers. Going through the same conversations
+     * every other headline is built from also makes this the exact complement
+     * of returningContacts(): the people seen this period, split by whether we
+     * already knew them.
+     */
     private function newContacts(Carbon $from, Carbon $to): int
     {
-        return DB::table('contacts')
-            ->where('tenant_id', $this->scope->tenantId)
-            ->where('is_group', false)
-            ->whereBetween('created_at', [$from, $to])
-            ->count();
+        return $this->contactsSeen($from, $to)
+            ->where('contacts.created_at', '>=', $from)
+            ->count('contacts.id');
     }
 
     /**
@@ -164,11 +175,22 @@ class OverviewStats
      */
     private function returningContacts(Carbon $from, Carbon $to): int
     {
+        return $this->contactsSeen($from, $to)
+            ->where('contacts.created_at', '<', $from)
+            ->count('contacts.id');
+    }
+
+    /**
+     * Distinct people behind the period's conversations. Groups are excluded
+     * even when the filter bar asks for them: a group is a room, not a new
+     * customer, and counting it here would report rooms as people.
+     */
+    private function contactsSeen(Carbon $from, Carbon $to)
+    {
         return $this->scope->conversations($from, $to)
             ->join('contacts', 'contacts.id', '=', 'conversations.contact_id')
-            ->where('contacts.created_at', '<', $from)
-            ->distinct()
-            ->count('contacts.id');
+            ->where('contacts.is_group', false)
+            ->distinct();
     }
 
     private function rate(int $part, int $whole): float

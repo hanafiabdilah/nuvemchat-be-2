@@ -10,6 +10,7 @@ use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
 use App\Jobs\DownloadInboundMedia;
 use App\Jobs\SyncContactPhoto;
+use App\Jobs\SyncContactProfile;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -125,12 +126,17 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         return Carbon::now();
     }
 
+    /**
+     * Instagram never carries a name in the webhook, so the contact's own
+     * scoped id stands in until SyncContactProfile reads the real one.
+     *
+     * It has to be the *contact's* id, not the sender's: on an echo the sender
+     * is the business account, and using it labelled every outbound-first
+     * thread with the account's own numeric id.
+     */
     public function getContactName(array $payload): ?string
     {
-        // Instagram doesn't provide name in webhook, will need to fetch via API
-        $senderId = $payload['messaging'][0]['sender']['id'] ?? null;
-
-        return $senderId; // Use ID as temporary name, will be updated later
+        return $this->getContactExternalId($payload);
     }
 
     public function getContactUsername(array $payload): ?string
@@ -233,10 +239,12 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
 
-            // Fetch Instagram user info to get name and username
-            if($contact->wasRecentlyCreated) {
-                $this->updateContactInfo($contact, $connection, $contactExternalId, $isOutgoing);
-            }
+            // Resolve the scoped id into a real name. Not gated on
+            // wasRecentlyCreated: when the business writes first, the lookup at
+            // creation time is refused (the person is not in a conversation
+            // with the account yet) and this reply is the first moment it can
+            // succeed. SyncContactProfile stops asking once a username sticks.
+            SyncContactProfile::dispatchIfUnresolved($contact, $connection);
 
             SyncContactPhoto::dispatchIfStale($contact, $connection);
 
@@ -691,78 +699,6 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             Log::error('InstagramHandler: Failed to handle media message', [
                 'message_id' => $message->id,
                 'error' => $th->getMessage(),
-            ]);
-        }
-    }
-
-    private function updateContactInfo(Contact $contact, Connection $connection, string $instagramUserId, bool $isOutgoing = false)
-    {
-        try {
-            $accessToken = $connection->credentials['access_token'] ?? null;
-            $instagramAccountId = $connection->credentials['instagram_account_id'] ?? null;
-
-            if (!$accessToken) {
-                Log::warning('InstagramHandler: Missing access token for updating contact info', [
-                    'contact_id' => $contact->id,
-                    'connection_id' => $connection->id,
-                ]);
-                return;
-            }
-
-            // Fetch user info from Instagram API
-            // Use the IGID (Instagram User ID) to query user information
-            $response = Http::get("https://graph.instagram.com/v25.0/{$instagramUserId}", [
-                'fields' => 'name,username',
-                'access_token' => $accessToken,
-            ]);
-
-            if ($response->successful()) {
-                $userInfo = $response->json();
-
-                $contact->update([
-                    'name' => $userInfo['name'] ?? $userInfo['username'] ?? $instagramUserId,
-                    'username' => $userInfo['username'] ?? null,
-                ]);
-
-                Log::info('InstagramHandler: Contact info updated', [
-                    'contact_id' => $contact->id,
-                    'connection_id' => $connection->id,
-                    'instagram_user_id' => $instagramUserId,
-                    'instagram_account_id' => $instagramAccountId,
-                    'is_outgoing' => $isOutgoing,
-                    'name' => $userInfo['name'] ?? null,
-                    'username' => $userInfo['username'] ?? null,
-                    'has_profile_pic' => !empty($userInfo['profile_pic']),
-                ]);
-            } else {
-                $errorMessage = $response->json()['error']['message'] ?? 'Unknown error';
-                $errorCode = $response->json()['error']['code'] ?? null;
-                $errorType = $response->json()['error']['type'] ?? null;
-
-                Log::warning('InstagramHandler: Failed to fetch user info from Instagram', [
-                    'contact_id' => $contact->id,
-                    'connection_id' => $connection->id,
-                    'instagram_user_id' => $instagramUserId,
-                    'instagram_account_id' => $instagramAccountId,
-                    'is_outgoing' => $isOutgoing,
-                    'error_type' => $errorType,
-                    'error_message' => $errorMessage,
-                    'error_code' => $errorCode,
-                    'status' => $response->status(),
-                    'full_response' => $response->json(),
-                ]);
-
-                // If failed, at least try to use username from webhook sender info
-                // Instagram might restrict querying user info depending on permissions
-            }
-        } catch (\Throwable $th) {
-            Log::error('InstagramHandler: Error updating contact info', [
-                'contact_id' => $contact->id,
-                'connection_id' => $connection->id,
-                'instagram_user_id' => $instagramUserId,
-                'is_outgoing' => $isOutgoing,
-                'error' => $th->getMessage(),
-                'trace' => $th->getTraceAsString(),
             ]);
         }
     }

@@ -113,10 +113,15 @@ class HealthStats
         })->all();
     }
 
+    /**
+     * The connections this view is about — not every connection the tenant
+     * owns. The failure and receipt tables above are already narrowed to the
+     * selected inbox, and a roster that still listed the e-mail account while
+     * the page says "Chat" is the one place the split visibly leaked.
+     */
     private function connections(): array
     {
-        $rows = DB::table('connections')
-            ->where('tenant_id', $this->scope->tenantId)
+        $rows = $this->scope->connections()
             ->select('id', 'name', 'channel', 'status', 'color', 'sync_status', 'sync_error', 'last_synced_at')
             ->orderBy('name')
             ->get();
