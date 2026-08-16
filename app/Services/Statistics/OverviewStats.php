@@ -5,6 +5,7 @@ namespace App\Services\Statistics;
 use App\Enums\Conversation\Status;
 use App\Enums\Message\SenderType;
 use Carbon\Carbon;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -19,6 +20,24 @@ use Illuminate\Support\Facades\DB;
  */
 class OverviewStats
 {
+    /**
+     * How recently a thread must have moved to still count as queue.
+     *
+     * Without a bound this block reported every conversation nobody ever
+     * accepted, back to the workspace's first day — one production tenant sat
+     * at 3,858 "waiting", a number no shift could act on and that no date
+     * preset could move. Nothing drains the Pending status on its own: only
+     * Accept, Resolve, or the AI picking a thread up, and the automatic
+     * window-expiry closer skips Pending on purpose. So the backlog is
+     * permanent, and a live strip that leads with it is telling the shift
+     * about work from two years ago.
+     *
+     * A week is the span in which an answer is still an answer. Older threads
+     * are not lost — they stay in the inbox, and the period metrics above
+     * still count them.
+     */
+    private const QUEUE_ACTIVE_DAYS = 7;
+
     private readonly ConversationTimings $timings;
 
     public function __construct(private readonly StatsScope $scope)
@@ -109,22 +128,25 @@ class OverviewStats
      * State right now, not over the period. Kept in its own block — and
      * labelled as such by the client — because mixing a live queue depth into
      * a row of period totals is exactly what made the old page confusing.
+     *
+     * "Right now" means what a shift could pick up today: open, visible in the
+     * inbox, and moved within QUEUE_ACTIVE_DAYS. It still ignores the date
+     * range above it, and the client says so.
      */
     private function snapshot(): array
     {
-        $byStatus = $this->scope->conversations()
+        $byStatus = $this->liveQueue()
             ->groupBy('conversations.status')
             ->select('conversations.status', DB::raw('COUNT(*) as total'))
             ->pluck('total', 'status');
 
-        $needsHuman = $this->scope->conversations()
+        $needsHuman = $this->liveQueue()
             ->where('conversations.needs_human', true)
             ->count();
 
-        // Waiting on us: still open, and the last thing said was the
+        // Waiting on us: still in the queue, and the last thing said was the
         // customer's, more than an hour ago.
-        $waiting = $this->scope->conversations()
-            ->whereIn('conversations.status', [Status::Pending->value, Status::Active->value, Status::AiHandling->value])
+        $waiting = $this->liveQueue()
             ->where('conversations.last_message_at', '<', now()->subHour())
             ->whereExists(function ($sub) {
                 $sub->select(DB::raw(1))
@@ -135,7 +157,10 @@ class OverviewStats
             })
             ->count();
 
-        $resolvedToday = $this->scope->conversations()
+        // Not through liveQueue(): closing a thread is the one thing here that
+        // already carries its own window, and a conversation resolved this
+        // morning after a month of silence is still resolved this morning.
+        $resolvedToday = $this->inboxConversations()
             ->where('conversations.resolved_at', '>=', now($this->scope->timezone)->startOfDay()->utc())
             ->count();
 
@@ -146,7 +171,58 @@ class OverviewStats
             'needs_human' => $needsHuman,
             'waiting_over_1h' => $waiting,
             'resolved_today' => $resolvedToday,
+            // So the client can say which window it is showing instead of
+            // leaving "Right now" to mean whatever the reader assumes.
+            'queue_active_days' => self::QUEUE_ACTIVE_DAYS,
         ];
+    }
+
+    /**
+     * Conversations as the inbox itself counts them.
+     *
+     * The two exclusions are copied from ConversationController@index, and
+     * both matter here. A conversation with no message at all is not waiting
+     * for anybody — the Live Chat Widget opens one the moment a visitor loads
+     * the page, before they type a word, so every bounce was landing in
+     * "waiting in queue" while being invisible in every agent's list. And a
+     * removed group is gone from the panel by definition.
+     */
+    private function inboxConversations(): Builder
+    {
+        return $this->scope->conversations()
+            ->whereExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('messages')
+                    ->whereColumn('messages.conversation_id', 'conversations.id');
+            })
+            ->whereNotExists(function ($sub) {
+                $sub->select(DB::raw(1))
+                    ->from('contacts')
+                    ->whereColumn('contacts.id', 'conversations.contact_id')
+                    ->whereNotNull('contacts.group_removed_at');
+            });
+    }
+
+    /**
+     * What the shift could actually pick up: open, in the inbox, and moved
+     * within QUEUE_ACTIVE_DAYS.
+     *
+     * Recency is read from `last_message_at` rather than `created_at` — the
+     * exception to this file's rule, and the right one here. That column is
+     * what the inbox sorts by, so the strip and the list agree on which
+     * threads are current; and because it follows the message's own clock, an
+     * import of two-year-old history lands as two-year-old history instead of
+     * as a queue that appeared this morning.
+     */
+    private function liveQueue(): Builder
+    {
+        return $this->inboxConversations()
+            ->whereIn('conversations.status', [
+                Status::Pending->value,
+                Status::Active->value,
+                Status::AiHandling->value,
+            ])
+            ->where('conversations.last_message_at', '>=', now()->subDays(self::QUEUE_ACTIVE_DAYS));
     }
 
     /**

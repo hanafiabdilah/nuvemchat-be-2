@@ -264,6 +264,36 @@ it('measures chat and e-mail as separate inboxes', function () {
     expect($channels)->not->toContain(Channel::Email->value);
 });
 
+it('counts only the live queue in the right-now strip', function () {
+    $user = statsOwner();
+    $connection = statsConnection($user);
+
+    // In the queue: waiting, and the customer wrote this morning.
+    $fresh = statsConversation($connection);
+    statsMessage($fresh, SenderType::Incoming, Carbon::now()->subHours(3));
+    $fresh->forceFill(['last_message_at' => Carbon::now()->subHours(3)])->save();
+
+    // Backlog: pending since forever. Still in the inbox, but no shift is
+    // going to answer a message from last year, and counting it as "right
+    // now" is what made this number unreadable.
+    $stale = statsConversation($connection);
+    statsMessage($stale, SenderType::Incoming, Carbon::now()->subMonths(8));
+    $stale->forceFill(['last_message_at' => Carbon::now()->subMonths(8)])->save();
+
+    // A Live Chat Widget session opened and abandoned before typing: pending,
+    // but invisible in every agent's list, so it is not waiting for anyone.
+    statsConversation($connection)->forceFill(['last_message_at' => Carbon::now()])->save();
+
+    $now = $this->actingAs($user)->getJson('/api/statistics/overview')->assertOk()->json('data.now');
+
+    expect($now['pending'])->toBe(1)
+        ->and($now['waiting_over_1h'])->toBe(1)
+        ->and($now['queue_active_days'])->toBe(7)
+        // The period metrics still see every thread that has a message.
+        ->and($this->actingAs($user)->getJson('/api/statistics/overview')->json('data.current.conversations'))
+        ->toBe(3);
+});
+
 it('keeps the contact counts inside the selected inbox', function () {
     $user = statsOwner();
     $chat = statsConnection($user);
