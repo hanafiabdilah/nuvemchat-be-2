@@ -109,8 +109,16 @@ class AutomationStats
     {
         // Qualified: the per-agent breakdown joins ai_hub_agents, which has its
         // own tenant_id and created_at.
+        //
+        // Narrowed by the conversation the run belongs to (`conversation_id` is
+        // required, so nothing is lost), which is what carries the inbox split
+        // and the channel/connection/agent/tag picks. Deliberately *not* by the
+        // conversation's own creation date: the population here is runs in the
+        // period, and an answer given today to a thread opened last month is
+        // still work the AI did today.
         $runs = DB::table('ai_hub_runs')
             ->where('ai_hub_runs.tenant_id', $this->scope->tenantId)
+            ->whereIn('ai_hub_runs.conversation_id', $this->scope->conversations()->select('conversations.id'))
             ->whereBetween('ai_hub_runs.created_at', [$this->scope->from, $this->scope->to]);
 
         $totals = (clone $runs)
@@ -170,8 +178,13 @@ class AutomationStats
     {
         // Qualified for the same reason as the AI runs: `recent` joins
         // connections, which carries its own tenant_id and created_at.
+        //
+        // A campaign belongs to the connection it went out on, so it filters
+        // through the connection roster rather than through conversations —
+        // a blast that reached nobody still happened on one of these numbers.
         $campaigns = DB::table('broadcasts')
             ->where('broadcasts.tenant_id', $this->scope->tenantId)
+            ->whereIn('broadcasts.connection_id', $this->scope->connections()->select('connections.id'))
             ->whereBetween('broadcasts.created_at', [$this->scope->from, $this->scope->to]);
 
         $totals = (clone $campaigns)
@@ -204,10 +217,11 @@ class AutomationStats
         // Did the blast start a conversation? Counted from the recipients'
         // threads, not from the campaign row, because only the thread knows
         // whether the customer wrote back.
+        // Reads off the same narrowed campaign set as the totals above, rather
+        // than rebuilding the filter — the two must never disagree about which
+        // campaigns are being counted.
         $replied = DB::table('broadcast_recipients')
-            ->join('broadcasts', 'broadcasts.id', '=', 'broadcast_recipients.broadcast_id')
-            ->where('broadcasts.tenant_id', $this->scope->tenantId)
-            ->whereBetween('broadcasts.created_at', [$this->scope->from, $this->scope->to])
+            ->whereIn('broadcast_recipients.broadcast_id', (clone $campaigns)->select('broadcasts.id'))
             ->where('broadcast_recipients.status', RecipientStatus::Sent->value)
             ->whereNotNull('broadcast_recipients.conversation_id')
             ->whereExists(function ($sub) {
@@ -221,10 +235,15 @@ class AutomationStats
 
         $sent = (int) ($totals->sent ?? 0);
 
-        $optOuts = DB::table('contacts')
-            ->where('tenant_id', $this->scope->tenantId)
-            ->whereBetween('broadcast_opted_out_at', [$this->scope->from, $this->scope->to])
-            ->count();
+        // Reached through their conversations, like the contact counts on the
+        // overview: opting out means having written the stop word, so everyone
+        // counted here has a thread, and going through it is what keeps the
+        // number inside the inbox the page is showing.
+        $optOuts = $this->scope->conversations()
+            ->join('contacts', 'contacts.id', '=', 'conversations.contact_id')
+            ->whereBetween('contacts.broadcast_opted_out_at', [$this->scope->from, $this->scope->to])
+            ->distinct()
+            ->count('contacts.id');
 
         return [
             'campaigns' => (int) ($totals->campaigns ?? 0),

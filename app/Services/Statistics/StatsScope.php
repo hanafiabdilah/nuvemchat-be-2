@@ -187,19 +187,32 @@ class StatsScope
         return $query;
     }
 
-    private function applyFilters(Builder $query): void
+    /**
+     * The tenant's connections, narrowed by the filters that describe a
+     * connection rather than a conversation: the inbox split, the channel
+     * picks, the explicit connection picks. Agent and tag are properties of a
+     * conversation and are deliberately not applied here.
+     *
+     * Anything keyed by connection instead of by conversation — a connection
+     * roster, a campaign — filters through this, so it obeys the same inbox
+     * split as everything else on the page.
+     */
+    public function connections(): Builder
     {
-        // The chat/e-mail split comes first: it decides which inbox the page is
-        // about, and every other filter narrows within it.
-        if ($this->scope === self::SCOPE_CHAT) {
-            $query->where('connections.channel', '!=', Channel::Email->value);
-        } elseif ($this->scope === self::SCOPE_EMAIL) {
-            $query->where('connections.channel', Channel::Email->value);
+        $query = DB::table('connections')->where('connections.tenant_id', $this->tenantId);
+
+        $this->applyChannelScope($query);
+
+        if ($this->connectionIds) {
+            $query->whereIn('connections.id', $this->connectionIds);
         }
 
-        if ($this->channels) {
-            $query->whereIn('connections.channel', $this->channels);
-        }
+        return $query;
+    }
+
+    private function applyFilters(Builder $query): void
+    {
+        $this->applyChannelScope($query);
 
         if ($this->connectionIds) {
             $query->whereIn('conversations.connection_id', $this->connectionIds);
@@ -224,6 +237,27 @@ class StatsScope
         // with conversations no agent was ever expected to answer.
         if (! $this->includeGroups) {
             $query->where('conversations.type', Type::Private->value);
+        }
+    }
+
+    /**
+     * The inbox split and the channel picks — the part of the filter set that
+     * only ever looks at `connections`, so it can be shared by queries that
+     * reach a connection through a conversation and by those that start there.
+     *
+     * The chat/e-mail split comes first everywhere: it decides which inbox the
+     * page is about, and every other filter narrows within it.
+     */
+    private function applyChannelScope(Builder $query): void
+    {
+        if ($this->scope === self::SCOPE_CHAT) {
+            $query->where('connections.channel', '!=', Channel::Email->value);
+        } elseif ($this->scope === self::SCOPE_EMAIL) {
+            $query->where('connections.channel', Channel::Email->value);
+        }
+
+        if ($this->channels) {
+            $query->whereIn('connections.channel', $this->channels);
         }
     }
 

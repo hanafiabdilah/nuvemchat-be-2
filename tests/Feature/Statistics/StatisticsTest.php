@@ -264,6 +264,53 @@ it('measures chat and e-mail as separate inboxes', function () {
     expect($channels)->not->toContain(Channel::Email->value);
 });
 
+it('keeps the contact counts inside the selected inbox', function () {
+    $user = statsOwner();
+    $chat = statsConnection($user);
+    $email = statsConnection($user, Channel::Email);
+    $at = Carbon::now()->subDay();
+
+    statsMessage(statsConversation($chat), SenderType::Incoming, $at);
+
+    $emailThread = statsConversation($email, ['status' => ConversationStatus::Active]);
+    statsMessage($emailThread, SenderType::Incoming, $at);
+
+    // Somebody in the address book who never wrote: counted straight off the
+    // contacts table this looked like a third new customer.
+    Contact::create([
+        'tenant_id' => $user->tenant_id,
+        'external_id' => 'never-wrote',
+        'name' => 'Imported',
+        'channel' => Channel::WhatsappApiway,
+    ]);
+
+    $newContacts = fn (string $scope) => $this->actingAs($user)
+        ->getJson('/api/statistics/overview?scope=' . $scope)
+        ->assertOk()
+        ->json('data.current.contacts_new');
+
+    expect($newContacts('chat'))->toBe(1)
+        ->and($newContacts('email'))->toBe(1)
+        ->and($newContacts('all'))->toBe(2);
+});
+
+it('lists only the selected inbox on the channels board', function () {
+    $user = statsOwner();
+    statsConnection($user);
+    statsConnection($user, Channel::Email);
+
+    $channels = fn (string $scope) => collect($this->actingAs($user)
+        ->getJson('/api/statistics/health?scope=' . $scope)
+        ->assertOk()
+        ->json('data.connections.items'))
+        ->pluck('channel')
+        ->all();
+
+    expect($channels('chat'))->toBe([Channel::WhatsappApiway->value])
+        ->and($channels('email'))->toBe([Channel::Email->value])
+        ->and($channels('all'))->toHaveCount(2);
+});
+
 it('times resolution from the moment the conversation was closed', function () {
     $user = statsOwner();
     $connection = statsConnection($user);
