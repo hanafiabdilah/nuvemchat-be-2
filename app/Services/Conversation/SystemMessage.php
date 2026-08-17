@@ -30,19 +30,32 @@ class SystemMessage
      *                                     language; `body` is the fallback for
      *                                     anything it does not recognise.
      * @param array<string, mixed> $params Values the translated copy needs.
+     * @param array<string, mixed> $attributes Extra columns for notes that stand
+     *                                     for something outside the platform and
+     *                                     need its identity and its instant — a
+     *                                     call log keys on `external_id` so a
+     *                                     re-delivered event updates one row
+     *                                     instead of stacking up notes. A `meta`
+     *                                     key here is merged beside the info
+     *                                     block, never over it.
      */
-    public static function info(Conversation $conversation, string $body, ?string $code = null, array $params = []): Message
+    public static function info(Conversation $conversation, string $body, ?string $code = null, array $params = [], array $attributes = []): Message
     {
-        $message = $conversation->messages()->create([
+        $meta = $code ? ['info' => array_filter([
+            'code' => $code,
+            'params' => $params ?: null,
+        ])] : [];
+
+        $meta = array_merge($meta, $attributes['meta'] ?? []);
+        unset($attributes['meta']);
+
+        $message = $conversation->messages()->create(array_merge([
             'sender_type' => SenderType::Outgoing,
             'message_type' => MessageType::Info,
             'body' => $body,
             'sent_at' => now(),
-            'meta' => $code ? ['info' => array_filter([
-                'code' => $code,
-                'params' => $params ?: null,
-            ])] : null,
-        ]);
+            'meta' => $meta ?: null,
+        ], $attributes));
 
         broadcast(new MessageReceived($message));
 

@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Connection;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Webhook\ChatService;
+use App\Services\Webhook\Handlers\Chat\WhatsappCallHandler;
 use App\Services\Webhook\Handlers\Chat\WhatsappCoexistenceHandler;
 use App\Services\Webhook\MetaSignatureVerifier;
 use Illuminate\Http\Request;
@@ -18,6 +19,7 @@ class WhatsAppController extends Controller
     public function __construct(
         protected ChatService $chatService,
         protected WhatsappCoexistenceHandler $coexistenceHandler,
+        protected WhatsappCallHandler $callHandler,
     ){
         //
     }
@@ -73,9 +75,10 @@ class WhatsAppController extends Controller
             };
 
             // The WABA webhook multiplexes several fields. Route by field:
-            // templates and Coexistence fields (message echoes, history sync,
-            // contact sync, account_update) each have their own handler; only
-            // the remaining changes (live messages/statuses) go to ChatService.
+            // templates, calls, and Coexistence fields (message echoes, history
+            // sync, contact sync, account_update) each have their own handler;
+            // only the remaining changes (live messages/statuses) go to
+            // ChatService.
             $changes = $entry['changes'] ?? [];
             $hasTemplateStatus = collect($changes)
                 ->contains(fn ($change) => ($change['field'] ?? null) === 'message_template_status_update');
@@ -88,7 +91,11 @@ class WhatsAppController extends Controller
             $chatChanges = [];
 
             foreach ($changes as $change) {
-                if (in_array($change['field'] ?? null, WhatsappCoexistenceHandler::FIELDS, true)) {
+                $field = $change['field'] ?? null;
+
+                if (in_array($field, WhatsappCallHandler::FIELDS, true)) {
+                    $this->callHandler->handleChange($connection, $change);
+                } elseif (in_array($field, WhatsappCoexistenceHandler::FIELDS, true)) {
                     $this->coexistenceHandler->handleChange($connection, $change);
                 } else {
                     $chatChanges[] = $change;

@@ -17,6 +17,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Services\Contact\Photo\ContactPhotoSyncer;
+use App\Services\Conversation\CallLog;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Message\VCard;
@@ -185,6 +186,16 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         // photo alike; Remove distinguishes a change from a deletion.
         if ($type === 'Picture') {
             $this->handlePictureChange($connection, $event);
+
+            return;
+        }
+
+        // Voice/video calls. whatsmeow emits the full signalling but implements
+        // no call media at all, so a call can only ever be watched here (and,
+        // one day, rejected) — never answered. Recorded as a note in the thread
+        // so the customer who rang is not simply missing from it.
+        if (str_starts_with((string) $type, 'Call') || $type === 'UnknownCallEvent') {
+            $this->handleCallEvent($connection, (string) $type, $event);
 
             return;
         }
@@ -744,6 +755,110 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         }
 
         SyncContactPhoto::dispatchForced($contact, $connection);
+    }
+
+    /**
+     * One step of a call, as whatsmeow reports it.
+     *
+     * Only inbound calls reach this: `CallOffer` is emitted when the linked
+     * account *receives* a call, and dialling is not implemented at all, so
+     * there is no outbound case to tell apart. Ringing, accepted and ended all
+     * rewrite the one note CallLog keys on `CallID`.
+     */
+    private function handleCallEvent(Connection $connection, string $type, array $event): void
+    {
+        // Media negotiation and latency probes. They say nothing a reader wants
+        // in a thread, and are matched here only to keep them out of the
+        // unhandled-event log.
+        if (in_array($type, ['CallPreAccept', 'CallTransport', 'CallRelayLatency', 'UnknownCallEvent'], true)) {
+            return;
+        }
+
+        // A group call rings for everyone at once and belongs to no one-to-one
+        // thread. Groups never carry flows or AI here either — same reasoning.
+        if (($event['Type'] ?? null) === 'group') {
+            Log::info('WhatsappApiwayHandler: ignoring group call', [
+                'connection_id' => $connection->id,
+                'call_id' => $event['CallID'] ?? null,
+            ]);
+
+            return;
+        }
+
+        $callId = $event['CallID'] ?? null;
+        $phone = $this->resolvePhoneFromJids($connection, [
+            $event['From'] ?? null,
+            $event['CallCreator'] ?? null,
+        ]);
+
+        if (! $callId || ! $phone) {
+            // Same trap as a `@lid`-only message re-delivery: keying a thread
+            // off an opaque handle would create one nobody can reply in.
+            Log::warning('WhatsappApiwayHandler: unresolvable call', [
+                'connection_id' => $connection->id,
+                'type' => $type,
+                'call_id' => $callId,
+                'from' => $event['From'] ?? null,
+            ]);
+
+            return;
+        }
+
+        $at = $this->parseTimestamp($event['Timestamp'] ?? null);
+
+        match ($type) {
+            'CallOffer', 'CallOfferNotice' => CallLog::record(
+                $connection, $phone, null, $callId, CallLog::RINGING, $at
+            ),
+
+            // Picked up on the linked phone — the only device that can answer.
+            // The accept time is kept because the terminate below is the only
+            // place a length can come from: whatsmeow reports no duration.
+            'CallAccept' => CallLog::record(
+                $connection, $phone, null, $callId, CallLog::ONGOING, $at, null,
+                ['accepted_at' => $at->toIso8601String()],
+            ),
+
+            'CallTerminate' => $this->callTerminated($connection, $event, $phone, $callId, $at),
+
+            // The caller gave up before anyone answered — from this side that
+            // is a missed call, not a declined one.
+            'CallReject' => CallLog::record(
+                $connection, $phone, null, $callId, CallLog::MISSED, $at, null, ['reason' => 'caller_cancelled']
+            ),
+
+            default => Log::info('WhatsappApiwayHandler: unhandled call event', [
+                'connection_id' => $connection->id,
+                'type' => $type,
+                'call_id' => $callId,
+            ]),
+        };
+    }
+
+    /**
+     * The call is over. whatsmeow's `Reason` is all we get — there is no
+     * duration in the event, so a length exists only when we also saw the
+     * accept and can measure between the two.
+     */
+    private function callTerminated(Connection $connection, array $event, string $phone, string $callId, Carbon $at): void
+    {
+        $reason = strtolower((string) ($event['Reason'] ?? ''));
+        $acceptedAt = data_get(CallLog::find($connection, $callId)?->meta, 'call.accepted_at');
+        $seconds = $acceptedAt ? (int) abs(Carbon::parse($acceptedAt)->diffInSeconds($at)) : null;
+
+        $code = match (true) {
+            $reason === 'rejected_elsewhere' => CallLog::DECLINED,
+            $seconds !== null => CallLog::ANSWERED,
+            // Answered on a device whose accept we never saw: it happened, we
+            // just cannot say for how long.
+            $reason === 'accepted_elsewhere' => CallLog::ENDED,
+            // `timeout`, or a reason whatsmeow has not named yet.
+            default => CallLog::MISSED,
+        };
+
+        CallLog::record($connection, $phone, null, $callId, $code, $at, $seconds, array_filter([
+            'reason' => $reason ?: null,
+        ]));
     }
 
     /**
