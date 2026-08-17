@@ -143,3 +143,32 @@ Schedule::command('instagram:publish-scheduled')
     ->everyMinute()
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('Instagram scheduled publish failed'));
+
+// --- Leads ---------------------------------------------------------------
+
+// Recompute every open lead's temperature.
+//
+// This is the half of the axis only a schedule can do: an inbound message can
+// warm a lead on the spot, but going quiet emits no event at all. Without this
+// pass a score would fall only when something else happened to touch the lead —
+// exactly backwards, since the cards worth surfacing are the untouched ones.
+// Only a band change (frio↔morno↔quente) is broadcast, so this does not set
+// every open board flickering once an hour.
+Schedule::command('leads:score')
+    ->hourly()
+    ->withoutOverlapping(10)
+    ->onFailure(fn () => logger()->error('Lead scoring pass failed'));
+
+// Retire leads nothing has happened to inside each tenant's own window.
+//
+// Auto-creation means every stranger who asked a price becomes a card, and a
+// board full of people who wrote once and vanished stops being read at all.
+// Daily rather than hourly: the windows are measured in weeks, so a pass an
+// hour would be almost entirely wasted work. Every tenant sets its own number
+// of days, can turn the sweep off, and decides whether it may touch cards an
+// agent has actually worked — see LeadSettings.
+Schedule::command('leads:close-stale')
+    ->dailyAt('03:30')
+    ->timezone('America/Sao_Paulo')
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->error('Stale lead sweep failed'));

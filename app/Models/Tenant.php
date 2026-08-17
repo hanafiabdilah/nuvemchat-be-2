@@ -10,6 +10,11 @@ class Tenant extends Model
     protected $fillable = [
         'user_id',
         'current_subscription_id',
+        'lead_settings',
+    ];
+
+    protected $casts = [
+        'lead_settings' => 'array',
     ];
 
     public function user()

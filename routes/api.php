@@ -48,6 +48,9 @@ use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\ConversationNoteController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\GroupController;
+use App\Http\Controllers\Api\LeadController;
+use App\Http\Controllers\Api\LeadPipelineController;
+use App\Http\Controllers\Api\LeadSettingsController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\MessageTemplateController;
 use App\Http\Controllers\Api\PermissionController;
@@ -229,6 +232,40 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/broadcasts/{id}/resume', [BroadcastController::class, 'resume'])->middleware('permission:broadcasts.send');
         Route::post('/broadcasts/{id}/cancel', [BroadcastController::class, 'cancel'])->middleware('permission:broadcasts.send');
         Route::post('/broadcasts/{id}/retry-failed', [BroadcastController::class, 'retryFailed'])->middleware('permission:broadcasts.send');
+
+        // Sales funnel — gated by the `crm` plan feature. A workspace can run a
+        // busy support inbox and never sell anything from it, so this is its own
+        // feature rather than part of `chat`.
+        Route::middleware('feature:crm')->group(function () {
+            // The board is deliberately its own endpoint rather than index()
+            // with a large page size: six columns that fetch every lead to
+            // render are fine at forty cards and unusable at five thousand.
+            Route::get('/leads/board', [LeadController::class, 'board'])->middleware('permission:leads.view');
+            // Before /leads/{id}, or "owners" is read as an id.
+            Route::get('/leads/owners', [LeadController::class, 'owners'])->middleware('permission:leads.view');
+            Route::get('/leads', [LeadController::class, 'index'])->middleware('permission:leads.view');
+            Route::post('/leads', [LeadController::class, 'store'])->middleware('permission:leads.create');
+            Route::get('/leads/{id}', [LeadController::class, 'show'])->middleware('permission:leads.view');
+            Route::patch('/leads/{id}', [LeadController::class, 'update'])->middleware('permission:leads.update');
+            // The drag. Its own verb because it writes the audit row the
+            // conversion report is built from — see LeadController::move().
+            Route::patch('/leads/{id}/stage', [LeadController::class, 'move'])->middleware('permission:leads.update');
+            Route::delete('/leads/{id}', [LeadController::class, 'destroy'])->middleware('permission:leads.delete');
+
+            Route::get('/contacts/{contact}/leads', [LeadController::class, 'forContact'])->middleware('permission:leads.view');
+
+            // Changing the shape of the funnel is a different level of trust
+            // from working a card.
+            // Auto-close window, and whether it runs at all. Every workspace
+            // sells on a different clock, so none of it is hard-coded.
+            Route::get('/lead-settings', [LeadSettingsController::class, 'show'])->middleware('permission:leads.view');
+            Route::put('/lead-settings', [LeadSettingsController::class, 'update'])->middleware('permission:lead-pipelines.manage');
+
+            Route::get('/lead-pipelines', [LeadPipelineController::class, 'index'])->middleware('permission:leads.view');
+            Route::post('/lead-pipelines/{pipeline}/stages', [LeadPipelineController::class, 'storeStage'])->middleware('permission:lead-pipelines.manage');
+            Route::patch('/lead-pipelines/{pipeline}/stages/{stage}', [LeadPipelineController::class, 'updateStage'])->middleware('permission:lead-pipelines.manage');
+            Route::delete('/lead-pipelines/{pipeline}/stages/{stage}', [LeadPipelineController::class, 'destroyStage'])->middleware('permission:lead-pipelines.manage');
+        });
 
         // Instagram publishing. Two id spaces meet here and are kept apart by
         // the path: `/instagram/posts/{post}` is one of our rows (a draft or a

@@ -90,6 +90,14 @@ class RoleAndPermissionSeeder extends Seeder
             'broadcasts.send',
             'broadcasts.delete',
 
+            // Sales funnel. Reshaping the funnel is split from working a card:
+            // moving a lead is daily work, deciding what counts as a sale is not.
+            'leads.view',
+            'leads.create',
+            'leads.update',
+            'leads.delete',
+            'lead-pipelines.manage',
+
             // Instagram publishing. `delete` covers our own drafts and
             // schedules only — Instagram Login has no endpoint for removing a
             // post that is already live.
