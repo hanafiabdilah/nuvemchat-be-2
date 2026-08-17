@@ -163,6 +163,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::delete('/groups/{id}/remove', [GroupController::class, 'restore']);
         Route::get('/conversations/{id}/transfer-targets', [ConversationController::class, 'transferTargets']);
         Route::post('/conversations/{id}/transfer', [ConversationController::class, 'transfer']);
+        // Transfer's mirror image: claim an active thread that belongs to
+        // someone else. Gated on connection access only — the caller is not the
+        // assignee, which is the whole point of the action.
+        Route::post('/conversations/{id}/take-over', [ConversationController::class, 'takeOver']);
         // Suggestions run on the tenant's AI Hub agents, so the plan must
         // include the hub feature.
         Route::post('/conversations/{id}/ai-suggest', [AiSuggestController::class, 'suggest'])->middleware(['feature:ai_agent_hub', 'throttle:15,1']);

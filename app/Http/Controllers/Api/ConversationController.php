@@ -7,6 +7,7 @@ use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Events\ConversationTakenOver;
 use App\Events\ConversationTransferred;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
@@ -21,6 +22,7 @@ use App\Models\Conversation;
 use App\Models\Tag;
 use App\Services\AutomatedMessageService;
 use App\Services\Conversation\OutboundConversationResolver;
+use App\Services\Conversation\SystemMessage;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
 use Carbon\Carbon;
@@ -33,6 +35,15 @@ use Illuminate\Validation\ValidationException;
 
 class ConversationController extends Controller
 {
+    /**
+     * Codes for the notes an assignment change writes into the thread. The SPA
+     * matches these to render the note in the reader's language; the stored
+     * English body is its fallback (see lib/infoMessage.ts).
+     */
+    public const INFO_TRANSFERRED = 'conversation_transferred';
+    public const INFO_TAKEN_OVER = 'conversation_taken_over';
+    public const INFO_ASSIGNED = 'conversation_assigned';
+
     public function index(Request $request)
     {
         // Parsed, not passed through as the ISO-8601 string the client sends: the
@@ -941,18 +952,143 @@ class ConversationController extends Controller
             ], 422);
         }
 
+        $actor = Auth::user();
+        $previousAgentId = $conversation->user_id;
+
         $conversation->user_id = $target->id;
         $conversation->needs_human = false;
         $conversation->save();
 
         $conversation->load('agent');
 
+        // The handover is attributed to whoever performed it, not to the former
+        // assignee: an owner can move a thread that was never theirs, and
+        // naming the wrong person is worse than naming none.
+        SystemMessage::info(
+            $conversation,
+            "{$actor->name} transferred this conversation to {$target->name}.",
+            self::INFO_TRANSFERRED,
+            ['from' => $actor->name, 'to' => $target->name],
+        );
+
+        $this->logAssignmentChange('transferred', $conversation, $previousAgentId, $target->id);
+
+        // After the note, so the row this broadcast carries already holds the
+        // last_message_at the note just bumped — the inbox lands on its final
+        // state in one step instead of flickering through the old preview.
         broadcast(new ConversationUpdated($conversation));
-        broadcast(new ConversationTransferred($conversation, Auth::user(), $target));
+        broadcast(new ConversationTransferred($conversation, $actor, $target));
 
         return response()->json([
             'message' => 'Conversation transferred',
             'data' => new ConversationResource($conversation),
+        ]);
+    }
+
+    /**
+     * Take an active conversation over from whoever is holding it ("assumir").
+     *
+     * The same assignment transfer performs, with the trust running the other
+     * way: transfer is done BY the assignee and therefore asks isAccessibleBy(),
+     * while a take-over is by definition performed by someone who is *not* the
+     * assignee — asking the same question would refuse every legitimate call.
+     * What remains is the boundary that actually matters, connection access,
+     * which is exactly the gate accept() uses to let any agent pull a thread out
+     * of the queue: whoever can already read the thread may claim it.
+     *
+     * The customer is told nothing. They are mid-conversation, and the
+     * connection's accept greeting would land as a second hello — the handover
+     * is an internal fact, so it stays internal.
+     */
+    public function takeOver(int $id)
+    {
+        $conversation = Conversation::visibleTo(Auth::user())->with(['connection', 'agent'])->findOrFail($id);
+
+        // E-mail is a shared inbox: every member already replies without the
+        // thread being assigned, so there is nothing to take over.
+        if($conversation->connection?->channel === Channel::Email){
+            return response()->json([
+                'message' => 'E-mail conversations are a shared inbox and have no assignee',
+            ], 400);
+        }
+
+        // Pending and AI-handled threads belong to nobody — accept() is the
+        // door for those, and it also stops the flow that is still running.
+        if($conversation->status !== Status::Active){
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        if((int) $conversation->user_id === (int) Auth::id()){
+            return response()->json([
+                'message' => 'Conversation is already assigned to you',
+            ], 400);
+        }
+
+        $actor = Auth::user();
+        $previousAgent = $conversation->agent;
+
+        $conversation->user_id = $actor->id;
+        $conversation->needs_human = false;
+        $conversation->save();
+
+        $conversation->load('agent');
+
+        // Written into the thread rather than only into the log: the agent who
+        // comes back to a conversation that is no longer theirs deserves to
+        // find out where it went from the conversation itself.
+        if($previousAgent){
+            SystemMessage::info(
+                $conversation,
+                "{$actor->name} took over this conversation from {$previousAgent->name}.",
+                self::INFO_TAKEN_OVER,
+                ['from' => $previousAgent->name, 'to' => $actor->name],
+            );
+        } else {
+            SystemMessage::info(
+                $conversation,
+                "{$actor->name} took this conversation.",
+                self::INFO_ASSIGNED,
+                ['to' => $actor->name],
+            );
+        }
+
+        $this->logAssignmentChange('taken over', $conversation, $previousAgent?->id, $actor->id);
+
+        broadcast(new ConversationUpdated($conversation));
+
+        // Only worth an event when somebody actually lost the thread: an active
+        // conversation with no assignee has no one to notify.
+        if($previousAgent){
+            broadcast(new ConversationTakenOver($conversation, $previousAgent, $actor));
+        }
+
+        return response()->json([
+            'message' => 'Conversation taken over',
+            'data' => new ConversationResource($conversation),
+        ]);
+    }
+
+    /**
+     * One line per assignment change, in the application log.
+     *
+     * The note in the thread answers "who has this?" while somebody is reading
+     * the conversation; this answers it afterwards. Threads scroll, and "who
+     * moved this, when, and who was holding it before" is exactly the question
+     * that gets asked days later — by which point the note is thousands of
+     * messages up, and ids (not names, which change) are what can be joined
+     * back to the rest of the system.
+     */
+    protected function logAssignmentChange(string $action, Conversation $conversation, ?int $fromUserId, int $toUserId): void
+    {
+        Log::info("Conversation {$action}", [
+            'conversation_id' => $conversation->id,
+            'connection_id' => $conversation->connection_id,
+            'tenant_id' => $conversation->connection?->tenant_id,
+            'actor_id' => Auth::id(),
+            'from_user_id' => $fromUserId,
+            'to_user_id' => $toUserId,
         ]);
     }
 
