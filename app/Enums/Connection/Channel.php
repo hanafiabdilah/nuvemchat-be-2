@@ -200,4 +200,29 @@ enum Channel: string
             default => false,
         };
     }
+
+    /**
+     * Whether the channel tells *us* that a message we sent reached the
+     * handset. The mirror image of supportsReadReceipt(), which is about the
+     * receipts we send outward — do not confuse the two.
+     *
+     * Only these three feed `messages.delivery_at` from an actual confirmation:
+     * WhatsApp Official's `delivered` status webhook, API Way's whatsmeow
+     * receipt event, and Messenger's delivery watermark. Instagram sends read
+     * events but no delivery ones; Telegram and TikTok stamp `delivery_at`
+     * themselves the moment the API accepts the send, which makes their rate
+     * 100% by construction and therefore worth nothing; the rest report
+     * nothing at all.
+     *
+     * A delivery rate is only honest where this is true. Everywhere else the
+     * UI must omit the metric rather than render a rate that is really a
+     * measure of which channel you happen to be on.
+     */
+    public function reportsDeliveryReceipts(): bool
+    {
+        return match ($this) {
+            self::WhatsappOfficial, self::WhatsappApiway, self::Messenger => true,
+            default => false,
+        };
+    }
 }

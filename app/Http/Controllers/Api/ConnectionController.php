@@ -13,9 +13,11 @@ use App\Http\Resources\ConnectionResource;
 use App\Jobs\SyncEmailInbox;
 use App\Models\AiHubAgent;
 use App\Models\Connection;
+use App\Models\Conversation;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
 use App\Services\Connection\Channels\EmailChannel;
+use App\Services\Connection\ConnectionActivity;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
@@ -40,14 +42,29 @@ class ConnectionController extends Controller
     {
         $user = request()->user();
 
+        // "Last activity" for the list column. Read off conversations rather
+        // than messages: `last_message_at` is already maintained by the
+        // Message::created hook, and conversations.connection_id is indexed —
+        // so this stays a keyed lookup instead of a MAX() over every message
+        // the tenant ever exchanged.
+        $lastActivity = Conversation::query()
+            ->selectRaw('MAX(last_message_at)')
+            ->whereColumn('conversations.connection_id', 'connections.id');
+
         // Owner gets all connections, agents get only assigned connections
         if ($user->hasRole('owner')) {
-            $connections = $user->tenant->connections()->orderBy('created_at', 'DESC')->get();
+            $connections = $user->tenant->connections()
+                ->select('connections.*')
+                ->addSelect(['last_activity_at' => $lastActivity])
+                ->orderBy('connections.created_at', 'DESC')
+                ->get();
         } else {
             // Agent: only get connections they have access to
             $connections = $user->connections()
                 ->where('tenant_id', $user->tenant_id)
-                ->orderBy('created_at', 'DESC')
+                ->select('connections.*')
+                ->addSelect(['last_activity_at' => $lastActivity])
+                ->orderBy('connections.created_at', 'DESC')
                 ->get();
         }
 
@@ -80,6 +97,106 @@ class ConnectionController extends Controller
                 'receivedToday' => $metrics['receivedToday'],
             ],
         ]);
+    }
+
+    /**
+     * Health and recent activity for one connection — the detail drawer's
+     * lower half. Read entirely out of `messages`; see ConnectionActivity for
+     * what that does and does not make knowable.
+     */
+    public function activity(int $id, Request $request)
+    {
+        $connection = $this->accessibleConnection($id);
+
+        $validated = $request->validate([
+            'days' => ['nullable', 'integer', 'min:1', 'max:'.ConnectionActivity::MAX_DAYS],
+            // Minutes east of UTC, as the browser reports it, so "per day"
+            // buckets on the viewer's calendar rather than on UTC's.
+            'timezone_offset' => ['nullable', 'integer', 'min:-840', 'max:840'],
+        ]);
+
+        $activity = new ConnectionActivity(
+            $connection,
+            (int) ($validated['days'] ?? ConnectionActivity::DEFAULT_DAYS),
+            (int) ($validated['timezone_offset'] ?? 0) * 60,
+        );
+
+        return response()->json(['data' => $activity->build()]);
+    }
+
+    /**
+     * Copy a connection's *settings* into a new, unconnected one.
+     *
+     * Credentials are deliberately not copied: they identify one WhatsApp
+     * number, one Page, one mailbox. Two connections sharing them would both
+     * receive the same webhooks and each overwrite the other's threads. The
+     * copy therefore lands Inactive and goes through Connect like any new one —
+     * what is saved is the part that takes time to redo (flow, colour,
+     * automated messages, service hours).
+     */
+    public function duplicate(int $id, Request $request)
+    {
+        $connection = $this->accessibleConnection($id);
+        $tenant = $request->user()->tenant;
+
+        if (! app(SubscriptionGate::class)->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
+            return response()->json([
+                'message' => 'You have reached the maximum number of connections for your plan.',
+                'code' => 'quota_exceeded',
+                'quota' => 'max_connections',
+            ], 422);
+        }
+
+        $copy = $tenant->connections()->create([
+            'channel' => $connection->channel,
+            'name' => $this->copyName($connection, $tenant),
+            'color' => $connection->color,
+            'flow_id' => $connection->flow_id,
+            'status' => ConnectionStatus::Inactive,
+            'accept_message' => $connection->accept_message,
+            'closing_message' => $connection->closing_message,
+            'service_hours' => $connection->service_hours,
+            'ai_suggest_agent_id' => $connection->ai_suggest_agent_id,
+        ]);
+
+        return response()->json([
+            'message' => 'Connection duplicated successfully',
+            'data' => $copy->toResource(ConnectionResource::class),
+        ], 201);
+    }
+
+    /**
+     * "Name (2)", "Name (3)" … — the suffix counts up past whatever copies
+     * already exist so duplicating twice does not produce two identical rows,
+     * which is the one thing that makes a connection list unusable.
+     */
+    private function copyName(Connection $connection, $tenant): string
+    {
+        $base = preg_replace('/\s\(\d+\)$/', '', $connection->name);
+        $taken = $tenant->connections()->pluck('name')->all();
+
+        for ($n = 2; $n < 100; $n++) {
+            $candidate = mb_substr($base, 0, 90)." ({$n})";
+
+            if (! in_array($candidate, $taken, true)) {
+                return $candidate;
+            }
+        }
+
+        return mb_substr($base, 0, 90).' ('.uniqid().')';
+    }
+
+    /**
+     * A connection of this tenant that the caller may actually see. Agents hold
+     * a `connection_user` row per connection; owners hold none and reach all.
+     */
+    private function accessibleConnection(int $id): Connection
+    {
+        $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        abort_unless(request()->user()->canAccessConnection($connection->id), 403);
+
+        return $connection;
     }
 
     public function store(Request $request)

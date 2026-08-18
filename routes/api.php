@@ -308,9 +308,14 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
 
     Route::get('/connections', [ConnectionController::class, 'index']);
     Route::get('/connections/metrics', [ConnectionController::class, 'metrics']);
+    // Health + recent activity for the detail drawer. No extra permission: it
+    // reports on messages the caller can already read, and the controller still
+    // gates on connection access.
+    Route::get('/connections/{id}/activity', [ConnectionController::class, 'activity']);
 
     // Connection routes - protected by permissions
     Route::post('/connections', [ConnectionController::class, 'store'])->middleware('permission:connections.create');
+    Route::post('/connections/{id}/duplicate', [ConnectionController::class, 'duplicate'])->middleware('permission:connections.create');
     Route::post('/connections/{id}/connect', [ConnectionController::class, 'connect'])->middleware('permission:connections.connect');
     Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
     Route::get('/connections/{id}/business-profile', [ConnectionController::class, 'businessProfile']);

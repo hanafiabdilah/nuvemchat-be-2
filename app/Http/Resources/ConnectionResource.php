@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Enums\Connection\Channel;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -69,6 +70,16 @@ class ConnectionResource extends JsonResource
             'api_key' => $this->api_key,
             // 'webhook_url' => route('webhook.chat', $this->id),
             'created_at' => $this->created_at,
+            // Only the list query selects this (see ConnectionController@index).
+            // Emitted conditionally rather than as a plain null so the SPA can
+            // tell "no traffic yet" from "this response never carried it" — a
+            // rename or a status check would otherwise blank the column out.
+            'last_activity_at' => $this->when(
+                array_key_exists('last_activity_at', $this->getAttributes()),
+                fn () => $this->last_activity_at
+                    ? Carbon::parse($this->last_activity_at)->toIso8601String()
+                    : null
+            ),
         ];
     }
 }
