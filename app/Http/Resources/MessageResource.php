@@ -236,11 +236,28 @@ class MessageResource extends JsonResource
         return match($channel) {
             Channel::WhatsappApiway => $this->getWhatsappApiwayMeta(),
             Channel::WhatsappOfficial => $this->getWhatsappOfficialMeta(),
-            Channel::Instagram => null,        // TODO: implement when needed
+            Channel::Instagram => $this->getInstagramMeta(),
             Channel::Telegram => null,         // TODO: implement when needed
             Channel::Email => $this->getEmailMeta(),
             default => null,
         };
+    }
+
+    /**
+     * A post or reel shared into the DM. The rest of an Instagram webhook
+     * never reaches the SPA, so this is the curated copy the handler wrote —
+     * the link the bubble offers, plus the caption of a post we deliberately
+     * did not mirror. See InstagramHandler::shareData().
+     */
+    private function getInstagramMeta(): ?array
+    {
+        if ($this->message_type !== MessageType::InstagramShare) {
+            return null;
+        }
+
+        $share = $this->meta['instagram_share'] ?? null;
+
+        return is_array($share) ? ['instagram_share' => $share] : null;
     }
 
     private function getEmailMeta(): ?array

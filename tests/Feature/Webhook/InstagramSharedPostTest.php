@@ -3,6 +3,7 @@
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Message\MessageType;
+use App\Http\Resources\MessageResource;
 use App\Jobs\DownloadInboundMedia;
 use App\Models\Connection;
 use App\Models\Message;
@@ -91,26 +92,40 @@ beforeEach(function () {
     Http::preventStrayRequests();
 });
 
-test('a shared reel becomes the caption and a link to the post', function () {
+test('a shared reel becomes the link to the post, and only that', function () {
     (new InstagramHandler)->handle(igShareConnection(), igSharePayload([igReelAttachment()], 'mid.reel.1'));
 
     $message = Message::sole();
 
-    expect($message->message_type)->toBe(MessageType::Text)
-        ->and($message->body)->toBe("Se o seu domingo não é assim 🎾\nhttps://www.instagram.com/reel/DcI0Jd4oeTJ/")
-        ->and($message->attachment)->toBeNull();
+    expect($message->message_type)->toBe(MessageType::InstagramShare)
+        // The caption is the poster's copy, not the customer's — it stays in
+        // meta for the bubble to use, out of the line the agent clicks.
+        ->and($message->body)->toBe('https://www.instagram.com/reel/DcI0Jd4oeTJ/')
+        ->and($message->attachment)->toBeNull()
+        ->and($message->meta['instagram_share'])->toBe([
+            'kind' => 'reel',
+            'permalink' => 'https://www.instagram.com/reel/DcI0Jd4oeTJ/',
+            'media_id' => '18010020866949303',
+            'caption' => 'Se o seu domingo não é assim 🎾',
+        ]);
 });
 
-test('a shared feed post keeps its caption and no link, because Instagram sends none', function () {
+test('a shared feed post falls back to its caption, because Instagram sends no link', function () {
     (new InstagramHandler)->handle(igShareConnection(), igSharePayload([igPostAttachment()], 'mid.post.1'));
 
     $message = Message::sole();
 
-    expect($message->message_type)->toBe(MessageType::Text)
+    expect($message->message_type)->toBe(MessageType::InstagramShare)
         // The lookaside url is a mirror of the media that expires with its
         // signature — pasting it would leave a 404 in the thread.
         ->and($message->body)->toBe('Registros 📸❤️')
-        ->and($message->attachment)->toBeNull();
+        ->and($message->attachment)->toBeNull()
+        ->and($message->meta['instagram_share'])->toBe([
+            'kind' => 'post',
+            'permalink' => null,
+            'media_id' => '18076990211540716',
+            'caption' => 'Registros 📸❤️',
+        ]);
 });
 
 test('a share carries a body even when the post has no caption', function () {
@@ -119,7 +134,8 @@ test('a share carries a body even when the post has no caption', function () {
         igSharePayload([igPostAttachment('share', '')], 'mid.post.2')
     );
 
-    expect(Message::sole()->body)->toBe('Instagram post shared');
+    expect(Message::sole()->body)->toBe('Instagram post shared')
+        ->and(Message::sole()->meta['instagram_share']['caption'])->toBeNull();
 });
 
 test('nothing is downloaded for a share', function () {
@@ -139,7 +155,19 @@ test('the linkable attachment wins when a batch mixes shapes', function () {
         igSharePayload([igPostAttachment('share'), igReelAttachment()], 'mid.mixed.1')
     );
 
-    expect(Message::sole()->body)->toContain('https://www.instagram.com/reel/DcI0Jd4oeTJ/');
+    expect(Message::sole()->body)->toBe('https://www.instagram.com/reel/DcI0Jd4oeTJ/');
+});
+
+test('the bubble reads the share off meta, and the rest of the webhook stays out of the SPA', function () {
+    $connection = igShareConnection();
+    (new InstagramHandler)->handle($connection, igSharePayload([igReelAttachment()], 'mid.reel.2'));
+
+    $meta = (new MessageResource(Message::sole()->load('conversation.connection')))
+        ->toArray(request())['meta'];
+
+    expect($meta)->toHaveKey('instagram_share')
+        ->and($meta['instagram_share']['permalink'])->toBe('https://www.instagram.com/reel/DcI0Jd4oeTJ/')
+        ->and($meta)->not->toHaveKey('messaging');
 });
 
 test('a plain photo is still mirrored', function () {

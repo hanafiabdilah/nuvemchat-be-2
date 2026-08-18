@@ -88,29 +88,63 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
     }
 
     /**
-     * The shared post as the agent should read it: caption plus a link to the
-     * post itself, when Instagram gives one.
+     * The shared post as the agent should read it: the link to the post, and
+     * nothing else. The caption is the poster's copy, not something the
+     * customer wrote — repeating it in the bubble buries the one line the
+     * agent is going to click. It stays in `meta.instagram_share` either way.
      *
-     * It only does for reels — there `payload.url` already *is* the public
+     * Only reels come with a link: there `payload.url` already *is* the public
      * permalink. A shared feed post carries a signed lookaside CDN url and an
-     * `ig_post_media_id` instead, and neither leads back to the post: the id is
-     * refused by the Graph API when the media is not the connected account's,
-     * and it lives in a different number space than the shortcode in an
-     * instagram.com/p/ url, so it cannot be converted either. Those shares are
-     * the caption alone rather than a link that dies with the CDN signature.
+     * `ig_post_media_id` instead, and neither leads back to the post — the id
+     * is refused by the Graph API when the media is not the connected
+     * account's, and it lives in a different number space than the shortcode
+     * in an instagram.com/p/ url, so it cannot be converted either. For those
+     * the caption is all there is, so it becomes the body rather than leaving
+     * a bubble with nothing in it.
      */
     private static function shareBody(array $attachment): string
     {
-        $payload = $attachment['payload'] ?? [];
-        $title = trim((string) ($payload['title'] ?? ''));
         $permalink = self::sharePermalink($attachment);
 
-        return match (true) {
-            $title !== '' && $permalink !== null => $title . "\n" . $permalink,
-            $permalink !== null => $permalink,
-            $title !== '' => $title,
-            default => self::SHARE_FALLBACK_BODY,
-        };
+        if ($permalink !== null) {
+            return $permalink;
+        }
+
+        $caption = trim((string) ($attachment['payload']['title'] ?? ''));
+
+        return $caption !== '' ? $caption : self::SHARE_FALLBACK_BODY;
+    }
+
+    /**
+     * What the bubble draws from: which kind of post it was, where it lives,
+     * and the caption — kept whether or not the body shows it, since it is the
+     * only description of a post we no longer mirror.
+     */
+    private static function shareData(array $attachment): array
+    {
+        $payload = $attachment['payload'] ?? [];
+        $caption = trim((string) ($payload['title'] ?? ''));
+
+        return [
+            'kind' => ($attachment['type'] ?? null) === 'ig_reel' ? 'reel' : 'post',
+            'permalink' => self::sharePermalink($attachment),
+            'media_id' => $payload['reel_video_id'] ?? $payload['ig_post_media_id'] ?? null,
+            'caption' => $caption !== '' ? $caption : null,
+        ];
+    }
+
+    /**
+     * The raw webhook, plus the share pulled out of it. The bubble reads the
+     * curated copy — MessageResource never lets an Instagram payload through
+     * to the SPA — and keeping it on the row means a share stays readable even
+     * after Instagram changes the shape of the attachment it came from.
+     */
+    private static function metaFor(array $payload): array
+    {
+        $attachments = $payload['messaging'][0]['message']['attachments'] ?? [];
+        $share = is_array($attachments) && $attachments ? self::shareAttachment($attachments) : null;
+
+        return $share ? $payload + ['instagram_share' => self::shareData($share)] : $payload;
     }
 
     /**
@@ -165,11 +199,11 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             return MessageType::Text;
         }
 
-        // A share reads as text — caption plus, for reels, the post's link.
-        // Picked the same way getMessageBody() picks it, so the two never
-        // disagree about which attachment the bubble is showing.
+        // A shared post gets its own bubble — picked the same way
+        // getMessageBody() picks it, so type and body never disagree about
+        // which attachment the message is showing.
         if (isset($message['attachments'][0]) && self::shareAttachment($message['attachments'])) {
-            return MessageType::Text;
+            return MessageType::InstagramShare;
         }
 
         // Check attachments
@@ -366,7 +400,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 'replied_message_id' => $repliedMessageId,
                 'sent_at' => $this->getMessageSentAt($payload),
                 'delivery_at' => $this->getMessageSentAt($payload),
-                'meta' => $payload,
+                'meta' => self::metaFor($payload),
             ]);
         });
 

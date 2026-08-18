@@ -19,6 +19,15 @@ enum MessageType: string
     case Contact = 'contact';
     case Template = 'template';
     case Interactive = 'interactive';
+
+    /**
+     * A post or reel someone shared from Instagram into the DM. Not media:
+     * the bytes belong to whoever posted them, so nothing is mirrored and the
+     * bubble is a link back to the post instead — served from
+     * `meta.instagram_share`. See InstagramHandler::shareData().
+     */
+    case InstagramShare = 'instagram_share';
+
     case Unsupported = 'unsupported';
 
     /**
