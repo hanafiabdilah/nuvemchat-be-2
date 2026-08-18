@@ -6,6 +6,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -21,7 +22,7 @@ use Illuminate\Support\Facades\Storage;
  * multipart bytes (media_url inputs are downloaded first). Unlike the Meta
  * channels, Discord supports replies, edits and deletes.
  */
-class DiscordHandler implements MessageHandlerInterface
+class DiscordHandler implements MessageHandlerInterface, SendsTypingIndicator
 {
     private const API_BASE = 'https://discord.com/api/v10';
 
@@ -298,5 +299,23 @@ class DiscordHandler implements MessageHandlerInterface
     private function authHeaders($connection): array
     {
         return ['Authorization' => 'Bot ' . ($connection->credentials['token'] ?? '')];
+    }
+
+    /**
+     * Discord lights the indicator for exactly 10 seconds and offers nothing to
+     * clear it early, so a withdrawal has no call to make — the agent stopping
+     * simply means the next refresh never comes. Returns 204 with no body.
+     */
+    public function handleTyping(Conversation $conversation, bool $typing = true): bool
+    {
+        if (!$typing) {
+            return false;
+        }
+
+        return Http::withHeaders($this->authHeaders($conversation->connection))
+            ->connectTimeout(5)
+            ->timeout(10)
+            ->post(self::API_BASE . "/channels/{$conversation->external_id}/typing")
+            ->successful();
     }
 }

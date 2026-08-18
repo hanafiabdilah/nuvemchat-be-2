@@ -7,6 +7,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
+use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -20,7 +21,7 @@ use Illuminate\Support\Facades\Storage;
  * Instagram, but against graph.facebook.com with the Page access token, and
  * with messaging_type=RESPONSE (we only ever reply inside the 24h window).
  */
-class MessengerHandler implements MessageHandlerInterface
+class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator
 {
     private const MESSAGES_URL = 'https://graph.facebook.com/v25.0/me/messages';
 
@@ -250,5 +251,22 @@ class MessengerHandler implements MessageHandlerInterface
         $message->update(['attachment' => $url]);
 
         return $message;
+    }
+
+    /**
+     * A sender action, which Meta requires to travel alone: the request carries
+     * the recipient and nothing else — no messaging_type, no message body —
+     * or it is rejected. typing_off exists here, unlike on Cloud API.
+     */
+    public function handleTyping(Conversation $conversation, bool $typing = true): bool
+    {
+        return Http::withToken($conversation->connection->credentials['access_token'] ?? '')
+            ->connectTimeout(5)
+            ->timeout(10)
+            ->post(self::MESSAGES_URL, [
+                'recipient' => ['id' => $conversation->external_id],
+                'sender_action' => $typing ? 'typing_on' : 'typing_off',
+            ])
+            ->successful();
     }
 }

@@ -7,6 +7,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
+use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -15,8 +16,10 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class InstagramHandler implements MessageHandlerInterface
+class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator
 {
+    private const MESSAGES_URL = 'https://graph.instagram.com/v25.0/me/messages';
+
     public function getMessageId(array $payload): string
     {
         return $payload['message_id'] ?? $payload['mid'] ?? uniqid('ig_', true);
@@ -710,5 +713,23 @@ class InstagramHandler implements MessageHandlerInterface
     public function handleDeleteMessage(Message $message): bool
     {
         throw new Exception('Message deletion not supported for Instagram API');
+    }
+
+    /**
+     * Same sender-action shape as Messenger, on Instagram's own host. Meta
+     * notes the recipient has to be signed in for it to render at all, so a
+     * successful response here still does not promise anyone saw it — one more
+     * reason nothing upstream treats the result as load-bearing.
+     */
+    public function handleTyping(Conversation $conversation, bool $typing = true): bool
+    {
+        return Http::withToken($conversation->connection->credentials['access_token'] ?? '')
+            ->connectTimeout(5)
+            ->timeout(10)
+            ->post(self::MESSAGES_URL, [
+                'recipient' => ['id' => $conversation->external_id],
+                'sender_action' => $typing ? 'typing_on' : 'typing_off',
+            ])
+            ->successful();
     }
 }

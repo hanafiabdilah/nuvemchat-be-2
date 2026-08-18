@@ -7,6 +7,7 @@ use App\Enums\Message\SenderType;
 use App\Events\MessageReceived;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -15,7 +16,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class WhatsappApiwayHandler implements MessageHandlerInterface
+class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator
 {
     /** Keys that may carry the node's message id in a send response (matched case-insensitively). */
     private const ID_KEYS = ['id', 'messageid', 'message_id', 'msgid'];
@@ -844,5 +845,34 @@ class WhatsappApiwayHandler implements MessageHandlerInterface
 
             throw new Exception('Failed to delete WhatsApp message: ' . $th->getMessage());
         }
+    }
+
+    /**
+     * The one channel here whose indicator has no timeout: whatsmeow holds
+     * `composing` until something replaces it, so the withdrawal is not a
+     * nicety — without a `paused` the customer is left watching a phantom agent
+     * type forever. Media is always `text`; "recording audio" would be a
+     * different, and false, claim about what the agent is doing.
+     */
+    public function handleTyping(Conversation $conversation, bool $typing = true): bool
+    {
+        $connection = $conversation->connection;
+        $instanceId = $connection->credentials['instance_id'] ?? null;
+        $token = $connection->credentials['token'] ?? null;
+
+        if (!$instanceId || !$token) {
+            return false;
+        }
+
+        $response = Http::withHeaders(['Authorization' => 'Bearer ' . $token])
+            ->connectTimeout(5)
+            ->timeout(10)
+            ->post($this->base() . '/v1/chats/send-presence?instanceId=' . $instanceId, [
+                'phone' => $conversation->external_id,
+                'presence' => $typing ? 'composing' : 'paused',
+                'media' => 'text',
+            ]);
+
+        return $response->successful();
     }
 }

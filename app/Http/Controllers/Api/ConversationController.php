@@ -568,11 +568,16 @@ class ConversationController extends Controller
     }
 
     /**
-     * Emit a typing indicator to the customer (WhatsApp Cloud API). Called by
-     * the composer while an agent is typing. Best-effort and no-op for channels
-     * without native typing support.
+     * Show the customer that an agent is writing. Called by the composer on a
+     * timer while an agent types, and once with `state=paused` when they stop.
+     *
+     * Every channel that can do this is covered (MessageService::sendTyping);
+     * the ones that cannot — TikTok, e-mail — are a silent no-op rather than an
+     * error, because the composer calls this blind and an agent must never see
+     * a failure for a decoration. The response is always 200 for the same
+     * reason: there is nothing the SPA could usefully do with a failure.
      */
-    public function typing(int $id)
+    public function typing(Request $request, int $id)
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
@@ -580,14 +585,9 @@ class ConversationController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        try {
-            (new MessageService())->markAsRead($conversation, typing: true);
-        } catch (\Throwable $th) {
-            Log::warning('Failed to send WhatsApp typing indicator', [
-                'conversation_id' => $conversation->id,
-                'error' => $th->getMessage(),
-            ]);
-        }
+        $typing = $request->input('state', 'composing') !== 'paused';
+
+        (new MessageService())->sendTyping($conversation, $typing);
 
         return response()->json(['message' => 'ok']);
     }

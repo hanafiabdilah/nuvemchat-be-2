@@ -125,4 +125,44 @@ enum Channel: string
     {
         return $this === self::WhatsappApiway;
     }
+
+    /**
+     * How often the agent's "typing…" has to be re-asserted to stay lit here,
+     * in seconds. Null means the channel has no typing indicator at all.
+     *
+     * Every one of these indicators is a dead man's switch, not a state: the
+     * platform lights it and starts a countdown, and the only way to keep it up
+     * is to say it again. So the number that matters is not "how long does it
+     * last" but "how soon must we repeat", and it is that second number both
+     * sides need — the SPA to pace its calls, this side to reject anything
+     * faster. Each sits comfortably inside the platform's own timeout so a slow
+     * request does not leave a visible gap:
+     *
+     *   WhatsApp Official  25s (or until the reply lands)
+     *   Messenger / IG     ~20s, and typing_off exists
+     *   Discord            10s exactly, with no way to clear it early
+     *   Telegram            5s — far the shortest, hence the tightest pace
+     *   API Way            no timeout: `composing` holds until `paused` is sent,
+     *                      which is also why it is the one channel where
+     *                      forgetting to stop leaves it lit for good
+     *   Live Chat Widget   ours; the widget expires it on its own
+     *
+     * TikTok has no such API, and e-mail has no such idea.
+     */
+    public function typingRefreshSeconds(): ?int
+    {
+        return match ($this) {
+            self::Telegram => 4,
+            self::Discord => 8,
+            self::WhatsappOfficial, self::WhatsappApiway,
+            self::Instagram, self::Messenger, self::LiveChatWidget => 10,
+            default => null,
+        };
+    }
+
+    /** Whether an agent's typing can be shown to the customer here at all. */
+    public function supportsTypingIndicator(): bool
+    {
+        return $this->typingRefreshSeconds() !== null;
+    }
 }

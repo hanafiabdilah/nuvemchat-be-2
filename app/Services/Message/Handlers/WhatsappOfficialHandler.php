@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -17,7 +18,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class WhatsappOfficialHandler implements MessageHandlerInterface
+class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingIndicator
 {
     private const GRAPH_BASE = 'https://graph.facebook.com/v25.0';
 
@@ -498,6 +499,17 @@ class WhatsappOfficialHandler implements MessageHandlerInterface
             ]);
             return false;
         }
+    }
+
+    /**
+     * Cloud API has no typing call of its own: the indicator is a passenger on
+     * the mark-as-read request, which is why this is a thin wrapper rather than
+     * a second endpoint. Meta also offers no way to turn it off — it clears
+     * itself when the reply lands, or after 25s — so withdrawing is a no-op.
+     */
+    public function handleTyping(Conversation $conversation, bool $typing = true): bool
+    {
+        return $typing ? $this->handleMarkAsRead($conversation, typing: true) : false;
     }
 
     public function handleEditMessage(Message $message, array $data): ?Message

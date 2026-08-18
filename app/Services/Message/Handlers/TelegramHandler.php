@@ -6,6 +6,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -14,7 +15,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Telegram\Bot\Api;
 
-class TelegramHandler implements MessageHandlerInterface
+class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
 {
     public function getMessageId(array $payload): string
     {
@@ -544,5 +545,23 @@ class TelegramHandler implements MessageHandlerInterface
 
             throw new Exception('Failed to delete Telegram message: ' . $th->getMessage());
         }
+    }
+
+    /**
+     * Telegram's chat action clears itself after 5 seconds — by far the
+     * shortest of any channel here, which is the whole reason the refresh
+     * interval is per-channel rather than one number for everyone. There is no
+     * "stop" action; the countdown is the stop.
+     */
+    public function handleTyping(Conversation $conversation, bool $typing = true): bool
+    {
+        if (!$typing) {
+            return false;
+        }
+
+        return (new Api($conversation->connection->credentials['token']))->sendChatAction([
+            'chat_id' => $conversation->external_id,
+            'action' => 'typing',
+        ]);
     }
 }

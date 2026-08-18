@@ -150,7 +150,13 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
             Route::post('/conversations/{id}/send-interactive', [ConversationController::class, 'sendInteractive']);
         });
         Route::get('/conversations/{id}/read', [ConversationController::class, 'read']);
-        Route::post('/conversations/{id}/typing', [ConversationController::class, 'typing']);
+        // Called on a timer by every open composer, and each call is an
+        // outbound request to the channel — throttled so a stuck client cannot
+        // turn one agent's keyboard into a rate-limit problem on the account.
+        // The ceiling is well above the fastest channel's pace (Telegram, every
+        // 4s ≈ 15/min) across a handful of threads at once.
+        Route::post('/conversations/{id}/typing', [ConversationController::class, 'typing'])
+            ->middleware('throttle:90,1');
         Route::post('/conversations/bulk-status', [ConversationController::class, 'bulkUpdateStatus']);
         Route::post('/conversations/{id}/accept', [ConversationController::class, 'accept']);
         Route::post('/conversations/{id}/resolve', [ConversationController::class, 'resolve']);

@@ -5,8 +5,10 @@ namespace App\Services\Message\Handlers;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\Widget\WidgetMessageReceived;
+use App\Events\Widget\WidgetTyping;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
@@ -15,7 +17,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
-class LiveChatWidgetHandler implements MessageHandlerInterface
+class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndicator
 {
     public function getMessageId(array $payload): string
     {
@@ -196,6 +198,24 @@ class LiveChatWidgetHandler implements MessageHandlerInterface
         $message->update(['unsend_at' => Carbon::now()]);
 
         broadcast(new WidgetMessageReceived($message->fresh()));
+
+        return true;
+    }
+
+    /**
+     * The only channel here with no third party in the middle: the indicator is
+     * our own event on the visitor's own session channel. The name sent is the
+     * thread's assignee, not whoever happens to be typing — the widget draws it
+     * beside an avatar it already chose from the assignee, and two different
+     * names on one row would read as two different people.
+     */
+    public function handleTyping(Conversation $conversation, bool $typing = true): bool
+    {
+        broadcast(new WidgetTyping(
+            $conversation->id,
+            $typing,
+            $conversation->agent?->name,
+        ));
 
         return true;
     }

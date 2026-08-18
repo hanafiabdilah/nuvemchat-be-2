@@ -4,7 +4,9 @@ namespace App\Services\Message;
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
+use Illuminate\Support\Facades\Log;
 
 class MessageService
 {
@@ -55,6 +57,37 @@ class MessageService
         }
 
         return $handler->handleMarkAsRead($conversation, $typing);
+    }
+
+    /**
+     * Show (or withdraw) "typing…" to the customer on the channel.
+     *
+     * Called from the composer while an agent writes, so it runs far more often
+     * than anything else here and must never cost the agent anything: a channel
+     * that cannot do it is a silent false, and a channel that can but fails is a
+     * logged warning, never an exception. A dropped indicator is invisible; a
+     * composer that throws is not.
+     */
+    public function sendTyping(Conversation $conversation, bool $typing = true): bool
+    {
+        $handler = MessageFactory::make($conversation->connection->channel);
+
+        if (! $handler instanceof SendsTypingIndicator) {
+            return false;
+        }
+
+        try {
+            return $handler->handleTyping($conversation, $typing);
+        } catch (\Throwable $th) {
+            Log::warning('MessageService: typing indicator failed', [
+                'conversation_id' => $conversation->id,
+                'channel' => $conversation->connection->channel->value,
+                'typing' => $typing,
+                'error' => $th->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     public function sendImage(Conversation $conversation, array $data): ?Message
