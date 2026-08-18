@@ -39,6 +39,9 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
     /** Attachment kinds that are a shared post rather than a plain file. */
     private const SHARE_TYPES = ['share', 'ig_post', 'ig_reel'];
 
+    /** Fallback body for a share whose caption is empty. */
+    private const SHARE_FALLBACK_BODY = 'Instagram post shared';
+
     public function getConversationId(array $payload): ?string
     {
         // For echo messages (outgoing), use recipient's ID as conversation identifier
@@ -69,25 +72,88 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
         // Check for share/post attachments
         if (isset($message['attachments'][0])) {
-            $attachment = $message['attachments'][0];
-            $type = $attachment['type'] ?? null;
+            $share = self::shareAttachment($message['attachments']);
 
-            // Instagram share, post, or reel
-            if (in_array($type, ['share', 'ig_post', 'ig_reel'])) {
-                $payload = $attachment['payload'] ?? [];
-                $title = $payload['title'] ?? null;
-
-                // Return title only (URL will be added after download)
-                return $title ?? 'Instagram post shared';
+            if ($share) {
+                return self::shareBody($share);
             }
 
             // Media with caption
-            if (isset($attachment['payload']['caption'])) {
-                return $attachment['payload']['caption'];
+            if (isset($message['attachments'][0]['payload']['caption'])) {
+                return $message['attachments'][0]['payload']['caption'];
             }
         }
 
         return null;
+    }
+
+    /**
+     * The shared post as the agent should read it: caption plus a link to the
+     * post itself, when Instagram gives one.
+     *
+     * It only does for reels — there `payload.url` already *is* the public
+     * permalink. A shared feed post carries a signed lookaside CDN url and an
+     * `ig_post_media_id` instead, and neither leads back to the post: the id is
+     * refused by the Graph API when the media is not the connected account's,
+     * and it lives in a different number space than the shortcode in an
+     * instagram.com/p/ url, so it cannot be converted either. Those shares are
+     * the caption alone rather than a link that dies with the CDN signature.
+     */
+    private static function shareBody(array $attachment): string
+    {
+        $payload = $attachment['payload'] ?? [];
+        $title = trim((string) ($payload['title'] ?? ''));
+        $permalink = self::sharePermalink($attachment);
+
+        return match (true) {
+            $title !== '' && $permalink !== null => $title . "\n" . $permalink,
+            $permalink !== null => $permalink,
+            $title !== '' => $title,
+            default => self::SHARE_FALLBACK_BODY,
+        };
+    }
+
+    /**
+     * The first share-shaped attachment, preferring one that carries a
+     * permalink: a single webhook can repeat the same post as both `share` and
+     * `ig_post`, and a mixed batch should still surface the linkable one.
+     */
+    private static function shareAttachment(array $attachments): ?array
+    {
+        $shares = array_values(array_filter(
+            $attachments,
+            fn ($attachment) => in_array($attachment['type'] ?? null, self::SHARE_TYPES),
+        ));
+
+        foreach ($shares as $share) {
+            if (self::sharePermalink($share) !== null) {
+                return $share;
+            }
+        }
+
+        return $shares[0] ?? null;
+    }
+
+    /** `payload.url` when it points at instagram.com, not at the CDN mirror. */
+    private static function sharePermalink(array $attachment): ?string
+    {
+        $url = $attachment['payload']['url'] ?? null;
+
+        if (!is_string($url) || $url === '') {
+            return null;
+        }
+
+        $host = parse_url($url, PHP_URL_HOST);
+
+        if (!is_string($host)) {
+            return null;
+        }
+
+        $host = strtolower($host);
+
+        return ($host === 'instagram.com' || str_ends_with($host, '.instagram.com'))
+            ? $url
+            : null;
     }
 
     public function getMessageType(array $payload): MessageType
@@ -99,6 +165,13 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             return MessageType::Text;
         }
 
+        // A share reads as text — caption plus, for reels, the post's link.
+        // Picked the same way getMessageBody() picks it, so the two never
+        // disagree about which attachment the bubble is showing.
+        if (isset($message['attachments'][0]) && self::shareAttachment($message['attachments'])) {
+            return MessageType::Text;
+        }
+
         // Check attachments
         if (isset($message['attachments'][0]['type'])) {
             return match($message['attachments'][0]['type']) {
@@ -106,7 +179,6 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 'video' => MessageType::Video,
                 'audio' => MessageType::Audio,
                 'file' => MessageType::Document,
-                'share', 'ig_post', 'ig_reel' => MessageType::Text,
                 'ephemeral' => MessageType::Unsupported,
                 default => MessageType::Unsupported,
             };
@@ -299,10 +371,9 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         });
 
         if($message){
-            // Both the plain media download and the shared-post fetch are CDN
-            // round-trips; they run off the queue so the bubble (and its
-            // caption) reaches the dashboard first. See downloadMedia().
-            if(self::hasDownloadableMedia($payload, $messageType)) {
+            // The download is a CDN round-trip; it runs off the queue so the
+            // bubble (and its caption) reaches the dashboard first.
+            if(in_array($messageType, self::MEDIA_TYPES)) {
                 DownloadInboundMedia::dispatchFor($message);
             }
 
@@ -603,39 +674,19 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
     }
 
     /**
-     * Queue-side entry point. Instagram has two kinds of media in one webhook
-     * shape: a plain attachment (image/video/audio/file), and a shared post,
-     * reel or story whose CDN copy is mirrored locally and linked from the
-     * body. Both are fetched here, off the request.
+     * Queue-side entry point, for plain attachments (image/video/audio/file)
+     * only. A shared post or reel is never mirrored: its bytes are the
+     * poster's, not the conversation's, and the bubble carries the caption and
+     * — for reels — a link to the post instead. See shareBody().
      */
     public function downloadMedia(Message $message): void
     {
-        $payload = $message->meta ?? [];
-
         if (in_array($message->message_type, self::MEDIA_TYPES)) {
-            $this->handleMediaMessage($message, $payload, $message->message_type);
-        }
-
-        $attachment = $payload['messaging'][0]['message']['attachments'][0] ?? null;
-
-        if ($attachment && in_array($attachment['type'] ?? null, self::SHARE_TYPES)) {
-            $this->handleInstagramShare($message, $attachment, $message->conversation->connection);
+            $this->handleMediaMessage($message, $message->meta ?? []);
         }
     }
 
-    /** True when this message has anything worth a download job. */
-    private static function hasDownloadableMedia(array $payload, MessageType $messageType): bool
-    {
-        if (in_array($messageType, self::MEDIA_TYPES)) {
-            return true;
-        }
-
-        $attachmentType = $payload['messaging'][0]['message']['attachments'][0]['type'] ?? null;
-
-        return in_array($attachmentType, self::SHARE_TYPES);
-    }
-
-    private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
+    private function handleMediaMessage(Message $message, array $payload)
     {
         $messaging = $payload['messaging'][0] ?? [];
         $attachments = $messaging['message']['attachments'] ?? [];
@@ -731,74 +782,4 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         };
     }
 
-    private function handleInstagramShare(Message $message, array $attachment, Connection $connection)
-    {
-        $type = $attachment['type'] ?? null;
-        $payload = $attachment['payload'] ?? [];
-        $title = $payload['title'] ?? null;
-        $cdnUrl = $payload['url'] ?? null;
-
-        if (!$cdnUrl) {
-            Log::warning('InstagramHandler: No CDN URL found for Instagram share', [
-                'message_id' => $message->id,
-                'type' => $type,
-            ]);
-            return;
-        }
-
-        try {
-            $accessToken = $connection->credentials['access_token'] ?? null;
-
-            if (!$accessToken) {
-                Log::error('InstagramHandler: Missing access token for downloading Instagram share', [
-                    'connection_id' => $connection->id,
-                ]);
-                return;
-            }
-
-            // Download content from CDN URL
-            $response = Http::withToken($accessToken)->get($cdnUrl);
-
-            if (!$response->successful()) {
-                Log::error('InstagramHandler: Failed to download Instagram share content', [
-                    'message_id' => $message->id,
-                    'url' => $cdnUrl,
-                    'status' => $response->status(),
-                ]);
-                return;
-            }
-
-            // Determine extension from mime type
-            $mimeType = $response->header('Content-Type');
-            $extension = $this->getExtensionFromMimeType($mimeType) ?? 'bin';
-
-            // Save to public storage
-            $fileName = $message->id . '_' . uniqid() . '.' . $extension;
-            $storagePath = 'instagram_shares/' . $fileName;
-            Storage::disk('public')->put($storagePath, $response->body());
-
-            // Generate public URL
-            $publicUrl = url('storage/' . $storagePath);
-
-            // Update message body with local URL
-            $newBody = $title ? "$title\n$publicUrl" : $publicUrl;
-
-            $message->update([
-                'body' => $newBody,
-                'attachment' => $storagePath,
-            ]);
-
-            Log::info('InstagramHandler: Instagram share downloaded successfully', [
-                'message_id' => $message->id,
-                'storage_path' => $storagePath,
-                'public_url' => $publicUrl,
-            ]);
-
-        } catch (\Throwable $th) {
-            Log::error('InstagramHandler: Error downloading Instagram share', [
-                'message_id' => $message->id,
-                'error' => $th->getMessage(),
-            ]);
-        }
-    }
 }
