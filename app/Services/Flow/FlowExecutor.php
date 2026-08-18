@@ -9,6 +9,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationHandoff;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
+use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Models\AiHubAgent;
 use App\Models\Connection;
 use App\Models\Conversation;
@@ -1695,6 +1696,20 @@ class FlowExecutor
             ]);
 
             // Stay on this node — wait for the next user reply.
+        } catch (AiRunQuotaExceededException $th) {
+            // Same consequence as any other AI failure — a human takes over —
+            // but recorded under its own reason: "the plan ran out" is an
+            // account problem somebody can fix, not an outage to investigate.
+            Log::warning('FlowExecutor: AIAgent run quota exhausted, handing off to human', [
+                'node_id' => $node->id,
+                'ai_hub_agent_id' => $agent->id,
+                'limit' => $th->limit,
+                'used' => $th->used,
+            ]);
+
+            $stateData[$reasonKey] = 'ai_quota_exceeded';
+            $flowState->update(['state_data' => $stateData]);
+            $this->routeHandoff($flowState, $node, 'ai_quota_exceeded', false);
         } catch (\Throwable $th) {
             Log::error('FlowExecutor: Error running AIAgent, handing off to human', [
                 'node_id' => $node->id,

@@ -1,5 +1,6 @@
 <?php
 
+use App\Support\Heartbeat;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -7,6 +8,14 @@ use Illuminate\Support\Facades\Schedule;
 Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
+
+// The scheduler proving it is running at all. Everything else on this page is
+// downstream of it, so when this one goes quiet the Back Office health page can
+// say "the scheduler is down" instead of reporting nine separate failures.
+Schedule::call(fn () => Heartbeat::ping('scheduler'))
+    ->everyMinute()
+    ->name('heartbeat')
+    ->withoutOverlapping();
 
 // Schedule Instagram token refresh daily
 Schedule::command('instagram:refresh-tokens --days-before=7')

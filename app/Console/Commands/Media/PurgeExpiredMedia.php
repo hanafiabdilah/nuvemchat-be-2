@@ -6,6 +6,7 @@ use App\Enums\Conversation\Type;
 use App\Enums\Message\AttachmentStatus;
 use App\Models\Message;
 use App\Services\Media\MediaRetention;
+use App\Support\Heartbeat;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -46,6 +47,8 @@ class PurgeExpiredMedia extends Command
 
     public function handle(): int
     {
+        Heartbeat::ping('media:purge');
+
         if (! MediaRetention::enabled()) {
             $this->warn('Media retention is disabled (MEDIA_RETENTION_ENABLED=false) — nothing to do.');
 

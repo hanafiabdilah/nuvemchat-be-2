@@ -12,6 +12,7 @@ use App\Models\ApiwaySubscription;
 use App\Services\Billing\BillingNotifier;
 use App\Services\Billing\BillingService;
 use App\Services\Connection\Apiway\ApiwayPartnerClient;
+use App\Support\Heartbeat;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -34,6 +35,8 @@ class RenewApiwaySubscriptions extends Command
 
     public function handle(BillingService $billing, BillingNotifier $notifier, ApiwayPartnerClient $partner): int
     {
+        Heartbeat::ping('apiway:renew');
+
         if (! $partner->isConfigured()) {
             $this->warn('ProxyBR partner token not configured — nothing to do.');
 

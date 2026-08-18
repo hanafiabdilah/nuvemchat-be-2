@@ -23,6 +23,9 @@ class Message extends Model
         'body',
         'attachment',
         'attachment_status',
+        // Written by MessageAttachmentObserver, not by callers — listed so the
+        // backfill command can mass-assign it.
+        'attachment_size',
         'replied_message_id',
         'sent_at',
         'delivery_at',

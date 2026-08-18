@@ -4,6 +4,7 @@ namespace App\Console\Commands\Billing;
 
 use App\Services\Connection\Apiway\ApiwayPartnerClient;
 use App\Services\Connection\Apiway\ApiwayService;
+use App\Support\Heartbeat;
 use Illuminate\Console\Command;
 
 /**
@@ -19,6 +20,8 @@ class SyncApiwaySubscriptions extends Command
 
     public function handle(ApiwayService $apiway, ApiwayPartnerClient $partner): int
     {
+        Heartbeat::ping('apiway:sync');
+
         if (! $partner->isConfigured()) {
             $this->warn('ProxyBR partner token not configured — nothing to do.');
 

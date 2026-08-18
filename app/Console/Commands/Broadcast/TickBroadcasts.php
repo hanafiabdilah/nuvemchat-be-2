@@ -8,6 +8,7 @@ use App\Jobs\RunBroadcastJob;
 use App\Models\Broadcast;
 use App\Models\BroadcastRecipient;
 use App\Services\Broadcast\BroadcastService;
+use App\Support\Heartbeat;
 use Illuminate\Console\Command;
 
 /**
@@ -33,6 +34,10 @@ class TickBroadcasts extends Command
 
     public function handle(BroadcastService $broadcasts): int
     {
+        // Pinged first, not last: a pass that finds nothing to do is the
+        // healthy case, and it still proves the watchdog is running.
+        Heartbeat::ping('broadcasts:tick');
+
         $this->startDue($broadcasts);
         $this->releaseStaleClaims();
         $this->revivePumps();

@@ -7,6 +7,7 @@ use App\Enums\Connection\Status;
 use App\Models\Connection;
 use App\Services\Connection\Discord\GatewayClient;
 use App\Services\Webhook\ChatService;
+use App\Support\Heartbeat;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -62,6 +63,15 @@ class DiscordGatewayCommand extends Command
 
             return;
         }
+
+        // Discord is the one channel with no inbound webhook — if this daemon
+        // is not running, DMs simply stop arriving and nothing else notices.
+        // The session count rides along because "alive with zero sessions" is a
+        // different problem from "not running": it means every bot token is bad.
+        Heartbeat::ping('discord:gateway', [
+            'sessions' => count($this->clients),
+            'connections' => $connections->count(),
+        ]);
 
         // Drop sessions for connections that were deleted, disconnected or
         // re-tokened since the last tick.

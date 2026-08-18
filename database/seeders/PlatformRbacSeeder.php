@@ -29,6 +29,17 @@ class PlatformRbacSeeder extends Seeder
         'bo.invoices.view',
         'bo.revenue.view',
         'bo.settings.manage',
+        'bo.ai-usage.view',
+        // Pausing another company's live campaign is an intervention, not a
+        // read, so it is not folded into an existing view permission.
+        'bo.broadcasts.manage',
+        'bo.health.view',
+        'bo.storage.view',
+        'bo.conversations.view',
+        'bo.reports.export',
+        // Granting a feature outside the plan bypasses billing; kept apart from
+        // bo.subscriptions.manage so it can be handed out separately.
+        'bo.entitlements.manage',
     ];
 
     public function run(): void

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Conversation\Status;
+use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Services\AiSuggest\AiSuggestService;
@@ -42,6 +43,16 @@ class AiSuggestController extends Controller
 
         try {
             $suggestion = $service->suggest($conversation);
+        } catch (AiRunQuotaExceededException $th) {
+            // 402, not 502: nothing is broken, the plan's AI runs are spent.
+            // The agent can still write the reply themselves, so this is a
+            // disabled button and a note — not an error state.
+            return response()->json([
+                'message' => 'Your plan\'s AI runs for this billing period are used up.',
+                'code' => 'ai_quota_exceeded',
+                'limit' => $th->limit,
+                'used' => $th->used,
+            ], 402);
         } catch (\Throwable $th) {
             Log::warning('AiSuggest: failed to generate suggestion', [
                 'conversation_id' => $conversation->id,

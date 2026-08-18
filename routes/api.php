@@ -18,8 +18,15 @@ use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
+use App\Http\Controllers\Api\Admin\AdminAiUsageController;
 use App\Http\Controllers\Api\Admin\AdminApiwayController;
+use App\Http\Controllers\Api\Admin\AdminBroadcastController;
+use App\Http\Controllers\Api\Admin\AdminConversationOverviewController;
+use App\Http\Controllers\Api\Admin\AdminEntitlementController;
+use App\Http\Controllers\Api\Admin\AdminHealthController;
 use App\Http\Controllers\Api\Admin\AdminInvoiceController;
+use App\Http\Controllers\Api\Admin\AdminReportController;
+use App\Http\Controllers\Api\Admin\AdminStorageController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
 use App\Http\Controllers\Api\Admin\AdminSettingsController;
@@ -501,12 +508,59 @@ Route::prefix('admin')->group(function () {
             Route::get('/otps', [AdminOtpController::class, 'index']);
         });
 
+        // AI spend. The platform's largest variable cost, and until this
+        // endpoint the only one with no reader — ai_hub_runs has recorded
+        // tokens and provider cost since the AI Hub shipped.
+        Route::get('/ai-usage', [AdminAiUsageController::class, 'index'])
+            ->middleware('permission:bo.ai-usage.view');
+
+        // Campaigns platform-wide, plus the ability to stop one. A bad blast
+        // spends the platform's WhatsApp reputation, not just the tenant's.
+        Route::middleware('permission:bo.broadcasts.manage')->group(function () {
+            Route::get('/broadcasts', [AdminBroadcastController::class, 'index']);
+            Route::post('/broadcasts/{broadcast}/pause', [AdminBroadcastController::class, 'pause']);
+            Route::post('/broadcasts/{broadcast}/cancel', [AdminBroadcastController::class, 'cancel']);
+        });
+
+        // Are the daemons, workers and scheduler alive? Nothing else answers
+        // this: they never serve a request, so their death is silent.
+        Route::get('/health', [AdminHealthController::class, 'index'])
+            ->middleware('permission:bo.health.view');
+
+        // Disk per customer + whether retention is keeping up.
+        Route::get('/storage', [AdminStorageController::class, 'index'])
+            ->middleware('permission:bo.storage.view');
+
+        // Volume and backlog per customer. Deliberately not a message reader —
+        // impersonation is the audited path for actually looking at a thread.
+        Route::get('/conversations-overview', [AdminConversationOverviewController::class, 'index'])
+            ->middleware('permission:bo.conversations.view');
+
+        // CSV exports for the tables people were copying by hand.
+        Route::middleware('permission:bo.reports.export')->group(function () {
+            Route::get('/reports', [AdminReportController::class, 'index']);
+            Route::get('/reports/{report}', [AdminReportController::class, 'download']);
+        });
+
         // Billing — plan catalogue management
         Route::middleware('permission:bo.plans.manage')->group(function () {
             Route::get('/plans', [AdminPlanController::class, 'index']);
+            // The feature/quota vocabulary, so the plan editor stops keeping
+            // its own copy of it — the copy went stale and silently dropped
+            // `crm` from every plan it saved.
+            Route::get('/plans/meta', [AdminPlanController::class, 'meta']);
             Route::post('/plans', [AdminPlanController::class, 'store']);
             Route::put('/plans/{plan}', [AdminPlanController::class, 'update']);
             Route::delete('/plans/{plan}', [AdminPlanController::class, 'destroy']);
+        });
+
+        // Per-tenant exceptions to the plan: a feature for a month, a raised
+        // cap during a migration. Never grants platform access — that is what
+        // a comped subscription is for.
+        Route::middleware('permission:bo.entitlements.manage')->group(function () {
+            Route::get('/customers/{tenant}/entitlements', [AdminEntitlementController::class, 'show']);
+            Route::put('/customers/{tenant}/entitlements', [AdminEntitlementController::class, 'update']);
+            Route::delete('/customers/{tenant}/entitlements', [AdminEntitlementController::class, 'destroy']);
         });
 
         // Billing — subscriptions + manual (comp) assignment

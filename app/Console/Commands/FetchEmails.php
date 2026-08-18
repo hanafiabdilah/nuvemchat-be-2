@@ -7,6 +7,7 @@ use App\Enums\Connection\Status as ConnectionStatus;
 use App\Jobs\SyncEmailInbox;
 use App\Models\Connection;
 use App\Services\Email\EmailInboxSynchronizer;
+use App\Support\Heartbeat;
 use Illuminate\Console\Command;
 
 class FetchEmails extends Command
@@ -17,6 +18,8 @@ class FetchEmails extends Command
 
     public function handle(EmailInboxSynchronizer $synchronizer): int
     {
+        Heartbeat::ping('emails:fetch');
+
         $connections = Connection::where('channel', Channel::Email)
             ->where('status', ConnectionStatus::Active)
             ->get();

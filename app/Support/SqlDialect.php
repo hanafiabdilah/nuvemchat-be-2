@@ -63,6 +63,16 @@ class SqlDialect
             : "DATE_FORMAT({$shifted}, '%Y-%m-%d')";
     }
 
+    /** Calendar month as 'YYYY-MM'. */
+    public static function month(string $column, int $offsetSeconds = 0): string
+    {
+        $shifted = self::shifted($column, $offsetSeconds);
+
+        return self::isSqlite()
+            ? "strftime('%Y-%m', {$shifted})"
+            : "DATE_FORMAT({$shifted}, '%Y-%m')";
+    }
+
     /** Day of week, 0 = Sunday .. 6 = Saturday (both drivers normalised). */
     public static function dayOfWeek(string $column, int $offsetSeconds = 0): string
     {

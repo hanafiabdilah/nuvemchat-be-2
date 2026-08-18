@@ -11,11 +11,36 @@ class Tenant extends Model
         'user_id',
         'current_subscription_id',
         'lead_settings',
+        'entitlement_overrides',
     ];
 
     protected $casts = [
         'lead_settings' => 'array',
+        'entitlement_overrides' => 'array',
     ];
+
+    /**
+     * The override block if one is in force, or null.
+     *
+     * Expiry is checked on read rather than by clearing the column, so the
+     * record of what was granted and until when survives the grant itself.
+     */
+    public function activeEntitlementOverrides(): ?array
+    {
+        $overrides = $this->entitlement_overrides;
+
+        if (! is_array($overrides) || $overrides === []) {
+            return null;
+        }
+
+        $expiresAt = $overrides['expires_at'] ?? null;
+
+        if ($expiresAt !== null && \Illuminate\Support\Carbon::parse($expiresAt)->isPast()) {
+            return null;
+        }
+
+        return $overrides;
+    }
 
     public function user()
     {

@@ -4,6 +4,8 @@ namespace App\Services\Billing;
 
 use App\Enums\Apiway\ApiwaySubscriptionStatus;
 use App\Enums\Billing\Feature;
+use App\Enums\Billing\Quota;
+use App\Models\AiHubRun;
 use App\Models\ApiwayInstance;
 use App\Models\Tenant;
 use Illuminate\Support\Facades\Cache;
@@ -63,6 +65,44 @@ class SubscriptionGate
     }
 
     /**
+     * AI Hub runs consumed in the current billing period.
+     *
+     * Windowed by the subscription's own period rather than the calendar month
+     * so the counter resets when the customer is charged, not on the 1st. With
+     * no subscription (or an open-ended comp) the calendar month is the only
+     * honest fallback.
+     */
+    public function aiRunsUsed(Tenant $tenant): int
+    {
+        $subscription = $tenant->currentSubscription;
+        $start = $subscription?->current_period_start ?? now()->startOfMonth();
+        $end = $subscription?->current_period_end;
+
+        return AiHubRun::query()
+            ->where('tenant_id', $tenant->id)
+            ->where('created_at', '>=', $start)
+            ->when($end, fn ($q) => $q->where('created_at', '<=', $end))
+            ->count();
+    }
+
+    /**
+     * Whether the tenant may start one more AI run.
+     *
+     * Free when no `max_ai_runs` quota is set, which is every plan that does not
+     * sell the limit — the count query only runs for plans that do.
+     */
+    public function canRunAi(Tenant $tenant): bool
+    {
+        $limit = $this->quota($tenant, Quota::MaxAiRuns->value);
+
+        if ($limit === null) {
+            return true;
+        }
+
+        return $this->aiRunsUsed($tenant) < $limit;
+    }
+
+    /**
      * @return array{quotas: array, features: array}
      */
     public function entitlements(Tenant $tenant): array
@@ -102,9 +142,43 @@ class SubscriptionGate
                     ]);
                 }
 
-                return $base;
+                return $this->applyOverrides($tenant, $base);
             },
         );
+    }
+
+    /**
+     * Layer a support-granted exception on top of the plan's entitlements.
+     *
+     * Applied last, so an override wins over both the plan and the API Way
+     * synthesis above — that is the point of it. A tenant with no usable plan
+     * still gets the merge, but `usable()` is untouched: an override tops up
+     * what an account may do, it does not pay for the account. Handing out
+     * platform access with no subscription is what `grantManual` is for.
+     *
+     * @param  array{quotas: array, features: array}  $base
+     * @return array{quotas: array, features: array}
+     */
+    private function applyOverrides(Tenant $tenant, array $base): array
+    {
+        $overrides = $tenant->activeEntitlementOverrides();
+
+        if ($overrides === null) {
+            return $base;
+        }
+
+        if (is_array($overrides['features'] ?? null)) {
+            // Not array_filter'd: an override explicitly setting a feature to
+            // false is how support takes something away, and dropping the false
+            // values would silently turn that into a no-op.
+            $base['features'] = array_merge($base['features'] ?? [], $overrides['features']);
+        }
+
+        if (is_array($overrides['quotas'] ?? null)) {
+            $base['quotas'] = array_merge($base['quotas'] ?? [], $overrides['quotas']);
+        }
+
+        return $base;
     }
 
     /**
