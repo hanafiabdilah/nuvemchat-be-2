@@ -39,5 +39,20 @@ interface EmailInboxClient
      */
     public function fetch(array $uids, ?int $maxMessageBytes = null): iterable;
 
+    /**
+     * Set the \Seen flag on exactly these UIDs.
+     *
+     * The counterpart of the leaveUnread()/FT_PEEK the whole sync is built on:
+     * downloading mail must never touch its state, so the mailbox stays exactly
+     * as the account owner left it — which also means that without this, mail
+     * an agent has read and answered here sits bold in Gmail forever. Only the
+     * act of reading a thread in the panel moves the flag.
+     *
+     * @param  array<int, int>  $uids
+     * @return int How many were flagged. Fewer than asked is normal: a UID may
+     *             have been moved or deleted from the mailbox since we saw it.
+     */
+    public function markSeen(array $uids): int;
+
     public function disconnect(): void;
 }

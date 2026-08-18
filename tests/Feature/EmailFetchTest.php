@@ -89,6 +89,16 @@ class FakeEmailInboxClient implements EmailInboxClient
         }
     }
 
+    /** UIDs handed to markSeen(), in call order — read by the read-receipt test. */
+    public array $seen = [];
+
+    public function markSeen(array $uids): int
+    {
+        $this->seen = array_merge($this->seen, $uids);
+
+        return count($uids);
+    }
+
     /**
      * @param  \Closure(InboundEmail): bool  $matches
      * @return array<int, int>

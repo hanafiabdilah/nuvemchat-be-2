@@ -165,4 +165,39 @@ enum Channel: string
     {
         return $this->typingRefreshSeconds() !== null;
     }
+
+    /**
+     * Whether "we have read you" can be reflected back onto the channel.
+     *
+     * Opening a thread has always cleared the badge on our side; this is the
+     * question of whether the *customer* can be told, in the app they are
+     * actually looking at. The panel asks this before queueing any work, so a
+     * channel that cannot do it costs nothing at all:
+     *
+     *   WhatsApp Official  status:read on the message id — marks every earlier
+     *                      message read too, so one call settles the thread
+     *   API Way            the same idea through the core (see the handler: the
+     *                      route is the one unverified piece of this feature)
+     *   Instagram          sender_action: mark_seen
+     *   Messenger          sender_action: mark_seen
+     *   Live Chat Widget   ours — an event on the visitor's own session channel,
+     *                      which is what turns their ticks blue live
+     *   E-mail             the only one where "the channel" is a mailbox rather
+     *                      than a person: the IMAP \Seen flag, so mail an agent
+     *                      has answered here stops sitting bold in Gmail
+     *
+     * The three that are out are out for good reasons, not for lack of work:
+     * a Telegram *bot* has no read API (readBusinessMessage belongs to Business
+     * accounts, which these are not), Discord's ack endpoint refuses bots, and
+     * TikTok sends us read events without accepting any.
+     */
+    public function supportsReadReceipt(): bool
+    {
+        return match ($this) {
+            self::WhatsappOfficial, self::WhatsappApiway,
+            self::Instagram, self::Messenger,
+            self::LiveChatWidget, self::Email => true,
+            default => false,
+        };
+    }
 }

@@ -7,11 +7,13 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
+use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -21,7 +23,7 @@ use Illuminate\Support\Facades\Storage;
  * Instagram, but against graph.facebook.com with the Page access token, and
  * with messaging_type=RESPONSE (we only ever reply inside the 24h window).
  */
-class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator
+class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
 {
     private const MESSAGES_URL = 'https://graph.facebook.com/v25.0/me/messages';
 
@@ -260,12 +262,32 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator
      */
     public function handleTyping(Conversation $conversation, bool $typing = true): bool
     {
+        return $this->senderAction($conversation, $typing ? 'typing_on' : 'typing_off');
+    }
+
+    /**
+     * The read tick under the customer's own bubble in Messenger. Like typing,
+     * it is a thread-level watermark with no message id of its own, so the list
+     * of what was just read has nothing to add to the call — and the Page, in
+     * return, gets the `read` webhook watermark it already handles inbound.
+     */
+    public function handleMarkAsRead(Conversation $conversation, Collection $messages): bool
+    {
+        return $this->senderAction($conversation, 'mark_seen');
+    }
+
+    /**
+     * Meta refuses a sender action sent alongside anything else, so this is
+     * deliberately the whole payload: recipient plus the one action.
+     */
+    private function senderAction(Conversation $conversation, string $action): bool
+    {
         return Http::withToken($conversation->connection->credentials['access_token'] ?? '')
             ->connectTimeout(5)
             ->timeout(10)
             ->post(self::MESSAGES_URL, [
                 'recipient' => ['id' => $conversation->external_id],
-                'sender_action' => $typing ? 'typing_on' : 'typing_off',
+                'sender_action' => $action,
             ])
             ->successful();
     }

@@ -9,16 +9,18 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingIndicator
+class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
 {
     private const GRAPH_BASE = 'https://graph.facebook.com/v25.0';
 
@@ -441,13 +443,25 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
     }
 
     /**
-     * Mark the conversation's latest inbound message as read on WhatsApp Cloud
-     * API (blue ticks for the customer). When $typing is true, also emit a
-     * typing indicator — Cloud API bundles both into one call keyed by the
-     * message id. Best-effort: returns false (never throws) so a read/typing
-     * ping never breaks the caller.
+     * Blue ticks for the customer. Cloud API keys the receipt to one message id
+     * and marks everything before it read too, so the newest inbound message
+     * settles the whole thread in a single call — which is why the list of what
+     * was read is only consulted for its last entry.
      */
-    public function handleMarkAsRead(Conversation $conversation, bool $typing = false): bool
+    public function handleMarkAsRead(Conversation $conversation, Collection $messages): bool
+    {
+        $target = $messages->last(fn (Message $message) => filled($message->external_id));
+
+        return $this->sendReadReceipt($conversation, typing: false, target: $target);
+    }
+
+    /**
+     * Mark an inbound message as read on WhatsApp Cloud API. When $typing is
+     * true, also emit a typing indicator — Cloud API bundles both into one call
+     * keyed by the message id. Best-effort: returns false (never throws) so a
+     * read/typing ping never breaks the caller.
+     */
+    private function sendReadReceipt(Conversation $conversation, bool $typing, ?Message $target = null): bool
     {
         $connection = $conversation->connection;
         $token = $connection->credentials['access_token'] ?? null;
@@ -457,20 +471,20 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
             return false;
         }
 
-        $lastInbound = $conversation->messages()
+        $target ??= $conversation->messages()
             ->where('sender_type', SenderType::Incoming)
             ->whereNotNull('external_id')
             ->latest('id')
             ->first();
 
-        if (!$lastInbound) {
+        if (!$target) {
             return false;
         }
 
         $payload = [
             'messaging_product' => 'whatsapp',
             'status' => 'read',
-            'message_id' => $lastInbound->external_id,
+            'message_id' => $target->external_id,
         ];
 
         if ($typing) {
@@ -509,7 +523,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
      */
     public function handleTyping(Conversation $conversation, bool $typing = true): bool
     {
-        return $typing ? $this->handleMarkAsRead($conversation, typing: true) : false;
+        return $typing ? $this->sendReadReceipt($conversation, typing: true) : false;
     }
 
     public function handleEditMessage(Message $message, array $data): ?Message

@@ -5,19 +5,22 @@ namespace App\Services\Message\Handlers;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\Widget\WidgetMessageReceived;
+use App\Events\Widget\WidgetMessagesRead;
 use App\Events\Widget\WidgetTyping;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
-class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndicator
+class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
 {
     public function getMessageId(array $payload): string
     {
@@ -215,6 +218,29 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
             $conversation->id,
             $typing,
             $conversation->agent?->name,
+        ));
+
+        return true;
+    }
+
+    /**
+     * The one channel where the read receipt is entirely ours to deliver. The
+     * widget already renders the second tick from each message's `read_at`, so
+     * this only has to name the ids that changed and it turns them live —
+     * nothing to store, since the rows were written before this ran.
+     */
+    public function handleMarkAsRead(Conversation $conversation, Collection $messages): bool
+    {
+        $ids = $messages->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        if ($ids === []) {
+            return false;
+        }
+
+        broadcast(new WidgetMessagesRead(
+            $conversation->id,
+            $ids,
+            Carbon::now()->toIso8601String(),
         ));
 
         return true;

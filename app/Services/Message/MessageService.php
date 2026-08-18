@@ -4,8 +4,10 @@ namespace App\Services\Message;
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 
 class MessageService
@@ -44,19 +46,35 @@ class MessageService
     }
 
     /**
-     * Mark the latest inbound message as read (and optionally emit a typing
-     * indicator) on the channel. Only WhatsApp Official supports Cloud read
-     * receipts / typing; other channels are a silent no-op.
+     * Reflect a read back onto the channel, so the customer's own app shows it.
+     *
+     * Best-effort in the same way as sendTyping(), and for a stronger reason:
+     * this runs from a queued job behind an agent who has already moved on, so
+     * there is nobody left to show an error to. A channel that cannot do it is
+     * a silent false; one that can but fails is a logged warning.
+     *
+     * @param  Collection<int, Message>|null  $messages  The messages that just
+     *         flipped to read, when the caller knows them (see the contract).
      */
-    public function markAsRead(Conversation $conversation, bool $typing = false): bool
+    public function markAsRead(Conversation $conversation, ?Collection $messages = null): bool
     {
-        $handler = MessageFactory::make($conversation->connection->channel, []);
+        $handler = MessageFactory::make($conversation->connection->channel);
 
-        if (!$handler instanceof WhatsappOfficialHandler) {
+        if (! $handler instanceof MarksMessagesAsRead) {
             return false;
         }
 
-        return $handler->handleMarkAsRead($conversation, $typing);
+        try {
+            return $handler->handleMarkAsRead($conversation, $messages ?? collect());
+        } catch (\Throwable $th) {
+            Log::warning('MessageService: read receipt failed', [
+                'conversation_id' => $conversation->id,
+                'channel' => $conversation->connection->channel->value,
+                'error' => $th->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**

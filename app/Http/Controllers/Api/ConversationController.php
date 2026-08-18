@@ -16,6 +16,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\ContactResource;
 use App\Http\Resources\ConversationResource;
 use App\Http\Resources\MessageResource;
+use App\Jobs\SendReadReceipt;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -544,22 +545,43 @@ class ConversationController extends Controller
         }
     }
 
+    /**
+     * How many of the messages just read are named to the channel. Only the
+     * newest actually matters everywhere but e-mail — WhatsApp and Meta carry a
+     * single watermark that settles everything before it — so this is a bound on
+     * the queue payload, not on the receipt: a thread nobody opened for a month
+     * would otherwise put thousands of ids into one job row to flag mail that
+     * the agent is, at best, skimming.
+     */
+    private const READ_RECEIPT_MAX_MESSAGES = 200;
+
     public function read(int $id)
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
+        // Read before the update, or there is nothing left to name: the channel
+        // has to be told *which* messages turned read, and one statement later
+        // they are indistinguishable from every message read last week.
+        $unreadIds = $conversation->messages()
+            ->where('sender_type', SenderType::Incoming)
+            ->whereNull('read_at')
+            ->orderBy('id')
+            ->pluck('id')
+            ->all();
+
         $conversation->messages()->where('sender_type', SenderType::Incoming)->whereNull('read_at')->update(['read_at' => now()]);
         broadcast(new ConversationUpdated($conversation));
 
-        // Best-effort: reflect the read receipt to the customer on WhatsApp
-        // Cloud API (blue ticks). No-op for other channels; never fatal.
-        try {
-            (new MessageService())->markAsRead($conversation);
-        } catch (\Throwable $th) {
-            Log::warning('Failed to send WhatsApp read receipt', [
-                'conversation_id' => $conversation->id,
-                'error' => $th->getMessage(),
-            ]);
+        // The other half of "read": until now this only moved a badge on our
+        // side, while the person who wrote the message kept looking at a single
+        // grey tick. Queued because an agent must not wait on Meta (or on an
+        // IMAP login) to open a thread, and skipped outright where the channel
+        // has no way to hear it — a Telegram bot, Discord, TikTok.
+        if ($unreadIds !== [] && $conversation->connection?->channel->supportsReadReceipt()) {
+            SendReadReceipt::dispatch(
+                $conversation,
+                array_slice($unreadIds, -self::READ_RECEIPT_MAX_MESSAGES)
+            );
         }
 
         return response()->json([

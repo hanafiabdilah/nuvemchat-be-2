@@ -7,16 +7,18 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
+use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator
+class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
 {
     private const MESSAGES_URL = 'https://graph.instagram.com/v25.0/me/messages';
 
@@ -723,12 +725,31 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator
      */
     public function handleTyping(Conversation $conversation, bool $typing = true): bool
     {
+        return $this->senderAction($conversation, $typing ? 'typing_on' : 'typing_off');
+    }
+
+    /**
+     * "Visto" under the customer's own bubble. Instagram carries no message id
+     * here — mark_seen is a thread-level watermark, so which messages were just
+     * read makes no difference to the call.
+     */
+    public function handleMarkAsRead(Conversation $conversation, Collection $messages): bool
+    {
+        return $this->senderAction($conversation, 'mark_seen');
+    }
+
+    /**
+     * Meta refuses a sender action sent alongside anything else, so this is
+     * deliberately the whole payload: recipient plus the one action.
+     */
+    private function senderAction(Conversation $conversation, string $action): bool
+    {
         return Http::withToken($conversation->connection->credentials['access_token'] ?? '')
             ->connectTimeout(5)
             ->timeout(10)
             ->post(self::MESSAGES_URL, [
                 'recipient' => ['id' => $conversation->external_id],
-                'sender_action' => $typing ? 'typing_on' : 'typing_off',
+                'sender_action' => $action,
             ])
             ->successful();
     }

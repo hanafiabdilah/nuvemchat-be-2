@@ -240,6 +240,45 @@ class WebklexEmailInboxClient implements EmailInboxClient
             ->all();
     }
 
+    /**
+     * +FLAGS \Seen, one STORE per UID.
+     *
+     * Not one STORE for the whole set: the protocol's store() builds a
+     * *sequence range* from its two bounds, so handing it the lowest and
+     * highest of a sparse list would flag every message in between — mail that
+     * arrived while the thread sat unread and that nobody has opened. A handful
+     * of round trips on a connection we already paid to open is the cheaper
+     * mistake, and per-UID failures stay per-UID.
+     *
+     * @param  array<int, int>  $uids
+     */
+    public function markSeen(array $uids): int
+    {
+        $uids = array_values(array_unique(array_filter(array_map('intval', $uids))));
+
+        if ($uids === []) {
+            return 0;
+        }
+
+        // Raw STORE, like sizes(): no folder is selected implicitly here.
+        $this->client->openFolder($this->folder->path);
+
+        $flagged = 0;
+
+        foreach ($uids as $uid) {
+            try {
+                $this->client->getConnection()->store(['\\Seen'], $uid, null, '+', true, IMAP::ST_UID);
+                $flagged++;
+            } catch (\Throwable) {
+                // A UID the mailbox no longer has (moved, deleted, expunged) is
+                // the ordinary case, not an outage — the rest of the batch is
+                // still worth flagging.
+            }
+        }
+
+        return $flagged;
+    }
+
     public function disconnect(): void
     {
         try {

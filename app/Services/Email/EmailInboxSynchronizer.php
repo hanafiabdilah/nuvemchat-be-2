@@ -344,6 +344,10 @@ class EmailInboxSynchronizer
             $sentAt = $email->sentAt ? Carbon::instance($email->sentAt) : now();
             $meta = [
                 'email' => [
+                    // The mailbox's own handle on this message. Message-Id is
+                    // what threads it; the UID is the only thing IMAP accepts
+                    // back — without it a read here can never be flagged there.
+                    'uid' => $email->uid,
                     'subject' => $email->subject,
                     'subject_normalized' => $this->normalizeSubject($email->subject),
                     'from' => $email->fromEmail,

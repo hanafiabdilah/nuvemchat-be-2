@@ -2,21 +2,24 @@
 
 namespace App\Services\Message\Handlers;
 
+use App\Enums\Conversation\Type as ConversationType;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\MessageReceived;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
-class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator
+class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
 {
     /** Keys that may carry the node's message id in a send response (matched case-insensitively). */
     private const ID_KEYS = ['id', 'messageid', 'message_id', 'msgid'];
@@ -874,5 +877,71 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             ]);
 
         return $response->successful();
+    }
+
+    /**
+     * Blue ticks on the customer's phone: POST /v1/message/read-message,
+     * "Marcar mensagem como lida" (apiway.com.br/docs — the OpenAPI spec behind
+     * that page is the route list for this core, and the only place these paths
+     * are written down; note the group is *message*, not the *chats* group that
+     * owns send-presence). Requires `phone` + `messageId`.
+     *
+     * whatsmeow marks read per message id within a chat and WhatsApp treats the
+     * newest as a watermark, so one call for the last message settles the whole
+     * thread — which is why the list of what was read is only read for its tail.
+     *
+     * `senderPhone` is the group case: in a group the chat is the `@g.us` JID
+     * and the receipt still has to say whose message was read, which is the
+     * per-message sender we already store on `messages.contact_id`. Sending it
+     * for a private chat would be redundant at best, so it goes only where the
+     * conversation is actually a group.
+     */
+    public function handleMarkAsRead(Conversation $conversation, Collection $messages): bool
+    {
+        $connection = $conversation->connection;
+        $instanceId = $connection->credentials['instance_id'] ?? null;
+        $token = $connection->credentials['token'] ?? null;
+
+        if (!$instanceId || !$token) {
+            return false;
+        }
+
+        $target = $messages->last(fn (Message $message) => filled($message->external_id))
+            ?: $conversation->messages()
+                ->where('sender_type', SenderType::Incoming)
+                ->whereNotNull('external_id')
+                ->latest('id')
+                ->first();
+
+        if (!$target) {
+            return false;
+        }
+
+        $payload = [
+            'phone' => $conversation->external_id,
+            'messageId' => $target->external_id,
+        ];
+
+        if ($conversation->type === ConversationType::Group && $target->contact?->external_id) {
+            $payload['senderPhone'] = $target->contact->external_id;
+        }
+
+        $response = Http::withHeaders(['Authorization' => 'Bearer ' . $token])
+            ->connectTimeout(5)
+            ->timeout(10)
+            ->post($this->base() . '/v1/message/read-message?instanceId=' . $instanceId, $payload);
+
+        if (! $response->successful()) {
+            Log::warning('WhatsappApiwayHandler: core refused the read receipt', [
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+
+            return false;
+        }
+
+        return true;
     }
 }

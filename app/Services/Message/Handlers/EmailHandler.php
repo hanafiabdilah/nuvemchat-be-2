@@ -7,11 +7,14 @@ use App\Enums\Message\SenderType;
 use App\Exceptions\ConnectionException;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\EmailSmtpTransportFactory;
+use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\MessageHandlerInterface;
 use Carbon\Carbon;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -22,7 +25,7 @@ use Symfony\Component\Mailer\Mailer;
 use Symfony\Component\Mime\Address;
 use Symfony\Component\Mime\Email;
 
-class EmailHandler implements MessageHandlerInterface
+class EmailHandler implements MessageHandlerInterface, MarksMessagesAsRead
 {
     public function getMessageId(array $payload): string
     {
@@ -495,6 +498,39 @@ class EmailHandler implements MessageHandlerInterface
             throw ValidationException::withMessages([
                 'media_url' => 'Envio de anexos por URL em e-mail ainda nao suportado. Envie o arquivo diretamente.',
             ]);
+        }
+    }
+
+    /**
+     * The odd one out among read receipts: there is no person to notify, only a
+     * mailbox to keep honest. The sync downloads with PEEK so it never disturbs
+     * the account, which left every message an agent had answered here still
+     * bold in Gmail — this is the flag the panel owes it back.
+     *
+     * Only the messages named are flagged, and only those with a stored UID:
+     * mail ingested before the UID was persisted is skipped rather than guessed
+     * at, because the alternative — searching the mailbox by Message-Id — is a
+     * per-message round trip to fix history nobody is looking at.
+     */
+    public function handleMarkAsRead(Conversation $conversation, Collection $messages): bool
+    {
+        $uids = $messages
+            ->map(fn (Message $message) => (int) ($message->meta['email']['uid'] ?? 0))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($uids === []) {
+            return false;
+        }
+
+        $client = app(EmailInboxClientFactory::class)->make($conversation->connection);
+
+        try {
+            return $client->markSeen($uids) > 0;
+        } finally {
+            $client->disconnect();
         }
     }
 }
