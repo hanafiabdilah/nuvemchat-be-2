@@ -39,6 +39,8 @@ class WhatsappOfficialChannel implements ChannelInterface
             'token_expires_at' => ['nullable', 'string'],
             'platform_type' => ['nullable', 'string'],
             'is_coexistence' => ['nullable', 'boolean'],
+            'migrated_from_bsp' => ['nullable', 'boolean'],
+            'migrated_at' => ['nullable', 'string'],
         ])->validate();
 
         // Check if this phone number is already connected
@@ -92,6 +94,13 @@ class WhatsappOfficialChannel implements ChannelInterface
                     // a fresh 24h sync window.
                     'platform_type' => $data['platform_type'] ?? null,
                     'is_coexistence' => (bool) ($data['is_coexistence'] ?? false),
+                    // Number moved here from another BSP via Embedded Signup.
+                    // Behaviourally identical afterwards; kept because a
+                    // migrated number's templates and quality rating were
+                    // rebuilt by Meta, which explains a lot of "why is this
+                    // template REJECTED / rating UNKNOWN" questions.
+                    'migrated_from_bsp' => (bool) ($data['migrated_from_bsp'] ?? false),
+                    'migrated_at' => $data['migrated_at'] ?? null,
                 ],
             ]);
 

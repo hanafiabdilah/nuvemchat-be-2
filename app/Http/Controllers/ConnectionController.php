@@ -554,6 +554,14 @@ class ConnectionController extends Controller
         // later as the authoritative signal; this flag covers the race where
         // the field hasn't flipped yet right after onboarding.
         $isCoexistence = filter_var($request->input('is_coexistence', false), FILTER_VALIDATE_BOOLEAN);
+        // Migration: the number is live on another BSP (Whaticket, 360dialog, …)
+        // and the business is moving it here. Embedded Signup drives the move
+        // itself — there is no separate API and no cooperation from the losing
+        // provider — but Meta lands the number on the new WABA *unregistered*,
+        // so this flag exists to stop the post-connect registration from being
+        // skipped. See handleWhatsAppCallback(). No Meta field reports "this
+        // number just arrived from elsewhere", hence a caller-supplied flag.
+        $isMigration = filter_var($request->input('is_migration', false), FILTER_VALIDATE_BOOLEAN);
 
         if (!$connectionId && $state = $request->input('state')) {
             $stateData = json_decode(base64_decode($state), true) ?: [];
@@ -562,6 +570,7 @@ class ConnectionController extends Controller
             $phoneNumberId = $phoneNumberId ?: ($stateData['phone_number_id'] ?? null);
             $fbUserId = $fbUserId ?: ($stateData['fb_user_id'] ?? null);
             $isCoexistence = $isCoexistence || !empty($stateData['is_coexistence']);
+            $isMigration = $isMigration || !empty($stateData['is_migration']);
         }
 
         if (!$connectionId) {
@@ -598,7 +607,7 @@ class ConnectionController extends Controller
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
-            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId, $fbUserId, $isCoexistence);
+            return $this->handleWhatsAppCallback($connection, $accessToken, $wabaId, $phoneNumberId, $fbUserId, $isCoexistence, $isMigration);
 
         } catch (\Throwable $th) {
             Log::error('Error processing Facebook callback', [
@@ -612,7 +621,7 @@ class ConnectionController extends Controller
         }
     }
 
-    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null, ?string $fbUserId = null, bool $isCoexistence = false)
+    private function handleWhatsAppCallback(Connection $connection, string $accessToken, ?string $wabaId = null, ?string $phoneNumberId = null, ?string $fbUserId = null, bool $isCoexistence = false, bool $isMigration = false)
     {
         try {
             // The WABA id comes from the frontend WA_EMBEDDED_SIGNUP "FINISH"
@@ -679,14 +688,37 @@ class ConnectionController extends Controller
             // Coexistence numbers are registered by Meta during the Business
             // App onboarding flow itself (no OTP/PIN on our side) — calling
             // /register for them fails, so they always skip.
+            //
+            // A migrated number is the exception that breaks the heuristic. It
+            // arrives already verified — it has been live on the losing BSP for
+            // months — so `code_verification_status` is VERIFIED from the first
+            // read, and `platform_type` may already say CLOUD_API. Skipping on
+            // that evidence leaves a connection that looks perfectly healthy
+            // and cannot send: registration is per-WABA, and this number has
+            // never been registered on *ours*. So a migration always attempts
+            // it. The call is safe to attempt — registerPhoneNumber() treats
+            // "already registered" as success.
             $alreadyRegistered = $isCoexistence
-                || (($platformType === 'CLOUD_API') && ($codeVerificationStatus === 'VERIFIED'));
+                || (!$isMigration && ($platformType === 'CLOUD_API') && ($codeVerificationStatus === 'VERIFIED'));
 
             // Credentials may be null here — e.g. re-authorizing a connection
             // that was wiped by a Meta data-deletion callback. Normalize to an
             // array so array-offset reads below don't warn on null.
             $existingCredentials = $connection->credentials ?? [];
             $pin = $existingCredentials['pin'] ?? null;
+
+            // Two-step verification is the one prerequisite the business has to
+            // clear at their old provider, and the only one we can see. Without
+            // this check Meta answers the register call with a PIN mismatch,
+            // which reads like our bug; named here, it is a two-minute fix in
+            // the other provider's WhatsApp Manager.
+            if ($isMigration && $isPinEnabled && !$pin) {
+                throw new \Exception(
+                    'Two-step verification is still enabled on this number. '
+                    . 'Disable it in your current provider\'s WhatsApp Manager (Settings → Two-step verification), '
+                    . 'then run the migration again.'
+                );
+            }
 
             if ($alreadyRegistered) {
                 Log::info('Phone number already registered on Cloud API; skipping /register', [
@@ -699,7 +731,7 @@ class ConnectionController extends Controller
             } else {
                 // Use stored PIN if we have one (e.g. previous attempt), else mint a new one.
                 $pin = $pin ?? str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-                $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin);
+                $this->registerPhoneNumber((string) $phoneNumberId, $accessToken, $pin, $isMigration);
             }
 
             // Note: we intentionally do NOT try to resolve a Facebook user ASID
@@ -733,6 +765,12 @@ class ConnectionController extends Controller
                 'token_expires_at' => null,
                 'platform_type' => $platformType,
                 'is_coexistence' => $isCoexistence,
+                // Kept so support can tell a migrated number from a fresh one
+                // months later: the two behave identically afterwards, but only
+                // a migrated one has templates and a quality rating that were
+                // rebuilt by Meta rather than earned here.
+                'migrated_from_bsp' => $isMigration ?: null,
+                'migrated_at' => $isMigration ? now()->toIso8601String() : null,
             ]);
 
             broadcast(new ConnectionUpdated($connection->fresh()));
@@ -749,6 +787,7 @@ class ConnectionController extends Controller
                 'phone_number_id' => $phoneNumberId,
                 'display_phone_number' => $displayPhoneNumber,
                 'is_coexistence' => $isCoexistence,
+                'is_migration' => $isMigration,
             ]);
 
             // Return JSON response instead of redirect for embedded signup
@@ -977,8 +1016,13 @@ class ConnectionController extends Controller
      * for the number; for first-time embedded signup any 6-digit PIN works.
      * The PIN must be persisted — re-registration requires the same value
      * unless 2FA is reset via Facebook Business settings.
+     *
+     * $isMigration only changes what a failure is allowed to say. Every way
+     * this call fails for a number arriving from another BSP has a fix the
+     * business can carry out themselves, and none of them are visible in
+     * Meta's raw error text.
      */
-    private function registerPhoneNumber(string $phoneNumberId, string $accessToken, string $pin): void
+    private function registerPhoneNumber(string $phoneNumberId, string $accessToken, string $pin, bool $isMigration = false): void
     {
         $response = Http::withToken($accessToken)
             ->post("https://graph.facebook.com/v25.0/{$phoneNumberId}/register", [
@@ -1016,11 +1060,44 @@ class ConnectionController extends Controller
 
         Log::error('Failed to register phone number on Cloud API', [
             'phone_number_id' => $phoneNumberId,
+            'is_migration' => $isMigration,
             'status' => $response->status(),
             'body' => $response->json(),
         ]);
 
+        if ($isMigration && $hint = self::migrationRegisterHint($code)) {
+            throw new \Exception($hint);
+        }
+
         throw new \Exception('Failed to register phone number: ' . ($message ?: 'Unknown error') . " (code {$code}, subcode {$subcode})");
+    }
+
+    /**
+     * Plain-language cause for a registration that failed while migrating a
+     * number in from another provider.
+     *
+     * Meta reports these as bare numeric codes with text written for whoever
+     * wrote the integration, not for the business owner who has to act. Each
+     * one below is something they can fix without us, and saying which one it
+     * is turns a support ticket into a two-minute task. Codes we cannot
+     * translate return null and keep Meta's own message — a wrong guess is
+     * worse than a technical string.
+     */
+    private static function migrationRegisterHint(int $code): ?string
+    {
+        return match ($code) {
+            // 133005: registered elsewhere under a PIN we do not know.
+            133005 => 'This number still has two-step verification enabled at your current provider. '
+                . 'Ask them to disable it (or turn it off yourself in WhatsApp Manager → Settings → Two-step verification), '
+                . 'then run the migration again.',
+            // 133006: the number was never verified, so it cannot be moved.
+            133006 => 'This number has not completed phone verification. '
+                . 'Finish verification in WhatsApp Manager before migrating it.',
+            // 133016: too many registration attempts in a short window.
+            133016 => 'Meta is rate-limiting registration attempts for this number. '
+                . 'Wait a few minutes and try the migration again.',
+            default => null,
+        };
     }
 
     public function facebookDeauthorize(Request $request)
