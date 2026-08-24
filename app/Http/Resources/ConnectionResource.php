@@ -66,6 +66,13 @@ class ConnectionResource extends JsonResource
                 'accept_message' => $this->accept_message,
                 'closing_message' => $this->closing_message,
             ],
+            // Routing, not a message: a contact who comes back inside the
+            // tolerance goes to the agent who last served them instead of
+            // through the flow and the queue.
+            'return_to_last_agent' => [
+                'enabled' => (bool) $this->return_to_last_agent,
+                'tolerance_minutes' => (int) $this->return_to_last_agent_minutes,
+            ],
             'flow' => new FlowResource($this->flow),
             'api_key' => $this->api_key,
             // 'webhook_url' => route('webhook.chat', $this->id),

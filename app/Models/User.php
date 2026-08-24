@@ -54,7 +54,38 @@ class User extends Authenticatable
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
             'ui_preferences' => 'array',
+            'last_seen_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Whether this agent's dashboard has reported in recently enough to treat
+     * them as available for work being routed to them automatically.
+     *
+     * Never-seen reads as offline, which is the safe direction: the only
+     * caller (see LastAgentRouter) falls back to the normal queue, so a
+     * deployment whose frontend has not shipped the heartbeat yet keeps
+     * behaving exactly as it did before.
+     */
+    public function isOnline(): bool
+    {
+        if ($this->last_seen_at === null) {
+            return false;
+        }
+
+        return $this->last_seen_at->gt(now()->subSeconds((int) config('presence.online_seconds', 150)));
+    }
+
+    /**
+     * Record a heartbeat. Written without touching `updated_at`: presence is
+     * not a change to the user, and moving `updated_at` once a minute per
+     * signed-in agent would make that column useless for anything else.
+     */
+    public function markSeen(): void
+    {
+        static::withoutTimestamps(function () {
+            $this->forceFill(['last_seen_at' => now()])->saveQuietly();
+        });
     }
 
     public function tenant()

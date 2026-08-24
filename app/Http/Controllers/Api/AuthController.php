@@ -82,6 +82,11 @@ class AuthController extends Controller
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
+        // Present from this second rather than from the first heartbeat a
+        // minute later — signing in is the clearest statement there is that
+        // someone is at their desk.
+        $user->markSeen();
+
         return response()->json([
             'access_token' => $token,
             'user' => $user->toResource(UserResource::class),

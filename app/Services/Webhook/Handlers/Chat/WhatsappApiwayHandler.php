@@ -19,6 +19,7 @@ use App\Models\MessageReaction;
 use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\CallLog;
 use App\Services\Conversation\GroupConversationService;
+use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -297,7 +298,11 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         $flowExecutor = new FlowExecutor;
 
         if ($isNewConversation && $conversationForWelcome) {
-            if ($connection->flow_id) {
+            // A contact who came straight back reaches the agent who was
+            // already helping them; the bot is for strangers.
+            $returnedToAgent = LastAgentRouter::route($conversationForWelcome);
+
+            if (! $returnedToAgent && $connection->flow_id) {
                 try {
                     $flowExecutor->startFlow($conversationForWelcome);
                 } catch (\Throwable $th) {

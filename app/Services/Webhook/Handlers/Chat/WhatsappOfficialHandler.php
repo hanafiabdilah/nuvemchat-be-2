@@ -14,6 +14,7 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
+use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Flow\InteractiveNodes;
 use App\Services\Message\MessageService;
@@ -311,7 +312,11 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
 
             // Handle new conversation - start flow
             if ($isNewConversation && $conversationForWelcome) {
-                if ($connection->flow_id) {
+                // A contact who came straight back reaches the agent who was
+                // already helping them; the bot is for strangers.
+                $returnedToAgent = LastAgentRouter::route($conversationForWelcome);
+
+                if (! $returnedToAgent && $connection->flow_id) {
                     try {
                         $flowExecutor->startFlow($conversationForWelcome);
                     } catch (\Throwable $th) {

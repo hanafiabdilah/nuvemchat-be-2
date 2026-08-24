@@ -14,6 +14,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\LiveChatSession;
+use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -207,11 +208,42 @@ class WidgetController extends Controller
         broadcast(new MessageReceived($message));
         broadcast(new ConversationUpdated($session->conversation->load('contact')));
 
+        // A visitor who reopens the widget minutes after their chat was closed
+        // goes back to the agent they were speaking to. Only on the opening
+        // message: after that the thread is wherever it was routed, and the
+        // flow may be mid-question.
+        //
+        // The webhook channels get this at conversation-creation time, which
+        // the widget cannot use — its conversation is created when the session
+        // opens, before the visitor has said anything, and assigning an empty
+        // thread would push a blank row into the dashboard.
+        if ($this->isOpeningMessage($session->conversation, $message)
+            && LastAgentRouter::route($session->conversation)) {
+            return response()->json([
+                'message' => (new MessageResource($message))->resolve(),
+            ]);
+        }
+
         $this->triggerFlow($session->conversation, $message);
 
         return response()->json([
             'message' => (new MessageResource($message))->resolve(),
         ]);
+    }
+
+    /**
+     * Whether the visitor has just said their first word in this conversation.
+     *
+     * Counted rather than inferred from the flow state: a thread whose flow was
+     * stopped (an agent took it over) has no state either, and treating the
+     * visitor's tenth message as their first would re-route a conversation
+     * somebody is already handling.
+     */
+    private function isOpeningMessage(Conversation $conversation, $message): bool
+    {
+        return $conversation->messages()
+            ->where('id', '!=', $message->id)
+            ->doesntExist();
     }
 
     /**

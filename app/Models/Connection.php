@@ -29,6 +29,8 @@ class Connection extends Model
         'api_key',
         'accept_message',
         'closing_message',
+        'return_to_last_agent',
+        'return_to_last_agent_minutes',
         'service_hours',
         'ai_suggest_agent_id',
     ];
@@ -46,7 +48,20 @@ class Connection extends Model
         'sync_remaining' => 'integer',
         'sync_started_at' => 'datetime',
         'service_hours' => 'array',
+        'return_to_last_agent' => 'boolean',
+        'return_to_last_agent_minutes' => 'integer',
     ];
+
+    /**
+     * How long after a conversation closes a returning contact still counts as
+     * the same visit. Clamped rather than trusted: an old row created before
+     * the column existed reads as 0, and a 0-minute tolerance would silently
+     * turn the switch into a no-op that looks enabled.
+     */
+    public function returnToLastAgentMinutes(): int
+    {
+        return max(1, (int) ($this->return_to_last_agent_minutes ?: 15));
+    }
 
     /**
      * Get the tenant that owns the connection.

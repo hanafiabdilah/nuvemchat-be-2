@@ -104,4 +104,24 @@ class UserController extends Controller
             'ui_preferences' => $user->ui_preferences,
         ]);
     }
+
+    /**
+     * "This dashboard is still open and someone is behind it."
+     *
+     * The SPA calls this once a minute. Nothing else in the product can answer
+     * the question: a Sanctum token proves someone signed in at some point, and
+     * an Echo subscription is a fact about Reverb that no request handler can
+     * read. Automatic routing needs the answer — see LastAgentRouter, which
+     * would otherwise hand a returning customer to an empty chair.
+     *
+     * Deliberately writes nothing back. The caller has no use for a body, and
+     * an empty response keeps the once-a-minute cost of the ping to a single
+     * UPDATE.
+     */
+    public function heartbeat(Request $request)
+    {
+        $request->user()->markSeen();
+
+        return response()->noContent();
+    }
 }

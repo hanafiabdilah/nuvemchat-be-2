@@ -104,6 +104,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // profile update so the frontend can persist a click without resending
     // name/email/password.
     Route::put('/user/preferences', [UserController::class, 'updatePreferences']);
+    // Presence ping from the open dashboard: once a minute, per tab. The limit
+    // is well above that because agents keep several tabs open and the throttle
+    // counts per user — it is here to bound abuse, not to pace the SPA.
+    Route::post('/user/heartbeat', [UserController::class, 'heartbeat'])->middleware('throttle:30,1');
 
     // Billing (tenant-side). Exempt from the subscription.active gate so a
     // suspended tenant can still load the page and pay (see EnsureSubscriptionActive).
