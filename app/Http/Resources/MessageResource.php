@@ -11,7 +11,6 @@ use App\Services\Media\MediaRetention;
 use App\Services\Message\VCard;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Illuminate\Support\Facades\Storage;
 
 class MessageResource extends JsonResource
 {
@@ -95,27 +94,7 @@ class MessageResource extends JsonResource
      */
     private function resolveAttachmentUrl(?string $attachment, ?Message $owner = null): ?string
     {
-        if (!$attachment) {
-            return null;
-        }
-
-        if (MediaRetention::isExternal($attachment)) {
-            return $attachment;
-        }
-
-        $owner ??= $this->resource;
-
-        // Between the purge date and the hourly sweep the file is still on
-        // disk; treating it as gone here keeps every client agreeing on when
-        // media stops being available.
-        if (MediaRetention::isExpired($owner, $this->conversation)) {
-            return null;
-        }
-
-        return Storage::disk('local')->temporaryUrl(
-            $attachment,
-            MediaRetention::urlExpiresAt($owner, $this->conversation),
-        );
+        return MediaRetention::signedUrl($attachment, $owner ?? $this->resource, $this->conversation);
     }
 
     /**

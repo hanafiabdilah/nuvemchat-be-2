@@ -6,6 +6,7 @@ use App\Enums\Conversation\Type;
 use App\Models\Conversation;
 use App\Models\Message;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * One clock for a message's media: when the file gets deleted, and how long
@@ -89,6 +90,40 @@ class MediaRetention
             : CarbonImmutable::now();
 
         return $createdAt->addDays(max(1, (int) config('media.url_ttl_days', 180)));
+    }
+
+    /**
+     * Turn a stored attachment reference into a URL that can actually fetch
+     * the bytes, or null when there is nothing fetchable behind it.
+     *
+     * Absolute URLs are media somebody else hosts and are returned untouched.
+     * Local paths get a signature that dies on the purge date (see
+     * urlExpiresAt), and a file whose window has already closed resolves to
+     * null even while the hourly sweep has yet to delete it — so every reader
+     * agrees on the moment media stops being available.
+     *
+     * $owner names the message the path belongs to: normally the one being
+     * rendered, but a quoted message when resolving `replied_message`, and the
+     * carrying message for each file an e-mail keeps in `meta`.
+     */
+    public static function signedUrl(?string $attachment, Message $owner, ?Conversation $conversation = null): ?string
+    {
+        if (! $attachment) {
+            return null;
+        }
+
+        if (self::isExternal($attachment)) {
+            return $attachment;
+        }
+
+        if (self::isExpired($owner, $conversation)) {
+            return null;
+        }
+
+        return Storage::disk('local')->temporaryUrl(
+            $attachment,
+            self::urlExpiresAt($owner, $conversation),
+        );
     }
 
     /**

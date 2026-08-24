@@ -17,8 +17,10 @@ use App\Models\FlowNode;
 use App\Models\FlowState;
 use App\Models\Message;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\AiAgentHub\AiAttachments;
 use App\Services\BusinessHours;
 use App\Services\Message\MessageService;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -30,6 +32,26 @@ class FlowExecutor
      * never fires.
      */
     protected const AI_MAX_TURNS = 20;
+
+    /**
+     * Most incoming messages folded into a single AI turn. Normally one; more
+     * only when several landed while a turn was held back waiting for a
+     * download, or while the hub was answering the previous one.
+     */
+    protected const AI_MAX_INPUT_MESSAGES = 10;
+
+    /**
+     * How long an AI turn will wait for an image that is still downloading
+     * before answering without it.
+     *
+     * Media is fetched off the queue (DownloadInboundMedia), so at the moment
+     * a webhook resumes the flow the file is almost never on disk yet —
+     * without a pause the agent would answer every screenshot blind. The job
+     * re-enters the turn the instant the bytes land, so in practice the wait
+     * is a second or two; this ceiling only covers a download that died
+     * without ever reaching its `failed()` handler.
+     */
+    protected const AI_MEDIA_WAIT_SECONDS = 300;
 
     protected MessageService $messageService;
 
@@ -1305,14 +1327,15 @@ class FlowExecutor
             'user_input' => substr($userInput, 0, 50), // Log first 50 chars only
         ]);
 
-        // Special handling for AIAgent nodes - feed user input to the agent
+        // Special handling for AIAgent nodes - feed user input to the agent.
+        //
+        // $userInput is deliberately not forwarded: the turn is assembled from
+        // the stored messages instead. A caption reaches the agent as a string
+        // either way, but only the row it was stored on knows there is an
+        // image underneath it — and only the stored watermark can tell that
+        // something arrived while an earlier turn was held back.
         if ($currentNode->type === NodeType::AIAgent) {
-            $latestIncomingId = Message::where('conversation_id', $conversation->id)
-                ->where('sender_type', SenderType::Incoming)
-                ->latest('id')
-                ->value('id');
-
-            $this->handleAIAgentInput($flowState, $currentNode, $userInput, $latestIncomingId);
+            $this->runAIAgentTurn($flowState, $currentNode);
             return;
         }
 
@@ -1521,7 +1544,161 @@ class FlowExecutor
             'message_id' => $pendingMessage->id,
         ]);
 
-        $this->handleAIAgentInput($flowState, $node, $pendingMessage->body ?? '', $pendingMessage->id);
+        $this->runAIAgentTurn($flowState, $node);
+    }
+
+    /**
+     * Assemble one AI turn out of what the customer has actually sent, and run
+     * it: their text, and the screenshots that text is about.
+     *
+     * Everything since the last turn goes in, not just the newest message.
+     * "Here's the error" followed a second later by the screenshot is one
+     * thought split across two messages, and answering only the half that
+     * arrived last is how the agent ends up asking for something it was
+     * already given.
+     */
+    protected function runAIAgentTurn(FlowState $flowState, FlowNode $node): void
+    {
+        $stateData = $flowState->state_data ?? [];
+        $lastProcessedId = (int) ($stateData["_ai_last_processed_message_id_{$node->id}"] ?? 0);
+
+        $messages = $this->pendingAiMessages($flowState, $lastProcessedId);
+
+        if ($messages->isEmpty()) {
+            return;
+        }
+
+        if ($this->awaitingImageDownload($messages)) {
+            // Hold the turn. DownloadInboundMedia calls resumeAfterMedia() the
+            // moment the file lands (or gives up), and nothing here has been
+            // marked processed, so the same messages will be picked up again.
+            Log::info('FlowExecutor: AIAgent turn deferred, waiting for image download', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+                'message_ids' => $messages->pluck('id')->all(),
+            ]);
+
+            return;
+        }
+
+        // Capped newest-first, so the screenshots that survive a burst are the
+        // recent ones — then flipped back, so what the agent sees is in the
+        // order the text below refers to it.
+        $attachments = array_reverse(AiAttachments::forMessages($messages->reverse()));
+
+        $text = trim($messages->map(function (Message $message) {
+            $body = trim((string) $message->body);
+
+            return $body !== '' ? $body : AiAttachments::describe($message);
+        })->implode("\n"));
+
+        $this->handleAIAgentInput(
+            $flowState,
+            $node,
+            $text,
+            (int) $messages->last()->id,
+            $attachments
+        );
+    }
+
+    /**
+     * The incoming messages this turn owes an answer to, oldest first.
+     *
+     * @return Collection<int, Message>
+     */
+    protected function pendingAiMessages(FlowState $flowState, int $lastProcessedId): Collection
+    {
+        $query = Message::where('conversation_id', $flowState->conversation_id)
+            ->where('sender_type', SenderType::Incoming)
+            ->whereNull('unsend_at');
+
+        if ($lastProcessedId <= 0) {
+            // No watermark. The welcome turn always leaves one behind, so this
+            // is the defensive path — answer the newest message rather than
+            // replaying a history the agent was never shown.
+            return $query->latest('id')->limit(1)->get();
+        }
+
+        return $query->where('id', '>', $lastProcessedId)
+            ->orderByDesc('id')
+            ->limit(self::AI_MAX_INPUT_MESSAGES)
+            ->get()
+            ->reverse()
+            ->values();
+    }
+
+    /**
+     * True while one of these messages is an image whose bytes are still in
+     * flight and recent enough to be worth waiting for.
+     *
+     * Only images hold a turn back. A pending document is unknowable until it
+     * arrives — a 40 MB PDF looks exactly like a screenshot from here — and a
+     * pending video or audio would never have been attached anyway.
+     */
+    protected function awaitingImageDownload(Collection $messages): bool
+    {
+        $cutoff = now()->subSeconds(self::AI_MEDIA_WAIT_SECONDS);
+
+        return $messages->contains(fn (Message $message) => AiAttachments::awaitingImage($message)
+            && $message->created_at !== null
+            && $message->created_at->gt($cutoff));
+    }
+
+    /**
+     * Re-enter an AI turn that was held back for this message's download.
+     *
+     * Called by DownloadInboundMedia once the file is on disk (or once it has
+     * given up on it). Every guard here answers the same question — is this
+     * still the message the agent is waiting on? — because between the webhook
+     * and the queue worker the conversation may have been handed to a human,
+     * resolved, or moved on to a turn that already went out without the image.
+     */
+    public function resumeAfterMedia(Message $message): void
+    {
+        $conversation = $message->conversation;
+
+        if (!$conversation
+            || $conversation->isGroup()
+            || $message->sender_type !== SenderType::Incoming) {
+            return;
+        }
+
+        if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return;
+        }
+
+        $flowState = FlowState::where('conversation_id', $conversation->id)->first();
+
+        if (!$flowState || $flowState->status !== FlowStateStatus::Running) {
+            return;
+        }
+
+        $node = $flowState->currentNode;
+
+        if (!$node || $node->type !== NodeType::AIAgent) {
+            return;
+        }
+
+        $stateData = $flowState->state_data ?? [];
+
+        // Turn zero means the node has not sent its welcome yet; entering it
+        // is executeAIAgentNode's job, and it never calls the AI anyway.
+        if ((int) ($stateData["_ai_turns_{$node->id}"] ?? 0) === 0) {
+            return;
+        }
+
+        if ($message->id <= (int) ($stateData["_ai_last_processed_message_id_{$node->id}"] ?? 0)) {
+            return;
+        }
+
+        Log::info('FlowExecutor: media landed, running the AI turn it was holding', [
+            'node_id' => $node->id,
+            'conversation_id' => $conversation->id,
+            'message_id' => $message->id,
+            'attachment_status' => $message->attachment_status?->value,
+        ]);
+
+        $this->runAIAgentTurn($flowState, $node);
     }
 
     /**
@@ -1574,6 +1751,9 @@ class FlowExecutor
      * to the contact, and decide whether to keep looping on this node or
      * hand off to the next node.
      *
+     * Callers reach this through runAIAgentTurn(), which is what decides what
+     * "the input" is — the text and the images that come with it.
+     *
      * Handoff path (move to next node):
      *   - Safety-net: turn counter exceeds AI_MAX_TURNS
      *   - Error path: hub call throws (fail open to human)
@@ -1583,8 +1763,13 @@ class FlowExecutor
      * field in the /runs response, parse it from the run record and call
      * moveToNextNode() with the reason stored in state_data.
      */
-    protected function handleAIAgentInput(FlowState $flowState, FlowNode $node, string $userInput, ?int $sourceMessageId = null): void
-    {
+    protected function handleAIAgentInput(
+        FlowState $flowState,
+        FlowNode $node,
+        string $userInput,
+        ?int $sourceMessageId = null,
+        array $attachments = []
+    ): void {
         $data = $node->data;
         $conversation = $flowState->conversation;
         $stateData = $flowState->state_data ?? [];
@@ -1632,7 +1817,8 @@ class FlowExecutor
                 $conversation,
                 $userInput,
                 $flowState->id,
-                $node->id
+                $node->id,
+                attachments: $attachments
             );
 
             $replyText = $run->output_message;

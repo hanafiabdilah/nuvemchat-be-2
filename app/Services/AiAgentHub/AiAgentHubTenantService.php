@@ -743,6 +743,10 @@ class AiAgentHubTenantService
      * $conversationExternalId overrides the hub-side conversation key. Use it
      * when the run must not touch the real conversation's hub state — e.g.
      * "Respond with AI" drafts, which run under a synthetic id.
+     *
+     * $attachments carries images for the agent to look at, in the shape the
+     * hub documents for `message.attachments` — build it with AiAttachments
+     * rather than by hand.
      */
     public function runAgent(
         AiHubAgent $agent,
@@ -751,12 +755,19 @@ class AiAgentHubTenantService
         ?int $flowStateId = null,
         ?int $flowNodeId = null,
         array $metadata = [],
-        ?string $conversationExternalId = null
+        ?string $conversationExternalId = null,
+        array $attachments = []
     ): AiHubRun {
         $tenant = $agent->aiHubTenant;
         $conversation->loadMissing(['contact', 'connection']);
 
         $this->assertWithinRunQuota($agent);
+
+        if ($attachments !== []) {
+            // Recorded on the run so "did the agent actually see the
+            // screenshot?" is answerable afterwards from the row alone.
+            $metadata['imageAttachments'] = count($attachments);
+        }
 
         $payload = [
             'agentExternalId' => $agent->external_id,
@@ -767,34 +778,47 @@ class AiAgentHubTenantService
                 'contactExternalId' => $conversation->contact->external_id,
                 'contactName' => $conversation->contact->name,
             ],
-            'message' => [
+            'message' => array_filter([
                 'role' => 'USER',
                 'content' => $userMessage,
-            ],
+                'attachments' => $attachments ?: null,
+            ], fn ($value) => $value !== null),
         ];
 
         if (!empty($metadata)) {
             $payload['metadata'] = $metadata;
         }
 
-        $response = Http::withHeaders($this->headers($tenant))
-            ->post("{$this->baseUrl}/runs", $payload);
-
-        $this->ensureSuccessful($response, 'run agent', [
+        $context = [
             'ai_hub_tenant_id' => $tenant->id,
             'hub_agent_id' => $agent->hub_agent_id,
             'conversation_id' => $conversation->id,
-        ]);
+        ];
 
-        $data = $response->json() ?? [];
+        try {
+            $data = $this->postRun($tenant, $payload, $context);
+        } catch (\Throwable $th) {
+            if ($attachments === []) {
+                throw $th;
+            }
 
-        Log::info('AiAgentHubTenantService: Agent run completed', [
-            'ai_hub_tenant_id' => $tenant->id,
-            'hub_agent_id' => $agent->hub_agent_id,
-            'conversation_id' => $conversation->id,
-            'hub_run_id' => $data['id'] ?? null,
-            'response' => $data,
-        ]);
+            // The images are the optional half of the request: whether the
+            // agent's model can accept them at all is decided hub-side, per
+            // agent, where we cannot see it. Losing every reply to a customer
+            // who happened to send a screenshot is a far worse failure than
+            // answering their text without looking at it, so one retry drops
+            // the pictures and keeps the conversation alive.
+            Log::warning('AiAgentHubTenantService: run with attachments failed, retrying text-only', array_merge($context, [
+                'attachments' => count($attachments),
+                'error' => $th->getMessage(),
+            ]));
+
+            unset($payload['message']['attachments'], $metadata['imageAttachments']);
+            $payload['metadata'] = $metadata ?: null;
+            $payload = array_filter($payload, fn ($value) => $value !== null);
+
+            $data = $this->postRun($tenant, $payload, $context);
+        }
 
         return $this->persistRun(
             $agent,
@@ -805,6 +829,32 @@ class AiAgentHubTenantService
             $flowNodeId,
             $metadata
         );
+    }
+
+    /**
+     * POST one run and return the decoded body. Split out of runAgent so the
+     * attachment fallback can replay the same request without duplicating the
+     * error handling.
+     *
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    protected function postRun(AiHubTenant $tenant, array $payload, array $context): array
+    {
+        $response = Http::withHeaders($this->headers($tenant))
+            ->post("{$this->baseUrl}/runs", $payload);
+
+        $this->ensureSuccessful($response, 'run agent', $context);
+
+        $data = $response->json() ?? [];
+
+        Log::info('AiAgentHubTenantService: Agent run completed', array_merge($context, [
+            'hub_run_id' => $data['id'] ?? null,
+            'response' => $data,
+        ]));
+
+        return $data;
     }
 
     /**

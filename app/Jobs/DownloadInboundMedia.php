@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Enums\Message\AttachmentStatus;
 use App\Events\MessageUpdated;
 use App\Models\Message;
+use App\Services\Flow\FlowExecutor;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use App\Services\Webhook\Factories\ChatFactory;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -118,6 +119,7 @@ class DownloadInboundMedia implements ShouldQueue
         $message->forceFill(['attachment_status' => AttachmentStatus::Failed])->save();
 
         $this->broadcastUpdate($message);
+        $this->releaseWaitingFlow($message);
     }
 
     /** The file is on disk: clear the flag and push it to open dashboards. */
@@ -128,6 +130,31 @@ class DownloadInboundMedia implements ShouldQueue
         }
 
         $this->broadcastUpdate($message);
+        $this->releaseWaitingFlow($message);
+    }
+
+    /**
+     * Let an AI agent turn that was waiting on this file run now.
+     *
+     * An AIAgent node holds its turn back when the customer's image is still
+     * downloading, because a screenshot the agent cannot see is worth nothing
+     * to it. This is the other end of that: whether the bytes arrived or the
+     * attempts ran out, the customer is owed an answer, and nothing else would
+     * ever come along to trigger one.
+     *
+     * Best-effort by construction — a flow that throws must not fail the job
+     * and cost the message its media a second time.
+     */
+    private function releaseWaitingFlow(Message $message): void
+    {
+        try {
+            (new FlowExecutor)->resumeAfterMedia($message);
+        } catch (Throwable $exception) {
+            Log::error('DownloadInboundMedia: failed to resume flow after media', [
+                'message_id' => $message->id,
+                'error' => $exception->getMessage(),
+            ]);
+        }
     }
 
     private function broadcastUpdate(Message $message): void
