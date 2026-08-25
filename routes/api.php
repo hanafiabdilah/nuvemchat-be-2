@@ -331,6 +331,12 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
     Route::get('/connections/{id}/business-profile', [ConnectionController::class, 'businessProfile']);
     Route::put('/connections/{id}/business-profile', [ConnectionController::class, 'updateBusinessProfile'])->middleware('permission:connections.update');
+    // Bringing a number in from another BSP: claim → send code → verify.
+    // Gated on connections.connect, same as any other act of attaching a
+    // number to a connection.
+    Route::post('/connections/{id}/migration/phone-number', [ConnectionController::class, 'migrateNumber'])->middleware('permission:connections.connect');
+    Route::post('/connections/{id}/migration/request-code', [ConnectionController::class, 'migrationRequestCode'])->middleware('permission:connections.connect');
+    Route::post('/connections/{id}/migration/verify-code', [ConnectionController::class, 'migrationVerifyCode'])->middleware('permission:connections.connect');
     // Email only — edits the stored mailbox credentials in place (see updateCredentials).
     Route::put('/connections/{id}/credentials', [ConnectionController::class, 'updateCredentials'])->middleware('permission:connections.connect');
     Route::put('/connections/{id}', [ConnectionController::class, 'update'])->middleware('permission:connections.update');

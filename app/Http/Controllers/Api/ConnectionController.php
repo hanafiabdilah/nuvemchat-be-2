@@ -23,6 +23,7 @@ use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\TikTok\TikTokAuthClient;
 use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
+use App\Services\Connection\WhatsApp\WhatsappNumberMigrationService;
 use App\Services\Email\EmailInboxSynchronizer;
 use App\Services\Flow\InteractiveNodes;
 use Illuminate\Http\Request;
@@ -302,15 +303,205 @@ class ConnectionController extends Controller
     /**
      * Resolve a tenant-scoped connection and assert it is WhatsApp Official.
      */
-    private function whatsappOfficialConnection(int $id): Connection
+    private function whatsappOfficialConnection(int $id, string $what = 'Business profile'): Connection
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
         if ($connection->channel !== Channel::WhatsappOfficial) {
-            abort(422, 'Business profile is only available for WhatsApp Official connections');
+            abort(422, "{$what} is only available for WhatsApp Official connections");
         }
 
         return $connection;
+    }
+
+    /* ------------------------------------------------------------------
+     | Migrating a number in from another BSP
+     |
+     | Meta's programmatic route, driven from our own UI so each step reports
+     | its own error: claim the number onto our WABA, have Meta send a code to
+     | it, verify, register. The alternative — asking the business to type the
+     | number inside Embedded Signup's own window — works, but is invisible:
+     | nothing is listed, no step is named, and a failure is indistinguishable
+     | from someone closing the popup.
+     |
+     | Progress lives in `credentials.pending_migration` so a browser refresh
+     | between the code being sent and being typed does not strand a number
+     | that has already been claimed.
+     * ------------------------------------------------------------------ */
+
+    /** Step 1 — claim the number onto this connection's WABA. */
+    public function migrateNumber(int $id, Request $request, WhatsappNumberMigrationService $service)
+    {
+        $connection = $this->whatsappOfficialConnection($id, 'Number migration');
+
+        $validated = $request->validate([
+            // Digits only: Meta takes the country code and the national number
+            // separately, and a pasted "+55 (11) …" is the most likely input.
+            'cc' => ['required', 'string', 'regex:/^\d{1,4}$/'],
+            'phone_number' => ['required', 'string', 'regex:/^\d{4,15}$/'],
+            'verified_name' => ['required', 'string', 'max:100'],
+        ]);
+
+        try {
+            $claim = $service->claimNumber(
+                $connection,
+                $validated['cc'],
+                $validated['phone_number'],
+                $validated['verified_name'],
+            );
+        } catch (\Throwable $th) {
+            return $this->migrationError($th);
+        }
+
+        $this->rememberMigration($connection, [
+            'phone_number_id' => $claim['phone_number_id'],
+            'cc' => $validated['cc'],
+            'phone_number' => $validated['phone_number'],
+            'verified_name' => $validated['verified_name'],
+            'claimed_at' => now()->toIso8601String(),
+        ]);
+
+        return response()->json([
+            'message' => 'Number claimed. Send the verification code next.',
+            'data' => ['phone_number_id' => $claim['phone_number_id']],
+        ]);
+    }
+
+    /** Step 2 — ask Meta to send the verification code to the number. */
+    public function migrationRequestCode(int $id, Request $request, WhatsappNumberMigrationService $service)
+    {
+        $connection = $this->whatsappOfficialConnection($id, 'Number migration');
+
+        $validated = $request->validate([
+            'code_method' => ['required', Rule::in(WhatsappNumberMigrationService::CODE_METHODS)],
+            'language' => ['nullable', 'string', 'max:10'],
+        ]);
+
+        $pending = $this->pendingMigration($connection);
+
+        try {
+            $service->requestCode(
+                $connection,
+                $pending['phone_number_id'],
+                $validated['code_method'],
+                $validated['language'] ?? 'en_US',
+            );
+        } catch (\Throwable $th) {
+            return $this->migrationError($th);
+        }
+
+        return response()->json(['message' => 'Verification code sent.']);
+    }
+
+    /**
+     * Step 3 + 4 — verify the code, register the number, and finish the
+     * connection.
+     *
+     * The last two are one request on purpose: between them the number is
+     * verified but unusable, and there is nothing the operator could decide in
+     * that gap. Registration failing on its own is still reported separately,
+     * because its fix (two-step verification at the old provider) is different
+     * from a wrong code.
+     */
+    public function migrationVerifyCode(int $id, Request $request, WhatsappNumberMigrationService $service)
+    {
+        $connection = $this->whatsappOfficialConnection($id, 'Number migration');
+
+        $validated = $request->validate([
+            'code' => ['required', 'string', 'max:16'],
+        ]);
+
+        $pending = $this->pendingMigration($connection);
+        $credentials = $connection->credentials ?? [];
+        $phoneNumberId = $pending['phone_number_id'];
+
+        try {
+            $service->verifyCode($connection, $phoneNumberId, $validated['code']);
+
+            // Reuse the PIN we already hold for this connection when there is
+            // one — a number that comes back to us later must be re-registered
+            // with the same value.
+            $pin = $credentials['pin'] ?? str_pad((string) random_int(0, 999999), 6, '0', STR_PAD_LEFT);
+            $service->register($connection, $phoneNumberId, $pin);
+
+            $details = $service->phoneDetails($connection, $phoneNumberId);
+
+            // Goes through the normal connect path so the number gets the same
+            // duplicate check, webhook subscription and Active status as any
+            // other WhatsApp connection — a migrated number is not a special
+            // kind of connection once it is here.
+            $this->connectionService->connect($connection, [
+                'access_token' => $credentials['access_token'],
+                'business_account_id' => $credentials['business_account_id'],
+                'phone_number_id' => $phoneNumberId,
+                'display_phone_number' => $details['display_phone_number'] ?? null,
+                'verified_name' => $details['verified_name'] ?? $pending['verified_name'],
+                'quality_rating' => $details['quality_rating'] ?? null,
+                'platform_type' => $details['platform_type'] ?? null,
+                'pin' => $pin,
+                'fb_user_id' => $credentials['fb_user_id'] ?? null,
+                'token_type' => $credentials['token_type'] ?? 'SYSTEM_USER',
+                'is_coexistence' => false,
+                'migrated_from_bsp' => true,
+                'migrated_at' => now()->toIso8601String(),
+            ]);
+        } catch (ValidationException $th) {
+            throw $th;
+        } catch (\Throwable $th) {
+            return $this->migrationError($th);
+        }
+
+        $this->rememberMigration($connection, null);
+        $connection->refresh();
+        broadcast(new ConnectionUpdated($connection));
+
+        Log::info('WhatsApp number migrated from another BSP', [
+            'connection_id' => $connection->id,
+            'phone_number_id' => $phoneNumberId,
+        ]);
+
+        return response()->json([
+            'message' => 'Number migrated successfully.',
+            'data' => $connection->toResource(ConnectionResource::class),
+        ]);
+    }
+
+    /**
+     * @return array{phone_number_id: string, cc: string, phone_number: string, verified_name: string}
+     */
+    private function pendingMigration(Connection $connection): array
+    {
+        $pending = ($connection->credentials ?? [])['pending_migration'] ?? null;
+
+        if (! is_array($pending) || empty($pending['phone_number_id'])) {
+            abort(422, 'Start the migration by submitting the phone number first.');
+        }
+
+        return $pending;
+    }
+
+    /** Write (or clear) the in-progress migration without touching the rest. */
+    private function rememberMigration(Connection $connection, ?array $pending): void
+    {
+        $credentials = $connection->credentials ?? [];
+
+        if ($pending === null) {
+            unset($credentials['pending_migration']);
+        } else {
+            $credentials['pending_migration'] = $pending;
+        }
+
+        $connection->forceFill(['credentials' => $credentials])->save();
+    }
+
+    /**
+     * The service already phrases these for the person who has to act, so the
+     * message is passed through as-is. 422 rather than 500: every one of them
+     * is something the business fixes and retries, not an outage.
+     */
+    private function migrationError(\Throwable $th)
+    {
+        return response()->json(['message' => $th->getMessage()], 422);
     }
 
     public function update(int $id, Request $request)
