@@ -131,8 +131,16 @@ an ordinary connect" has not tested anything.
 1. Pingly → **Connections → New connection → WhatsApp Official**.
 2. Choose **"Migrate from another provider"** (the third card), read the
    prerequisites, then:
-   - **Authorize with Meta** — only if this connection has no WABA yet. The
-     number is *not* entered here; it is asked for in the next step.
+   - **Authorize with Meta** — only if this connection has no WABA yet.
+     In Meta's window, **create a new WhatsApp Business Account and do not add
+     a phone number to it.** The number you are migrating is still live at the
+     other provider; it is asked for in the next step, not here. Do not add a
+     different number just to get past the screen — that leaves a stray number
+     on the account.
+
+     An empty WABA is the expected outcome of this step: the callback stores
+     the account and its token and leaves the connection **Pending**. (Outside
+     a migration an empty WABA still fails loudly, as it should.)
    - **Which number are you moving?** — country code, number, and the display
      name already approved for it, plus SMS or voice for the code.
    - **Enter the verification code** — the 6-digit code Meta sends to that

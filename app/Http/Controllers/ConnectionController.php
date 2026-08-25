@@ -662,6 +662,39 @@ class ConnectionController extends Controller
                 $phoneNumbers = $phoneNumbersResponse->successful() ? ($phoneNumbersResponse->json()['data'] ?? []) : [];
 
                 if (empty($phoneNumbers)) {
+                    // A migration is expected to land here: the customer made
+                    // the destination WABA and deliberately did not add a
+                    // number to it, because the number they want is still
+                    // live at the other provider and comes across in the next
+                    // step. Keep the account and the token — without them the
+                    // migration wizard has nowhere to put it — and leave the
+                    // connection Pending rather than pretending it is ready.
+                    if ($isMigration) {
+                        $this->subscribeWabaApp((string) $wabaId, $accessToken);
+
+                        $connection->forceFill([
+                            'credentials' => array_merge($connection->credentials ?? [], [
+                                'access_token' => $accessToken,
+                                'business_account_id' => (string) $wabaId,
+                                'fb_user_id' => $fbUserId ?: (($connection->credentials ?? [])['fb_user_id'] ?? null),
+                                'token_type' => 'SYSTEM_USER',
+                            ]),
+                        ])->save();
+
+                        broadcast(new ConnectionUpdated($connection->fresh()));
+
+                        Log::info('WhatsApp migration: destination WABA ready, awaiting the number', [
+                            'connection_id' => $connection->id,
+                            'business_account_id' => $wabaId,
+                        ]);
+
+                        return response()->json([
+                            'status' => 'success',
+                            'message' => 'WhatsApp Business Account ready. Enter the number you are migrating next.',
+                            'data' => $connection->fresh()->toResource(\App\Http\Resources\ConnectionResource::class),
+                        ], 200);
+                    }
+
                     throw new \Exception('No phone numbers found for this WhatsApp Business Account');
                 }
 

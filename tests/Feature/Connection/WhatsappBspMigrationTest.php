@@ -146,6 +146,52 @@ test('a PIN mismatch from Meta is translated into the fix the business can carry
         ->and($response->json('message'))->toContain('run the migration again');
 });
 
+test('a migration that creates an empty WABA keeps it and waits for the number', function () {
+    // Embedded Signup made the destination account and the customer added no
+    // number to it — correct for a migration, since the number they want is
+    // still live at the other provider. This used to throw "No phone numbers
+    // found", losing the WABA and stranding the flow with nowhere to put it.
+    Http::fake([
+        'graph.facebook.com/v25.0/oauth/access_token' => Http::response(['access_token' => 'system-user-token']),
+        'graph.facebook.com/v25.0/' . MIGRATION_WABA_ID . '/phone_numbers' => Http::response(['data' => []]),
+        'graph.facebook.com/v25.0/' . MIGRATION_WABA_ID . '/subscribed_apps' => Http::response(['success' => true]),
+    ]);
+
+    $connection = migrationConnection();
+
+    $state = base64_encode(json_encode([
+        'connection_id' => $connection->id,
+        'waba_id' => MIGRATION_WABA_ID,
+        'fb_user_id' => '123456',
+        'is_migration' => true,
+    ]));
+
+    test()->get('/oauth/facebook/callback?' . http_build_query(['code' => 'oauth-code', 'state' => $state]))
+        ->assertOk();
+
+    $credentials = $connection->fresh()->credentials;
+
+    expect($credentials['business_account_id'])->toBe(MIGRATION_WABA_ID)
+        ->and($credentials['access_token'])->toBe('system-user-token')
+        // Still Pending: nothing can be sent until the number arrives, and
+        // showing Active here is the failure mode this whole feature exists
+        // to avoid.
+        ->and($connection->fresh()->status)->toBe(ConnectionStatus::Pending);
+});
+
+test('an ordinary connect with no numbers still fails loudly', function () {
+    Http::fake([
+        'graph.facebook.com/v25.0/oauth/access_token' => Http::response(['access_token' => 'system-user-token']),
+        'graph.facebook.com/v25.0/' . MIGRATION_WABA_ID . '/phone_numbers' => Http::response(['data' => []]),
+    ]);
+
+    $connection = migrationConnection();
+
+    // Outside a migration an empty WABA means the onboarding did not finish —
+    // the tolerance above is deliberately scoped to migrations only.
+    migrationCallback($connection, isMigration: false)->assertStatus(500);
+});
+
 test('a number Meta says is already registered completes instead of failing', function () {
     fakeMigrationGraph(
         [],
