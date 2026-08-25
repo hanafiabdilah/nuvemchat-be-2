@@ -11,6 +11,21 @@ use Exception;
  */
 class ApiwayPartnerException extends Exception
 {
+    /**
+     * Refusals that mean "not right now" rather than "not ever": the request is
+     * valid, the money is already collected on our side, and ProxyBR simply
+     * will not allocate at this moment. Retrying is the only correct answer —
+     * failing hands the customer a manual refund for something an admin raises
+     * in one click, and they wanted the instance, not their money back.
+     *
+     * `no_enabled_subnet_capacity` deliberately stays out: that one is real
+     * IPv4 stock exhaustion with no ETA, so holding a paid purchase open
+     * indefinitely would be the crueller answer.
+     */
+    private const CAPACITY_HOLD = [
+        'platform_capacity_reached',
+    ];
+
     /** Partner error codes that must never be retried automatically. */
     private const NON_RETRIABLE = [
         'no_enabled_subnet_capacity',
@@ -46,12 +61,26 @@ class ApiwayPartnerException extends Exception
     }
 
     /**
+     * ProxyBR is at a self-imposed ceiling. Arrives as a 422, but unlike every
+     * other 422 on this surface nothing about the request is wrong — see
+     * CAPACITY_HOLD.
+     */
+    public function isCapacityHold(): bool
+    {
+        return in_array($this->errorCode, self::CAPACITY_HOLD, true);
+    }
+
+    /**
      * Whether a retry (queue backoff) has any chance of succeeding.
      * Transport failures and 5xx/502 apiway_* hub errors are retriable;
-     * validation/capacity/state errors are not.
+     * validation/state errors are not.
      */
     public function isRetriable(): bool
     {
+        if ($this->isCapacityHold()) {
+            return true;
+        }
+
         if (in_array($this->errorCode, self::NON_RETRIABLE, true)) {
             return false;
         }

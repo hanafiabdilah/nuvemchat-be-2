@@ -47,6 +47,14 @@ class ProvisionApiwaySubscription implements ShouldQueue, ShouldBeUnique
         try {
             $apiway->provision($row);
         } catch (ApiwayPartnerException $e) {
+            if ($e->isCapacityHold()) {
+                // Held, not failed: provision() parked the row and apiway:sync
+                // retries hourly. Spending this job's five attempts inside
+                // eight minutes against a ceiling only an operator raises
+                // would just fill failed_jobs with noise.
+                return;
+            }
+
             if (! $e->isRetriable()) {
                 // provision() already marked the row failed + notified.
                 $this->fail($e);

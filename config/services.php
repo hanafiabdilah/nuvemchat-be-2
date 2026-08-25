@@ -48,6 +48,14 @@ return [
     // AI Agent Hub credentials live in the `settings` table (DB-only).
     // See App\Services\AiAgentHub\AiAgentHubConfig.
 
+    'apiway' => [
+        // Credentials (base_url, integrator/partner tokens) live in the
+        // `settings` table — see App\Services\Connection\Proxy\ApiwayConfig.
+        // How long a paid purchase waits while ProxyBR is at its platform cap
+        // before we give up and flag it for refund.
+        'capacity_hold_hours' => (int) env('APIWAY_CAPACITY_HOLD_HOURS', 24),
+    ],
+
     'mercadopago' => [
         // Credentials (access_token, public_key, webhook_secret, back_url) live in
         // the `settings` table (DB-only) — see App\Services\Billing\MercadoPago\MercadoPagoConfig.

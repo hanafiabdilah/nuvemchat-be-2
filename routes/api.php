@@ -577,6 +577,9 @@ Route::prefix('admin')->group(function () {
         Route::middleware('permission:bo.subscriptions.manage')->group(function () {
             Route::get('/subscriptions', [AdminSubscriptionController::class, 'index']);
             Route::get('/apiway/subscriptions', [AdminApiwayController::class, 'subscriptions']);
+            // Books a manual MercadoPago refund against a purchase that was
+            // captured but never provisioned — clears it off the Health page.
+            Route::post('/apiway/subscriptions/{subscription}/settle-refund', [AdminApiwayController::class, 'settleRefund']);
             Route::get('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'show']);
             Route::post('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'assign']);
             Route::delete('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'cancel']);

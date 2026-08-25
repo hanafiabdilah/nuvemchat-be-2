@@ -225,6 +225,37 @@ test('renew mirrors the partner response onto the local row', function () {
     Http::assertSent(fn ($request) => $request->hasHeader('Idempotency-Key', 'test-key'));
 });
 
+test('a replayed renewal payment reuses the same idempotency key', function () {
+    // ProxyBR extends expiry additively and treats Idempotency-Key as optional
+    // (partner security review, 2026-08-24 — still open on their side). A
+    // duplicate MercadoPago webhook must therefore replay, not renew twice:
+    // the key is derived from the invoice, never generated per call.
+    $tenant = lifecycleTenant();
+    $row = lifecycleSubscription($tenant);
+
+    $invoice = Invoice::create([
+        'tenant_id' => $tenant->id,
+        'apiway_subscription_id' => $row->id,
+        'purpose' => InvoicePurpose::ApiwayRenewal,
+        'status' => InvoiceStatus::Paid,
+        'payment_method' => PaymentMethod::Pix,
+        'amount_cents' => 4990,
+        'currency' => 'BRL',
+        'paid_at' => now(),
+    ]);
+
+    $service = app(ApiwayService::class);
+    $service->handleApiwayInvoicePaid($invoice);
+    $service->handleApiwayInvoicePaid($invoice);
+
+    $keys = collect(Bus::dispatched(RenewApiwaySubscription::class))
+        ->map(fn (RenewApiwaySubscription $job) => $job->idempotencyKey)
+        ->unique();
+
+    expect($keys)->toHaveCount(1)
+        ->and($keys->first())->toBe('pingly-renew-inv-' . $invoice->id);
+});
+
 // --- apiway:sync (no grace at ProxyBR) -------------------------------------
 
 test('sync expires overdue rows, releases connections and voids open invoices', function () {

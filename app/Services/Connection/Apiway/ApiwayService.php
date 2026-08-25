@@ -145,12 +145,16 @@ class ApiwayService
         try {
             $this->provision($row);
         } catch (ApiwayPartnerException $e) {
-            if (! $e->isRetriable()) {
+            if (! $e->isCapacityHold() && ! $e->isRetriable()) {
                 // provision() already marked the row failed + notified.
                 throw ValidationException::withMessages(['included' => $e->getMessage()]);
             }
 
-            ProvisionApiwaySubscription::dispatch($row->id);
+            // A hold is already parked by provision() and retried hourly by
+            // apiway:sync — queuing here only buys an immediate second refusal.
+            if (! $e->isCapacityHold()) {
+                ProvisionApiwaySubscription::dispatch($row->id);
+            }
         } catch (\Throwable $e) {
             Log::warning('Included apiway provisioning deferred to queue', [
                 'apiway_subscription_id' => $row->id,
@@ -276,7 +280,9 @@ class ApiwayService
                 $row->cycle,
             );
         } catch (ApiwayPartnerException $e) {
-            if (! $e->isRetriable()) {
+            if ($e->isCapacityHold()) {
+                $this->markCapacityHold($row, $e);
+            } elseif (! $e->isRetriable()) {
                 $this->markProvisionFailed($row, $e);
             }
 
@@ -286,7 +292,11 @@ class ApiwayService
         $data = $result['data'];
 
         DB::transaction(function () use ($row, $data) {
+            $meta = $row->meta ?? [];
+            unset($meta['capacity_hold']);
+
             $row->update([
+                'meta' => $meta,
                 'provider_subscription_id' => $data['id'] ?? null,
                 'status' => ApiwaySubscriptionStatus::Active,
                 'unit_price_cents' => $this->toCents($data['unit_price'] ?? ($row->unit_price_cents / 100)),
@@ -318,6 +328,84 @@ class ApiwayService
         $this->notifier->notifyTenant(NotificationType::ApiwayPurchaseActivated, $row->tenant, [
             'quantity' => $row->quantity,
         ]);
+    }
+
+    /**
+     * ProxyBR is at its platform ceiling. Hold the purchase instead of failing
+     * it: the row stays `provisioning`, the customer keeps their place, and
+     * apiway:sync retries hourly until an operator raises the cap.
+     *
+     * Bounded, though — a hold that never resolves is a customer who paid and
+     * heard nothing, which is worse than an honest refund. Past the window this
+     * degrades into the ordinary permanent failure.
+     */
+    protected function markCapacityHold(ApiwaySubscription $row, ApiwayPartnerException $e): void
+    {
+        $hold = $row->meta['capacity_hold'] ?? [];
+        $since = isset($hold['since']) ? \Illuminate\Support\Carbon::parse($hold['since']) : now();
+
+        if ($since->addHours($this->capacityHoldHours())->isPast()) {
+            Log::error('Apiway capacity hold exhausted — giving up', [
+                'apiway_subscription_id' => $row->id,
+                'held_since' => $hold['since'] ?? null,
+                'attempts' => $hold['attempts'] ?? 0,
+            ]);
+
+            $this->markProvisionFailed($row, $e);
+
+            return;
+        }
+
+        $meta = $row->meta ?? [];
+        $meta['capacity_hold'] = [
+            'code' => $e->getErrorCode(),
+            'message' => $e->getMessage(),
+            'since' => ($hold['since'] ?? now()->toISOString()),
+            'last_attempt_at' => now()->toISOString(),
+            'attempts' => ((int) ($hold['attempts'] ?? 0)) + 1,
+        ];
+
+        $row->update(['meta' => $meta]);
+
+        // Platform-level, not tenant-level: nothing the customer does fixes a
+        // cap on our side, and ApiwayProvisionFailed promises a call back.
+        Log::warning('Apiway provisioning held: ProxyBR at platform capacity', [
+            'apiway_subscription_id' => $row->id,
+            'tenant_id' => $row->tenant_id,
+            'quantity' => $row->quantity,
+            'code' => $e->getErrorCode(),
+            'attempts' => $meta['capacity_hold']['attempts'],
+            'paid' => $row->source === ApiwaySubscriptionSource::Unit,
+        ]);
+
+        ApiwaySubscriptionUpdated::dispatch($row->fresh());
+    }
+
+    protected function capacityHoldHours(): int
+    {
+        return max(1, (int) config('services.apiway.capacity_hold_hours', 24));
+    }
+
+    /**
+     * Re-attempt purchases parked by markCapacityHold(). Driven by apiway:sync
+     * rather than the job's own retries: five attempts across eight minutes buy
+     * nothing against a ceiling only a human raises.
+     */
+    public function retryHeldProvisions(?Tenant $tenant = null): int
+    {
+        $held = ApiwaySubscription::query()
+            ->where('status', ApiwaySubscriptionStatus::Provisioning->value)
+            ->when($tenant, fn ($q) => $q->where('tenant_id', $tenant->id))
+            ->get()
+            // Filtered here, not in SQL: provisioning rows are transient and
+            // few, and a JSON path predicate would differ per DB driver.
+            ->filter(fn (ApiwaySubscription $row) => isset($row->meta['capacity_hold']));
+
+        foreach ($held as $row) {
+            ProvisionApiwaySubscription::dispatch($row->id);
+        }
+
+        return $held->count();
     }
 
     protected function markProvisionFailed(ApiwaySubscription $row, ApiwayPartnerException $e): void
@@ -568,7 +656,7 @@ class ApiwayService
      * Local expiry pass + best-effort reconciliation with ProxyBR. Mirrors
      * their no-grace hourly revoke: anything past expires_at is gone for good.
      *
-     * @return array{expired: int, synced: int}
+     * @return array{expired: int, synced: int, retried: int}
      */
     public function syncStatuses(?Tenant $tenant = null): array
     {
@@ -598,7 +686,11 @@ class ApiwayService
             $expired++;
         }
 
-        return ['expired' => $expired, 'synced' => $this->reconcileWithPartner($tenant)];
+        return [
+            'expired' => $expired,
+            'retried' => $this->retryHeldProvisions($tenant),
+            'synced' => $this->reconcileWithPartner($tenant),
+        ];
     }
 
     public function markExpired(ApiwaySubscription $row): void

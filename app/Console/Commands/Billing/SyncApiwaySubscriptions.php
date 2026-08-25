@@ -11,6 +11,10 @@ use Illuminate\Console\Command;
  * Mirrors ProxyBR's hourly no-grace revoke: expires local rows past their
  * expiry (releasing linked connections, voiding open invoices, notifying the
  * tenant) and reconciles remaining state from the partner API best-effort.
+ *
+ * Also the retry engine for purchases parked at ProxyBR's platform cap — an
+ * hourly cadence matches how those clear (an operator raising the ceiling),
+ * which the provisioning job's own eight minutes of backoff never could.
  */
 class SyncApiwaySubscriptions extends Command
 {
@@ -30,7 +34,7 @@ class SyncApiwaySubscriptions extends Command
 
         $result = $apiway->syncStatuses();
 
-        $this->info("Expired locally: {$result['expired']}, reconciled from partner: {$result['synced']}.");
+        $this->info("Expired locally: {$result['expired']}, held purchases retried: {$result['retried']}, reconciled from partner: {$result['synced']}.");
 
         return self::SUCCESS;
     }

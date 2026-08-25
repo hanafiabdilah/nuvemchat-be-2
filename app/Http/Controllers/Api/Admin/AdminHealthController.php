@@ -40,6 +40,7 @@ class AdminHealthController extends Controller
                 $this->failedJobs(),
                 $this->stalledBroadcasts(),
                 $this->apiwayRenewals(),
+                $this->apiwayUndelivered(),
                 $this->emailSync(),
                 $this->brokenConnections(),
             ],
@@ -207,6 +208,57 @@ class AdminHealthController extends Controller
             (string) ($expiringSoon + $alreadyOverdue),
             'ProxyBR has no grace period — an instance past its expiry is revoked permanently, not suspended.',
             ['expiring_3d' => $expiringSoon, 'overdue' => $alreadyOverdue],
+        );
+    }
+
+    /**
+     * Purchases where money moved and nothing was delivered.
+     *
+     * Provisioning happens after the charge settles, so every failure past
+     * that point leaves a customer who paid for an instance they do not have.
+     * The row was already flagged `needs_refund` in `meta` — nothing has ever
+     * read it, which made a captured payment with no instance the one incident
+     * on this platform with no screen at all. Holds are counted beside it: a
+     * hold is not yet an incident, but an operator raising ProxyBR's cap now
+     * is what stops it from becoming one.
+     */
+    private function apiwayUndelivered(): array
+    {
+        $rows = ApiwaySubscription::query()
+            ->needsAttention()
+            ->with('tenant.user:id,name')
+            ->orderByDesc('id')
+            ->limit(25)
+            ->get();
+
+        $owed = $rows->filter(fn (ApiwaySubscription $row) => ! empty($row->meta['needs_refund']));
+        $held = $rows->count() - $owed->count();
+
+        return $this->check(
+            'apiway:undelivered',
+            'API Way',
+            'Paid but not delivered',
+            match (true) {
+                $owed->isNotEmpty() => 'down',
+                $held > 0 => 'warn',
+                default => 'ok',
+            },
+            (string) $rows->count(),
+            'Purchases charged on our side that ProxyBR never provisioned. Refund each one at MercadoPago, then mark it settled on the customer page — this stays red until you do.',
+            [
+                'awaiting_refund' => $owed->count(),
+                'held_at_capacity' => $held,
+                // Named, not just counted: an operator cannot act on a number.
+                'rows' => $rows->map(fn (ApiwaySubscription $row) => [
+                    'id' => $row->id,
+                    'tenant_id' => $row->tenant_id,
+                    'tenant' => $row->tenant?->user?->name,
+                    'quantity' => $row->quantity,
+                    'amount_cents' => $row->total_price_cents,
+                    'reason' => $row->meta['failure']['code'] ?? ($row->meta['capacity_hold']['code'] ?? null),
+                    'held_since' => $row->meta['capacity_hold']['since'] ?? null,
+                ])->values(),
+            ],
         );
     }
 

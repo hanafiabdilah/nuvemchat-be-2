@@ -72,6 +72,33 @@ class ApiwaySubscription extends Model
             ->where(fn (Builder $q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()));
     }
 
+    /**
+     * Purchases the platform owes someone something for: money captured with
+     * no instance delivered (and no refund recorded yet), or a paid purchase
+     * parked while ProxyBR sits at its platform cap.
+     *
+     * Presence, not value: `needs_refund` and `capacity_hold` are only ever
+     * written when true and unset when resolved, so a null json_extract means
+     * "clear" on both MySQL and SQLite — a boolean comparison across a JSON
+     * path does not survive that driver difference.
+     */
+    public function scopeNeedsAttention(Builder $query): Builder
+    {
+        return $query->where(fn (Builder $q) => $q
+            ->where(fn (Builder $q) => $q
+                ->whereNotNull('meta->needs_refund')
+                ->whereNull('meta->refund_settled_at'))
+            ->orWhereNotNull('meta->capacity_hold'));
+    }
+
+    public function needsAttention(): bool
+    {
+        $meta = $this->meta ?? [];
+
+        return (! empty($meta['needs_refund']) && empty($meta['refund_settled_at']))
+            || isset($meta['capacity_hold']);
+    }
+
     /** Subscriptions the partner API will accept a renew for. */
     public function scopeRenewable(Builder $query): Builder
     {
