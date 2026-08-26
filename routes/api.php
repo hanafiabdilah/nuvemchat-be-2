@@ -104,6 +104,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // profile update so the frontend can persist a click without resending
     // name/email/password.
     Route::put('/user/preferences', [UserController::class, 'updatePreferences']);
+    // Who is allowed to interrupt this user, and from which connections. Stored
+    // on the account so the choice follows them to another browser; applied by
+    // the dashboard, which is the only place that knows who is looking at what.
+    Route::put('/user/notification-preferences', [UserController::class, 'updateNotificationPreferences']);
     // Presence ping from the open dashboard: once a minute, per tab. The limit
     // is well above that because agents keep several tabs open and the throttle
     // counts per user — it is here to bound abuse, not to pace the SPA.

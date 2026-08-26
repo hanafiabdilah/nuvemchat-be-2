@@ -24,6 +24,11 @@ class UserResource extends JsonResource
             // Cosmetic UI state (theme preset + appearance) so a user's chosen
             // theme follows them to any browser/device, not just the one that set it.
             'ui_preferences' => $this->ui_preferences ?: null,
+            // Always sent filled in (unlike ui_preferences, which may be null):
+            // the dashboard has to decide whether to make a sound on the very
+            // first message it receives, and a missing key there would mean
+            // duplicating the "notify unless told otherwise" default client-side.
+            'notification_preferences' => $this->notificationSettings(),
             'roles' => $this->whenLoaded('roles', function() {
                 return $this->roles->pluck('name');
             }),

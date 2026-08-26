@@ -27,6 +27,7 @@ class User extends Authenticatable
         'whatsapp_number',
         'whatsapp_verified_at',
         'ui_preferences',
+        'notification_preferences',
     ];
 
     /**
@@ -54,7 +55,36 @@ class User extends Authenticatable
             'password' => 'hashed',
             'two_factor_confirmed_at' => 'datetime',
             'ui_preferences' => 'array',
+            'notification_preferences' => 'array',
             'last_seen_at' => 'datetime',
+        ];
+    }
+
+    /**
+     * This user's notification switches, filled in with the defaults.
+     *
+     * Everything the column can say is an *exception*: the product notifies by
+     * default, and a user opts out of the whole thing or of individual
+     * connections. So a null column, a missing key and a fresh account all have
+     * to read the same — hence one place that answers the question, rather than
+     * every caller repeating `?? true`.
+     *
+     * Enforcement lives in the dashboard, not here: incoming-message events are
+     * broadcast on a per-connection channel shared by every agent who can see
+     * that connection, so the server has no per-recipient moment at which to
+     * apply this. It is stored on the account so the choice follows the person
+     * to their other browser, not so the backend can act on it.
+     *
+     * @return array{incoming_messages: bool, muted_connection_ids: array<int, int>}
+     */
+    public function notificationSettings(): array
+    {
+        $stored = $this->notification_preferences ?? [];
+        $muted = is_array($stored['muted_connection_ids'] ?? null) ? $stored['muted_connection_ids'] : [];
+
+        return [
+            'incoming_messages' => (bool) ($stored['incoming_messages'] ?? true),
+            'muted_connection_ids' => array_values(array_unique(array_map('intval', $muted))),
         ];
     }
 

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
+use App\Models\Connection;
 use App\Services\Billing\SubscriptionGate;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -102,6 +103,46 @@ class UserController extends Controller
 
         return response()->json([
             'ui_preferences' => $user->ui_preferences,
+        ]);
+    }
+
+    /**
+     * Per-user notification settings: whether an incoming message is allowed to
+     * raise a toast and play a sound, and which connections are exempted from
+     * that individually.
+     *
+     * Partial like updatePreferences() — the settings page saves one switch at
+     * a time, and future switches must not be wiped by a client that predates
+     * them.
+     */
+    public function updateNotificationPreferences(Request $request)
+    {
+        $user = Auth::user();
+
+        $validated = $request->validate([
+            'incoming_messages' => ['sometimes', 'boolean'],
+            'muted_connection_ids' => ['sometimes', 'array'],
+            'muted_connection_ids.*' => ['integer'],
+        ]);
+
+        if (array_key_exists('muted_connection_ids', $validated)) {
+            // Narrowed to the tenant's own connections rather than rejected:
+            // an id that no longer exists (connection deleted while the page was
+            // open) cannot represent an intention worth keeping, and failing the
+            // whole save over it would lose the switch the user actually flipped.
+            $ownIds = Connection::where('tenant_id', $user->tenant_id)
+                ->whereIn('id', $validated['muted_connection_ids'])
+                ->pluck('id')
+                ->all();
+
+            $validated['muted_connection_ids'] = array_values(array_map('intval', $ownIds));
+        }
+
+        $user->notification_preferences = array_merge($user->notification_preferences ?? [], $validated);
+        $user->save();
+
+        return response()->json([
+            'notification_preferences' => $user->notificationSettings(),
         ]);
     }
 
