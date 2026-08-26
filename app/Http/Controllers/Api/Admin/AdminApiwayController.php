@@ -29,10 +29,24 @@ class AdminApiwayController extends Controller
         try {
             return response()->json(['data' => $this->partner->plans()]);
         } catch (ApiwayPartnerException $e) {
+            $upstream = $e->getHttpStatus();
+            $rejectedUs = in_array($upstream, [401, 403], true);
+
+            // ProxyBR's status describes OUR partner token, never the admin
+            // holding this session — so it must not be relayed verbatim.
+            // Passing its 401 through logged the admin straight out of the
+            // Back Office, on the one button whose entire job is to report
+            // that the token is wrong, and its bare "Unauthenticated." read
+            // like the session had expired. Anything upstream refuses is a
+            // 502 here: nothing the caller did caused it.
             return response()->json([
-                'message' => $e->getMessage(),
-                'code' => $e->getErrorCode() ?? 'apiway_unavailable',
-            ], $e->getHttpStatus() >= 400 ? $e->getHttpStatus() : 502);
+                'message' => $rejectedUs
+                    ? "ProxyBR rejected our partner token: {$e->getMessage()}"
+                    : $e->getMessage(),
+                'code' => $e->getErrorCode()
+                    ?? ($rejectedUs ? 'apiway_unauthorized' : 'apiway_unavailable'),
+                'upstream_status' => $upstream,
+            ], in_array($upstream, [400, 422], true) ? 422 : 502);
         }
     }
 
