@@ -61,6 +61,11 @@ enum NodeType: string
                 //   handoff_in_hours    = AI handles, then hands a human the chat within service hours
                 //   human_only_in_hours = within service hours skip AI entirely → human queue; AI otherwise
                 'service_hours_behavior' => 'always_ai',
+                // Seconds to wait after the customer's last message before
+                // answering, so a question typed in four bursts is answered
+                // once. null = config('ai.turn_delay_seconds'); 0 = answer on
+                // arrival.
+                'response_delay_seconds' => null,
             ],
             // WhatsApp Official only — reply buttons / a list menu / a media
             // carousel, where every option is its own outgoing branch (edge

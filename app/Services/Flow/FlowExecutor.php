@@ -10,6 +10,7 @@ use App\Events\ConversationHandoff;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
+use App\Jobs\RunAiAgentTurn;
 use App\Models\AiHubAgent;
 use App\Models\Connection;
 use App\Models\Conversation;
@@ -21,8 +22,10 @@ use App\Services\AiAgentHub\AiAttachments;
 use App\Services\BusinessHours;
 use App\Services\Message\MessageService;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 class FlowExecutor
 {
@@ -34,9 +37,13 @@ class FlowExecutor
     protected const AI_MAX_TURNS = 20;
 
     /**
-     * Most incoming messages folded into a single AI turn. Normally one; more
-     * only when several landed while a turn was held back waiting for a
-     * download, or while the hub was answering the previous one.
+     * Most incoming messages folded into a single AI turn.
+     *
+     * A burst is the normal case, not the exception — turns wait out the
+     * customer's typing (see scheduleAIAgentTurn) precisely so the several
+     * messages one thought was split across arrive together. Past this many,
+     * the newest survive: the tail of a long burst is what the answer is
+     * actually about.
      */
     protected const AI_MAX_INPUT_MESSAGES = 10;
 
@@ -52,6 +59,17 @@ class FlowExecutor
      * without ever reaching its `failed()` handler.
      */
     protected const AI_MEDIA_WAIT_SECONDS = 300;
+
+    /**
+     * How long one conversation's AI turn holds the door shut behind it.
+     *
+     * Turns are queued, so two of them can reach a conversation at once — the
+     * debounced burst and a message that landed while the hub was answering.
+     * Generous on purpose: the lock expiring early is what would let the same
+     * messages be answered twice, which is the bug this whole path exists to
+     * prevent.
+     */
+    protected const AI_TURN_LOCK_SECONDS = 300;
 
     protected MessageService $messageService;
 
@@ -1334,8 +1352,12 @@ class FlowExecutor
         // either way, but only the row it was stored on knows there is an
         // image underneath it — and only the stored watermark can tell that
         // something arrived while an earlier turn was held back.
+        //
+        // Nor is the turn run here. It is armed, and this message re-arms it —
+        // see scheduleAIAgentTurn(). Answering each message as it lands is what
+        // made a customer typing in bursts get one reply per burst.
         if ($currentNode->type === NodeType::AIAgent) {
-            $this->runAIAgentTurn($flowState, $currentNode);
+            $this->scheduleAIAgentTurn($flowState, $currentNode);
             return;
         }
 
@@ -1544,7 +1566,129 @@ class FlowExecutor
             'message_id' => $pendingMessage->id,
         ]);
 
-        $this->runAIAgentTurn($flowState, $node);
+        $this->scheduleAIAgentTurn($flowState, $node);
+    }
+
+    /**
+     * Arm the AI turn for this node, or push back the one already armed.
+     *
+     * This is the whole of the burst handling: the token written here is what
+     * the queued job checks itself against when it wakes up, so the only job
+     * that gets to run is the one armed by the last message the customer sent.
+     * Everything queued behind an earlier message finds a token that is no
+     * longer its own and steps aside — and the turn that does run assembles
+     * every message since the watermark, so nothing is lost by waiting.
+     */
+    protected function scheduleAIAgentTurn(FlowState $flowState, FlowNode $node): void
+    {
+        $delay = $this->aiTurnDelaySeconds($node);
+        $token = (string) Str::uuid();
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[$this->aiDebounceKey($node->id)] = $token;
+        $flowState->update(['state_data' => $stateData]);
+
+        RunAiAgentTurn::dispatch($flowState->id, $node->id, $token)
+            ->delay(now()->addSeconds($delay));
+
+        Log::info('FlowExecutor: AIAgent turn armed', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'delay_seconds' => $delay,
+        ]);
+    }
+
+    /**
+     * Run a turn that was armed earlier, if it is still the one owed.
+     *
+     * Returns false — and only false — when another turn holds this
+     * conversation, which is the caller's cue to come back rather than give
+     * up: the messages this one was armed for are still unanswered.
+     */
+    public function runScheduledAiTurn(int $flowStateId, int $nodeId, string $token): bool
+    {
+        $flowState = FlowState::find($flowStateId);
+
+        if (!$flowState || $flowState->status !== FlowStateStatus::Running) {
+            return true;
+        }
+
+        // A later message re-armed the turn. That job owns it now.
+        if (($flowState->state_data[$this->aiDebounceKey($nodeId)] ?? null) !== $token) {
+            return true;
+        }
+
+        $node = $flowState->currentNode;
+
+        if (!$node || $node->id !== $nodeId || $node->type !== NodeType::AIAgent) {
+            return true;
+        }
+
+        $conversation = $flowState->conversation;
+
+        // Between the arming and now, an agent may have taken the conversation.
+        if (!$conversation || !in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return true;
+        }
+
+        $lock = Cache::lock($this->aiTurnLockKey($conversation->id), self::AI_TURN_LOCK_SECONDS);
+
+        if (!$lock->get()) {
+            return false;
+        }
+
+        try {
+            // The turn we queued behind may have moved the watermark, sent the
+            // reply, or handed the conversation to a human while we waited.
+            $flowState->refresh();
+
+            $stateData = $flowState->state_data ?? [];
+
+            if ($flowState->status !== FlowStateStatus::Running
+                || $flowState->current_node_id !== $nodeId
+                || ($stateData[$this->aiDebounceKey($nodeId)] ?? null) !== $token) {
+                return true;
+            }
+
+            // Disarmed before the turn runs, not after: from here on, anything
+            // that arrives is the next turn's input, and resumeAfterMedia reads
+            // this key to tell "a turn is coming" from "a turn is waiting on me".
+            unset($stateData[$this->aiDebounceKey($nodeId)]);
+            $flowState->update(['state_data' => $stateData]);
+
+            $this->runAIAgentTurn($flowState, $node);
+        } finally {
+            $lock->release();
+        }
+
+        return true;
+    }
+
+    /**
+     * How long this node waits for the customer to finish typing.
+     *
+     * The node's own setting wins; the config default covers every flow built
+     * before the field existed. Clamped, because the value comes from a form.
+     */
+    protected function aiTurnDelaySeconds(FlowNode $node): int
+    {
+        $configured = ($node->data ?? [])['response_delay_seconds'] ?? null;
+
+        $seconds = is_numeric($configured)
+            ? (int) $configured
+            : (int) config('ai.turn_delay_seconds', 8);
+
+        return max(0, min($seconds, (int) config('ai.max_turn_delay_seconds', 300)));
+    }
+
+    protected function aiDebounceKey(int $nodeId): string
+    {
+        return "_ai_debounce_token_{$nodeId}";
+    }
+
+    protected function aiTurnLockKey(int $conversationId): string
+    {
+        return "ai-turn:{$conversationId}";
     }
 
     /**
@@ -1556,6 +1700,10 @@ class FlowExecutor
      * thought split across two messages, and answering only the half that
      * arrived last is how the agent ends up asking for something it was
      * already given.
+     *
+     * Reached only through runScheduledAiTurn(), which holds the conversation
+     * lock for the duration — nothing here guards against a second turn
+     * running alongside it.
      */
     protected function runAIAgentTurn(FlowState $flowState, FlowNode $node): void
     {
@@ -1691,6 +1839,14 @@ class FlowExecutor
             return;
         }
 
+        // A turn is already armed and has not fired yet: the customer is still
+        // typing, and that job will pick this file up along with whatever else
+        // they send. Running now would answer a half-finished thought and undo
+        // the wait it is serving.
+        if (($stateData[$this->aiDebounceKey($node->id)] ?? null) !== null) {
+            return;
+        }
+
         Log::info('FlowExecutor: media landed, running the AI turn it was holding', [
             'node_id' => $node->id,
             'conversation_id' => $conversation->id,
@@ -1698,7 +1854,24 @@ class FlowExecutor
             'attachment_status' => $message->attachment_status?->value,
         ]);
 
-        $this->runAIAgentTurn($flowState, $node);
+        // Straight through the arming path so the conversation lock still
+        // applies, but with no wait: the download already spent it.
+        $this->dispatchAiTurnNow($flowState, $node);
+    }
+
+    /**
+     * Arm a turn that is due immediately — the customer has already waited on
+     * something other than themselves.
+     */
+    protected function dispatchAiTurnNow(FlowState $flowState, FlowNode $node): void
+    {
+        $token = (string) Str::uuid();
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[$this->aiDebounceKey($node->id)] = $token;
+        $flowState->update(['state_data' => $stateData]);
+
+        RunAiAgentTurn::dispatch($flowState->id, $node->id, $token);
     }
 
     /**
@@ -1779,6 +1952,12 @@ class FlowExecutor
 
         if ($sourceMessageId !== null) {
             $stateData[$lastProcessedKey] = $sourceMessageId;
+
+            // Written before the hub is called, not after it answers. The model
+            // takes seconds, and a message that lands in that gap belongs to the
+            // next turn — held in memory only, the watermark would still read as
+            // unanswered and the same messages would be assembled a second time.
+            $flowState->update(['state_data' => $stateData]);
         }
 
         $turns = $stateData[$turnsKey] ?? 0;
