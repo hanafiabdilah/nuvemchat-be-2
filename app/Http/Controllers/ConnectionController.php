@@ -1058,17 +1058,37 @@ class ConnectionController extends Controller
 
         // (1) Straight node read per granted Page id. The edge can be filtered
         // while the node itself still answers.
+        //
+        // Ask for the token ALONE. `name` needs pages_read_engagement, which
+        // this login configuration does not request, and Graph rejects the
+        // whole request when a single field is disallowed — asking for the
+        // name too would throw away the one field that actually matters.
         foreach ($granted as $pageId) {
             $response = Http::get("https://graph.facebook.com/v25.0/{$pageId}", [
-                'fields' => 'id,name,access_token',
+                'fields' => 'access_token',
                 'access_token' => $userToken,
             ]);
 
             $attempts["page:{$pageId}"] = $response->json();
 
-            if ($response->successful() && !empty($response->json()['access_token'])) {
-                $pages[] = $response->json();
+            $pageToken = $response->successful() ? ($response->json()['access_token'] ?? null) : null;
+
+            if (!$pageToken) {
+                continue;
             }
+
+            // A Page's own token can always read that Page's name; the user
+            // token cannot, without the permission above.
+            $named = Http::get('https://graph.facebook.com/v25.0/me', [
+                'fields' => 'id,name',
+                'access_token' => $pageToken,
+            ]);
+
+            $pages[] = [
+                'id' => (string) $pageId,
+                'name' => $named->successful() ? ($named->json()['name'] ?? null) : null,
+                'access_token' => $pageToken,
+            ];
         }
 
         // (2) The business edges — where Login for Business actually files the
