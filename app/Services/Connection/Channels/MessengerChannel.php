@@ -78,6 +78,18 @@ class MessengerChannel implements ChannelInterface
                 'access_token' => $pageToken,
             ]);
 
+            // `name` on a Page node needs pages_read_engagement, and Graph
+            // refuses the whole request over one disallowed field. The name is
+            // a nicety — the login already told us what the Page is called —
+            // so drop it and keep the part that matters: proving the token
+            // works. Without this the connect fails on a perfectly good token.
+            if (!$response->successful()) {
+                $response = Http::get(self::GRAPH_BASE . '/me', [
+                    'fields' => 'id',
+                    'access_token' => $pageToken,
+                ]);
+            }
+
             if (!$response->successful()) {
                 Log::error('Invalid Messenger page access token', [
                     'connection_id' => $connection->id,

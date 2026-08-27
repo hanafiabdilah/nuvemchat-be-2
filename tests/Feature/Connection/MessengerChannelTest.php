@@ -94,6 +94,32 @@ test('connect uses the page token captured during login instead of re-fetching i
     Http::assertNotSent(fn ($request) => str_contains($request->url(), 'graph.facebook.com/v25.0/111?'));
 });
 
+test('connect survives a Page node that refuses the name field', function () {
+    // Without pages_read_engagement, GET /me?fields=id,name is refused outright
+    // even with a valid page token. Falling back to fields=id keeps the connect
+    // alive; the name comes from what the login already listed.
+    Http::fake([
+        'graph.facebook.com/v25.0/me?fields=id%2Cname*' => Http::response([
+            'error' => ['message' => "(#100) …requires the 'pages_read_engagement' permission", 'code' => 100],
+        ], 400),
+        'graph.facebook.com/v25.0/me?fields=id*' => Http::response(['id' => '111']),
+        'graph.facebook.com/v25.0/111/subscribed_apps' => Http::response(['success' => true]),
+    ]);
+
+    $connection = pendingMessengerConnection(messengerTestTenant());
+    $credentials = $connection->credentials;
+    $credentials['pending_pages'][0]['access_token'] = 'page-token-from-login';
+    $connection->forceFill(['credentials' => $credentials])->save();
+
+    (new MessengerChannel)->connect($connection, ['page_id' => '111']);
+
+    $connection->refresh();
+
+    expect($connection->status)->toBe(Status::Active)
+        ->and($connection->credentials['access_token'])->toBe('page-token-from-login')
+        ->and($connection->credentials['page_name'])->toBe('Página A');
+});
+
 test('connect rejects a page that was not authorized during login', function () {
     $connection = pendingMessengerConnection(messengerTestTenant());
 
