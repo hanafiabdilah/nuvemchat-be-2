@@ -286,6 +286,143 @@ it('withholds the roster from someone without the agent statistics permission', 
         ->and($data['pulse'])->not->toBeNull();
 });
 
+/* ------------------------------------------------------- the activity lane */
+
+it('reports what agents did to conversations, newest first', function () {
+    $owner = liveOwner();
+    $agent = User::factory()->create(['tenant_id' => $owner->tenant_id, 'name' => 'Ana Souza']);
+    $connection = liveConnection($owner);
+    $agent->connections()->sync([$connection->id]);
+
+    // Picked out of the queue…
+    $accepted = liveConversation($connection, ['status' => ConversationStatus::Pending]);
+    $this->actingAs($agent)->postJson("/api/conversations/{$accepted->id}/accept")->assertOk();
+
+    // …taken over by somebody else…
+    $held = liveConversation($connection, ['status' => ConversationStatus::Active, 'user_id' => $agent->id]);
+    $this->actingAs($owner)->postJson("/api/conversations/{$held->id}/take-over")->assertOk();
+
+    // …and closed.
+    $done = liveConversation($connection, ['status' => ConversationStatus::Active, 'user_id' => $owner->id]);
+    $this->actingAs($owner)->postJson("/api/conversations/{$done->id}/resolve")->assertOk();
+
+    $activity = collect(
+        $this->actingAs($owner)->getJson('/api/statistics/live')->assertOk()->json('data.activity')
+    );
+
+    $codes = $activity->pluck('code');
+
+    expect($codes)->toContain('conversation_assigned')
+        ->and($codes)->toContain('conversation_taken_over')
+        ->and($codes)->toContain('conversation_resolved');
+
+    $resolved = $activity->firstWhere('code', 'conversation_resolved');
+    expect($resolved['params']['by'])->toBe('Owner')
+        ->and($resolved['conversation_id'])->toBe($done->id)
+        ->and($resolved['contact']['name'])->toBe('João Pereira');
+
+    $takenOver = $activity->firstWhere('code', 'conversation_taken_over');
+    expect($takenOver['params'])->toBe(['from' => 'Ana Souza', 'to' => 'Owner']);
+
+    // Newest first, so the row somebody is waiting for is where their eye is.
+    $timestamps = $activity->pluck('at')->all();
+    expect($timestamps)->toBe(collect($timestamps)->sortDesc()->values()->all());
+});
+
+it('shows a handoff as activity, because that is work arriving', function () {
+    $owner = liveOwner();
+    $connection = liveConnection($owner);
+
+    liveConversation($connection, [
+        'status' => ConversationStatus::Pending,
+        'needs_human' => true,
+        'handoff_reason' => 'ai_requested',
+        'handoff_at' => now(),
+    ]);
+
+    $activity = $this->actingAs($owner)->getJson('/api/statistics/live')->assertOk()->json('data.activity');
+
+    expect($activity)->toHaveCount(1)
+        ->and($activity[0]['code'])->toBe('conversation_handoff')
+        ->and($activity[0]['params']['reason'])->toBe('ai_requested');
+});
+
+it('counts an auto-closed thread once, and credits nobody for it', function () {
+    $owner = liveOwner();
+    $conversation = liveConversation(liveConnection($owner), ['status' => ConversationStatus::Active]);
+
+    // What ExpiredWindowResolver does: its own note, and a resolution with no
+    // resolver. Counting both would report one event twice.
+    liveMessage($conversation, SenderType::Outgoing, null, [
+        'message_type' => MessageType::Info,
+        'meta' => ['info' => ['code' => 'messaging_window_expired', 'params' => ['hours' => 24]]],
+    ]);
+    $conversation->markResolved();
+
+    $activity = $this->actingAs($owner)->getJson('/api/statistics/live')->assertOk()->json('data.activity');
+
+    expect($activity)->toHaveCount(1)
+        ->and($activity[0]['code'])->toBe('messaging_window_expired')
+        ->and($activity[0]['params']['hours'])->toBe(24);
+});
+
+it('keeps system notes out of the message lanes and in the activity one', function () {
+    $owner = liveOwner();
+    $conversation = liveConversation(liveConnection($owner), [
+        'status' => ConversationStatus::Active,
+        'user_id' => $owner->id,
+    ]);
+
+    $this->actingAs($owner)->postJson("/api/conversations/{$conversation->id}/resolve")->assertOk();
+
+    $data = $this->actingAs($owner)->getJson('/api/statistics/live')->assertOk()->json('data');
+
+    expect(collect($data['events'])->pluck('message_type'))->not->toContain('info')
+        ->and($data['activity'])->toHaveCount(1);
+});
+
+/* --------------------------------------------------------- chat vs e-mail */
+
+it('measures chat and e-mail apart, and both together', function () {
+    $owner = liveOwner();
+    $chat = liveConnection($owner);
+    $mail = Connection::create([
+        'tenant_id' => $owner->tenant_id,
+        'channel' => Channel::Email,
+        'name' => 'Suporte',
+        'status' => ConnectionStatus::Active,
+    ]);
+    $owner->connections()->syncWithoutDetaching([$mail->id]);
+
+    liveMessage(liveConversation($chat), SenderType::Incoming);
+    liveMessage(liveConversation($mail), SenderType::Incoming);
+    liveMessage(liveConversation($mail), SenderType::Incoming);
+
+    $read = fn (string $scope) => $this->actingAs($owner)
+        ->getJson("/api/statistics/live?scope={$scope}")
+        ->assertOk()
+        ->json('data');
+
+    $all = $read('all');
+    $chatOnly = $read('chat');
+    $mailOnly = $read('email');
+
+    expect($all['events'])->toHaveCount(3)
+        ->and($all['pulse']['inbound_window'])->toBe(3)
+        ->and($chatOnly['events'])->toHaveCount(1)
+        ->and($chatOnly['pulse']['inbound_window'])->toBe(1)
+        ->and($chatOnly['events'][0]['channel'])->toBe('whatsapp_official')
+        ->and($mailOnly['events'])->toHaveCount(2)
+        ->and($mailOnly['pulse']['inbound_window'])->toBe(2)
+        ->and($mailOnly['events'][0]['channel'])->toBe('email');
+});
+
+it('rejects an inbox scope it does not know', function () {
+    $owner = liveOwner();
+
+    $this->actingAs($owner)->getJson('/api/statistics/live?scope=sms')->assertStatus(422);
+});
+
 it('counts the queue and how long its oldest thread has waited', function () {
     $user = liveOwner();
     $connection = liveConnection($user);

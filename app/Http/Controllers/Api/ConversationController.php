@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Api;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status;
-use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationTakenOver;
 use App\Events\ConversationTransferred;
@@ -42,7 +41,9 @@ class ConversationController extends Controller
      * English body is its fallback (see lib/infoMessage.ts).
      */
     public const INFO_TRANSFERRED = 'conversation_transferred';
+
     public const INFO_TAKEN_OVER = 'conversation_taken_over';
+
     public const INFO_ASSIGNED = 'conversation_assigned';
 
     public function index(Request $request)
@@ -69,18 +70,18 @@ class ConversationController extends Controller
         // MessageResource on last_message) — without this a 500-row sync page
         // explodes into thousands of lazy queries.
         $query = Conversation::with([
-                'contact',
-                'tags',
-                'agent',
-                'flowState.currentNode',
-                'lastMessage.repliedMessage',
-                'lastMessage.reactions.contact',
-                'lastMessage.contact',
-                'lastMessage.sentByUser',
-                'lastMessage.sentByFlow',
-                'lastMessage.sentByAiHubAgent',
-                'lastMessage.conversation.connection',
-            ])
+            'contact',
+            'tags',
+            'agent',
+            'flowState.currentNode',
+            'lastMessage.repliedMessage',
+            'lastMessage.reactions.contact',
+            'lastMessage.contact',
+            'lastMessage.sentByUser',
+            'lastMessage.sentByFlow',
+            'lastMessage.sentByAiHubAgent',
+            'lastMessage.conversation.connection',
+        ])
             ->withCount(['messages as unread_count' => function ($q) {
                 $q->where('sender_type', SenderType::Incoming)->whereNull('read_at');
             }, 'notes'])
@@ -145,7 +146,7 @@ class ConversationController extends Controller
      * sends, not something the client is trusted to infer from an absence of
      * rows. Anything outside this list gets purged locally.
      *
-     * @return array<int, string>|null  null on later pages (nothing to apply)
+     * @return array<int, string>|null null on later pages (nothing to apply)
      */
     private function accessibleConnectionIds(?string $before): ?array
     {
@@ -218,7 +219,7 @@ class ConversationController extends Controller
             ->where('tenant_id', Auth::user()->tenant_id)
             ->firstOrFail();
 
-        if(!Auth::user()->canAccessConnection($connection)){
+        if (! Auth::user()->canAccessConnection($connection)) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -230,7 +231,7 @@ class ConversationController extends Controller
         // second thread on a channel that never grants the business the first
         // word. WhatsApp Official re-engages through an approved template
         // instead (POST /api/templates/send).
-        if (!$connection->channel->canStartConversation()) {
+        if (! $connection->channel->canStartConversation()) {
             return response()->json([
                 'message' => 'This channel does not allow starting a conversation — the customer has to message first.',
                 'code' => 'channel_cannot_start_conversation',
@@ -287,9 +288,9 @@ class ConversationController extends Controller
             ]);
 
             // Send the message
-            $messageService = new MessageService();
+            $messageService = new MessageService;
             $message = $messageService->sendMessage($conversation, [
-                'message' => $validated['message']
+                'message' => $validated['message'],
             ]);
 
             $message?->update(['sent_by_user_id' => Auth::id()]);
@@ -303,7 +304,7 @@ class ConversationController extends Controller
                 'data' => new ConversationResource($conversation->load('contact')),
                 'message' => new MessageResource($message),
             ], 201);
-        } catch(ValidationException $th){
+        } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
             Log::error('ConversationController: Failed to create conversation or send message', [
@@ -340,7 +341,7 @@ class ConversationController extends Controller
             ->where('channel', Channel::Email)
             ->firstOrFail();
 
-        if (!Auth::user()->canAccessConnection($connection)) {
+        if (! Auth::user()->canAccessConnection($connection)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -360,13 +361,13 @@ class ConversationController extends Controller
         // creating a new one — composing twice must not fork the conversation
         // (the inbound sync threads replies into a single external_id too). The
         // resolver owns that key; see OutboundConversationResolver.
-        $resolved = (new OutboundConversationResolver())->resolve($connection, $contact, emailSubject: $subject);
+        $resolved = (new OutboundConversationResolver)->resolve($connection, $contact, emailSubject: $subject);
 
         $conversation = $resolved->conversation;
         $createdConversation = $resolved->wasCreated;
 
         try {
-            $message = (new EmailHandler())->sendNewEmail(
+            $message = (new EmailHandler)->sendNewEmail(
                 $conversation,
                 $subject,
                 (string) ($validated['message'] ?? ''),
@@ -385,6 +386,7 @@ class ConversationController extends Controller
             }
             if ($th instanceof ConnectionException) {
                 $status = $th->getHttpStatusCode() ?: 502;
+
                 return response()->json(['message' => $th->getMessage()], $status);
             }
 
@@ -497,14 +499,14 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $message = $conversation->messages()->findOrFail($message_id);
         $path = $message->meta['email']['html_path'] ?? null;
 
-        if (!$path || !Storage::disk('local')->exists($path)) {
+        if (! $path || ! Storage::disk('local')->exists($path)) {
             return response()->json(['message' => 'This message has no HTML body'], 404);
         }
 
@@ -517,16 +519,16 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json(['message' => 'Conversation is not active'], 400);
         }
 
         try {
-            $message = (new MessageService())->sendInteractive($conversation, $request->all());
+            $message = (new MessageService)->sendInteractive($conversation, $request->all());
 
             $message?->update(['sent_by_user_id' => Auth::id()]);
 
@@ -536,11 +538,11 @@ class ConversationController extends Controller
             return response()->json([
                 'data' => new MessageResource($message),
             ]);
-        } catch(ValidationException $th){
+        } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
             return response()->json([
-                'message' => 'Failed to send interactive message: ' . $th->getMessage(),
+                'message' => 'Failed to send interactive message: '.$th->getMessage(),
             ], 500);
         }
     }
@@ -603,13 +605,13 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $typing = $request->input('state', 'composing') !== 'paused';
 
-        (new MessageService())->sendTyping($conversation, $typing);
+        (new MessageService)->sendTyping($conversation, $typing);
 
         return response()->json(['message' => 'ok']);
     }
@@ -618,19 +620,19 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
         }
 
-        $messageService = new MessageService();
+        $messageService = new MessageService;
 
         try {
             $message = $messageService->sendMessage($conversation, $request->all());
@@ -643,7 +645,7 @@ class ConversationController extends Controller
             return response()->json([
                 'data' => new MessageResource($message),
             ]);
-        } catch(ValidationException $th){
+        } catch (ValidationException $th) {
             throw $th;
         } catch (ConnectionException $th) {
             $status = $th->getHttpStatusCode();
@@ -666,19 +668,19 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
         }
 
-        $messageService = new MessageService();
+        $messageService = new MessageService;
 
         try {
             $message = $messageService->sendImage($conversation, $request->all());
@@ -691,7 +693,7 @@ class ConversationController extends Controller
             return response()->json([
                 'data' => new MessageResource($message),
             ]);
-        } catch(ValidationException $th){
+        } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
             return response()->json([
@@ -704,19 +706,19 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
         }
 
-        $messageService = new MessageService();
+        $messageService = new MessageService;
 
         try {
             $message = $messageService->sendAudio($conversation, $request->all());
@@ -729,7 +731,7 @@ class ConversationController extends Controller
             return response()->json([
                 'data' => new MessageResource($message),
             ]);
-        } catch(ValidationException $th){
+        } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
             return response()->json([
@@ -742,19 +744,19 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
         }
 
-        $messageService = new MessageService();
+        $messageService = new MessageService;
 
         try {
             $message = $messageService->sendVideo($conversation, $request->all());
@@ -767,7 +769,7 @@ class ConversationController extends Controller
             return response()->json([
                 'data' => new MessageResource($message),
             ]);
-        } catch(ValidationException $th){
+        } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
             return response()->json([
@@ -780,19 +782,19 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
         }
 
-        $messageService = new MessageService();
+        $messageService = new MessageService;
 
         try {
             $message = $messageService->sendDocument($conversation, $request->all());
@@ -805,7 +807,7 @@ class ConversationController extends Controller
             return response()->json([
                 'data' => new MessageResource($message),
             ]);
-        } catch(ValidationException $th){
+        } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
             return response()->json([
@@ -820,7 +822,7 @@ class ConversationController extends Controller
 
         // An agent can pick up a conversation from the unassigned Pending queue
         // or take it over from the AI while it is being handled.
-        if(!in_array($conversation->status, [Status::Pending, Status::AiHandling], true)){
+        if (! in_array($conversation->status, [Status::Pending, Status::AiHandling], true)) {
             return response()->json([
                 'message' => 'Conversation is not pending',
             ], 400);
@@ -837,13 +839,13 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
@@ -904,7 +906,7 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
@@ -939,13 +941,13 @@ class ConversationController extends Controller
 
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
@@ -953,13 +955,13 @@ class ConversationController extends Controller
 
         $target = Auth::user()->tenant->users()->find($validated['agent_id']);
 
-        if(!$target){
+        if (! $target) {
             return response()->json([
                 'message' => 'Agent not found',
             ], 404);
         }
 
-        if((int) $conversation->user_id === (int) $target->id){
+        if ((int) $conversation->user_id === (int) $target->id) {
             return response()->json([
                 'message' => 'Conversation is already assigned to this agent',
             ], 400);
@@ -967,7 +969,7 @@ class ConversationController extends Controller
 
         // Assigning to someone who cannot see the connection would park the
         // thread in an inbox that never renders it.
-        if(!$target->canAccessConnection($conversation->connection)){
+        if (! $target->canAccessConnection($conversation->connection)) {
             return response()->json([
                 'message' => 'That agent does not have access to this connection',
                 'code' => 'agent_missing_connection_access',
@@ -1028,7 +1030,7 @@ class ConversationController extends Controller
 
         // E-mail is a shared inbox: every member already replies without the
         // thread being assigned, so there is nothing to take over.
-        if($conversation->connection?->channel === Channel::Email){
+        if ($conversation->connection?->channel === Channel::Email) {
             return response()->json([
                 'message' => 'E-mail conversations are a shared inbox and have no assignee',
             ], 400);
@@ -1036,13 +1038,13 @@ class ConversationController extends Controller
 
         // Pending and AI-handled threads belong to nobody — accept() is the
         // door for those, and it also stops the flow that is still running.
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
         }
 
-        if((int) $conversation->user_id === (int) Auth::id()){
+        if ((int) $conversation->user_id === (int) Auth::id()) {
             return response()->json([
                 'message' => 'Conversation is already assigned to you',
             ], 400);
@@ -1060,7 +1062,7 @@ class ConversationController extends Controller
         // Written into the thread rather than only into the log: the agent who
         // comes back to a conversation that is no longer theirs deserves to
         // find out where it went from the conversation itself.
-        if($previousAgent){
+        if ($previousAgent) {
             SystemMessage::info(
                 $conversation,
                 "{$actor->name} took over this conversation from {$previousAgent->name}.",
@@ -1082,7 +1084,7 @@ class ConversationController extends Controller
 
         // Only worth an event when somebody actually lost the thread: an active
         // conversation with no assignee has no one to notify.
-        if($previousAgent){
+        if ($previousAgent) {
             broadcast(new ConversationTakenOver($conversation, $previousAgent, $actor));
         }
 
@@ -1131,18 +1133,34 @@ class ConversationController extends Controller
 
         // Taking over from the AI: stop the running flow so it no longer auto-replies.
         if ($wasAiHandling) {
-            (new \App\Services\Flow\FlowExecutor())->stopFlow($conversation);
+            (new \App\Services\Flow\FlowExecutor)->stopFlow($conversation);
         }
+
+        // Picking a thread out of the queue was the one assignment that left no
+        // trace anywhere: transfers and take-overs have written a note into the
+        // thread for a while, but the most common of the three recorded only a
+        // changed `user_id`, so neither the conversation nor the live board
+        // could say who picked it up or when. Same code and same copy as a
+        // take-over with nobody to take it from, because that is the same event.
+        //
+        // Before the broadcast, so the inbox row lands on its final preview in
+        // one step instead of flickering through the old one.
+        SystemMessage::info(
+            $conversation,
+            Auth::user()->name.' took this conversation.',
+            self::INFO_ASSIGNED,
+            ['to' => Auth::user()->name],
+        );
 
         broadcast(new ConversationUpdated($conversation));
 
         // Send accept message AFTER broadcasting conversation update
-        $automatedMessageService = new AutomatedMessageService();
+        $automatedMessageService = new AutomatedMessageService;
         $acceptMessage = $automatedMessageService->getAcceptMessage($conversation->connection, Auth::user());
 
         if ($acceptMessage) {
             try {
-                $messageService = new MessageService();
+                $messageService = new MessageService;
                 $acceptMsg = $messageService->sendMessage($conversation, ['message' => $acceptMessage]);
 
                 $acceptMsg?->update(['sent_by_user_id' => Auth::id()]);
@@ -1168,13 +1186,13 @@ class ConversationController extends Controller
     protected function applyResolve(Conversation $conversation): void
     {
         // Send closing message before resolving
-        $automatedMessageService = new AutomatedMessageService();
+        $automatedMessageService = new AutomatedMessageService;
         $closingMessage = $automatedMessageService->getClosingMessage($conversation->connection, Auth::user());
 
         $closingMsg = null;
         if ($closingMessage) {
             try {
-                $messageService = new MessageService();
+                $messageService = new MessageService;
                 $closingMsg = $messageService->sendMessage($conversation, ['message' => $closingMessage]);
                 $closingMsg?->update(['sent_by_user_id' => Auth::id()]);
             } catch (\Throwable $th) {
@@ -1224,8 +1242,9 @@ class ConversationController extends Controller
             try {
                 if ($target === Status::Active) {
                     // Accept: only from the Pending queue or from the AI.
-                    if (!in_array($conversation->status, [Status::Pending, Status::AiHandling], true)) {
+                    if (! in_array($conversation->status, [Status::Pending, Status::AiHandling], true)) {
                         $skipped++;
+
                         continue;
                     }
 
@@ -1235,8 +1254,9 @@ class ConversationController extends Controller
                     // Resolve: only Active, and only accessible conversations
                     // (own, or any e-mail shared-inbox conversation) unless owner.
                     if ($conversation->status !== Status::Active
-                        || !$conversation->isAccessibleBy(Auth::user())) {
+                        || ! $conversation->isAccessibleBy(Auth::user())) {
                         $skipped++;
+
                         continue;
                     }
 
@@ -1267,13 +1287,13 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
@@ -1299,13 +1319,13 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
@@ -1313,14 +1333,14 @@ class ConversationController extends Controller
 
         $message = $conversation->messages()->where('id', $message_id)->firstOrFail();
 
-        if($message->sender_type !== SenderType::Outgoing){
+        if ($message->sender_type !== SenderType::Outgoing) {
             return response()->json([
                 'message' => 'Only outgoing messages can be edited',
             ], 400);
         }
 
         try {
-            $messageService = new MessageService();
+            $messageService = new MessageService;
             $editedMessage = $messageService->editMessage($message, $request->all());
 
             broadcast(new ConversationUpdated($conversation));
@@ -1329,7 +1349,7 @@ class ConversationController extends Controller
             return response()->json([
                 'data' => new MessageResource($editedMessage),
             ]);
-        } catch(ValidationException $th){
+        } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
             return response()->json([
@@ -1342,13 +1362,13 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
@@ -1356,14 +1376,14 @@ class ConversationController extends Controller
 
         $message = $conversation->messages()->where('id', $message_id)->firstOrFail();
 
-        if($message->sender_type !== SenderType::Outgoing){
+        if ($message->sender_type !== SenderType::Outgoing) {
             return response()->json([
                 'message' => 'Only outgoing messages can be deleted',
             ], 400);
         }
 
         try {
-            $messageService = new MessageService();
+            $messageService = new MessageService;
             $messageService->deleteMessage($message);
 
             broadcast(new ConversationUpdated($conversation));

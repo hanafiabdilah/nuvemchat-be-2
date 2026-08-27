@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Tenant;
 use App\Services\Live\LiveMonitor;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 /**
  * Back Office: the platform wallboard.
@@ -32,6 +33,9 @@ class AdminLiveController extends Controller
     /** Agents shown across the whole platform. Online only — see below. */
     private const AGENT_LIMIT = 60;
 
+    /** Payload sections whose rows name a tenant and need it resolved. */
+    private const LABELLED = ['events', 'activity', 'agents', 'tenants'];
+
     public function index(Request $request)
     {
         $request->validate([
@@ -39,10 +43,11 @@ class AdminLiveController extends Controller
             'after_id' => ['nullable', 'integer', 'min:0'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:'.LiveMonitor::MAX_FEED_LIMIT],
             'full' => ['nullable', 'boolean'],
+            'scope' => ['nullable', Rule::in(LiveMonitor::scopes())],
         ]);
 
         $tenantId = $request->integer('tenant_id') ?: null;
-        $monitor = LiveMonitor::forPlatform($tenantId);
+        $monitor = LiveMonitor::forPlatform($tenantId, (string) $request->string('scope', LiveMonitor::SCOPE_ALL));
 
         $afterId = $request->filled('after_id') ? (int) $request->integer('after_id') : null;
         $events = $monitor->feed($afterId, (int) $request->integer('limit', LiveMonitor::FEED_LIMIT));
@@ -59,6 +64,7 @@ class AdminLiveController extends Controller
             // this page answers is who is working, so only they are listed.
             $payload['pulse'] = $monitor->pulse();
             $payload['status_updates'] = $monitor->statusUpdates();
+            $payload['activity'] = $monitor->activity();
             $payload['agents'] = $monitor->agents(onlineOnly: true, limit: self::AGENT_LIMIT);
             $payload['tenants'] = $monitor->activeTenants();
         }
@@ -73,9 +79,8 @@ class AdminLiveController extends Controller
      */
     private function withTenantNames(array $payload): array
     {
-        $ids = collect($payload['events'] ?? [])->pluck('tenant_id')
-            ->merge(collect($payload['agents'] ?? [])->pluck('tenant_id'))
-            ->merge(collect($payload['tenants'] ?? [])->pluck('tenant_id'))
+        $ids = collect(self::LABELLED)
+            ->flatMap(fn (string $key) => collect($payload[$key] ?? [])->pluck('tenant_id'))
             ->filter()
             ->unique();
 
@@ -94,7 +99,7 @@ class AdminLiveController extends Controller
             'tenant_name' => $names[$row['tenant_id'] ?? null] ?? null,
         ];
 
-        foreach (['events', 'agents', 'tenants'] as $key) {
+        foreach (self::LABELLED as $key) {
             if (isset($payload[$key])) {
                 $payload[$key] = array_map($label, $payload[$key]);
             }

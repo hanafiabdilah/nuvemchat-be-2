@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Services\Live\LiveMonitor;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 /**
  * The tenant dashboard's live monitor.
@@ -28,10 +29,11 @@ class LiveController extends Controller
             'after_id' => ['nullable', 'integer', 'min:0'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:'.LiveMonitor::MAX_FEED_LIMIT],
             'full' => ['nullable', 'boolean'],
+            'scope' => ['nullable', Rule::in(LiveMonitor::scopes())],
         ]);
 
         $user = $request->user();
-        $monitor = LiveMonitor::forUser($user);
+        $monitor = LiveMonitor::forUser($user, (string) $request->string('scope', LiveMonitor::SCOPE_ALL));
 
         $afterId = $request->filled('after_id') ? (int) $request->integer('after_id') : null;
         $events = $monitor->feed($afterId, (int) $request->integer('limit', LiveMonitor::FEED_LIMIT));
@@ -47,6 +49,7 @@ class LiveController extends Controller
         if ($afterId === null || $request->boolean('full')) {
             $payload['pulse'] = $monitor->pulse();
             $payload['status_updates'] = $monitor->statusUpdates();
+            $payload['activity'] = $monitor->activity();
 
             // The roster is agent data, gated by the same permission as the
             // Agents tab of Statistics. Someone without it still gets the

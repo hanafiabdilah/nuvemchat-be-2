@@ -2,6 +2,7 @@
 
 namespace App\Services\Live;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
@@ -75,26 +76,56 @@ final class LiveMonitor
      */
     private const COLD_START_HOURS = 6;
 
+    /**
+     * Activity rows returned per call. These are human actions — a shift
+     * produces a handful a minute at most, so the lane is read whole rather
+     * than paged.
+     */
+    private const ACTIVITY_LIMIT = 40;
+
+    /**
+     * Which inbox the board is about. Same three values, same meaning and the
+     * same predicate as StatsScope — chat and e-mail are measured apart there
+     * because they behave nothing alike (a chat is answered in seconds by an
+     * assignee, an e-mail in hours by a shared inbox with none), and mixing
+     * them produces a middle number that describes neither. That is at least as
+     * true of a live board: one queue is late at four minutes, the other is
+     * fine at four hours.
+     */
+    public const SCOPE_ALL = 'all';
+
+    public const SCOPE_CHAT = 'chat';
+
+    public const SCOPE_EMAIL = 'email';
+
     private function __construct(
         private readonly ?int $tenantId,
         /** @var int[]|null Null means every connection in scope. */
         private readonly ?array $connectionIds,
         private readonly bool $maskContacts,
         private readonly bool $withTenant,
+        private readonly string $scope,
     ) {}
+
+    /** The three inbox scopes, for request validation. */
+    public static function scopes(): array
+    {
+        return [self::SCOPE_ALL, self::SCOPE_CHAT, self::SCOPE_EMAIL];
+    }
 
     /**
      * The tenant dashboard's view: one workspace, and only the inboxes this
      * user holds. Owners hold no `connection_user` rows by design, so they are
      * resolved through the role instead — see User::canAccessAllConnections().
      */
-    public static function forUser(User $user): self
+    public static function forUser(User $user, string $scope = self::SCOPE_ALL): self
     {
         return new self(
             tenantId: (int) $user->tenant_id,
             connectionIds: $user->canAccessAllConnections() ? null : $user->accessibleConnectionIds(),
             maskContacts: false,
             withTenant: false,
+            scope: $scope,
         );
     }
 
@@ -104,13 +135,14 @@ final class LiveMonitor
      * somebody who is a customer of a customer, and operations can act on all
      * of this without it.
      */
-    public static function forPlatform(?int $tenantId = null): self
+    public static function forPlatform(?int $tenantId = null, string $scope = self::SCOPE_ALL): self
     {
         return new self(
             tenantId: $tenantId,
             connectionIds: null,
             maskContacts: true,
             withTenant: true,
+            scope: $scope,
         );
     }
 
@@ -334,6 +366,203 @@ final class LiveMonitor
         }
 
         return str_repeat('•', min(6, $length - 4)).mb_substr($handle, -4);
+    }
+
+    /* -------------------------------------------------------- the activity */
+
+    /**
+     * What people did to conversations, newest first.
+     *
+     * The third lane, and the one that explains the other two: a thread going
+     * quiet means nothing on its own, but "Ana took it over, Bruno resolved it"
+     * is the shift actually happening. Handoffs belong here for the opposite
+     * reason — that is work arriving, not work finishing.
+     *
+     * Read whole rather than paged by cursor, unlike the message stream. These
+     * are human actions: a busy shift produces a few a minute, so re-reading a
+     * capped window costs less than the machinery to page it. Two of the three
+     * sources could not be paged by message id anyway — a resolution is a
+     * column changing on a conversation, not a row being written.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function activity(int $limit = self::ACTIVITY_LIMIT): array
+    {
+        return $this->cached('activity.'.$limit, function () use ($limit) {
+            $since = now()->subMinutes(self::WINDOW_MINUTES);
+
+            $rows = array_merge(
+                $this->threadNotes($since, $limit),
+                $this->resolutions($since, $limit),
+                $this->handoffs($since, $limit),
+            );
+
+            usort($rows, fn (array $a, array $b) => $b['at_ts'] <=> $a['at_ts']);
+
+            return array_map(function (array $row) {
+                unset($row['at_ts']);
+
+                return $row;
+            }, array_slice($rows, 0, $limit));
+        });
+    }
+
+    /**
+     * Notes the platform already writes into threads: transfers, take-overs,
+     * an agent picking a thread out of the queue, a reply window closing, a
+     * call. They are real `messages` rows carrying a stable code plus the
+     * values its copy needs, so nothing new had to be recorded for this lane —
+     * see App\Services\Conversation\SystemMessage.
+     *
+     * They are excluded from the message stream on purpose (they are written
+     * Outgoing but never sent to a channel, so the outbound lane would show
+     * them as messages nobody sent); this is where they belong instead.
+     */
+    private function threadNotes(Carbon $since, int $limit): array
+    {
+        return $this->messages()
+            ->leftJoin('contacts', 'conversations.contact_id', '=', 'contacts.id')
+            ->where('messages.message_type', MessageType::Info->value)
+            ->where('messages.created_at', '>=', $since)
+            ->orderByDesc('messages.id')
+            ->limit($limit)
+            ->select([
+                'messages.id',
+                'messages.created_at',
+                'messages.body',
+                'messages.meta',
+                ...self::CONTEXT_COLUMNS,
+            ])
+            ->get()
+            ->map(function ($row) {
+                // Hand-decoded rather than cast: this is the query builder, not
+                // Eloquent, so `meta` arrives as the raw column — and a row with
+                // no meta at all is normal here.
+                $meta = json_decode((string) $row->meta, true);
+                $info = is_array($meta) && is_array($meta['info'] ?? null) ? $meta['info'] : [];
+
+                return $this->activityRow(
+                    id: 'note:'.$row->id,
+                    at: Carbon::parse($row->created_at),
+                    // A note from before codes existed still reads, through its
+                    // stored English body.
+                    code: $info['code'] ?? null,
+                    params: is_array($info['params'] ?? null) ? $info['params'] : [],
+                    body: $row->body,
+                    row: $row,
+                );
+            })
+            ->all();
+    }
+
+    /**
+     * Threads an agent closed.
+     *
+     * Only deliberate closures: a window expiring also stamps `resolved_at`,
+     * but it leaves no resolver (see Conversation::markResolved) and already
+     * writes its own note above, so counting both would report one event twice
+     * and credit a person for something nobody did.
+     */
+    private function resolutions(Carbon $since, int $limit): array
+    {
+        return $this->conversations()
+            ->leftJoin('contacts', 'conversations.contact_id', '=', 'contacts.id')
+            ->leftJoin('users as resolvers', 'conversations.resolved_by_user_id', '=', 'resolvers.id')
+            ->whereNotNull('conversations.resolved_by_user_id')
+            ->where('conversations.resolved_at', '>=', $since)
+            ->orderByDesc('conversations.resolved_at')
+            ->limit($limit)
+            ->select(['conversations.resolved_at', 'resolvers.name as resolver_name', ...self::CONTEXT_COLUMNS])
+            ->get()
+            ->map(fn ($row) => $this->activityRow(
+                // Write-once by construction — an inbound message never reopens
+                // a resolved thread — so the conversation id alone is stable.
+                id: 'resolved:'.$row->conversation_id,
+                at: Carbon::parse($row->resolved_at),
+                code: 'conversation_resolved',
+                params: ['by' => $row->resolver_name],
+                body: "{$row->resolver_name} resolved this conversation.",
+                row: $row,
+            ))
+            ->all();
+    }
+
+    /**
+     * Threads the automation handed to a person.
+     *
+     * The one kind of activity that is a request rather than a report: every
+     * row here is somebody waiting for an agent who has not arrived yet.
+     */
+    private function handoffs(Carbon $since, int $limit): array
+    {
+        return $this->conversations()
+            ->leftJoin('contacts', 'conversations.contact_id', '=', 'contacts.id')
+            ->whereNotNull('conversations.handoff_at')
+            ->where('conversations.handoff_at', '>=', $since)
+            ->orderByDesc('conversations.handoff_at')
+            ->limit($limit)
+            ->select(['conversations.handoff_at', 'conversations.handoff_reason', ...self::CONTEXT_COLUMNS])
+            ->get()
+            ->map(fn ($row) => $this->activityRow(
+                id: 'handoff:'.$row->conversation_id.':'.Carbon::parse($row->handoff_at)->timestamp,
+                at: Carbon::parse($row->handoff_at),
+                code: 'conversation_handoff',
+                params: array_filter(['reason' => $row->handoff_reason]),
+                body: 'Handed to a human agent.',
+                row: $row,
+            ))
+            ->all();
+    }
+
+    /**
+     * The thread columns every activity source needs, so the three of them
+     * return rows the renderer can treat identically.
+     */
+    private const CONTEXT_COLUMNS = [
+        'conversations.id as conversation_id',
+        'connections.id as connection_id',
+        'connections.name as connection_name',
+        'connections.channel as channel',
+        'connections.tenant_id as tenant_id',
+        'contacts.name as contact_name',
+        'contacts.external_id as contact_external_id',
+    ];
+
+    /**
+     * One activity row.
+     *
+     * `code` and `params` rather than a finished sentence: the server has no
+     * idea what language the reader uses, and a duration or a name formatted
+     * here would be frozen into one. `body` is the English fallback for a code
+     * the client has not learned yet — the same contract the thread notes
+     * already use, so both surfaces render this with the copy they have.
+     */
+    private function activityRow(string $id, Carbon $at, ?string $code, array $params, ?string $body, object $row): array
+    {
+        $entry = [
+            'id' => $id,
+            'at' => $at->toIso8601String(),
+            'at_ts' => $at->getTimestamp(),
+            'code' => $code,
+            'params' => (object) $params,
+            'body' => $body,
+            'conversation_id' => (int) $row->conversation_id,
+            'channel' => $row->channel,
+            'connection' => [
+                'id' => (int) $row->connection_id,
+                'name' => $row->connection_name,
+            ],
+            'contact' => [
+                'name' => $this->contactLabel($row),
+                'handle' => $this->handle($row->contact_external_id),
+            ],
+        ];
+
+        if ($this->withTenant) {
+            $entry['tenant_id'] = (int) $row->tenant_id;
+        }
+
+        return $entry;
     }
 
     /* --------------------------------------------------------- the counters */
@@ -649,31 +878,42 @@ final class LiveMonitor
     {
         $scope = ($this->tenantId ?? 'all').':'.(
             $this->connectionIds === null ? 'all' : md5(implode(',', $this->connectionIds))
-        ).':'.($this->maskContacts ? 'masked' : 'plain');
+        ).':'.($this->maskContacts ? 'masked' : 'plain').':'.$this->scope;
 
         return Cache::remember("live:{$bucket}:{$scope}", self::AGGREGATE_TTL_SECONDS, $resolve);
     }
 
     /**
-     * Every read starts here, so tenant scoping and the per-agent connection
-     * filter cannot be forgotten by one query and remembered by the next —
-     * the same reason StatsScope exists for the period-based statistics.
+     * Every read starts here, so tenant scoping, the per-agent connection
+     * filter and the inbox split cannot be forgotten by one query and
+     * remembered by the next — the same reason StatsScope exists for the
+     * period-based statistics.
      */
     private function messages(): Builder
     {
-        return DB::table('messages')
-            ->join('conversations', 'messages.conversation_id', '=', 'conversations.id')
-            ->join('connections', 'conversations.connection_id', '=', 'connections.id')
-            ->when($this->tenantId, fn ($q) => $q->where('connections.tenant_id', $this->tenantId))
-            ->when($this->connectionIds !== null, fn ($q) => $q->whereIn('conversations.connection_id', $this->connectionIds ?: [0]));
+        return $this->scoped(
+            DB::table('messages')
+                ->join('conversations', 'messages.conversation_id', '=', 'conversations.id')
+                ->join('connections', 'conversations.connection_id', '=', 'connections.id')
+        );
     }
 
     private function conversations(): Builder
     {
-        return DB::table('conversations')
-            ->join('connections', 'conversations.connection_id', '=', 'connections.id')
+        return $this->scoped(
+            DB::table('conversations')
+                ->join('connections', 'conversations.connection_id', '=', 'connections.id')
+        );
+    }
+
+    /** The three narrowings, applied to any query that has reached `connections`. */
+    private function scoped(Builder $query): Builder
+    {
+        return $query
             ->when($this->tenantId, fn ($q) => $q->where('connections.tenant_id', $this->tenantId))
-            ->when($this->connectionIds !== null, fn ($q) => $q->whereIn('conversations.connection_id', $this->connectionIds ?: [0]));
+            ->when($this->connectionIds !== null, fn ($q) => $q->whereIn('conversations.connection_id', $this->connectionIds ?: [0]))
+            ->when($this->scope === self::SCOPE_CHAT, fn ($q) => $q->where('connections.channel', '!=', Channel::Email->value))
+            ->when($this->scope === self::SCOPE_EMAIL, fn ($q) => $q->where('connections.channel', Channel::Email->value));
     }
 
     /**

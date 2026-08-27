@@ -178,6 +178,56 @@ it('ranks the workspaces that are actually moving', function () {
         ->and($tenants[1]['tenant_name'])->toBe('Globex SA');
 });
 
+it('names the agent in an activity row but still masks the customer', function () {
+    $admin = liveAdmin();
+    [$tenant, , $conversation] = liveWorkspace();
+
+    $agent = User::factory()->create(['tenant_id' => $tenant->id, 'name' => 'Ana Souza']);
+    $conversation->update(['status' => ConversationStatus::Active, 'user_id' => $agent->id]);
+    $conversation->markResolved($agent->id);
+
+    $activity = $this->actingAs($admin)->getJson('/api/admin/live')->assertOk()->json('data.activity');
+
+    expect($activity)->toHaveCount(1)
+        ->and($activity[0]['code'])->toBe('conversation_resolved')
+        // Platform staff are not customers of a customer: they are named.
+        ->and($activity[0]['params']['by'])->toBe('Ana Souza')
+        ->and($activity[0]['tenant_name'])->toBe('Acme Ltda')
+        // The person on the other end still is.
+        ->and($activity[0]['contact']['name'])->toBe('João P.');
+});
+
+it('splits the platform by inbox the same way the tenant board does', function () {
+    $admin = liveAdmin();
+    [$tenant, , $chatThread] = liveWorkspace();
+
+    $mail = Connection::create([
+        'tenant_id' => $tenant->id,
+        'name' => 'Suporte',
+        'channel' => 'email',
+        'status' => 'active',
+    ]);
+    $mailThread = Conversation::create([
+        'connection_id' => $mail->id,
+        'contact_id' => $chatThread->contact_id,
+        'external_id' => 'mail-1',
+        'status' => ConversationStatus::Pending,
+        'last_message_at' => now(),
+    ]);
+
+    liveAdminMessage($chatThread, SenderType::Incoming);
+    liveAdminMessage($mailThread, SenderType::Incoming);
+
+    $chatOnly = $this->actingAs($admin)->getJson('/api/admin/live?scope=chat')->assertOk()->json('data');
+    $mailOnly = $this->actingAs($admin)->getJson('/api/admin/live?scope=email')->assertOk()->json('data');
+
+    expect($chatOnly['events'])->toHaveCount(1)
+        ->and($chatOnly['events'][0]['channel'])->toBe('whatsapp_official')
+        ->and($mailOnly['events'])->toHaveCount(1)
+        ->and($mailOnly['events'][0]['channel'])->toBe('email')
+        ->and($mailOnly['pulse']['inbound_window'])->toBe(1);
+});
+
 it('streams deltas by cursor without recomputing the aggregates', function () {
     $admin = liveAdmin();
     [, , $conversation] = liveWorkspace();
