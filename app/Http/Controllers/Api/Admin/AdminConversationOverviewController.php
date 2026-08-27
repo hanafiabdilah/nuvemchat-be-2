@@ -10,6 +10,7 @@ use App\Models\Message;
 use App\Models\Tenant;
 use App\Support\AdminPeriod;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Back Office: conversation volume and backlog per customer.
@@ -25,6 +26,15 @@ use Illuminate\Http\Request;
  * "Unanswered" is the number that earns the page: a conversation waiting on a
  * first human reply for hours is a customer being ignored, and it is invisible
  * from inside a single tenant's dashboard.
+ *
+ * Every conversation count here goes through conversations(), which counts
+ * them the way the inbox does. That is not tidiness: the Live Chat Widget
+ * opens a Pending conversation the moment a visitor loads the page, before
+ * they type a word, and nothing ever drains those. One production tenant
+ * showed 4,594 "Waiting" here against three real threads — 4,591 empty widget
+ * rows growing by fifty to a hundred a day, plus three removed groups. A
+ * backlog figure nobody can act on is worse than no figure, because the page
+ * exists to say which workspaces are stuck.
  */
 class AdminConversationOverviewController extends Controller
 {
@@ -67,7 +77,14 @@ class AdminConversationOverviewController extends Controller
     {
         return Conversation::query()
             ->join('connections', 'conversations.connection_id', '=', 'connections.id')
-            ->when($tenantId, fn ($q) => $q->where('connections.tenant_id', $tenantId));
+            ->when($tenantId, fn ($q) => $q->where('connections.tenant_id', $tenantId))
+            ->whereExists(fn ($sub) => $sub->select(DB::raw(1))
+                ->from('messages')
+                ->whereColumn('messages.conversation_id', 'conversations.id'))
+            ->whereNotExists(fn ($sub) => $sub->select(DB::raw(1))
+                ->from('contacts')
+                ->whereColumn('contacts.id', 'conversations.contact_id')
+                ->whereNotNull('contacts.group_removed_at'));
     }
 
     private function totals(AdminPeriod $period, ?int $tenantId): array

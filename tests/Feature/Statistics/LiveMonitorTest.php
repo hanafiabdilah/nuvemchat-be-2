@@ -427,15 +427,18 @@ it('counts the queue and how long its oldest thread has waited', function () {
     $user = liveOwner();
     $connection = liveConnection($user);
 
-    liveConversation($connection, [
+    $pending = liveConversation($connection, [
         'status' => ConversationStatus::Pending,
         'last_message_at' => now()->subMinutes(20),
     ]);
-    liveConversation($connection, [
+    liveMessage($pending, SenderType::Incoming, now()->subMinutes(20));
+
+    $active = liveConversation($connection, [
         'status' => ConversationStatus::Active,
         'user_id' => $user->id,
         'last_message_at' => now(),
     ]);
+    liveMessage($active, SenderType::Incoming);
 
     $pulse = $this->actingAs($user)->getJson('/api/statistics/live')->assertOk()->json('data.pulse');
 
@@ -443,4 +446,53 @@ it('counts the queue and how long its oldest thread has waited', function () {
         ->and($pulse['waiting_unassigned'])->toBe(1)
         ->and($pulse['active_conversations'])->toBe(1)
         ->and($pulse['oldest_waiting_seconds'])->toBeGreaterThanOrEqual(1190);
+});
+
+/*
+ * The regression that made this board unreadable for a real workspace: it
+ * reported 4,594 waiting where three threads were actually queued. Each row
+ * below is one of the three ways a conversation can exist without being work
+ * anybody can pick up.
+ */
+it('leaves out queue rows nobody can act on', function () {
+    $user = liveOwner();
+    $connection = liveConnection($user);
+
+    // Real: someone wrote and is waiting.
+    $real = liveConversation($connection, [
+        'status' => ConversationStatus::Pending,
+        'last_message_at' => now()->subMinutes(5),
+    ]);
+    liveMessage($real, SenderType::Incoming, now()->subMinutes(5));
+
+    // A visitor who loaded the page with the widget on it and never typed.
+    // The widget opens the conversation at session-open, so this row exists
+    // before there is anything to answer.
+    liveConversation($connection, [
+        'status' => ConversationStatus::Pending,
+        'last_message_at' => now()->subMinutes(5),
+    ]);
+
+    // A group the workspace removed: gone from the panel by definition.
+    $removed = liveConversation($connection, [
+        'status' => ConversationStatus::Pending,
+        'last_message_at' => now()->subMinutes(5),
+    ]);
+    liveMessage($removed, SenderType::Incoming, now()->subMinutes(5));
+    $removed->contact->update(['is_group' => true, 'group_removed_at' => now()]);
+
+    // Untouched for weeks. Still in the inbox, still counted by the period
+    // metrics in Statistics — but not news on a board about right now.
+    $stale = liveConversation($connection, [
+        'status' => ConversationStatus::Pending,
+        'last_message_at' => now()->subDays(30),
+    ]);
+    liveMessage($stale, SenderType::Incoming, now()->subDays(30));
+
+    $pulse = $this->actingAs($user)->getJson('/api/statistics/live')->assertOk()->json('data.pulse');
+
+    expect($pulse['waiting'])->toBe(1)
+        ->and($pulse['waiting_unassigned'])->toBe(1)
+        // The oldest is the real one at ~5 minutes, not the 30-day row.
+        ->and($pulse['oldest_waiting_seconds'])->toBeLessThan(3600);
 });

@@ -261,9 +261,10 @@ test('the overview counts volume and backlog without exposing message bodies', f
 test('a conversation left pending for hours shows up as backlog', function () {
     $tenant = opsTenant();
     $stale = opsConversation($tenant, ['status' => 'pending']);
+    opsMessage($stale);
     Conversation::whereKey($stale->id)->toBase()->update(['updated_at' => now()->subHours(9)]);
 
-    opsConversation($tenant, ['status' => 'pending']);
+    opsMessage(opsConversation($tenant, ['status' => 'pending']));
 
     $res = $this->actingAs(opsAdmin(['bo.conversations.view']), 'sanctum')
         ->getJson('/api/admin/conversations-overview')
@@ -271,6 +272,34 @@ test('a conversation left pending for hours shows up as backlog', function () {
 
     expect($res->json('data.totals.pending'))->toBe(2);
     expect($res->json('data.totals.stale_pending'))->toBe(1);
+});
+
+/*
+ * What this page is for is telling operations which workspaces are stuck, so
+ * a backlog figure nobody can act on is worse than none. A real tenant read
+ * 4,594 "Waiting" here against three queued threads: the Live Chat Widget
+ * opens a Pending conversation the moment a visitor loads the page, and
+ * nothing ever drains those.
+ */
+test('the backlog leaves out threads nobody can act on', function () {
+    $tenant = opsTenant();
+
+    opsMessage(opsConversation($tenant, ['status' => 'pending']));
+
+    // A visitor who loaded a page carrying the widget and never wrote.
+    opsConversation($tenant, ['status' => 'pending']);
+
+    // A group the workspace removed — gone from the panel by definition.
+    $removed = opsConversation($tenant, ['status' => 'pending']);
+    opsMessage($removed);
+    $removed->contact->update(['is_group' => true, 'group_removed_at' => now()]);
+
+    $res = $this->actingAs(opsAdmin(['bo.conversations.view']), 'sanctum')
+        ->getJson('/api/admin/conversations-overview')
+        ->assertOk();
+
+    expect($res->json('data.totals.pending'))->toBe(1);
+    expect($res->json('data.totals.new_conversations'))->toBe(1);
 });
 
 /* -------------------------------------------------------------------------

@@ -58,6 +58,15 @@ final class LiveMonitor
     private const WAITING_ALERT_SECONDS = 600;
 
     /**
+     * How recently a thread must have moved to still count as queue depth.
+     *
+     * Same bound, same reason, as OverviewStats::QUEUE_ACTIVE_DAYS — see the
+     * comment on inboxConversations() for why an unbounded count of open
+     * threads is the wrong number for a board about right now.
+     */
+    private const QUEUE_ACTIVE_DAYS = 7;
+
+    /**
      * How long an aggregate is reused.
      *
      * The stream itself is never cached — it pages by primary key and is the
@@ -599,12 +608,12 @@ final class LiveMonitor
                 )
                 ->first();
 
-            $byStatus = $this->conversations()
+            $byStatus = $this->inboxConversations()
                 ->selectRaw('conversations.status as status, COUNT(*) as c')
                 ->groupBy('conversations.status')
                 ->pluck('c', 'status');
 
-            $waiting = $this->conversations()
+            $waiting = $this->inboxConversations()
                 ->where('conversations.status', Status::Pending->value)
                 ->selectRaw('COUNT(*) as total,
                              SUM(CASE WHEN conversations.user_id IS NULL THEN 1 ELSE 0 END) as unassigned,
@@ -628,7 +637,7 @@ final class LiveMonitor
                 'waiting_unassigned' => (int) ($waiting->unassigned ?? 0),
                 'oldest_waiting_seconds' => $oldestWaiting,
                 'waiting_alert_seconds' => self::WAITING_ALERT_SECONDS,
-                'needs_human' => $this->conversations()->where('conversations.needs_human', true)->count(),
+                'needs_human' => $this->inboxConversations()->where('conversations.needs_human', true)->count(),
                 'series' => $this->series($window),
             ];
         });
@@ -712,7 +721,7 @@ final class LiveMonitor
 
             $ids = $users->pluck('id')->all();
 
-            $open = $this->conversations()
+            $open = $this->inboxConversations()
                 ->whereIn('conversations.user_id', $ids)
                 ->where('conversations.status', Status::Active->value)
                 ->selectRaw('conversations.user_id as user_id, COUNT(*) as c')
@@ -904,6 +913,46 @@ final class LiveMonitor
             DB::table('conversations')
                 ->join('connections', 'conversations.connection_id', '=', 'connections.id')
         );
+    }
+
+    /**
+     * Conversations as a shift could actually act on them: in the inbox, and
+     * moved recently. Every queue-depth counter goes through here; the
+     * activity lanes do not, because a thread that was resolved or handed off
+     * carries its own timestamp and cannot be one of the rows this excludes.
+     *
+     * The three exclusions are the same ones OverviewStats settled on, and
+     * each closes a way this board was reporting work nobody can do:
+     *
+     * A conversation with no message at all is not waiting for anybody. The
+     * Live Chat Widget opens one the moment a visitor loads the page, before
+     * they type a word — so every bounce landed in "Waiting" while being
+     * invisible in every agent's list. One production tenant reached 4,591
+     * such rows, growing by fifty to a hundred a day, against three real
+     * threads. The inbox has always filtered these — see the whereHas on
+     * messages in ConversationController::index() — and this surface never
+     * did, which is exactly why the two disagreed.
+     *
+     * A removed group is gone from the panel by definition.
+     *
+     * And nothing drains Pending on its own — only Accept, Resolve, or the AI
+     * picking a thread up, and the window-expiry closer skips Pending on
+     * purpose — so without a recency bound the count is a permanent backlog
+     * reaching back to the workspace's first day. Older threads are not lost:
+     * they stay in the inbox, and the period metrics in Statistics still count
+     * them. They are simply not news on a board about the last few minutes.
+     */
+    private function inboxConversations(): Builder
+    {
+        return $this->conversations()
+            ->whereExists(fn ($sub) => $sub->select(DB::raw(1))
+                ->from('messages')
+                ->whereColumn('messages.conversation_id', 'conversations.id'))
+            ->whereNotExists(fn ($sub) => $sub->select(DB::raw(1))
+                ->from('contacts')
+                ->whereColumn('contacts.id', 'conversations.contact_id')
+                ->whereNotNull('contacts.group_removed_at'))
+            ->where('conversations.last_message_at', '>=', now()->subDays(self::QUEUE_ACTIVE_DAYS));
     }
 
     /** The three narrowings, applied to any query that has reached `connections`. */
