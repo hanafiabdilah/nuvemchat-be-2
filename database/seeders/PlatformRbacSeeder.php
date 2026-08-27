@@ -36,6 +36,10 @@ class PlatformRbacSeeder extends Seeder
         'bo.health.view',
         'bo.storage.view',
         'bo.conversations.view',
+        // The realtime wallboard. Metadata only, like bo.conversations.view,
+        // but kept separate so a NOC screen can be handed out without the
+        // per-customer volume reporting alongside it.
+        'bo.live.view',
         'bo.reports.export',
         // Granting a feature outside the plan bypasses billing; kept apart from
         // bo.subscriptions.manage so it can be handed out separately.

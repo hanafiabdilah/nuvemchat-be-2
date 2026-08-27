@@ -25,6 +25,7 @@ use App\Http\Controllers\Api\Admin\AdminConversationOverviewController;
 use App\Http\Controllers\Api\Admin\AdminEntitlementController;
 use App\Http\Controllers\Api\Admin\AdminHealthController;
 use App\Http\Controllers\Api\Admin\AdminInvoiceController;
+use App\Http\Controllers\Api\Admin\AdminLiveController;
 use App\Http\Controllers\Api\Admin\AdminReportController;
 use App\Http\Controllers\Api\Admin\AdminStorageController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
@@ -56,6 +57,7 @@ use App\Http\Controllers\Api\ConversationNoteController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\LeadController;
+use App\Http\Controllers\Api\LiveController;
 use App\Http\Controllers\Api\LeadPipelineController;
 use App\Http\Controllers\Api\LeadSettingsController;
 use App\Http\Controllers\Api\MessageController;
@@ -405,6 +407,14 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         });
 
         Route::get('/statistics/agents', [StatisticsController::class, 'agents'])->middleware('permission:statistics.agents.view');
+
+        // The live monitor. Same feature and same viewing permission as the
+        // rest of Statistics, but no filter set and no period: it only ever
+        // describes the last few minutes. Polled every couple of seconds by an
+        // open wallboard, so it is throttled well above that — a stuck client
+        // must not be able to hammer the database in a tight loop.
+        Route::get('/statistics/live', [LiveController::class, 'index'])
+            ->middleware(['permission:statistics.tenant.view', 'throttle:120,1']);
     });
 
     // AI Agent Hub routes - protected by permissions + the `ai_agent_hub` feature
@@ -549,6 +559,12 @@ Route::prefix('admin')->group(function () {
         // impersonation is the audited path for actually looking at a thread.
         Route::get('/conversations-overview', [AdminConversationOverviewController::class, 'index'])
             ->middleware('permission:bo.conversations.view');
+
+        // The same question with the period removed: what is moving right now,
+        // and who is staffing it. Keeps the metadata-only rule above — see
+        // AdminLiveController. Polled, so throttled above the poll rate.
+        Route::get('/live', [AdminLiveController::class, 'index'])
+            ->middleware(['permission:bo.live.view', 'throttle:120,1']);
 
         // CSV exports for the tables people were copying by hand.
         Route::middleware('permission:bo.reports.export')->group(function () {

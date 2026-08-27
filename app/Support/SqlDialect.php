@@ -63,6 +63,20 @@ class SqlDialect
             : "DATE_FORMAT({$shifted}, '%Y-%m-%d')";
     }
 
+    /**
+     * Minute as 'YYYY-MM-DD HH:MM'. Only the live monitor buckets this finely,
+     * and it always reads a window of minutes ending now — so it passes no
+     * offset and compares the strings against buckets built the same way.
+     */
+    public static function minute(string $column, int $offsetSeconds = 0): string
+    {
+        $shifted = self::shifted($column, $offsetSeconds);
+
+        return self::isSqlite()
+            ? "strftime('%Y-%m-%d %H:%M', {$shifted})"
+            : "DATE_FORMAT({$shifted}, '%Y-%m-%d %H:%i')";
+    }
+
     /** Calendar month as 'YYYY-MM'. */
     public static function month(string $column, int $offsetSeconds = 0): string
     {
