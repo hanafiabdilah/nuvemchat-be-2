@@ -325,6 +325,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
 
     Route::get('/connections', [ConnectionController::class, 'index']);
     Route::get('/connections/metrics', [ConnectionController::class, 'metrics']);
+    Route::get('/connections/meta-config', [ConnectionController::class, 'metaConfig']);
     // Health + recent activity for the detail drawer. No extra permission: it
     // reports on messages the caller can already read, and the controller still
     // gates on connection access.

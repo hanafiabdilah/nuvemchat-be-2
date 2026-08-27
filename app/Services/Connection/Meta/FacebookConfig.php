@@ -17,6 +17,13 @@ class FacebookConfig
     public const KEY_CONFIG_ID = 'facebook.config_id';
     public const KEY_MESSENGER_CONFIG_ID = 'facebook.messenger_config_id';
 
+    /**
+     * Graph/SDK version the whole product speaks — the browser SDK reads this
+     * too (see metaConfig()), so the dialog and the calls that follow it can
+     * never end up on different versions. Coexistence onboarding needs >= v23.
+     */
+    public const GRAPH_VERSION = 'v25.0';
+
     public static function appId(): ?string
     {
         return Setting::get(self::KEY_APP_ID);
@@ -36,6 +43,11 @@ class FacebookConfig
     public static function configId(): ?string
     {
         return Setting::get(self::KEY_CONFIG_ID);
+    }
+
+    public static function graphVersion(): string
+    {
+        return self::GRAPH_VERSION;
     }
 
     /**

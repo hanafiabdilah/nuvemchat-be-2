@@ -1083,6 +1083,16 @@ class ConnectionController extends Controller
             $attempts['me/businesses'] = $businesses->json();
 
             foreach ($businesses->json()['data'] ?? [] as $business) {
+                // Which portfolio claims this app decides everything above:
+                // under Standard Access only that portfolio's Pages are
+                // readable. Nothing here reads it back to us, so ask.
+                foreach (['owned_apps', 'client_apps'] as $edge) {
+                    $attempts["{$business['id']}/{$edge}"] = Http::get("https://graph.facebook.com/v25.0/{$business['id']}/{$edge}", [
+                        'fields' => 'id,name',
+                        'access_token' => $userToken,
+                    ])->json();
+                }
+
                 foreach (['owned_pages', 'client_pages'] as $edge) {
                     $response = Http::get("https://graph.facebook.com/v25.0/{$business['id']}/{$edge}", [
                         'fields' => 'id,name,access_token',

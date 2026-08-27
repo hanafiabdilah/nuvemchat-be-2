@@ -74,6 +74,25 @@ class ConnectionController extends Controller
         ]);
     }
 
+    /**
+     * Non-secret Meta identifiers the browser needs to open the Facebook SDK
+     * dialogs. Both already travel inside the OAuth URL the user is sent to,
+     * so neither is a secret — the point is that they come from the Back
+     * Office settings instead of a build-time .env, so pointing the product at
+     * a different Meta app no longer requires rebuilding the frontend (and can
+     * no longer silently disagree with what the backend uses).
+     */
+    public function metaConfig()
+    {
+        return response()->json([
+            'facebook' => [
+                'app_id' => FacebookConfig::appId(),
+                'config_id' => FacebookConfig::configId(),
+                'graph_version' => FacebookConfig::graphVersion(),
+            ],
+        ]);
+    }
+
     public function metrics(Request $request)
     {
         $tenant = $request->user()->tenant;
