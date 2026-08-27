@@ -120,6 +120,60 @@ test('connect survives a Page node that refuses the name field', function () {
         ->and($connection->credentials['page_name'])->toBe('Página A');
 });
 
+function pendingMessengerConnectionWithToken(Tenant $tenant): Connection
+{
+    $connection = pendingMessengerConnection($tenant);
+    $credentials = $connection->credentials;
+    $credentials['pending_pages'][0]['access_token'] = 'page-token-from-login';
+    $connection->forceFill(['credentials' => $credentials])->save();
+
+    return $connection;
+}
+
+test('connect proceeds when the Page node cannot be read at all', function () {
+    // Production reality before Advanced Access: Graph refuses EVERY field on
+    // the Page node — `id` included — even for a token debug_token reports as
+    // a valid PAGE token. Rejecting the connect here would fail on a healthy
+    // token; the subscription below is the real proof it works.
+    Http::fake([
+        'graph.facebook.com/v25.0/me*' => Http::response([
+            'error' => ['message' => "(#100) …requires the 'pages_read_engagement' permission", 'code' => 100],
+        ], 400),
+        'graph.facebook.com/v25.0/111/subscribed_apps' => Http::response(['success' => true]),
+    ]);
+
+    $connection = pendingMessengerConnectionWithToken(messengerTestTenant());
+
+    (new MessengerChannel)->connect($connection, ['page_id' => '111']);
+
+    $connection->refresh();
+
+    expect($connection->status)->toBe(Status::Active)
+        ->and($connection->credentials['access_token'])->toBe('page-token-from-login')
+        ->and($connection->credentials['page_name'])->toBe('Página A');
+});
+
+test('a failed webhook subscription leaves the connection pending, not active', function () {
+    Http::fake([
+        'graph.facebook.com/v25.0/me*' => Http::response(['id' => '111', 'name' => 'Página A']),
+        'graph.facebook.com/v25.0/111/subscribed_apps' => Http::response([
+            'error' => ['message' => 'Nope', 'code' => 200],
+        ], 403),
+    ]);
+
+    $connection = pendingMessengerConnectionWithToken(messengerTestTenant());
+
+    expect(fn () => (new MessengerChannel)->connect($connection, ['page_id' => '111']))
+        ->toThrow(Exception::class);
+
+    $connection->refresh();
+
+    // A Page whose events never reach us is not connected — it must not be
+    // left looking healthy.
+    expect($connection->status)->toBe(Status::Pending)
+        ->and($connection->credentials)->not->toHaveKey('page_id');
+});
+
 test('connect rejects a page that was not authorized during login', function () {
     $connection = pendingMessengerConnection(messengerTestTenant());
 

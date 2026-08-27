@@ -90,15 +90,25 @@ class MessengerChannel implements ChannelInterface
                 ]);
             }
 
+            // Without pages_read_engagement Graph refuses EVERY field on a Page
+            // node, `id` included — so a failure here says nothing about the
+            // token. Treating it as invalid rejects perfectly good page tokens.
+            // The honest check is the webhook subscription below: it cannot
+            // succeed unless this token really works on this Page.
+            $pageInfo = $response->successful() ? $response->json() : [];
+
             if (!$response->successful()) {
-                Log::error('Invalid Messenger page access token', [
+                Log::warning('Messenger: Page node unreadable, leaving token validation to the webhook subscription', [
                     'connection_id' => $connection->id,
+                    'page_id' => $pageId,
                     'response' => $response->json(),
                 ]);
-                throw new Exception('Invalid Facebook Page access token.');
             }
 
-            $pageInfo = $response->json();
+            // Subscribe BEFORE persisting Active. A Page whose events we never
+            // receive is not connected, and saving first would leave a dead
+            // connection looking healthy whenever this call fails.
+            $this->subscribeWebhook($connection, $pageId, $pageToken);
 
             $connection->update([
                 'status' => Status::Active,
@@ -112,8 +122,6 @@ class MessengerChannel implements ChannelInterface
                     'fb_user_id' => $fbUserId,
                 ],
             ]);
-
-            $this->subscribeWebhook($connection);
         } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
@@ -215,15 +223,8 @@ class MessengerChannel implements ChannelInterface
         return $response->json()['access_token'];
     }
 
-    private function subscribeWebhook(Connection $connection): void
+    private function subscribeWebhook(Connection $connection, string $pageId, string $pageToken): void
     {
-        $pageId = $connection->credentials['page_id'] ?? null;
-        $pageToken = $connection->credentials['access_token'] ?? null;
-
-        if (!$pageId || !$pageToken) {
-            throw new Exception('Missing page_id or access_token for webhook subscription.');
-        }
-
         // POST /{page-id}/subscribed_apps — subscribes THIS app to the Page's
         // Messenger events (delivered to /webhook/facebook).
         $response = Http::post(self::GRAPH_BASE . "/{$pageId}/subscribed_apps", [
