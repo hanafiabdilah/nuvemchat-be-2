@@ -63,6 +63,37 @@ test('connect via page picker fetches the page token, activates and subscribes t
     Http::assertSent(fn ($request) => str_contains($request->url(), '/111/subscribed_apps'));
 });
 
+test('connect uses the page token captured during login instead of re-fetching it', function () {
+    // Graph refuses GET /{page_id}?fields=access_token whenever the app cannot
+    // read the Page node — the normal case before Advanced Access. The token
+    // the login already handed us is the only one that works, so the picker
+    // must never go back and ask for it again.
+    Http::fake([
+        'graph.facebook.com/v25.0/111?*' => Http::response([
+            'error' => ['message' => '(#100) Object does not exist, cannot be loaded due to missing permission', 'code' => 100],
+        ], 400),
+        'graph.facebook.com/v25.0/me*' => Http::response(['id' => '111', 'name' => 'Página A']),
+        'graph.facebook.com/v25.0/111/subscribed_apps' => Http::response(['success' => true]),
+    ]);
+
+    $connection = pendingMessengerConnection(messengerTestTenant());
+    $credentials = $connection->credentials;
+    $credentials['pending_pages'][0]['access_token'] = 'page-token-from-login';
+    $connection->forceFill(['credentials' => $credentials])->save();
+
+    (new MessengerChannel)->connect($connection, ['page_id' => '111']);
+
+    $connection->refresh();
+
+    expect($connection->status)->toBe(Status::Active)
+        ->and($connection->credentials['access_token'])->toBe('page-token-from-login');
+
+    // The unpicked page's token goes away with the rest of pending_pages.
+    expect($connection->credentials)->not->toHaveKey('pending_pages');
+
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), 'graph.facebook.com/v25.0/111?'));
+});
+
 test('connect rejects a page that was not authorized during login', function () {
     $connection = pendingMessengerConnection(messengerTestTenant());
 

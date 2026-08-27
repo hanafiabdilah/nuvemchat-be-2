@@ -1007,16 +1007,26 @@ class ConnectionController extends Controller
             return redirect($resultUrl . '?status=success&message=' . urlencode('Facebook Page connected successfully!'));
         }
 
-        // Multiple Pages: stash the choice list (ids + names only — page tokens
-        // are re-fetched with the user token at connect time). The SPA renders
-        // a picker and finishes via POST /connections/{id}/connect {page_id}.
+        // Multiple Pages: stash the choice list. The SPA renders a picker and
+        // finishes via POST /connections/{id}/connect {page_id}.
+        //
+        // The page access token that came with the list is kept, not thrown
+        // away: re-fetching it at connect time (GET /{page_id}?fields=access_token)
+        // is refused whenever the app cannot read the Page node directly — the
+        // exact situation this login flow exists to get around. These tokens
+        // live only until a Page is picked; connect() replaces credentials
+        // wholesale, taking the unpicked ones with it.
         $connection->update([
             'status' => Status::Pending,
             'credentials' => [
                 'user_access_token' => $userToken,
                 'fb_user_id' => $fbUserId,
                 'pending_pages' => collect($pages)
-                    ->map(fn ($page) => ['id' => (string) $page['id'], 'name' => $page['name'] ?? ''])
+                    ->map(fn ($page) => [
+                        'id' => (string) $page['id'],
+                        'name' => $page['name'] ?? '',
+                        'access_token' => $page['access_token'] ?? null,
+                    ])
                     ->values()
                     ->all(),
             ],
@@ -1027,6 +1037,9 @@ class ConnectionController extends Controller
         Log::info('Messenger OAuth authorized; awaiting page selection', [
             'connection_id' => $connection->id,
             'page_count' => count($pages),
+            // A Page listed without a token can only be connected by the
+            // re-fetch, so this number is what says whether connect will work.
+            'pages_with_token' => collect($pages)->filter(fn ($page) => !empty($page['access_token']))->count(),
         ]);
 
         return redirect($resultUrl . '?status=success&message=' . urlencode('Authorized! Now choose which Page to connect.'));

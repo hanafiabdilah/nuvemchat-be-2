@@ -57,7 +57,11 @@ class MessengerChannel implements ChannelInterface
             }
 
             $pageName = $pageName ?? ($pending['name'] ?? null);
-            $pageToken = $this->fetchPageToken($pageId, $userToken);
+            // Prefer the token captured during login. Asking Graph for it again
+            // fails whenever the app cannot read the Page node directly, so the
+            // re-fetch is only a fallback — for rows stored before tokens were
+            // kept, and for the single-Page path that never had a picker.
+            $pageToken = $pending['access_token'] ?? $this->fetchPageToken($pageId, $userToken);
         }
 
         if (Connection::where('id', '!=', $connection->id)
