@@ -964,15 +964,26 @@ class ConnectionController extends Controller
                 'access_token' => FacebookConfig::appId() . '|' . FacebookConfig::appSecret(),
             ]);
 
+            $debugData = $debugToken->json()['data'] ?? [];
+
             Log::warning('Messenger OAuth: /me/accounts returned no pages', [
                 'connection_id' => $connection->id,
                 'me' => $me->json(),
                 'accounts_response' => $pagesResponse->json(),
                 'permissions' => $permissions->json(),
-                'debug_token' => $debugToken->json()['data'] ?? $debugToken->json(),
+                'debug_token' => $debugData ?: $debugToken->json(),
             ]);
 
-            return redirect($resultUrl . '?status=error&message=' . urlencode('No Facebook Pages were shared with this app. Try again and, on the Facebook screen, tap "Edit access" and select at least one Page. If the app is in development mode, the Facebook user also needs a role on the app.'));
+            // /me/accounts is a user-centric edge, but Facebook Login for
+            // Business hands the Pages over through a business portfolio — a
+            // token can carry the Page ids in granular_scopes (proof the grant
+            // landed) and still get an empty list back here. Ask for the very
+            // same Pages the other two ways before giving up.
+            $pages = $this->messengerFallbackPages($connection, $userToken, $debugData);
+        }
+
+        if (empty($pages)) {
+            return redirect($resultUrl . '?status=error&message=' . urlencode('Facebook authorized the app but returned no usable Page. If the Pages were selected on the Facebook screen, the app most likely still has Standard Access for Page permissions — it can then only read Pages owned by the business portfolio that owns the app. Check the server log for the exact Graph response.'));
         }
 
         if (count($pages) === 1) {
@@ -1019,6 +1030,86 @@ class ConnectionController extends Controller
         ]);
 
         return redirect($resultUrl . '?status=success&message=' . urlencode('Authorized! Now choose which Page to connect.'));
+    }
+
+    /**
+     * Second and third attempts at the Page list, run only once /me/accounts
+     * has already come back empty.
+     *
+     * Both read the exact Page ids the token itself proves were granted
+     * (debug_token's granular_scopes), so neither can widen access beyond what
+     * the user picked in the login dialog — a Page that never made it into the
+     * token is never connectable through here.
+     *
+     * @param  array<string, mixed>  $debugData  debug_token's `data` payload
+     * @return array<int, array<string, mixed>>  Pages carrying a page access token
+     */
+    private function messengerFallbackPages(Connection $connection, string $userToken, array $debugData): array
+    {
+        $granted = collect($debugData['granular_scopes'] ?? [])
+            ->whereIn('scope', ['pages_show_list', 'pages_messaging'])
+            ->flatMap(fn ($scope) => $scope['target_ids'] ?? [])
+            ->map(fn ($id) => (string) $id)
+            ->unique()
+            ->values();
+
+        $pages = [];
+        $attempts = [];
+
+        // (1) Straight node read per granted Page id. The edge can be filtered
+        // while the node itself still answers.
+        foreach ($granted as $pageId) {
+            $response = Http::get("https://graph.facebook.com/v25.0/{$pageId}", [
+                'fields' => 'id,name,access_token',
+                'access_token' => $userToken,
+            ]);
+
+            $attempts["page:{$pageId}"] = $response->json();
+
+            if ($response->successful() && !empty($response->json()['access_token'])) {
+                $pages[] = $response->json();
+            }
+        }
+
+        // (2) The business edges — where Login for Business actually files the
+        // assets it just handed over. Needs business_management, which that
+        // login configuration grants alongside the page permissions.
+        if (empty($pages)) {
+            $businesses = Http::get('https://graph.facebook.com/v25.0/me/businesses', [
+                'fields' => 'id,name',
+                'access_token' => $userToken,
+            ]);
+
+            $attempts['me/businesses'] = $businesses->json();
+
+            foreach ($businesses->json()['data'] ?? [] as $business) {
+                foreach (['owned_pages', 'client_pages'] as $edge) {
+                    $response = Http::get("https://graph.facebook.com/v25.0/{$business['id']}/{$edge}", [
+                        'fields' => 'id,name,access_token',
+                        'access_token' => $userToken,
+                    ]);
+
+                    $attempts["{$business['id']}/{$edge}"] = $response->json();
+
+                    foreach ($response->json()['data'] ?? [] as $page) {
+                        if ($granted->contains((string) ($page['id'] ?? '')) && !empty($page['access_token'])) {
+                            $pages[] = $page;
+                        }
+                    }
+                }
+            }
+        }
+
+        $pages = collect($pages)->unique('id')->values()->all();
+
+        Log::warning('Messenger OAuth: fallback page discovery', [
+            'connection_id' => $connection->id,
+            'granted_page_ids' => $granted->all(),
+            'recovered_page_ids' => collect($pages)->pluck('id')->all(),
+            'attempts' => $attempts,
+        ]);
+
+        return $pages;
     }
 
     /**
