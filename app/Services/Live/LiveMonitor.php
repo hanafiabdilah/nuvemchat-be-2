@@ -400,9 +400,14 @@ final class LiveMonitor
         return $this->cached('activity.'.$limit, function () use ($limit) {
             $since = now()->subMinutes(self::WINDOW_MINUTES);
 
+            // Resolutions used to be read from `conversations.resolved_at`
+            // here. They are not any more: every status change now writes a
+            // note into the thread (ConversationObserver::noteStatusChange), so
+            // reading the column as well would report one closure twice.
+            // Handoffs still need their own source — in practice they move a
+            // thread from Pending to Pending, which is no status change at all.
             $rows = array_merge(
                 $this->threadNotes($since, $limit),
-                $this->resolutions($since, $limit),
                 $this->handoffs($since, $limit),
             );
 
@@ -461,38 +466,6 @@ final class LiveMonitor
                     row: $row,
                 );
             })
-            ->all();
-    }
-
-    /**
-     * Threads an agent closed.
-     *
-     * Only deliberate closures: a window expiring also stamps `resolved_at`,
-     * but it leaves no resolver (see Conversation::markResolved) and already
-     * writes its own note above, so counting both would report one event twice
-     * and credit a person for something nobody did.
-     */
-    private function resolutions(Carbon $since, int $limit): array
-    {
-        return $this->conversations()
-            ->leftJoin('contacts', 'conversations.contact_id', '=', 'contacts.id')
-            ->leftJoin('users as resolvers', 'conversations.resolved_by_user_id', '=', 'resolvers.id')
-            ->whereNotNull('conversations.resolved_by_user_id')
-            ->where('conversations.resolved_at', '>=', $since)
-            ->orderByDesc('conversations.resolved_at')
-            ->limit($limit)
-            ->select(['conversations.resolved_at', 'resolvers.name as resolver_name', ...self::CONTEXT_COLUMNS])
-            ->get()
-            ->map(fn ($row) => $this->activityRow(
-                // Write-once by construction — an inbound message never reopens
-                // a resolved thread — so the conversation id alone is stable.
-                id: 'resolved:'.$row->conversation_id,
-                at: Carbon::parse($row->resolved_at),
-                code: 'conversation_resolved',
-                params: ['by' => $row->resolver_name],
-                body: "{$row->resolver_name} resolved this conversation.",
-                row: $row,
-            ))
             ->all();
     }
 

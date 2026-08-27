@@ -20,6 +20,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Tag;
+use App\Observers\ConversationObserver;
 use App\Services\AutomatedMessageService;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Conversation\SystemMessage;
@@ -1129,7 +1130,11 @@ class ConversationController extends Controller
         $conversation->user_id = Auth::id();
         $conversation->status = Status::Active;
         $conversation->needs_human = false;
-        $conversation->save();
+
+        // The automatic status note is suppressed here because the note written
+        // a few lines below says more: it names who picked the thread up, which
+        // "pending → active" only implies. Two notes for one click is noise.
+        ConversationObserver::withoutStatusNote(fn () => $conversation->save());
 
         // Taking over from the AI: stop the running flow so it no longer auto-replies.
         if ($wasAiHandling) {

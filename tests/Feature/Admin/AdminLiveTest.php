@@ -183,13 +183,21 @@ it('names the agent in an activity row but still masks the customer', function (
     [$tenant, , $conversation] = liveWorkspace();
 
     $agent = User::factory()->create(['tenant_id' => $tenant->id, 'name' => 'Ana Souza']);
-    $conversation->update(['status' => ConversationStatus::Active, 'user_id' => $agent->id]);
+
+    // saveQuietly, because putting the thread into the state under test is
+    // arrangement — going through the observer would leave a "pending → active"
+    // note of its own and make the assertion below about the wrong row.
+    $conversation->forceFill(['status' => ConversationStatus::Active, 'user_id' => $agent->id])->saveQuietly();
+
+    // Signed in as the agent, the way applyResolve() runs: the note the status
+    // change writes takes its subject from whoever is driving the request.
+    $this->actingAs($agent);
     $conversation->markResolved($agent->id);
 
     $activity = $this->actingAs($admin)->getJson('/api/admin/live')->assertOk()->json('data.activity');
 
     expect($activity)->toHaveCount(1)
-        ->and($activity[0]['code'])->toBe('conversation_resolved')
+        ->and($activity[0]['code'])->toBe('conversation_status_changed_by')
         // Platform staff are not customers of a customer: they are named.
         ->and($activity[0]['params']['by'])->toBe('Ana Souza')
         ->and($activity[0]['tenant_name'])->toBe('Acme Ltda')

@@ -5,6 +5,7 @@ namespace App\Services\Messaging;
 use App\Enums\Conversation\Status;
 use App\Events\ConversationUpdated;
 use App\Models\Conversation;
+use App\Observers\ConversationObserver;
 use App\Services\Conversation\SystemMessage;
 
 /**
@@ -47,7 +48,11 @@ class ExpiredWindowResolver
         // After the note, so the broadcast carries the last_message_at the note
         // just bumped and every inbox row lands on its final state at once.
         // No resolver id: nobody closed this, the window did.
-        $conversation->markResolved();
+        //
+        // The automatic status note is suppressed because the note just written
+        // says the same thing and says why — "active → resolved" underneath it
+        // would add a line and no information.
+        ConversationObserver::withoutStatusNote(fn () => $conversation->markResolved());
 
         broadcast(new ConversationUpdated($conversation));
 

@@ -12,6 +12,7 @@ use App\Models\Flow;
 use App\Models\Message;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\Messaging\ExpiredWindowResolver;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Spatie\Permission\Models\Permission;
@@ -314,10 +315,14 @@ it('reports what agents did to conversations, newest first', function () {
 
     expect($codes)->toContain('conversation_assigned')
         ->and($codes)->toContain('conversation_taken_over')
-        ->and($codes)->toContain('conversation_resolved');
+        // Closing a thread is a status change, and every status change now
+        // writes its own note — nothing reads `resolved_at` for this any more.
+        ->and($codes)->toContain('conversation_status_changed_by');
 
-    $resolved = $activity->firstWhere('code', 'conversation_resolved');
+    $resolved = $activity->firstWhere('code', 'conversation_status_changed_by');
     expect($resolved['params']['by'])->toBe('Owner')
+        ->and($resolved['params']['from_status'])->toBe('active')
+        ->and($resolved['params']['to_status'])->toBe('resolved')
         ->and($resolved['conversation_id'])->toBe($done->id)
         ->and($resolved['contact']['name'])->toBe('João Pereira');
 
@@ -351,13 +356,12 @@ it('counts an auto-closed thread once, and credits nobody for it', function () {
     $owner = liveOwner();
     $conversation = liveConversation(liveConnection($owner), ['status' => ConversationStatus::Active]);
 
-    // What ExpiredWindowResolver does: its own note, and a resolution with no
-    // resolver. Counting both would report one event twice.
-    liveMessage($conversation, SenderType::Outgoing, null, [
-        'message_type' => MessageType::Info,
-        'meta' => ['info' => ['code' => 'messaging_window_expired', 'params' => ['hours' => 24]]],
-    ]);
-    $conversation->markResolved();
+    // The customer last wrote well outside the 24-hour window, so the real
+    // resolver closes the thread: one note saying why, and — because it
+    // suppresses the automatic one — no "active → resolved" underneath it.
+    liveMessage($conversation, SenderType::Incoming, now()->subHours(30));
+
+    expect(ExpiredWindowResolver::resolve($conversation->fresh()))->toBeTrue();
 
     $activity = $this->actingAs($owner)->getJson('/api/statistics/live')->assertOk()->json('data.activity');
 
