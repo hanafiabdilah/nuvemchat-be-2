@@ -174,10 +174,26 @@ class MessengerChannel implements ChannelInterface
     public function checkStatus(Connection $connection): void
     {
         try {
+            $pageToken = $connection->credentials['access_token'] ?? null;
+            $pageId = $connection->credentials['page_id'] ?? null;
+
             $response = Http::get(self::GRAPH_BASE . '/me', [
                 'fields' => 'id,name',
-                'access_token' => $connection->credentials['access_token'] ?? null,
+                'access_token' => $pageToken,
             ]);
+
+            // Reading the Page node needs pages_read_engagement, which this app
+            // does not have — so a refusal here means nothing about the token,
+            // and marking the connection Inactive on it would kill a perfectly
+            // healthy Page. Ask something we ARE allowed to ask instead: the
+            // Page's app subscriptions. It proves the token works and, unlike a
+            // name lookup, proves the thing that actually matters — that events
+            // will still reach us.
+            if (!$response->successful() && $pageId) {
+                $response = Http::get(self::GRAPH_BASE . "/{$pageId}/subscribed_apps", [
+                    'access_token' => $pageToken,
+                ]);
+            }
 
             if ($response->successful()) {
                 $connection->update([

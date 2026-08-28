@@ -174,6 +174,31 @@ test('a failed webhook subscription leaves the connection pending, not active', 
         ->and($connection->credentials)->not->toHaveKey('page_id');
 });
 
+test('check status keeps a healthy page active when the Page node is unreadable', function () {
+    // Pressing "check status" must not deactivate a working connection just
+    // because pages_read_engagement is missing.
+    Http::fake([
+        'graph.facebook.com/v25.0/me*' => Http::response([
+            'error' => ['message' => "(#100) …requires the 'pages_read_engagement' permission", 'code' => 100],
+        ], 400),
+        'graph.facebook.com/v25.0/111/subscribed_apps*' => Http::response(['data' => [['id' => '999']]]),
+    ]);
+
+    $tenant = messengerTestTenant();
+    $connection = Connection::create([
+        'tenant_id' => $tenant->id,
+        'channel' => Channel::Messenger,
+        'name' => 'Messenger ' . uniqid(),
+        'color' => '#0084ff',
+        'status' => Status::Active,
+        'credentials' => ['page_id' => '111', 'page_name' => 'Página A', 'access_token' => 'page-token-111'],
+    ]);
+
+    (new MessengerChannel)->checkStatus($connection);
+
+    expect($connection->refresh()->status)->toBe(Status::Active);
+});
+
 test('connect rejects a page that was not authorized during login', function () {
     $connection = pendingMessengerConnection(messengerTestTenant());
 
