@@ -37,6 +37,20 @@ class AiVoiceReply
     /** Speak every turn, whatever the customer does. */
     public const MODE_ALWAYS = 'always';
 
+    /**
+     * File extension per hub format. Opus comes back in an Ogg container, and
+     * `.ogg` is what both WhatsApp handlers already recognise as audio they do
+     * not need to re-encode.
+     */
+    private const FORMAT_EXTENSIONS = [
+        'mp3' => 'mp3',
+        'opus' => 'ogg',
+        'aac' => 'aac',
+        'flac' => 'flac',
+        'wav' => 'wav',
+        'pcm' => 'wav',
+    ];
+
     /** The voice note is the answer. */
     public const DELIVERY_AUDIO_ONLY = 'audio_only';
 
@@ -131,19 +145,31 @@ class AiVoiceReply
      * falls through to config/ai.php, so the product can be re-voiced in one
      * place instead of flow by flow.
      *
+     * The format is the channel's call rather than the author's: it decides
+     * whether the reply arrives as a voice note or as a file, which is not a
+     * question anybody should have to answer per flow.
+     *
      * @param  array<string, mixed>  $config  from config()
      * @return array<string, mixed>
      */
-    public static function options(array $config): array
+    public static function options(array $config, Channel $channel): array
     {
         return array_filter([
             'enabled' => true,
             'model' => config('ai.voice.model'),
             'voice' => $config['voice'] ?? config('ai.voice.voice'),
-            'format' => config('ai.voice.format', 'mp3'),
+            'format' => self::format($channel),
             'speed' => $config['speed'] ?? config('ai.voice.speed'),
             'instructions' => $config['instructions'] ?? config('ai.voice.instructions'),
         ], fn ($value) => $value !== null && $value !== '');
+    }
+
+    /** What the hub is asked for: the platform override, or the channel's own answer. */
+    public static function format(Channel $channel): string
+    {
+        $forced = self::text(config('ai.voice.format'));
+
+        return $forced ?? $channel->voiceReplyFormat();
     }
 
     /**
@@ -185,6 +211,13 @@ class AiVoiceReply
      */
     public static function download(string $url, string $format = 'mp3'): ?UploadedFile
     {
+        // The name matters more than it looks. `.opus` sends the API Way
+        // handler down its FFmpeg conversion branch (it re-encodes anything
+        // that is not mp3/ogg), and the file is genuinely an Ogg container
+        // either way — so Opus travels as `.ogg` and arrives as a voice note
+        // without anything being transcoded.
+        $extension = self::FORMAT_EXTENSIONS[$format] ?? 'mp3';
+
         try {
             $response = Http::timeout(30)->get($url);
         } catch (\Throwable $th) {
@@ -211,7 +244,7 @@ class AiVoiceReply
 
         return new UploadedFile(
             $path,
-            'resposta-' . Str::lower(Str::random(6)) . '.' . ($format ?: 'mp3'),
+            'resposta-' . Str::lower(Str::random(6)) . '.' . $extension,
             $response->header('Content-Type') ?: 'audio/mpeg',
             null,
             true, // already "uploaded": skip the is_uploaded_file() check

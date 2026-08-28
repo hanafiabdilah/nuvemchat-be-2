@@ -243,4 +243,28 @@ enum Channel: string
             default => true,
         };
     }
+
+    /**
+     * The audio format to ask the AI hub for, so the reply arrives as the
+     * right *kind* of message here.
+     *
+     * This is not about playback — every channel below plays an MP3 — but
+     * about which bubble the recipient gets. WhatsApp draws a voice note, with
+     * the waveform and the play-once behaviour people expect from someone
+     * talking to them, only for Ogg/Opus; an MP3 lands as a file attachment
+     * that reads like a document somebody sent. Same audio, different message.
+     *
+     * Everything else stays on MP3 deliberately. Telegram would need
+     * `sendVoice` rather than `sendAudio` to draw the voice bubble, so an Opus
+     * file there buys nothing and only narrows what can play it; Discord,
+     * Instagram, Messenger and the widget have no voice-note concept at all,
+     * where MP3 is the safest thing to hand a browser.
+     */
+    public function voiceReplyFormat(): string
+    {
+        return match ($this) {
+            self::WhatsappOfficial, self::WhatsappApiway => 'opus',
+            default => 'mp3',
+        };
+    }
 }

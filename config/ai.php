@@ -118,8 +118,18 @@ return [
 
         'model' => env('AI_TTS_MODEL', 'gpt-4o-mini-tts'),
         'voice' => env('AI_TTS_VOICE', 'onyx'),
-        'format' => env('AI_TTS_FORMAT', 'mp3'),
         'speed' => (float) env('AI_TTS_SPEED', 1.0),
+
+        /*
+        | Left unset on purpose: the format decides whether WhatsApp draws a
+        | voice note or a file attachment, so the channel picks it
+        | (Channel::voiceReplyFormat()). Setting this forces one format
+        | everywhere — useful to pin down a hub that rejects a codec, and a
+        | regression the rest of the time. The hub accepts: mp3, opus, aac,
+        | flac, wav, pcm.
+        */
+
+        'format' => env('AI_TTS_FORMAT'),
 
         /*
         | How the voice should sound. Style, not content — the words are the

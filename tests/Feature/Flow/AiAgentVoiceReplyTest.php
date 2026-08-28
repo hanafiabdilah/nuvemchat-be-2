@@ -16,12 +16,19 @@ use Tests\Support\AiAgentFixtures;
 uses(RefreshDatabase::class);
 
 /**
- * Enough of a real MP3 for the `mimes:` rule on the send path: the validator
- * guesses the type from the bytes, and "fake-audio" guesses as plain text.
+ * Enough of a real Ogg/Opus file for the `mimes:` rule on the send path: the
+ * validator guesses the type from the bytes, and "fake-audio" guesses as plain
+ * text. A first page carrying the OpusHead packet is all libmagic reads.
  */
-function mp3Bytes(): string
+function opusBytes(): string
 {
-    return "ID3\x04\x00\x00\x00\x00\x00\x00" . str_repeat("\xFF\xFB\x90\x00", 32);
+    $body = "OpusHead" . pack("Cx", 1) . pack("v", 312) . pack("V", 48000) . pack("v", 0) . "\x00\x00";
+
+    $header = "OggS" . chr(0) . chr(2) . str_repeat("\x00", 8)
+        . pack("V", 12345) . pack("V", 0) . pack("V", 0)
+        . chr(1) . chr(strlen($body));
+
+    return $header . $body . str_repeat("\x00", 32);
 }
 
 /** The hub's reply when it was asked to speak. */
@@ -32,8 +39,8 @@ function hubSpokenAnswer(string $status = 'generated'): array
             'enabled' => true,
             'status' => $status,
             'url' => $status === 'generated' ? 'https://api-ia.ipbr.pro/v1/media/audio/eyJ0eXAiOiJhdWRpbyJ9' : null,
-            'mimeType' => 'audio/mpeg',
-            'format' => 'mp3',
+            'mimeType' => 'audio/ogg',
+            'format' => 'opus',
             'voice' => 'onyx',
             'expiresAt' => '2026-08-29T12:00:00.000Z',
         ], fn ($v) => $v !== null),
@@ -44,7 +51,7 @@ function hubSpokenAnswer(string $status = 'generated'): array
 function voiceReplyFakes(): array
 {
     return [
-        'api-ia.ipbr.pro/v1/media/*' => Http::response(mp3Bytes(), 200, ['Content-Type' => 'audio/mpeg']),
+        'api-ia.ipbr.pro/v1/media/*' => Http::response(opusBytes(), 200, ['Content-Type' => 'audio/ogg']),
         'graph.facebook.com/*/media' => Http::response(['id' => 'wa-media-1']),
     ];
 }
@@ -88,13 +95,17 @@ test('a customer who sends a voice note is answered with one', function () {
     $run = AiAgentFixtures::hubRuns()[0];
     expect($run['responseAudio']['enabled'])->toBeTrue()
         ->and($run['responseAudio']['model'])->toBe('gpt-4o-mini-tts')
-        ->and($run['responseAudio']['format'])->toBe('mp3');
+        // Opus, not MP3: on WhatsApp the format is what decides between a
+        // voice note and a file attachment somebody has to open.
+        ->and($run['responseAudio']['format'])->toBe('opus');
 
     $voice = outgoing(MessageType::Audio);
 
     expect($voice)->toHaveCount(1)
-        // Our own copy of the file, not the hub's expiring link.
+        // Our own copy of the file, not the hub's expiring link — and stored
+        // as .ogg, which is what both WhatsApp handlers pass through untouched.
         ->and($voice->first()->attachment)->toStartWith('media/')
+        ->and($voice->first()->attachment)->toEndWith('.ogg')
         ->and($voice->first()->attachment)->not->toContain('api-ia.ipbr.pro')
         // The words are kept so the thread stays readable for a human.
         ->and($voice->first()->meta['transcription']['text'])->toBe('Consigo sim, o IPv6 resolve esse caso.')

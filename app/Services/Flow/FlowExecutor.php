@@ -2348,7 +2348,7 @@ class FlowExecutor
                 $flowState->id,
                 $node->id,
                 attachments: $attachments,
-                responseAudio: $speak ? AiVoiceReply::options($voice) : []
+                responseAudio: $speak ? AiVoiceReply::options($voice, $conversation->connection->channel) : []
             );
 
             // Before the reply is sent: the transcription belongs to the
@@ -2518,7 +2518,11 @@ class FlowExecutor
         }
 
         try {
-            $file = AiVoiceReply::download($url, (string) ($audio['format'] ?? 'mp3'));
+            // The hub echoes the format it produced; when it does not, what we
+            // asked this channel for is a better guess than a fixed default.
+            $format = (string) ($audio['format'] ?? '') ?: AiVoiceReply::format($conversation->connection->channel);
+
+            $file = AiVoiceReply::download($url, $format);
 
             if ($file === null) {
                 return null;
