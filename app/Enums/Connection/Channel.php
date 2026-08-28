@@ -225,4 +225,22 @@ enum Channel: string
             default => false,
         };
     }
+
+    /**
+     * Whether an AI agent can answer here with a voice note.
+     *
+     * Every channel below already sends agent-recorded audio, so this asks a
+     * narrower question: is a spoken reply a message on this channel, or an
+     * attachment? TikTok is the only one that flatly cannot (text and image
+     * only). E-mail can carry the file, and that is exactly why it is
+     * excluded — an MP3 attached to a mail is not somebody answering you, and
+     * the AI hub has no channel mapping for e-mail anyway.
+     */
+    public function supportsVoiceReply(): bool
+    {
+        return match ($this) {
+            self::TikTok, self::Email => false,
+            default => true,
+        };
+    }
 }

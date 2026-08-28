@@ -96,4 +96,38 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Voice replies (the agent answering out loud)
+    |--------------------------------------------------------------------------
+    |
+    | Whether an AI node speaks is decided per node in the flow builder — see
+    | App\Services\AiAgentHub\AiVoiceReply. What lives here is only the voice
+    | itself: the defaults a node inherits when its author did not pick one,
+    | so changing how the product sounds does not mean editing every flow.
+    |
+    | `enabled` is the platform kill switch. Off, no node speaks and no
+    | `responseAudio` block is sent — the same failure the hub's missing audio
+    | support caused, but chosen rather than discovered.
+    |
+    */
+
+    'voice' => [
+
+        'enabled' => (bool) env('AI_VOICE_REPLY_ENABLED', true),
+
+        'model' => env('AI_TTS_MODEL', 'gpt-4o-mini-tts'),
+        'voice' => env('AI_TTS_VOICE', 'onyx'),
+        'format' => env('AI_TTS_FORMAT', 'mp3'),
+        'speed' => (float) env('AI_TTS_SPEED', 1.0),
+
+        /*
+        | How the voice should sound. Style, not content — the words are the
+        | agent's reply, already written by the time this is read.
+        */
+
+        'instructions' => env('AI_TTS_INSTRUCTIONS'),
+
+    ],
+
 ];

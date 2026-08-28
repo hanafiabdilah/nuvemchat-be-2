@@ -5,6 +5,7 @@ namespace App\Services\Flow;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
+use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationHandoff;
 use App\Events\ConversationUpdated;
@@ -12,6 +13,7 @@ use App\Events\MessageReceived;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Jobs\RunAiAgentTurn;
 use App\Models\AiHubAgent;
+use App\Models\AiHubRun;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\FlowNode;
@@ -22,6 +24,7 @@ use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
 use App\Services\AiAgentHub\AiTranscripts;
+use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\BusinessHours;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Message\MessageService;
@@ -2014,13 +2017,76 @@ class FlowExecutor
             return $body !== '' ? $body : AiAttachments::describe($message);
         })->implode("\n"));
 
+        // "Me responde por áudio" is an instruction about the whole
+        // conversation, so it is read before the run and remembered after it.
+        $this->rememberVoicePreference($flowState, $node, $messages->pluck('body'));
+
+        $spokenTo = $messages->contains(fn (Message $message) => $message->message_type === MessageType::Audio);
+
         $this->handleAIAgentInput(
             $flowState,
             $node,
             $text,
             (int) $messages->last()->id,
-            $entries
+            $entries,
+            $spokenTo
         );
+
+        // Second pass over the same messages, now that their voice notes have
+        // been written down: a request made out loud only becomes readable
+        // once the hub has answered, and it has to count for the next turn.
+        $this->rememberVoicePreference(
+            $flowState,
+            $node,
+            $messages->map(fn (Message $message) => data_get($message->meta, 'transcription.text'))
+        );
+    }
+
+    /**
+     * Record whether the customer has asked to be answered out loud (or asked
+     * us to stop), and return what stands now.
+     *
+     * Sticky, unlike a voice note: the request is about the conversation, not
+     * about the message it arrived in. Only an explicit signal moves it, so
+     * every ordinary message leaves the setting exactly as it was.
+     *
+     * @param  Collection<int, string|null>|iterable<string|null>  $texts
+     */
+    protected function rememberVoicePreference(FlowState $flowState, FlowNode $node, iterable $texts): bool
+    {
+        $signal = null;
+
+        // Last word wins: "manda áudio... na verdade escreve" is one person
+        // changing their mind inside a single burst.
+        foreach ($texts as $text) {
+            $signal = AiVoiceReply::requestSignal($text) ?? $signal;
+        }
+
+        $key = "_ai_voice_{$node->id}";
+
+        // Re-read: the run between the two passes writes state_data of its own,
+        // and merging into a stale copy would undo it.
+        $flowState->refresh();
+        $stateData = $flowState->state_data ?? [];
+
+        if ($signal === null) {
+            return (bool) ($stateData[$key] ?? false);
+        }
+
+        if ((bool) ($stateData[$key] ?? false) === $signal) {
+            return $signal;
+        }
+
+        $stateData[$key] = $signal;
+        $flowState->update(['state_data' => $stateData]);
+
+        Log::info('FlowExecutor: AIAgent voice preference changed', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'speak' => $signal,
+        ]);
+
+        return $signal;
     }
 
     /**
@@ -2214,7 +2280,8 @@ class FlowExecutor
         FlowNode $node,
         string $userInput,
         ?int $sourceMessageId = null,
-        array $attachmentEntries = []
+        array $attachmentEntries = [],
+        bool $customerSpoke = false
     ): void {
         $attachments = array_column($attachmentEntries, 'attachment');
 
@@ -2265,6 +2332,14 @@ class FlowExecutor
             return;
         }
 
+        $voice = AiVoiceReply::config($data);
+        $speak = AiVoiceReply::shouldSpeak(
+            $voice,
+            $conversation->connection->channel,
+            $customerSpoke,
+            (bool) ($stateData["_ai_voice_{$node->id}"] ?? false),
+        );
+
         try {
             $run = $this->aiAgentHubService->runAgent(
                 $agent,
@@ -2272,7 +2347,8 @@ class FlowExecutor
                 $userInput,
                 $flowState->id,
                 $node->id,
-                attachments: $attachments
+                attachments: $attachments,
+                responseAudio: $speak ? AiVoiceReply::options($voice) : []
             );
 
             // Before the reply is sent: the transcription belongs to the
@@ -2283,25 +2359,7 @@ class FlowExecutor
             $replyText = $run->output_message;
 
             if (!empty($replyText)) {
-                $message = $this->messageService->sendMessage($conversation, [
-                    'message' => $replyText,
-                ]);
-
-                if ($message) {
-                    $message->update([
-                        'sent_by_flow_id' => $flowState->flow_id,
-                        'sent_by_ai_hub_agent_id' => $agent->id,
-                        'meta' => array_merge((array) ($message->meta ?? []), [
-                            'ai_generated' => true,
-                            'ai_hub_run_id' => $run->id,
-                            'ai_hub_agent_id' => $agent->id,
-                        ]),
-                    ]);
-
-                    $run->update(['message_id' => $message->id]);
-
-                    broadcast(new MessageReceived($message));
-                }
+                $this->deliverAiReply($flowState, $node, $conversation, $agent, $run, $replyText, $voice, $speak);
             } else {
                 Log::warning('FlowExecutor: AIAgent run returned empty reply', [
                     'node_id' => $node->id,
@@ -2366,6 +2424,149 @@ class FlowExecutor
             $flowState->update(['state_data' => $stateData]);
             $this->routeHandoff($flowState, $node, 'error', false);
         }
+    }
+
+    /**
+     * Put the agent's answer in front of the customer, spoken or written.
+     *
+     * One rule governs the whole method: the customer is never left with
+     * nothing. The voice can fail in three places this app does not control —
+     * the hub may report `failed`, the file may not download before its
+     * `expiresAt`, the channel may refuse the upload — and each of those falls
+     * back to the words, which existed all along.
+     *
+     * @param  array<string, mixed>  $voice  from AiVoiceReply::config()
+     */
+    protected function deliverAiReply(
+        FlowState $flowState,
+        FlowNode $node,
+        Conversation $conversation,
+        AiHubAgent $agent,
+        AiHubRun $run,
+        string $replyText,
+        array $voice,
+        bool $speak
+    ): void {
+        // Written first when both are going out: reading is instant, and a
+        // customer who has already read the answer can listen at their leisure.
+        $sent = (! $speak || $voice['delivery'] === AiVoiceReply::DELIVERY_AUDIO_AND_TEXT)
+            ? $this->sendAiText($flowState, $conversation, $agent, $run, $replyText)
+            : null;
+
+        if ($speak) {
+            $spoken = $this->sendAiVoice($flowState, $conversation, $agent, $run, $replyText);
+
+            if ($spoken === null && $sent === null) {
+                Log::warning('FlowExecutor: AIAgent voice reply failed, sending the text instead', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $conversation->id,
+                    'run_id' => $run->id,
+                ]);
+
+                $sent = $this->sendAiText($flowState, $conversation, $agent, $run, $replyText);
+            }
+
+            $sent ??= $spoken;
+        }
+
+        if ($sent) {
+            $run->update(['message_id' => $sent->id]);
+        }
+    }
+
+    /** The agent's reply as a text message. */
+    protected function sendAiText(
+        FlowState $flowState,
+        Conversation $conversation,
+        AiHubAgent $agent,
+        AiHubRun $run,
+        string $replyText
+    ): ?Message {
+        $message = $this->messageService->sendMessage($conversation, ['message' => $replyText]);
+
+        return $message ? $this->stampAiMessage($message, $flowState, $agent, $run) : null;
+    }
+
+    /**
+     * The agent's reply as a voice note.
+     *
+     * The words ride along in `meta.transcription` — the same field an
+     * inbound voice note carries, rendered by the same bubble. Nothing is sent
+     * twice: it is there so the thread stays readable for the human who takes
+     * the conversation over, who would otherwise have to press play on every
+     * bubble to find out what the bot promised.
+     */
+    protected function sendAiVoice(
+        FlowState $flowState,
+        Conversation $conversation,
+        AiHubAgent $agent,
+        AiHubRun $run,
+        string $replyText
+    ): ?Message {
+        $audio = (array) data_get($run->metadata, 'responseAudio', []);
+        $status = $audio['status'] ?? null;
+        $url = $audio['url'] ?? null;
+
+        if ($status !== 'generated' || ! is_string($url) || $url === '') {
+            Log::warning('FlowExecutor: AIAgent asked for a voice reply and did not get one', [
+                'conversation_id' => $conversation->id,
+                'run_id' => $run->id,
+                'status' => $status,
+            ]);
+
+            return null;
+        }
+
+        try {
+            $file = AiVoiceReply::download($url, (string) ($audio['format'] ?? 'mp3'));
+
+            if ($file === null) {
+                return null;
+            }
+
+            $message = $this->messageService->sendAudio($conversation, ['audio' => $file]);
+        } catch (\Throwable $th) {
+            Log::warning('FlowExecutor: sending the AI voice reply failed', [
+                'conversation_id' => $conversation->id,
+                'run_id' => $run->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        return $message
+            ? $this->stampAiMessage($message, $flowState, $agent, $run, [
+                'transcription' => ['text' => $replyText],
+            ])
+            : null;
+    }
+
+    /**
+     * Mark a message as this agent's work and put it on the wire.
+     *
+     * @param  array<string, mixed>  $extraMeta
+     */
+    protected function stampAiMessage(
+        Message $message,
+        FlowState $flowState,
+        AiHubAgent $agent,
+        AiHubRun $run,
+        array $extraMeta = []
+    ): Message {
+        $message->update([
+            'sent_by_flow_id' => $flowState->flow_id,
+            'sent_by_ai_hub_agent_id' => $agent->id,
+            'meta' => array_merge((array) ($message->meta ?? []), [
+                'ai_generated' => true,
+                'ai_hub_run_id' => $run->id,
+                'ai_hub_agent_id' => $agent->id,
+            ], $extraMeta),
+        ]);
+
+        broadcast(new MessageReceived($message));
+
+        return $message;
     }
 
     /**

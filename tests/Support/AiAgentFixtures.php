@@ -175,13 +175,19 @@ class AiAgentFixtures
         ]);
     }
 
-    /** The run payloads the hub received, in order. */
+    /**
+     * The run payloads the hub received, in order.
+     *
+     * Matched on the endpoint, not just the host: a voice reply fetches its
+     * generated file from the hub too, and counting that GET as a run shifts
+     * every index by one.
+     */
     public static function hubRuns(): array
     {
         $runs = [];
 
         foreach (Http::recorded() as [$request, $response]) {
-            if (str_contains($request->url(), 'api-ia.ipbr.pro')) {
+            if (str_ends_with(parse_url($request->url(), PHP_URL_PATH) ?: '', '/runs')) {
                 $runs[] = $request->data();
             }
         }

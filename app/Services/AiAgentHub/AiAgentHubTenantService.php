@@ -749,6 +749,11 @@ class AiAgentHubTenantService
      * for `message.attachments`. Build it with AiAttachments rather than by
      * hand: the `inputAudio` block that makes a voice note more than a file is
      * derived from it here.
+     *
+     * $responseAudio asks the hub to speak the reply as well as write it. It
+     * has to travel with the run — the voice is generated alongside the text,
+     * so nothing can add it afterwards. Build it with AiVoiceReply, which owns
+     * the question of when an agent should be speaking at all.
      */
     public function runAgent(
         AiHubAgent $agent,
@@ -758,7 +763,8 @@ class AiAgentHubTenantService
         ?int $flowNodeId = null,
         array $metadata = [],
         ?string $conversationExternalId = null,
-        array $attachments = []
+        array $attachments = [],
+        array $responseAudio = []
     ): AiHubRun {
         $tenant = $agent->aiHubTenant;
         $conversation->loadMissing(['contact', 'connection']);
@@ -798,6 +804,13 @@ class AiAgentHubTenantService
             $payload['inputAudio'] = $inputAudio;
         }
 
+        // Asked for here or never: the hub generates the voice as part of the
+        // run, so there is no second call that could add it afterwards.
+        if ($responseAudio !== []) {
+            $payload['responseAudio'] = $responseAudio;
+            $metadata['voiceRequested'] = true;
+        }
+
         if (!empty($metadata)) {
             $payload['metadata'] = $metadata;
         }
@@ -811,30 +824,37 @@ class AiAgentHubTenantService
         try {
             $data = $this->postRun($tenant, $payload, $context);
         } catch (\Throwable $th) {
-            if ($attachments === []) {
+            if ($attachments === [] && $responseAudio === []) {
                 throw $th;
             }
 
-            // The media is the optional half of the request: whether the
-            // agent's model can accept it at all is decided hub-side, per
-            // agent, where we cannot see it. Losing every reply to a customer
-            // who happened to send a screenshot is a far worse failure than
-            // answering their text without looking at it, so one retry drops
-            // the pictures and keeps the conversation alive.
+            // Media and voice are the optional halves of the request: whether
+            // the agent's model can accept them at all is decided hub-side, per
+            // agent, where we cannot see it — and a hub that has not shipped an
+            // audio feature yet rejects the whole run over one unknown field,
+            // which is exactly how this app spent an afternoon in August 2026.
+            // Losing every reply to a customer who happened to send a
+            // screenshot is a far worse failure than answering their text
+            // without looking at it, so one retry drops the extras and keeps
+            // the conversation alive.
             //
             // A dropped voice note leaves nothing behind — the turn falls back
             // to the "[audio]" placeholder its caller built — but a customer
-            // told "could you type that?" is still a customer who was answered.
+            // told "could you type that?" is still a customer who was answered,
+            // and one written reply beats a silent one.
             Log::warning('AiAgentHubTenantService: run with attachments failed, retrying text-only', array_merge($context, [
                 'attachments' => count($attachments),
+                'response_audio' => $responseAudio !== [],
                 'error' => $th->getMessage(),
             ]));
 
             unset(
                 $payload['message']['attachments'],
                 $payload['inputAudio'],
+                $payload['responseAudio'],
                 $metadata['imageAttachments'],
                 $metadata['audioAttachments'],
+                $metadata['voiceRequested'],
             );
             $payload['metadata'] = $metadata ?: null;
             $payload = array_filter($payload, fn ($value) => $value !== null);
@@ -962,6 +982,14 @@ class AiAgentHubTenantService
         // why the agent answered a question nobody typed.
         if (is_array($output['inputAudio'] ?? null)) {
             $metadata['inputAudio'] = $output['inputAudio'];
+        }
+
+        // The voice file the hub generated, if one was asked for. Kept because
+        // the caller has to fetch it before its `expiresAt`, and because a run
+        // that was asked to speak and came back mute is only diagnosable from
+        // the `status` the hub put here.
+        if (is_array($output['audio'] ?? null)) {
+            $metadata['responseAudio'] = $output['audio'];
         }
 
         $startedAt = !empty($data['startedAt']) ? Carbon::parse($data['startedAt']) : null;
