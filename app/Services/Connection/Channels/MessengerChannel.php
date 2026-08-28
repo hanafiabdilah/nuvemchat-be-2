@@ -228,7 +228,11 @@ class MessengerChannel implements ChannelInterface
         // POST /{page-id}/subscribed_apps — subscribes THIS app to the Page's
         // Messenger events (delivered to /webhook/facebook).
         $response = Http::post(self::GRAPH_BASE . "/{$pageId}/subscribed_apps", [
-            'subscribed_fields' => 'messages,message_reads,message_deliveries,message_reactions,message_echoes',
+            // messaging_postbacks belongs here even though nothing in the app
+            // sends buttons yet: MessengerHandler already turns a postback into
+            // a text message, and a Page subscribed without it drops those
+            // silently — the customer taps, and nobody ever sees it.
+            'subscribed_fields' => 'messages,messaging_postbacks,message_reads,message_deliveries,message_reactions,message_echoes',
             'access_token' => $pageToken,
         ]);
 
