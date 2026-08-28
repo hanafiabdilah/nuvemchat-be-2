@@ -212,7 +212,7 @@ class MessageResource extends JsonResource
             return null;
         }
 
-        return match($channel) {
+        $meta = match($channel) {
             Channel::WhatsappApiway => $this->getWhatsappApiwayMeta(),
             Channel::WhatsappOfficial => $this->getWhatsappOfficialMeta(),
             Channel::Instagram => $this->getInstagramMeta(),
@@ -220,6 +220,31 @@ class MessageResource extends JsonResource
             Channel::Email => $this->getEmailMeta(),
             default => null,
         };
+
+        // Merged after the channel's own meta rather than inside each branch:
+        // what the AI heard in a voice note is the platform's, not the
+        // channel's, and every channel that can carry audio can carry this.
+        $transcription = $this->getTranscriptionMeta();
+
+        if ($transcription !== null) {
+            $meta = array_merge($meta ?? [], $transcription);
+        }
+
+        return $meta;
+    }
+
+    /**
+     * What an AI run wrote down for a voice note. See
+     * App\Services\AiAgentHub\AiTranscripts — the agent reading the thread
+     * gets the words; the model already had them.
+     */
+    private function getTranscriptionMeta(): ?array
+    {
+        $text = $this->meta['transcription']['text'] ?? null;
+
+        return is_string($text) && trim($text) !== ''
+            ? ['transcription' => ['text' => $text]]
+            : null;
     }
 
     /**

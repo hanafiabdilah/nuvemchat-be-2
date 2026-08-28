@@ -21,6 +21,7 @@ use App\Models\User;
 use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
+use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\BusinessHours;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Message\MessageService;
@@ -1964,7 +1965,8 @@ class FlowExecutor
 
     /**
      * Assemble one AI turn out of what the customer has actually sent, and run
-     * it: their text, and the screenshots that text is about.
+     * it: their text, the screenshots that text is about, and the voice notes
+     * they sent instead of text.
      *
      * Everything since the last turn goes in, not just the newest message.
      * "Here's the error" followed a second later by the screenshot is one
@@ -1987,11 +1989,11 @@ class FlowExecutor
             return;
         }
 
-        if ($this->awaitingImageDownload($messages)) {
+        if ($this->awaitingMediaDownload($messages)) {
             // Hold the turn. DownloadInboundMedia calls resumeAfterMedia() the
             // moment the file lands (or gives up), and nothing here has been
             // marked processed, so the same messages will be picked up again.
-            Log::info('FlowExecutor: AIAgent turn deferred, waiting for image download', [
+            Log::info('FlowExecutor: AIAgent turn deferred, waiting for media download', [
                 'node_id' => $node->id,
                 'conversation_id' => $flowState->conversation_id,
                 'message_ids' => $messages->pluck('id')->all(),
@@ -2000,10 +2002,11 @@ class FlowExecutor
             return;
         }
 
-        // Capped newest-first, so the screenshots that survive a burst are the
-        // recent ones — then flipped back, so what the agent sees is in the
-        // order the text below refers to it.
-        $attachments = array_reverse(AiAttachments::forMessages($messages->reverse()));
+        // Capped newest-first, so the media that survives a burst is the recent
+        // one — then flipped back, so what the agent sees is in the order the
+        // text below refers to it. The messages travel alongside because a
+        // transcription has to find its way back to the voice note it came from.
+        $entries = array_reverse(AiAttachments::forMessagesWithSources($messages->reverse()));
 
         $text = trim($messages->map(function (Message $message) {
             $body = trim((string) $message->body);
@@ -2016,7 +2019,7 @@ class FlowExecutor
             $node,
             $text,
             (int) $messages->last()->id,
-            $attachments
+            $entries
         );
     }
 
@@ -2047,18 +2050,17 @@ class FlowExecutor
     }
 
     /**
-     * True while one of these messages is an image whose bytes are still in
+     * True while one of these messages carries media whose bytes are still in
      * flight and recent enough to be worth waiting for.
      *
-     * Only images hold a turn back. A pending document is unknowable until it
-     * arrives — a 40 MB PDF looks exactly like a screenshot from here — and a
-     * pending video or audio would never have been attached anyway.
+     * Which media that is, and why, is AiAttachments::awaitingMedia's call —
+     * the same rule that decides what would have been attached had it landed.
      */
-    protected function awaitingImageDownload(Collection $messages): bool
+    protected function awaitingMediaDownload(Collection $messages): bool
     {
         $cutoff = now()->subSeconds(self::AI_MEDIA_WAIT_SECONDS);
 
-        return $messages->contains(fn (Message $message) => AiAttachments::awaitingImage($message)
+        return $messages->contains(fn (Message $message) => AiAttachments::awaitingMedia($message)
             && $message->created_at !== null
             && $message->created_at->gt($cutoff));
     }
@@ -2212,8 +2214,10 @@ class FlowExecutor
         FlowNode $node,
         string $userInput,
         ?int $sourceMessageId = null,
-        array $attachments = []
+        array $attachmentEntries = []
     ): void {
+        $attachments = array_column($attachmentEntries, 'attachment');
+
         $data = $node->data;
         $conversation = $flowState->conversation;
         $stateData = $flowState->state_data ?? [];
@@ -2270,6 +2274,11 @@ class FlowExecutor
                 $node->id,
                 attachments: $attachments
             );
+
+            // Before the reply is sent: the transcription belongs to the
+            // customer's message, and an agent reading the thread from the top
+            // should not find the answer above the question.
+            AiTranscripts::store($run, $attachmentEntries);
 
             $replyText = $run->output_message;
 

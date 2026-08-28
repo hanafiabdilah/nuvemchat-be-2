@@ -7,6 +7,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
+use App\Services\AiAgentHub\AiTranscripts;
 use RuntimeException;
 
 /**
@@ -36,11 +37,12 @@ class AiSuggestService
     protected const OLD_MESSAGE_CHAR_CAP = 600;
 
     /**
-     * Customer images sent along with the draft request, newest first.
+     * Customer media sent along with the draft request, newest first.
      *
      * Deliberately tighter than a flow turn's budget: a suggestion is one
      * throwaway draft an agent may not even use, and each image is billed
-     * input tokens every time the button is pressed.
+     * input tokens — each voice note, minutes of transcription — every time
+     * the button is pressed.
      */
     protected const MAX_ATTACHMENTS = 2;
 
@@ -63,7 +65,7 @@ class AiSuggestService
             throw new RuntimeException('AI suggestions are not available for email conversations.');
         }
 
-        [$instruction, $lastMessageId, $attachments] = $this->buildInstruction($conversation);
+        [$instruction, $lastMessageId, $attachmentEntries] = $this->buildInstruction($conversation);
 
         $run = $this->hub->runAgent(
             $agent,
@@ -74,8 +76,12 @@ class AiSuggestService
             // and a draft must neither inherit nor contaminate the state of
             // the real conversation (or of earlier drafts).
             conversationExternalId: "suggest:{$conversation->id}:m{$lastMessageId}",
-            attachments: $attachments,
+            attachments: array_column($attachmentEntries, 'attachment'),
         );
+
+        // A draft the agent may well discard still leaves the thread better
+        // than it found it: the voice note it transcribed keeps its words.
+        AiTranscripts::store($run, $attachmentEntries);
 
         $suggestion = trim((string) ($run->output_message ?? ''));
 
@@ -96,13 +102,13 @@ class AiSuggestService
      * the prompt singles out the customer's latest message as the one the
      * reply must address.
      *
-     * The customer's most recent screenshots ride along as real attachments.
-     * A transcript can only say that an image exists; half the support threads
-     * that most need a drafted reply are the ones where the answer is inside
-     * the picture.
+     * The customer's most recent screenshots and voice notes ride along as
+     * real attachments. A transcript can only say that an image exists; half
+     * the support threads that most need a drafted reply are the ones where
+     * the answer is inside the picture — or was never typed at all.
      *
-     * @return array{0: string, 1: int, 2: array<int, array<string, mixed>>}
-     *         [instruction, last transcript message id, image attachments]
+     * @return array{0: string, 1: int, 2: array<int, array{attachment: array<string, mixed>, message: \App\Models\Message}>}
+     *         [instruction, last transcript message id, attachments with their sources]
      */
     protected function buildInstruction(Conversation $conversation): array
     {
@@ -122,30 +128,39 @@ class AiSuggestService
         $latestCustomerMessage = null;
         $budget = self::TRANSCRIPT_CHAR_BUDGET;
         $truncated = false;
-        $attachments = [];
+        $entries = [];
 
         foreach ($recent as $index => $message) {
             $isIncoming = $message->sender_type === SenderType::Incoming;
             $body = trim((string) ($message->body ?? ''));
 
-            // Only the customer's images are worth sending: one the agent
+            // What an earlier run already heard in this voice note. Written by
+            // AiTranscripts; empty for everything that is not spoken audio.
+            $spoken = trim((string) data_get($message->meta, 'transcription.text'));
+
+            // Only the customer's media is worth sending: one the agent
             // already sent is something this side chose and knows about.
-            $attachment = ($isIncoming && count($attachments) < self::MAX_ATTACHMENTS)
+            // Audio that has already been written down is skipped — the words
+            // are in the transcript below, and transcribing them a second time
+            // buys the same sentence at the same per-minute price.
+            $attachment = ($isIncoming && $spoken === '' && count($entries) < self::MAX_ATTACHMENTS)
                 ? AiAttachments::forMessage($message)
                 : null;
 
             if ($attachment !== null) {
-                $attachments[] = $attachment;
+                $entries[] = ['attachment' => $attachment, 'message' => $message];
             }
 
-            // Mark the attached ones apart from the images that only exist in
+            // Mark the attached ones apart from the media that only exists in
             // the transcript as a word, so the agent knows which picture it is
             // actually looking at.
             $marker = $attachment !== null ? ' [attached to this request]' : '';
 
             if ($body === '') {
                 $type = $message->message_type?->value ?? 'message';
-                $body = $type === 'text' ? '' : "[{$type}]{$marker}";
+                $body = $spoken !== ''
+                    ? "[{$type}] {$spoken}"
+                    : ($type === 'text' ? '' : "[{$type}]{$marker}");
             } else {
                 $body .= $marker;
             }
@@ -200,9 +215,9 @@ The customer's most recent message — the one your reply must address:
 FOCUS
             : 'The customer has not written since the agent\'s last message; draft a natural follow-up that moves the conversation forward.';
 
-        $imageRule = $attachments === []
+        $imageRule = $entries === []
             ? ''
-            : "\n- The customer's image(s) marked \"[attached to this request]\" in the transcript are attached to this message; read them before replying, and answer what they actually show.";
+            : "\n- The customer's file(s) marked \"[attached to this request]\" in the transcript are attached to this message; read or listen to them before replying, and answer what they actually contain.";
 
         $instruction = <<<PROMPT
 You are assisting a human support agent. Read the FULL conversation transcript below to understand the context — what the customer already said, what has been answered, and any details they already provided — then draft the agent's next reply to the customer ({$contactName}).
@@ -223,6 +238,6 @@ PROMPT;
 
         // Collected newest-first to keep the cap on the recent ones; handed
         // over oldest-first, like the transcript that points at them.
-        return [$instruction, $lastId, array_reverse($attachments)];
+        return [$instruction, $lastId, array_reverse($entries)];
     }
 }

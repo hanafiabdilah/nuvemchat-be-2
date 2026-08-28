@@ -744,9 +744,11 @@ class AiAgentHubTenantService
      * when the run must not touch the real conversation's hub state — e.g.
      * "Respond with AI" drafts, which run under a synthetic id.
      *
-     * $attachments carries images for the agent to look at, in the shape the
-     * hub documents for `message.attachments` — build it with AiAttachments
-     * rather than by hand.
+     * $attachments carries the media the agent should be given — screenshots
+     * to look at, voice notes to transcribe — in the shape the hub documents
+     * for `message.attachments`. Build it with AiAttachments rather than by
+     * hand: the `inputAudio` block that makes a voice note more than a file is
+     * derived from it here.
      */
     public function runAgent(
         AiHubAgent $agent,
@@ -763,10 +765,14 @@ class AiAgentHubTenantService
 
         $this->assertWithinRunQuota($agent);
 
-        if ($attachments !== []) {
-            // Recorded on the run so "did the agent actually see the
-            // screenshot?" is answerable afterwards from the row alone.
-            $metadata['imageAttachments'] = count($attachments);
+        // Recorded on the run so "did the agent actually see the screenshot /
+        // hear the voice note?" is answerable afterwards from the row alone.
+        $counts = array_count_values(array_column($attachments, 'type'));
+
+        foreach (['image' => 'imageAttachments', 'audio' => 'audioAttachments'] as $type => $key) {
+            if (isset($counts[$type])) {
+                $metadata[$key] = $counts[$type];
+            }
         }
 
         $payload = [
@@ -785,6 +791,13 @@ class AiAgentHubTenantService
             ], fn ($value) => $value !== null),
         ];
 
+        // A voice note is not input until somebody turns it into words, and the
+        // hub only does that when asked. Without this block the file travels
+        // and is ignored.
+        if ($inputAudio = AiAttachments::inputAudioOptions($attachments)) {
+            $payload['inputAudio'] = $inputAudio;
+        }
+
         if (!empty($metadata)) {
             $payload['metadata'] = $metadata;
         }
@@ -802,18 +815,27 @@ class AiAgentHubTenantService
                 throw $th;
             }
 
-            // The images are the optional half of the request: whether the
-            // agent's model can accept them at all is decided hub-side, per
+            // The media is the optional half of the request: whether the
+            // agent's model can accept it at all is decided hub-side, per
             // agent, where we cannot see it. Losing every reply to a customer
             // who happened to send a screenshot is a far worse failure than
             // answering their text without looking at it, so one retry drops
             // the pictures and keeps the conversation alive.
+            //
+            // A dropped voice note leaves nothing behind — the turn falls back
+            // to the "[audio]" placeholder its caller built — but a customer
+            // told "could you type that?" is still a customer who was answered.
             Log::warning('AiAgentHubTenantService: run with attachments failed, retrying text-only', array_merge($context, [
                 'attachments' => count($attachments),
                 'error' => $th->getMessage(),
             ]));
 
-            unset($payload['message']['attachments'], $metadata['imageAttachments']);
+            unset(
+                $payload['message']['attachments'],
+                $payload['inputAudio'],
+                $metadata['imageAttachments'],
+                $metadata['audioAttachments'],
+            );
             $payload['metadata'] = $metadata ?: null;
             $payload = array_filter($payload, fn ($value) => $value !== null);
 
@@ -933,6 +955,14 @@ class AiAgentHubTenantService
         $output = $data['output'] ?? [];
         $usage = $output['usage'] ?? [];
         $cost = $output['cost'] ?? [];
+
+        // What the hub heard in the voice notes, returned as a by-product of
+        // the run. Kept on the row for two readers: AiTranscripts, which puts
+        // it back on the message the agent will read, and anyone later asking
+        // why the agent answered a question nobody typed.
+        if (is_array($output['inputAudio'] ?? null)) {
+            $metadata['inputAudio'] = $output['inputAudio'];
+        }
 
         $startedAt = !empty($data['startedAt']) ? Carbon::parse($data['startedAt']) : null;
         $completedAt = !empty($data['completedAt']) ? Carbon::parse($data['completedAt']) : null;
