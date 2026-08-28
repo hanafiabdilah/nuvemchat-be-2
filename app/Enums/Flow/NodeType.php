@@ -33,8 +33,15 @@ enum NodeType: string
                 'validation' => null, // e.g. "any", "number", "email", "phone"
                 "error_message" => '', // message to show if validation fails
             ],
+            // Closes the conversation. Holds a status value rather than a bare
+            // flag because the column it writes is `conversations.status` — but
+            // Resolved is the only one on offer, and the other three are
+            // refusals rather than omissions: Active without an assignee is a
+            // thread that has left the queue and belongs to nobody, Pending is
+            // where a flow already runs, and AiHandling is the engine's own
+            // bookkeeping. See FlowExecutor::executeStatusNode.
             self::Status => [
-                'value' => 'open', // open, pending, resolved
+                'value' => 'resolved',
             ],
             self::Tagging => [
                 'action' => 'add', // 'add' or 'remove'
@@ -48,9 +55,20 @@ enum NodeType: string
                 'operator' => 'equals', // equals, not_equals, contains, not_contains, greater_than, less_than, is_empty, is_not_empty
                 'value' => '', // Value to compare against (not used for is_empty/is_not_empty)
             ],
+            // Does something to the conversation itself. `type` is one of
+            // App\Services\Flow\ActionNodes::TYPES and starts as null on
+            // purpose: a node is auto-saved the moment it lands on the canvas,
+            // and one that transferred every customer to a human before its
+            // author had picked anything would be a side effect nobody asked
+            // for. The executor skips an unconfigured node.
+            //
+            // `parameters` by type:
+            //   assign_agent   => ['agent_id' => int, 'when_unavailable' => 'queue'|'assign_anyway']
+            //   transfer_human => []  (the reason is a fixed code, not authored)
+            //   internal_note  => ['note' => string]  (supports {{variable}})
             self::Action => [
-                'type' => '', // e.g. "assign_agent", "add_tag", "remove_tag"
-                'parameters' => [], // parameters for the action
+                'type' => null,
+                'parameters' => [],
             ],
             self::AIAgent => [
                 'ai_hub_agent_id' => null, // FK to ai_hub_agents.id

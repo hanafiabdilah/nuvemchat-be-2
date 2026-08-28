@@ -13,9 +13,10 @@ return [
     | and a background tab whose timers the browser throttles is still an agent
     | sitting at their desk.
     |
-    | Only "return to the last agent" reads this today. Widening it makes that
-    | routing more eager (and more likely to hand a thread to an empty chair);
-    | narrowing it makes it stricter.
+    | Two things read it, and both are automatic routing to a named person:
+    | "return to the last agent", and the flow builder's assign-to-agent action.
+    | Widening it makes both more eager (and more likely to hand a thread to an
+    | empty chair); narrowing it makes them stricter.
     |
     */
 

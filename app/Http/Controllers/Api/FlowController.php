@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\NodeType;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\FlowResource;
 use App\Models\Flow;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
+use App\Services\Flow\ActionNodes;
 use App\Services\Flow\InteractiveNodes;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -457,8 +459,12 @@ class FlowController extends Controller
                 'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
                 'error_message' => ['nullable', 'string'],
             ],
+            // Resolved is the only status a flow may set; the reasoning is on
+            // NodeType::data and FlowExecutor::executeStatusNode. Strict rather
+            // than lenient because nothing in the builder can produce anything
+            // else — a different value arriving here is a bug, not old data.
             'status' => [
-                'value' => ['required', 'string', Rule::in(['open', 'pending', 'resolved'])],
+                'value' => ['required', 'string', Rule::in([ConversationStatus::Resolved->value])],
             ],
             'tagging' => [
                 'action' => ['required', 'string', Rule::in(['add', 'remove'])],
@@ -470,9 +476,25 @@ class FlowController extends Controller
                 'operator' => ['required', 'string', Rule::in(['equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'is_not_empty'])],
                 'value' => ['nullable', 'string'], // nullable for is_empty/is_not_empty operators
             ],
+            // Nullable like http_request's url: a node is dropped on the canvas
+            // and auto-saved before its author has picked anything, and the
+            // executor skips one that never got configured. The parameters are
+            // a flat union across the three actions rather than a per-type
+            // shape — the unused keys are simply absent, and a rule that has to
+            // read `type` to know whether a field is required is a rule that
+            // breaks the moment auto-save catches the node mid-edit.
             'action' => [
-                'type' => ['required', 'string'],
-                'parameters' => ['required', 'array'],
+                'type' => ['nullable', 'string', Rule::in(ActionNodes::TYPES)],
+                'parameters' => ['nullable', 'array'],
+                'parameters.agent_id' => [
+                    'nullable',
+                    'integer',
+                    // Tenant-scoped here as well as at runtime: this is what
+                    // stops one workspace's flow naming another workspace's user.
+                    Rule::exists('users', 'id')->where('tenant_id', auth()->user()->tenant_id),
+                ],
+                'parameters.when_unavailable' => ['nullable', 'string', Rule::in(ActionNodes::UNAVAILABLE_MODES)],
+                'parameters.note' => ['nullable', 'string', 'max:4000'],
             ],
             'ai_agent' => [
                 'ai_hub_agent_id' => [

@@ -17,9 +17,12 @@ use App\Models\Conversation;
 use App\Models\FlowNode;
 use App\Models\FlowState;
 use App\Models\Message;
+use App\Models\User;
+use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
 use App\Services\BusinessHours;
+use App\Services\Conversation\SystemMessage;
 use App\Services\Message\MessageService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -197,6 +200,14 @@ class FlowExecutor
 
             case NodeType::Interactive:
                 $this->executeInteractiveNode($flowState, $node);
+                break;
+
+            case NodeType::Status:
+                $this->executeStatusNode($flowState, $node);
+                break;
+
+            case NodeType::Action:
+                $this->executeActionNode($flowState, $node);
                 break;
 
             default:
@@ -586,6 +597,266 @@ class FlowExecutor
             // Continue flow even on error
             $this->moveToNextNode($flowState, $node);
         }
+    }
+
+    /**
+     * Execute a Status node — close the conversation.
+     *
+     * Terminal by design, and the node is drawn without an output handle to say
+     * so. Resolving is what ends a conversation, so a node wired after this one
+     * would be a promise the engine cannot keep: executeFromNode refuses to run
+     * in a conversation that is no longer flow-eligible, and Resolved is not.
+     */
+    protected function executeStatusNode(FlowState $flowState, FlowNode $node): void
+    {
+        $value = $node->data['value'] ?? null;
+
+        // Only Resolved is authorable (see NodeType::data). Anything else is a
+        // node from before that was settled, and guessing which status its
+        // author meant is worse than leaving the conversation alone.
+        if ($value !== ConversationStatus::Resolved->value) {
+            Log::warning('FlowExecutor: Status node has no status to set, skipping', [
+                'node_id' => $node->id,
+                'value' => $value,
+            ]);
+
+            $this->moveToNextNode($flowState, $node);
+
+            return;
+        }
+
+        $conversation = $flowState->conversation;
+
+        if ($conversation->status === ConversationStatus::Resolved) {
+            Log::info('FlowExecutor: Status node reached an already-resolved conversation', [
+                'conversation_id' => $conversation->id,
+            ]);
+
+            return;
+        }
+
+        // No actor, because nobody clicked anything: ConversationObserver turns
+        // this save into the thread's own "Status: pending → resolved" note, and
+        // the version of that sentence without a name is the honest one.
+        $conversation->markResolved();
+
+        // Reaching the node the author wired as the end is not the same event as
+        // a human interrupting the bot, which is what the observer's stopFlow
+        // records — hence Completed, written after the save so it is the state
+        // that survives. It is also the only thing that ends a flow whose
+        // conversation was AiHandling: that stopFlow only fires from Pending.
+        $flowState->update([
+            'status' => FlowStateStatus::Completed,
+            'completed_at' => now(),
+        ]);
+
+        broadcast(new ConversationUpdated($conversation->fresh()));
+
+        Log::info('FlowExecutor: Conversation resolved by status node', [
+            'conversation_id' => $conversation->id,
+            'node_id' => $node->id,
+            'flow_state_id' => $flowState->id,
+        ]);
+    }
+
+    /**
+     * Execute an Action node — do something to the conversation itself.
+     *
+     * The three actions differ in who ends up holding the conversation, and
+     * that is what decides whether the flow continues: assigning names a
+     * person, transferring names the queue, and a note names nobody.
+     */
+    protected function executeActionNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $type = $data['type'] ?? null;
+        $parameters = is_array($data['parameters'] ?? null) ? $data['parameters'] : [];
+
+        try {
+            $handedOver = match ($type) {
+                ActionNodes::ASSIGN_AGENT => $this->assignConversationToAgent($flowState, $node, $parameters),
+                ActionNodes::TRANSFER_HUMAN => $this->transferConversationToQueue($flowState),
+                ActionNodes::INTERNAL_NOTE => $this->writeInternalNote($flowState, $node, $parameters),
+                default => $this->skipUnconfiguredAction($node, $type),
+            };
+
+            if ($handedOver) {
+                return;
+            }
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing action node', [
+                'node_id' => $node->id,
+                'action' => $type,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
+        // Nobody took the conversation — a note, a node its author never
+        // finished, or one that threw. The flow carries on for the same reason
+        // the tagging node does: a side effect failing is not a reason to
+        // strand the customer halfway through.
+        $this->moveToNextNode($flowState, $node);
+    }
+
+    /**
+     * Assign the conversation to one named agent.
+     *
+     * Returns true once somebody owns the conversation — the agent on the node,
+     * or the queue when that agent cannot take it. False means the node was
+     * never configured and the flow should carry on past it.
+     *
+     * @param  array<string, mixed>  $parameters
+     */
+    protected function assignConversationToAgent(FlowState $flowState, FlowNode $node, array $parameters): bool
+    {
+        $agentId = (int) ($parameters['agent_id'] ?? 0);
+
+        if ($agentId <= 0) {
+            // Not a runtime condition — the node is half-finished, and the same
+            // rule applies as to an interactive node with no options: skip it
+            // rather than act on a blank.
+            Log::warning('FlowExecutor: Action node has no agent to assign to, skipping', [
+                'node_id' => $node->id,
+            ]);
+
+            return false;
+        }
+
+        $conversation = $flowState->conversation;
+        $connection = $conversation->connection;
+
+        $agent = User::where('tenant_id', $connection?->tenant_id)->find($agentId);
+
+        // Connection access is the product's real boundary, not a UI filter:
+        // revoking it is meant to close the threads an agent still holds, so
+        // handing them a new one here would walk straight around it.
+        if (! $agent || ! $agent->canAccessConnection($conversation->connection_id)) {
+            Log::warning('FlowExecutor: Assign-agent target unavailable, handing to the queue', [
+                'node_id' => $node->id,
+                'agent_id' => $agentId,
+                'conversation_id' => $conversation->id,
+                'reason' => $agent ? 'no_connection_access' : 'agent_missing',
+            ]);
+
+            $this->transferToHuman($flowState, ActionNodes::REASON_AGENT_UNAVAILABLE);
+
+            return true;
+        }
+
+        // Presence is the one condition the author gets to overrule, because it
+        // is about the shift rather than about the account. Assigning to an
+        // empty chair leaves a customer waiting on somebody who is not coming,
+        // while the queue they would land in instead is watched by everyone —
+        // the same reasoning that gates LastAgentRouter.
+        if (ActionNodes::unavailableMode($parameters) === ActionNodes::UNAVAILABLE_QUEUE && ! $agent->isOnline()) {
+            Log::info('FlowExecutor: Assign-agent target is offline, handing to the queue', [
+                'node_id' => $node->id,
+                'agent_id' => $agent->id,
+                'conversation_id' => $conversation->id,
+            ]);
+
+            $this->transferToHuman($flowState, ActionNodes::REASON_AGENT_OFFLINE);
+
+            return true;
+        }
+
+        // The status note is suppressed because the assignment note below says
+        // strictly more: it names the agent as well as implying pending →
+        // active. Same call ConversationController::applyAccept makes.
+        ConversationObserver::withoutStatusNote(function () use ($conversation, $agent) {
+            $conversation->forceFill([
+                'user_id' => $agent->id,
+                'status' => ConversationStatus::Active,
+                'needs_human' => false,
+            ])->save();
+        });
+
+        // Belt and braces: the observer stops the flow on pending → active but
+        // not on ai_handling → active, and the bot has to fall silent either way.
+        $this->stopFlow($conversation);
+
+        // Written before the broadcast so the inbox row lands on its final
+        // preview instead of flickering through the previous message.
+        SystemMessage::info(
+            $conversation,
+            "The flow assigned this conversation to {$agent->name}.",
+            ActionNodes::INFO_ASSIGNED_BY_FLOW,
+            ['to' => $agent->name],
+        );
+
+        broadcast(new ConversationUpdated($conversation->fresh()));
+
+        Log::info('FlowExecutor: Conversation assigned to an agent by the flow', [
+            'conversation_id' => $conversation->id,
+            'node_id' => $node->id,
+            'agent_id' => $agent->id,
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Put the conversation in the unassigned human queue and ring for an agent.
+     *
+     * Reuses the AI node's handoff so the two are the same event: needs_human,
+     * back to Pending, the bot silenced, and ConversationHandoff broadcast so
+     * every open dashboard toasts and the "needs an agent" badge appears. Before
+     * this action existed that was reachable only through an AI Agent node, so a
+     * flow with no AI in it had no way at all to ask for a person.
+     */
+    protected function transferConversationToQueue(FlowState $flowState): bool
+    {
+        $this->transferToHuman($flowState, ActionNodes::REASON_REQUESTED);
+
+        return true;
+    }
+
+    /**
+     * Write a line into the thread that the customer never sees.
+     *
+     * Stored with no code, so the SPA renders the body as-is: the sentence was
+     * written by the tenant, in the tenant's own language, and a translation
+     * table has nothing to add to it.
+     *
+     * Always returns false — a note hands the conversation to nobody, so it is
+     * the one action the flow continues past.
+     *
+     * @param  array<string, mixed>  $parameters
+     */
+    protected function writeInternalNote(FlowState $flowState, FlowNode $node, array $parameters): bool
+    {
+        $text = trim($this->interpolateVariables((string) ($parameters['note'] ?? ''), $flowState));
+
+        if ($text === '') {
+            Log::warning('FlowExecutor: Action node has an empty internal note, skipping', [
+                'node_id' => $node->id,
+            ]);
+
+            return false;
+        }
+
+        SystemMessage::info($flowState->conversation, $text);
+
+        Log::info('FlowExecutor: Internal note written by flow', [
+            'conversation_id' => $flowState->conversation_id,
+            'node_id' => $node->id,
+        ]);
+
+        return false;
+    }
+
+    /**
+     * An action node whose author never picked an action. Skipped, not failed:
+     * an unfinished node should be invisible to the customer, not a dead end.
+     */
+    protected function skipUnconfiguredAction(FlowNode $node, mixed $type): bool
+    {
+        Log::warning('FlowExecutor: Action node has no action selected, skipping', [
+            'node_id' => $node->id,
+            'action' => $type,
+        ]);
+
+        return false;
     }
 
     /**
