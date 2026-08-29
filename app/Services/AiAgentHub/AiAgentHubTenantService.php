@@ -91,6 +91,14 @@ class AiAgentHubTenantService
             'ownerType' => 'customer',
         ];
 
+        // ElevenLabs is stored as a credential but refused as an agent's
+        // provider — it exists here only to transcribe voice notes and to
+        // speak replies. Saying so in the metadata keeps the hub's own record
+        // honest about what the key is for.
+        if (strtoupper((string) ($payload['provider'] ?? '')) === 'ELEVENLABS') {
+            $payload['metadata']['usage'] = ['speech_to_text', 'text_to_speech'];
+        }
+
         $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/provider-credentials", $payload);
 
