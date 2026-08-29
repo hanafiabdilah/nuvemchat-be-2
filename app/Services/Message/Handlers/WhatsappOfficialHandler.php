@@ -389,14 +389,41 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
             'media_url' => 'required_without:audio|url',
         ])->validate();
 
+        $media = OutboundMedia::fromData($data, 'audio');
+
         return $this->sendMedia(
             $conversation,
-            OutboundMedia::fromData($data, 'audio'),
+            $media,
             'audio',
             MessageType::Audio,
-            [],
+            $this->voiceNoteFields($media),
             null,
         );
+    }
+
+    /**
+     * What makes WhatsApp draw a voice note instead of a file attachment.
+     *
+     * The codec alone does not do it — an Ogg/Opus file uploaded as
+     * `audio/ogg` still arrives as something the recipient has to open, which
+     * is exactly how this was discovered. The rendering is switched by an
+     * explicit `voice: true` on the audio object, and it only holds for
+     * Ogg/Opus: Meta ignores the flag for every other format and delivers a
+     * plain audio message, so sending it is never worse than leaving it out.
+     *
+     * Applies to anything we send as audio, not just the AI's replies — an
+     * agent's own recording is a voice note for the same reason.
+     */
+    private function voiceNoteFields(?OutboundMedia $media): array
+    {
+        if ($media === null) {
+            return [];
+        }
+
+        $isOgg = in_array($media->extension, ['ogg', 'oga', 'opus'], true)
+            || $media->mimeType === 'audio/ogg';
+
+        return $isOgg ? ['voice' => true] : [];
     }
 
     public function handleSendVideo(Conversation $conversation, array $data): ?Message

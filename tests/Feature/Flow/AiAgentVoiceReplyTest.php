@@ -68,6 +68,20 @@ function speakingNode(FlowNode $node, array $settings = []): FlowNode
     return $node->refresh();
 }
 
+/** The audio object of the last WhatsApp message send. */
+function lastWhatsappAudioPayload(): array
+{
+    $payload = [];
+
+    foreach (Http::recorded() as [$request, $response]) {
+        if (str_ends_with($request->url(), '/messages') && ($request->data()['type'] ?? null) === 'audio') {
+            $payload = $request->data()['audio'] ?? [];
+        }
+    }
+
+    return $payload;
+}
+
 function outgoing(MessageType $type): \Illuminate\Support\Collection
 {
     return Message::where('sender_type', SenderType::Outgoing)
@@ -110,6 +124,10 @@ test('a customer who sends a voice note is answered with one', function () {
         // The words are kept so the thread stays readable for a human.
         ->and($voice->first()->meta['transcription']['text'])->toBe('Consigo sim, o IPv6 resolve esse caso.')
         ->and($voice->first()->meta['ai_generated'])->toBeTrue();
+
+    // The codec alone does not make a voice note: without this flag WhatsApp
+    // draws a file attachment, whatever the file happens to be.
+    expect(lastWhatsappAudioPayload()['voice'])->toBeTrue();
 
     // Only the greeting was ever written; the answer itself was spoken.
     expect(outgoing(MessageType::Text)->pluck('body')->all())->toBe(['Oi! Como posso ajudar?']);
