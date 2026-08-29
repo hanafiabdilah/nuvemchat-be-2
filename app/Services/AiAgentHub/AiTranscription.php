@@ -2,6 +2,8 @@
 
 namespace App\Services\AiAgentHub;
 
+use Illuminate\Support\Facades\Log;
+
 /**
  * The `inputAudio` block: who listens to the customer's voice note, and how.
  *
@@ -72,9 +74,45 @@ class AiTranscription
 
         return [
             'provider' => self::provider($raw['provider'] ?? null, (string) config('ai.audio.provider', self::OPENAI)),
-            'credential_id' => self::text($raw['credential_id'] ?? null),
+            'credential_id' => self::credentialId($raw['credential_id'] ?? null),
             'model' => self::text($raw['model'] ?? null),
         ];
+    }
+
+    /**
+     * A hub credential id, or null when what was entered is plainly not one.
+     *
+     * The hub stores a provider's API key and hands back an id; the id is what
+     * belongs here. Pasting the key itself is the obvious mistake to make —
+     * it is the thing the person is holding — and the hub answers it with
+     * "Audio speech credential not found or disabled", which reads like the
+     * credential is broken rather than like the wrong thing was pasted.
+     *
+     * Dropping it is better than forwarding it: with no id the hub falls back
+     * to the account's default credential for that provider, which is what
+     * most workspaces have anyway. And a secret must not travel in a field
+     * that is neither encrypted nor meant to hold one.
+     */
+    public static function credentialId(mixed $value): ?string
+    {
+        $id = self::text($value);
+
+        if ($id === null) {
+            return null;
+        }
+
+        // OpenAI keys start `sk-`, ElevenLabs `sk_`; hub ids are ~25-character
+        // cuids, so anything much longer is a secret rather than an id.
+        if (preg_match('/^sk[-_]/i', $id) || strlen($id) > 40) {
+            Log::warning('AiTranscription: an API key was entered where a hub credential id belongs, ignoring it', [
+                'length' => strlen($id),
+                'prefix' => substr($id, 0, 3),
+            ]);
+
+            return null;
+        }
+
+        return $id;
     }
 
     /** True when this run is carrying something to listen to. */

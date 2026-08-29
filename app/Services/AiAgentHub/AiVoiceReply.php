@@ -113,6 +113,19 @@ class AiVoiceReply
 
         $voiceId = self::text($raw['voice_id'] ?? null) ?? self::text(config('ai.voice.elevenlabs_voice_id'));
 
+        // A voice on ElevenLabs is an id from somebody's own account, so there
+        // is nothing to fall back to: without one the node speaks with OpenAI
+        // rather than asking the hub to use a voice that does not exist.
+        $effective = ($provider === AiTranscription::ELEVENLABS && $voiceId === null)
+            ? AiTranscription::OPENAI
+            : $provider;
+
+        // Everything below the provider line was entered for one of them and
+        // means nothing to the other: an ElevenLabs model handed to OpenAI is
+        // not a model, and its credential is not a credential. When the
+        // fallback above changes who speaks, those fields do not come along.
+        $ownFields = $effective === $provider;
+
         return [
             'enabled' => (bool) ($raw['enabled'] ?? false) && (bool) config('ai.voice.enabled', true),
             'mode' => in_array($mode, [self::MODE_MATCH_CUSTOMER, self::MODE_ALWAYS], true)
@@ -121,19 +134,14 @@ class AiVoiceReply
             'delivery' => in_array($delivery, [self::DELIVERY_AUDIO_ONLY, self::DELIVERY_AUDIO_AND_TEXT], true)
                 ? $delivery
                 : self::DELIVERY_AUDIO_ONLY,
-            // A voice on ElevenLabs is an id from somebody's own account, so
-            // there is nothing to fall back to: without one the node speaks
-            // with OpenAI rather than asking the hub to use a voice that does
-            // not exist. Silently answering in writing would be worse — the
-            // author asked for audio, and this still delivers audio.
-            'provider' => ($provider === AiTranscription::ELEVENLABS && $voiceId === null)
-                ? AiTranscription::OPENAI
-                : $provider,
-            'credential_id' => self::text($raw['credential_id'] ?? null),
-            'model' => self::text($raw['model'] ?? null),
+            // Falling back still delivers audio, which is what the author
+            // asked for; silently answering in writing would be worse.
+            'provider' => $effective,
+            'credential_id' => $ownFields ? AiTranscription::credentialId($raw['credential_id'] ?? null) : null,
+            'model' => $ownFields ? self::text($raw['model'] ?? null) : null,
             'voice' => self::text($raw['voice'] ?? null),
-            'voice_id' => $voiceId,
-            'voice_settings' => self::voiceSettings($raw['voice_settings'] ?? null),
+            'voice_id' => $effective === AiTranscription::ELEVENLABS ? $voiceId : null,
+            'voice_settings' => $ownFields ? self::voiceSettings($raw['voice_settings'] ?? null) : [],
             'speed' => isset($raw['speed']) && is_numeric($raw['speed'])
                 ? max(0.25, min(4.0, (float) $raw['speed']))
                 : null,

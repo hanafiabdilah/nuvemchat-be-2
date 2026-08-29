@@ -381,14 +381,19 @@ test('a node can speak through ElevenLabs, in ElevenLabs\' own spelling', functi
     expect(outgoing(MessageType::Audio))->toHaveCount(1);
 });
 
-test('ElevenLabs without a voice id speaks with OpenAI rather than not at all', function () {
+test('ElevenLabs without a voice id speaks with OpenAI, and leaves its fields behind', function () {
     Storage::fake('local', ['serve' => true]);
     AiAgentFixtures::fakeChannelsAndHub(extra: voiceReplyFakes(), output: hubSpokenAnswer());
 
     [$conversation, $node] = AiAgentFixtures::flow();
     // A voice there is an id from somebody's own account; there is nothing to
     // fall back to, and the author still asked for audio.
-    speakingNode($node, ['provider' => 'elevenlabs']);
+    speakingNode($node, [
+        'provider' => 'elevenlabs',
+        'model' => 'eleven_flash_v2_5',
+        'credential_id' => 'cred_11labs_1',
+        'voice_settings' => ['stability' => 0.4],
+    ]);
     AiAgentFixtures::openWithWelcome($conversation);
 
     AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/37_abc.ogg');
@@ -396,9 +401,41 @@ test('ElevenLabs without a voice id speaks with OpenAI rather than not at all', 
 
     $block = AiAgentFixtures::hubRuns()[0]['responseAudio'];
 
+    // An ElevenLabs model handed to OpenAI is not a model, and its credential
+    // is not a credential — the hub answers that mixture with
+    // "credential not found", which reads like a broken account.
     expect($block['provider'])->toBe('OPENAI')
         ->and($block['voice'])->toBe('onyx')
+        ->and($block['model'])->toBe('gpt-4o-mini-tts')
+        ->and($block)->not->toHaveKey('providerCredentialId')
+        ->and($block)->not->toHaveKey('voiceSettings')
+        ->and($block)->not->toHaveKey('voiceId')
         ->and(outgoing(MessageType::Audio))->toHaveCount(1);
+});
+
+test('an API key pasted where a credential id belongs is dropped, not forwarded', function () {
+    Storage::fake('local', ['serve' => true]);
+    AiAgentFixtures::fakeChannelsAndHub(extra: voiceReplyFakes(), output: hubSpokenAnswer());
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    speakingNode($node, [
+        'provider' => 'elevenlabs',
+        'voice_id' => 'v0iceId11labs',
+        // The key is the thing a person is holding, so it is the thing they
+        // paste. Forwarding it buys "credential not found" and puts a secret
+        // in a field never meant to hold one.
+        'credential_id' => 'sk_9482b8bfbcf2dd322a7054b00eaec04a542915560fe948ef',
+    ]);
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/38_abc.ogg');
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), '');
+
+    $block = AiAgentFixtures::hubRuns()[0]['responseAudio'];
+
+    // Left out, so the hub falls back to the account's default credential.
+    expect($block['provider'])->toBe('ELEVENLABS')
+        ->and($block)->not->toHaveKey('providerCredentialId');
 });
 
 test('the stored file is named after what actually arrived, in either dialect', function (string $format, ?string $mime, string $expected) {
