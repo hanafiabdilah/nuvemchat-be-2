@@ -240,28 +240,6 @@ class AiAttachments
         return (bool) config('ai.audio.enabled', true);
     }
 
-    /**
-     * The `inputAudio` block that tells the hub to transcribe before it runs
-     * the agent, or null when this run carries no audio to transcribe.
-     *
-     * @param  array<int, array<string, mixed>>  $attachments
-     * @return array<string, mixed>|null
-     */
-    public static function inputAudioOptions(array $attachments): ?array
-    {
-        $carriesAudio = collect($attachments)->contains(fn ($attachment) => ($attachment['type'] ?? null) === 'audio');
-
-        if (! $carriesAudio) {
-            return null;
-        }
-
-        return array_filter([
-            'transcriptionModel' => config('ai.audio.transcription_model'),
-            'language' => config('ai.audio.language'),
-            'prompt' => config('ai.audio.prompt'),
-        ], fn ($value) => $value !== null && $value !== '');
-    }
-
     /** A file that exists, is ours to serve, and has not been purged. */
     private static function hasUsableFile(Message $message): bool
     {

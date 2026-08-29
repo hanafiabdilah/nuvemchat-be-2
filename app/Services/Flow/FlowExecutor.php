@@ -23,6 +23,7 @@ use App\Models\User;
 use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
+use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\BusinessHours;
@@ -2348,7 +2349,8 @@ class FlowExecutor
                 $flowState->id,
                 $node->id,
                 attachments: $attachments,
-                responseAudio: $speak ? AiVoiceReply::options($voice, $conversation->connection->channel) : []
+                responseAudio: $speak ? AiVoiceReply::options($voice, $conversation->connection->channel) : [],
+                inputAudio: AiTranscription::options($data, $attachments)
             );
 
             // Before the reply is sent: the transcription belongs to the
@@ -2522,7 +2524,7 @@ class FlowExecutor
             // asked this channel for is a better guess than a fixed default.
             $format = (string) ($audio['format'] ?? '') ?: AiVoiceReply::format($conversation->connection->channel);
 
-            $file = AiVoiceReply::download($url, $format);
+            $file = AiVoiceReply::download($url, $format, $audio['mimeType'] ?? null);
 
             if ($file === null) {
                 return null;

@@ -336,3 +336,79 @@ test('reading a customer message as an instruction about the medium', function (
     ['quanto custa o plano mensal?', null],
     ['', null],
 ]);
+
+test('a node can speak through ElevenLabs, in ElevenLabs\' own spelling', function () {
+    Storage::fake('local', ['serve' => true]);
+    AiAgentFixtures::fakeChannelsAndHub(extra: voiceReplyFakes(), output: hubSpokenAnswer());
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    speakingNode($node, [
+        'provider' => 'elevenlabs',
+        'credential_id' => 'cred_11labs_1',
+        'voice_id' => 'v0iceId11labs',
+        'speed' => 1.2,
+        'voice_settings' => [
+            'stability' => 0.45,
+            'similarity_boost' => 0.8,
+            'style' => 0.2,
+            'use_speaker_boost' => true,
+        ],
+    ]);
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/36_abc.ogg');
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), '');
+
+    $block = AiAgentFixtures::hubRuns()[0]['responseAudio'];
+
+    expect($block['provider'])->toBe('ELEVENLABS')
+        ->and($block['providerCredentialId'])->toBe('cred_11labs_1')
+        ->and($block['model'])->toBe('eleven_flash_v2_5')
+        ->and($block['voiceId'])->toBe('v0iceId11labs')
+        // The channel still decides the format; only its spelling changes.
+        ->and($block['outputFormat'])->toBe('opus_48000_32')
+        ->and($block['voiceSettings'])->toBe([
+            'stability' => 0.45,
+            'similarityBoost' => 0.8,
+            'style' => 0.2,
+            'useSpeakerBoost' => true,
+        ])
+        // OpenAI's fields would be meaningless here, and the hub validates.
+        ->and($block)->not->toHaveKey('voice')
+        ->and($block)->not->toHaveKey('format')
+        ->and($block)->not->toHaveKey('instructions');
+
+    expect(outgoing(MessageType::Audio))->toHaveCount(1);
+});
+
+test('ElevenLabs without a voice id speaks with OpenAI rather than not at all', function () {
+    Storage::fake('local', ['serve' => true]);
+    AiAgentFixtures::fakeChannelsAndHub(extra: voiceReplyFakes(), output: hubSpokenAnswer());
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    // A voice there is an id from somebody's own account; there is nothing to
+    // fall back to, and the author still asked for audio.
+    speakingNode($node, ['provider' => 'elevenlabs']);
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/37_abc.ogg');
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), '');
+
+    $block = AiAgentFixtures::hubRuns()[0]['responseAudio'];
+
+    expect($block['provider'])->toBe('OPENAI')
+        ->and($block['voice'])->toBe('onyx')
+        ->and(outgoing(MessageType::Audio))->toHaveCount(1);
+});
+
+test('the stored file is named after what actually arrived, in either dialect', function (string $format, ?string $mime, string $expected) {
+    expect(AiVoiceReply::extensionFor($format, $mime))->toBe($expected);
+})->with([
+    // OpenAI's spelling, ElevenLabs' spelling, and the MIME winning over both.
+    ['opus', null, 'ogg'],
+    ['opus_48000_32', null, 'ogg'],
+    ['mp3_44100_128', null, 'mp3'],
+    ['mp3', 'audio/ogg', 'ogg'],
+    ['opus', 'audio/mpeg', 'mp3'],
+    ['something-new', null, 'mp3'],
+]);

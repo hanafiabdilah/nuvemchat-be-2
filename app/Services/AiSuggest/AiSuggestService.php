@@ -7,6 +7,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
+use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
 use RuntimeException;
 
@@ -67,6 +68,8 @@ class AiSuggestService
 
         [$instruction, $lastMessageId, $attachmentEntries] = $this->buildInstruction($conversation);
 
+        $attachments = array_column($attachmentEntries, 'attachment');
+
         $run = $this->hub->runAgent(
             $agent,
             $conversation,
@@ -76,7 +79,10 @@ class AiSuggestService
             // and a draft must neither inherit nor contaminate the state of
             // the real conversation (or of earlier drafts).
             conversationExternalId: "suggest:{$conversation->id}:m{$lastMessageId}",
-            attachments: array_column($attachmentEntries, 'attachment'),
+            attachments: $attachments,
+            // No node behind a draft, so the platform default decides who
+            // listens — the same voice note, transcribed the same way.
+            inputAudio: AiTranscription::options(null, $attachments),
         );
 
         // A draft the agent may well discard still leaves the thread better

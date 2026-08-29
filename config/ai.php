@@ -70,11 +70,27 @@ return [
         'language' => env('AI_TRANSCRIPTION_LANGUAGE', 'pt'),
 
         /*
-        | Optional hint carried into the transcription — product names and
-        | jargon a general model spells phonetically otherwise.
+        | Which provider listens, when a flow node does not say. Both reach the
+        | hub through the same `inputAudio` block but under different field
+        | names — see AiTranscription, which is the only place that knows the
+        | difference.
+        */
+
+        'provider' => env('AI_TRANSCRIPTION_PROVIDER', 'openai'),
+        'elevenlabs_model' => env('AI_TRANSCRIPTION_ELEVENLABS_MODEL', 'scribe_v2'),
+
+        /*
+        | The same hint in the two shapes the providers accept: OpenAI takes a
+        | sentence of context, ElevenLabs a list of terms. Both exist for one
+        | reason — product names and jargon a general model spells
+        | phonetically otherwise (SOCKS5 becomes "socks five").
         */
 
         'prompt' => env('AI_TRANSCRIPTION_PROMPT'),
+        'keyterms' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('AI_TRANSCRIPTION_KEYTERMS', '')),
+        ))),
 
         /*
         | Voice notes per turn. Someone who records three in a row is asking
@@ -116,9 +132,27 @@ return [
 
         'enabled' => (bool) env('AI_VOICE_REPLY_ENABLED', true),
 
+        /*
+        | Which provider speaks, when a flow node does not say. ElevenLabs
+        | sounds markedly more human and costs more; OpenAI is the default
+        | because it is the one every tenant already has credentials for.
+        */
+
+        'provider' => env('AI_TTS_PROVIDER', 'openai'),
+
         'model' => env('AI_TTS_MODEL', 'gpt-4o-mini-tts'),
         'voice' => env('AI_TTS_VOICE', 'onyx'),
         'speed' => (float) env('AI_TTS_SPEED', 1.0),
+
+        /*
+        | ElevenLabs equivalents. `voice_id` has no sensible default — a voice
+        | there is an id somebody picked in their own account — so a node that
+        | chooses ElevenLabs without one falls back to OpenAI rather than
+        | asking the hub to speak with nothing to speak through.
+        */
+
+        'elevenlabs_model' => env('AI_TTS_ELEVENLABS_MODEL', 'eleven_flash_v2_5'),
+        'elevenlabs_voice_id' => env('AI_TTS_ELEVENLABS_VOICE_ID'),
 
         /*
         | Left unset on purpose: the format decides whether WhatsApp draws a

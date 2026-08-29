@@ -57,7 +57,8 @@ test('a voice note reaches the agent as an audio attachment the hub is asked to 
 
     // Without this block the file travels and is ignored: the hub transcribes
     // only when asked, and a voice note nobody transcribed is not input.
-    expect($run['inputAudio']['transcriptionModel'])->toBe('gpt-4o-mini-transcribe')
+    expect($run['inputAudio']['provider'])->toBe('OPENAI')
+        ->and($run['inputAudio']['transcriptionModel'])->toBe('gpt-4o-mini-transcribe')
         ->and($run['inputAudio']['language'])->toBe('pt');
 
     expect(AiHubRun::first()->metadata['audioAttachments'])->toBe(1);
@@ -217,4 +218,54 @@ test('a burst of voice notes travels whole, up to the per-turn ceiling', functio
 
     expect(array_column($runs[0]['message']['attachments'], 'name'))
         ->toBe(['26_b.ogg', '26_c.ogg']);
+});
+
+test('a node can send the voice note to ElevenLabs instead, in ElevenLabs\' own spelling', function () {
+    Storage::fake('local', ['serve' => true]);
+    config(['ai.audio.keyterms' => ['ProxyBR', 'SOCKS5']]);
+    AiAgentFixtures::fakeChannelsAndHub();
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    $node->update(['data' => array_merge($node->data, [
+        'input_audio' => [
+            'provider' => 'elevenlabs',
+            'credential_id' => 'cred_11labs_1',
+        ],
+    ])]);
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/41_abc.ogg');
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), '');
+
+    $block = AiAgentFixtures::hubRuns()[0]['inputAudio'];
+
+    // Same request, different vocabulary: `model` rather than
+    // `transcriptionModel`, and a term list rather than a sentence of prompt.
+    expect($block['provider'])->toBe('ELEVENLABS')
+        ->and($block['model'])->toBe('scribe_v2')
+        ->and($block['providerCredentialId'])->toBe('cred_11labs_1')
+        ->and($block['keyterms'])->toBe(['ProxyBR', 'SOCKS5'])
+        ->and($block)->not->toHaveKey('transcriptionModel')
+        ->and($block)->not->toHaveKey('prompt')
+        // A transcript is read by a person skimming a thread; timestamps and
+        // "[laughs]" annotations are noise in that line.
+        ->and($block['timestampsGranularity'])->toBe('none')
+        ->and($block['tagAudioEvents'])->toBeFalse();
+});
+
+test('an unknown provider is never forwarded to the hub', function () {
+    Storage::fake('local', ['serve' => true]);
+    AiAgentFixtures::fakeChannelsAndHub();
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    $node->update(['data' => array_merge($node->data, [
+        'input_audio' => ['provider' => 'whisper-selfhosted'],
+    ])]);
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/42_abc.ogg');
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), '');
+
+    // A typo in stored node data must not cost the customer their answer.
+    expect(AiAgentFixtures::hubRuns()[0]['inputAudio']['provider'])->toBe('OPENAI');
 });

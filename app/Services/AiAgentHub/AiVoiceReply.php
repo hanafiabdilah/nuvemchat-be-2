@@ -106,6 +106,13 @@ class AiVoiceReply
         $mode = $raw['mode'] ?? self::MODE_MATCH_CUSTOMER;
         $delivery = $raw['delivery'] ?? self::DELIVERY_AUDIO_ONLY;
 
+        $provider = AiTranscription::provider(
+            $raw['provider'] ?? null,
+            (string) config('ai.voice.provider', AiTranscription::OPENAI),
+        );
+
+        $voiceId = self::text($raw['voice_id'] ?? null) ?? self::text(config('ai.voice.elevenlabs_voice_id'));
+
         return [
             'enabled' => (bool) ($raw['enabled'] ?? false) && (bool) config('ai.voice.enabled', true),
             'mode' => in_array($mode, [self::MODE_MATCH_CUSTOMER, self::MODE_ALWAYS], true)
@@ -114,12 +121,48 @@ class AiVoiceReply
             'delivery' => in_array($delivery, [self::DELIVERY_AUDIO_ONLY, self::DELIVERY_AUDIO_AND_TEXT], true)
                 ? $delivery
                 : self::DELIVERY_AUDIO_ONLY,
+            // A voice on ElevenLabs is an id from somebody's own account, so
+            // there is nothing to fall back to: without one the node speaks
+            // with OpenAI rather than asking the hub to use a voice that does
+            // not exist. Silently answering in writing would be worse — the
+            // author asked for audio, and this still delivers audio.
+            'provider' => ($provider === AiTranscription::ELEVENLABS && $voiceId === null)
+                ? AiTranscription::OPENAI
+                : $provider,
+            'credential_id' => self::text($raw['credential_id'] ?? null),
+            'model' => self::text($raw['model'] ?? null),
             'voice' => self::text($raw['voice'] ?? null),
+            'voice_id' => $voiceId,
+            'voice_settings' => self::voiceSettings($raw['voice_settings'] ?? null),
             'speed' => isset($raw['speed']) && is_numeric($raw['speed'])
                 ? max(0.25, min(4.0, (float) $raw['speed']))
                 : null,
             'instructions' => self::text($raw['instructions'] ?? null),
         ];
+    }
+
+    /**
+     * ElevenLabs' four dials, kept only where the author actually moved one.
+     *
+     * Sent empty they are not "defaults of ours" — they are the provider's,
+     * which is a better place for them to live than in a form nobody revisits.
+     *
+     * @return array<string, mixed>
+     */
+    private static function voiceSettings(mixed $raw): array
+    {
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        $clamp = fn ($value) => is_numeric($value) ? max(0.0, min(1.0, (float) $value)) : null;
+
+        return array_filter([
+            'stability' => $clamp($raw['stability'] ?? null),
+            'similarityBoost' => $clamp($raw['similarity_boost'] ?? null),
+            'style' => $clamp($raw['style'] ?? null),
+            'useSpeakerBoost' => isset($raw['use_speaker_boost']) ? (bool) $raw['use_speaker_boost'] : null,
+        ], fn ($value) => $value !== null);
     }
 
     /**
@@ -154,14 +197,28 @@ class AiVoiceReply
      */
     public static function options(array $config, Channel $channel): array
     {
-        return array_filter([
+        $common = array_filter([
             'enabled' => true,
-            'model' => config('ai.voice.model'),
+            'provider' => strtoupper($config['provider']),
+            'providerCredentialId' => $config['credential_id'],
+            'speed' => $config['speed'] ?? config('ai.voice.speed'),
+        ], fn ($value) => $value !== null && $value !== '');
+
+        if ($config['provider'] === AiTranscription::ELEVENLABS) {
+            return array_filter(array_merge($common, [
+                'model' => $config['model'] ?? config('ai.voice.elevenlabs_model'),
+                'voiceId' => $config['voice_id'],
+                'outputFormat' => self::elevenLabsOutputFormat($channel),
+                'voiceSettings' => $config['voice_settings'] ?: null,
+            ]), fn ($value) => $value !== null && $value !== '');
+        }
+
+        return array_filter(array_merge($common, [
+            'model' => $config['model'] ?? config('ai.voice.model'),
             'voice' => $config['voice'] ?? config('ai.voice.voice'),
             'format' => self::format($channel),
-            'speed' => $config['speed'] ?? config('ai.voice.speed'),
             'instructions' => $config['instructions'] ?? config('ai.voice.instructions'),
-        ], fn ($value) => $value !== null && $value !== '');
+        ]), fn ($value) => $value !== null && $value !== '');
     }
 
     /** What the hub is asked for: the platform override, or the channel's own answer. */
@@ -170,6 +227,16 @@ class AiVoiceReply
         $forced = self::text(config('ai.voice.format'));
 
         return $forced ?? $channel->voiceReplyFormat();
+    }
+
+    /**
+     * The same choice in ElevenLabs' vocabulary, where a format also carries a
+     * sample rate and a bitrate. 32 kbps Opus is what a voice note is: mono
+     * speech, sized for a phone on mobile data.
+     */
+    public static function elevenLabsOutputFormat(Channel $channel): string
+    {
+        return self::format($channel) === 'opus' ? 'opus_48000_32' : 'mp3_44100_128';
     }
 
     /**
@@ -209,14 +276,9 @@ class AiVoiceReply
      * pointing at it would work today and be a dead player next month. The
      * bytes come here once, and the send path stores its own copy.
      */
-    public static function download(string $url, string $format = 'mp3'): ?UploadedFile
+    public static function download(string $url, string $format = 'mp3', ?string $mimeType = null): ?UploadedFile
     {
-        // The name matters more than it looks. `.opus` sends the API Way
-        // handler down its FFmpeg conversion branch (it re-encodes anything
-        // that is not mp3/ogg), and the file is genuinely an Ogg container
-        // either way — so Opus travels as `.ogg` and arrives as a voice note
-        // without anything being transcoded.
-        $extension = self::FORMAT_EXTENSIONS[$format] ?? 'mp3';
+        $extension = self::extensionFor($format, $mimeType);
 
         try {
             $response = Http::timeout(30)->get($url);
@@ -249,6 +311,41 @@ class AiVoiceReply
             null,
             true, // already "uploaded": skip the is_uploaded_file() check
         );
+    }
+
+    /**
+     * The file extension to store the generated audio under.
+     *
+     * The name matters more than it looks. `.opus` sends the API Way handler
+     * down its FFmpeg conversion branch (it re-encodes anything that is not
+     * mp3/ogg), and WhatsApp Official reads the stored file's type to decide
+     * whether the message is a voice note — so an Ogg container has to be
+     * called `.ogg` whichever provider produced it.
+     *
+     * The MIME the hub reports wins, because it describes the bytes that
+     * actually arrived. The format name is the fallback, and it comes in two
+     * dialects: `opus` from OpenAI, `opus_48000_32` from ElevenLabs.
+     */
+    public static function extensionFor(string $format, ?string $mimeType = null): string
+    {
+        $mime = strtolower(trim(explode(';', (string) $mimeType)[0]));
+
+        $fromMime = match ($mime) {
+            'audio/ogg', 'audio/opus', 'application/ogg' => 'ogg',
+            'audio/mpeg', 'audio/mp3' => 'mp3',
+            'audio/wav', 'audio/x-wav', 'audio/wave' => 'wav',
+            'audio/aac' => 'aac',
+            'audio/flac', 'audio/x-flac' => 'flac',
+            default => null,
+        };
+
+        if ($fromMime !== null) {
+            return $fromMime;
+        }
+
+        $family = strtolower(explode('_', trim($format))[0]);
+
+        return self::FORMAT_EXTENSIONS[$family] ?? 'mp3';
     }
 
     /** Lowercase, unaccented, single-spaced — what the patterns are written against. */

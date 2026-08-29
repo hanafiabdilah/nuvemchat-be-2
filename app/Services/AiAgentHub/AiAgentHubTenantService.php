@@ -764,7 +764,8 @@ class AiAgentHubTenantService
         array $metadata = [],
         ?string $conversationExternalId = null,
         array $attachments = [],
-        array $responseAudio = []
+        array $responseAudio = [],
+        array $inputAudio = []
     ): AiHubRun {
         $tenant = $agent->aiHubTenant;
         $conversation->loadMissing(['contact', 'connection']);
@@ -799,8 +800,9 @@ class AiAgentHubTenantService
 
         // A voice note is not input until somebody turns it into words, and the
         // hub only does that when asked. Without this block the file travels
-        // and is ignored.
-        if ($inputAudio = AiAttachments::inputAudioOptions($attachments)) {
+        // and is ignored. Built by the caller (AiTranscription), which is where
+        // the flow node's provider choice is known.
+        if ($inputAudio !== []) {
             $payload['inputAudio'] = $inputAudio;
         }
 
