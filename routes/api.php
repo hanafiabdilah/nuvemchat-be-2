@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileCo
 use App\Http\Controllers\Api\AiHub\AgentSkillController as AiHubAgentSkillController;
 use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentTrainingExampleController;
 use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
+use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
 use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
@@ -422,6 +423,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::prefix('ai-hub')->middleware('feature:ai_agent_hub')->group(function () {
         Route::post('/provision', [AiHubProvisionController::class, 'store'])->middleware('permission:ai-agents.create');
         Route::get('/models', [AiHubModelController::class, 'index'])->middleware('permission:ai-agents.view');
+
+        // The ElevenLabs voice library — shared, credential-free, and read by
+        // the flow builder so a voice is chosen rather than pasted.
+        Route::get('/voices', [AiHubVoiceController::class, 'index'])->middleware('permission:ai-agents.view|flows.update');
 
         Route::get('/provider-credentials', [AiHubProviderCredentialController::class, 'index'])->middleware('permission:ai-agents.view');
         Route::post('/provider-credentials', [AiHubProviderCredentialController::class, 'store'])->middleware('permission:ai-agents.create');

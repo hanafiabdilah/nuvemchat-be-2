@@ -120,6 +120,16 @@ class AiVoiceReply
             ? AiTranscription::OPENAI
             : $provider;
 
+        if ($effective !== $provider) {
+            // Said out loud, because from the flow builder the node still reads
+            // "ElevenLabs" while every customer hears OpenAI — a difference
+            // that is otherwise only visible by reading a run payload.
+            Log::warning('AiVoiceReply: ElevenLabs is selected but no voice id is set, speaking with the default provider instead', [
+                'provider' => $provider,
+                'fell_back_to' => $effective,
+            ]);
+        }
+
         // Everything below the provider line was entered for one of them and
         // means nothing to the other: an ElevenLabs model handed to OpenAI is
         // not a model, and its credential is not a credential. When the
