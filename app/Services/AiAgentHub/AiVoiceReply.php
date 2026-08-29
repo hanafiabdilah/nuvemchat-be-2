@@ -31,12 +31,6 @@ use Illuminate\Support\Str;
  */
 class AiVoiceReply
 {
-    /** Speak when the customer speaks, or when they have asked us to. */
-    public const MODE_MATCH_CUSTOMER = 'match_customer';
-
-    /** Speak every turn, whatever the customer does. */
-    public const MODE_ALWAYS = 'always';
-
     /**
      * File extension per hub format. Opus comes back in an Ogg container, and
      * `.ogg` is what both WhatsApp handlers already recognise as audio they do
@@ -50,12 +44,6 @@ class AiVoiceReply
         'wav' => 'wav',
         'pcm' => 'wav',
     ];
-
-    /** The voice note is the answer. */
-    public const DELIVERY_AUDIO_ONLY = 'audio_only';
-
-    /** The written answer first, the voice note after it. */
-    public const DELIVERY_AUDIO_AND_TEXT = 'audio_and_text';
 
     /**
      * Explicit refusals, checked before anything else.
@@ -103,8 +91,7 @@ class AiVoiceReply
     {
         $raw = is_array($nodeData['response_audio'] ?? null) ? $nodeData['response_audio'] : [];
 
-        $mode = $raw['mode'] ?? self::MODE_MATCH_CUSTOMER;
-        $delivery = $raw['delivery'] ?? self::DELIVERY_AUDIO_ONLY;
+        $mode = self::resolveMode($raw);
 
         $provider = AiTranscription::provider(
             $raw['provider'] ?? null,
@@ -136,14 +123,13 @@ class AiVoiceReply
         // fallback above changes who speaks, those fields do not come along.
         $ownFields = $effective === $provider;
 
+        // The kill switch does not silence the agent, it stops it speaking:
+        // every mode collapses to the written answer.
+        $enabled = $mode !== AiDeliveryPolicy::MODE_TEXT_ONLY && (bool) config('ai.voice.enabled', true);
+
         return [
-            'enabled' => (bool) ($raw['enabled'] ?? false) && (bool) config('ai.voice.enabled', true),
-            'mode' => in_array($mode, [self::MODE_MATCH_CUSTOMER, self::MODE_ALWAYS], true)
-                ? $mode
-                : self::MODE_MATCH_CUSTOMER,
-            'delivery' => in_array($delivery, [self::DELIVERY_AUDIO_ONLY, self::DELIVERY_AUDIO_AND_TEXT], true)
-                ? $delivery
-                : self::DELIVERY_AUDIO_ONLY,
+            'enabled' => $enabled,
+            'mode' => $enabled ? $mode : AiDeliveryPolicy::MODE_TEXT_ONLY,
             // Falling back still delivers audio, which is what the author
             // asked for; silently answering in writing would be worse.
             'provider' => $effective,
@@ -157,6 +143,40 @@ class AiVoiceReply
                 : null,
             'instructions' => self::text($raw['instructions'] ?? null),
         ];
+    }
+
+    /**
+     * The node's delivery mode, reading the shape it was saved in.
+     *
+     * Nodes built before this existed carry `enabled` + the old two-value mode
+     * + `delivery`; they are translated rather than migrated, because a flow
+     * that keeps working through a redesign is worth more than a tidy column.
+     * A node with no audio settings at all reads as text — voice is never
+     * something a flow starts doing on its own.
+     *
+     * @param  array<string, mixed>  $raw
+     */
+    private static function resolveMode(array $raw): string
+    {
+        $mode = $raw['mode'] ?? null;
+
+        if (in_array($mode, AiDeliveryPolicy::MODES, true)) {
+            return $mode;
+        }
+
+        if (! ($raw['enabled'] ?? false)) {
+            return AiDeliveryPolicy::MODE_TEXT_ONLY;
+        }
+
+        // Legacy `always` + `audio_and_text` is today's text_and_audio; legacy
+        // `match_customer` is what dynamic grew out of.
+        if ($mode === 'always') {
+            return ($raw['delivery'] ?? null) === 'audio_and_text'
+                ? AiDeliveryPolicy::MODE_TEXT_AND_AUDIO
+                : AiDeliveryPolicy::MODE_AUDIO_ONLY;
+        }
+
+        return AiDeliveryPolicy::MODE_DYNAMIC;
     }
 
     /**
@@ -181,22 +201,6 @@ class AiVoiceReply
             'style' => $clamp($raw['style'] ?? null),
             'useSpeakerBoost' => isset($raw['use_speaker_boost']) ? (bool) $raw['use_speaker_boost'] : null,
         ], fn ($value) => $value !== null);
-    }
-
-    /**
-     * Whether this turn should be spoken.
-     *
-     * @param  array<string, mixed>  $config  from config()
-     */
-    public static function shouldSpeak(array $config, Channel $channel, bool $customerSpoke, bool $voiceRequested): bool
-    {
-        if (! $config['enabled'] || ! $channel->supportsVoiceReply()) {
-            return false;
-        }
-
-        return $config['mode'] === self::MODE_ALWAYS
-            || $customerSpoke
-            || $voiceRequested;
     }
 
     /**

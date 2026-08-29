@@ -176,6 +176,23 @@ class AiAgentFixtures
     }
 
     /**
+     * Enough of a real Ogg/Opus file for the `mimes:` rule on the send path:
+     * the validator guesses the type from the bytes, and "fake-audio" guesses
+     * as plain text. A first page carrying the OpusHead packet is all libmagic
+     * reads.
+     */
+    public static function opusBytes(): string
+    {
+        $body = "OpusHead" . pack('Cx', 1) . pack('v', 312) . pack('V', 48000) . pack('v', 0) . "\x00\x00";
+
+        $header = 'OggS' . chr(0) . chr(2) . str_repeat("\x00", 8)
+            . pack('V', 12345) . pack('V', 0) . pack('V', 0)
+            . chr(1) . chr(strlen($body));
+
+        return $header . $body . str_repeat("\x00", 32);
+    }
+
+    /**
      * The run payloads the hub received, in order.
      *
      * Matched on the endpoint, not just the host: a voice reply fetches its

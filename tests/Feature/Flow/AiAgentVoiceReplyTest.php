@@ -6,6 +6,7 @@ use App\Enums\Message\SenderType;
 use App\Models\FlowNode;
 use App\Models\FlowState;
 use App\Models\Message;
+use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\Flow\FlowExecutor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -14,22 +15,6 @@ use Illuminate\Support\Facades\Storage;
 use Tests\Support\AiAgentFixtures;
 
 uses(RefreshDatabase::class);
-
-/**
- * Enough of a real Ogg/Opus file for the `mimes:` rule on the send path: the
- * validator guesses the type from the bytes, and "fake-audio" guesses as plain
- * text. A first page carrying the OpusHead packet is all libmagic reads.
- */
-function opusBytes(): string
-{
-    $body = "OpusHead" . pack("Cx", 1) . pack("v", 312) . pack("V", 48000) . pack("v", 0) . "\x00\x00";
-
-    $header = "OggS" . chr(0) . chr(2) . str_repeat("\x00", 8)
-        . pack("V", 12345) . pack("V", 0) . pack("V", 0)
-        . chr(1) . chr(strlen($body));
-
-    return $header . $body . str_repeat("\x00", 32);
-}
 
 /** The hub's reply when it was asked to speak. */
 function hubSpokenAnswer(string $status = 'generated'): array
@@ -51,7 +36,7 @@ function hubSpokenAnswer(string $status = 'generated'): array
 function voiceReplyFakes(): array
 {
     return [
-        'api-ia.ipbr.pro/v1/media/*' => Http::response(opusBytes(), 200, ['Content-Type' => 'audio/ogg']),
+        'api-ia.ipbr.pro/v1/media/*' => Http::response(AiAgentFixtures::opusBytes(), 200, ['Content-Type' => 'audio/ogg']),
         'graph.facebook.com/*/media' => Http::response(['id' => 'wa-media-1']),
     ];
 }
@@ -207,12 +192,12 @@ test('a node nobody configured stays silent, however the customer writes', funct
         ->and(outgoing(MessageType::Audio))->toBeEmpty();
 });
 
-test('always mode speaks to a customer who only ever typed', function () {
+test('audio-only mode speaks to a customer who only ever typed', function () {
     Storage::fake('local', ['serve' => true]);
     AiAgentFixtures::fakeChannelsAndHub(extra: voiceReplyFakes(), output: hubSpokenAnswer());
 
     [$conversation, $node] = AiAgentFixtures::flow();
-    speakingNode($node, ['mode' => AiVoiceReply::MODE_ALWAYS, 'voice' => 'alloy', 'speed' => 1.18]);
+    speakingNode($node, ['mode' => AiDeliveryPolicy::MODE_AUDIO_ONLY, 'voice' => 'alloy', 'speed' => 1.18]);
     AiAgentFixtures::openWithWelcome($conversation);
 
     $conversation->messages()->create([
@@ -241,7 +226,7 @@ test('audio and text together sends the written answer first', function () {
     );
 
     [$conversation, $node] = AiAgentFixtures::flow();
-    speakingNode($node, ['delivery' => AiVoiceReply::DELIVERY_AUDIO_AND_TEXT]);
+    speakingNode($node, ['mode' => AiDeliveryPolicy::MODE_TEXT_AND_AUDIO]);
     AiAgentFixtures::openWithWelcome($conversation);
 
     AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/33_abc.ogg');
@@ -302,22 +287,28 @@ test('a file that will not download falls back to the words it was made from', f
 });
 
 test('a channel that cannot carry a voice note is never asked to', function () {
-    $config = AiVoiceReply::config(['response_audio' => ['enabled' => true, 'mode' => AiVoiceReply::MODE_ALWAYS]]);
+    $mode = AiDeliveryPolicy::MODE_AUDIO_ONLY;
 
-    expect(AiVoiceReply::shouldSpeak($config, Channel::WhatsappOfficial, false, false))->toBeTrue()
+    expect(AiDeliveryPolicy::decide($mode, Channel::WhatsappOfficial, false, false, false))
+        ->toBe(AiDeliveryPolicy::MODE_AUDIO_ONLY)
         // Text and image only — an unplayable file is worse than a written reply.
-        ->and(AiVoiceReply::shouldSpeak($config, Channel::TikTok, true, true))->toBeFalse()
+        ->and(AiDeliveryPolicy::decide($mode, Channel::TikTok, true, true, false))
+        ->toBe(AiDeliveryPolicy::MODE_TEXT_ONLY)
         // An MP3 attached to a mail is not somebody answering you.
-        ->and(AiVoiceReply::shouldSpeak($config, Channel::Email, true, true))->toBeFalse();
+        ->and(AiDeliveryPolicy::decide($mode, Channel::Email, true, true, false))
+        ->toBe(AiDeliveryPolicy::MODE_TEXT_ONLY);
 });
 
 test('the platform kill switch outranks every node', function () {
     config(['ai.voice.enabled' => false]);
 
-    $config = AiVoiceReply::config(['response_audio' => ['enabled' => true, 'mode' => AiVoiceReply::MODE_ALWAYS]]);
+    $config = AiVoiceReply::config(['response_audio' => ['mode' => AiDeliveryPolicy::MODE_AUDIO_ONLY]]);
 
+    // Not silenced — collapsed to the written answer.
     expect($config['enabled'])->toBeFalse()
-        ->and(AiVoiceReply::shouldSpeak($config, Channel::WhatsappOfficial, true, true))->toBeFalse();
+        ->and($config['mode'])->toBe(AiDeliveryPolicy::MODE_TEXT_ONLY)
+        ->and(AiDeliveryPolicy::decide($config['mode'], Channel::WhatsappOfficial, true, true, false))
+        ->toBe(AiDeliveryPolicy::MODE_TEXT_ONLY);
 });
 
 test('reading a customer message as an instruction about the medium', function (string $text, ?bool $expected) {
@@ -457,7 +448,7 @@ test('a run the hub failed is retried without the audio, not left in silence', f
     // FAILED, and `output` is null — so nothing throws, nothing is sent, and
     // the customer waits for a bot that already gave up.
     Http::fake([
-        'api-ia.ipbr.pro/v1/media/*' => Http::response(opusBytes(), 200, ['Content-Type' => 'audio/ogg']),
+        'api-ia.ipbr.pro/v1/media/*' => Http::response(AiAgentFixtures::opusBytes(), 200, ['Content-Type' => 'audio/ogg']),
         'graph.facebook.com/*/media' => Http::response(['id' => 'wa-media-1']),
         'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.OUT1']]]),
         'api-ia.ipbr.pro/*' => Http::sequence()

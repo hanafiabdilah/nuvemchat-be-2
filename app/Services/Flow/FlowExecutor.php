@@ -23,6 +23,7 @@ use App\Models\User;
 use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
+use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\AiAgentHub\AiVoiceReply;
@@ -2334,12 +2335,19 @@ class FlowExecutor
         }
 
         $voice = AiVoiceReply::config($data);
-        $speak = AiVoiceReply::shouldSpeak(
-            $voice,
+
+        // Decided from the customer's side, because it has to be: the voice is
+        // generated during the run, so asking for it comes before a word of the
+        // answer exists. What the answer turns out to say is judged afterwards.
+        $decision = AiDeliveryPolicy::decide(
+            $voice['mode'],
             $conversation->connection->channel,
             $customerSpoke,
             (bool) ($stateData["_ai_voice_{$node->id}"] ?? false),
+            (bool) ($stateData["_ai_last_spoken_{$node->id}"] ?? false),
         );
+
+        $speak = AiDeliveryPolicy::speaks($decision);
 
         try {
             $run = $this->aiAgentHubService->runAgent(
@@ -2361,7 +2369,7 @@ class FlowExecutor
             $replyText = $run->output_message;
 
             if (!empty($replyText)) {
-                $this->deliverAiReply($flowState, $node, $conversation, $agent, $run, $replyText, $voice, $speak);
+                $this->deliverAiReply($flowState, $node, $conversation, $agent, $run, $replyText, $decision);
             } else {
                 // Nothing to send, and staying on the node means the customer
                 // waits for a bot that has already given up. A human takes it
@@ -2448,7 +2456,7 @@ class FlowExecutor
      * `expiresAt`, the channel may refuse the upload — and each of those falls
      * back to the words, which existed all along.
      *
-     * @param  array<string, mixed>  $voice  from AiVoiceReply::config()
+     * @param  string  $decision  what AiDeliveryPolicy::decide() asked for
      */
     protected function deliverAiReply(
         FlowState $flowState,
@@ -2457,12 +2465,28 @@ class FlowExecutor
         AiHubAgent $agent,
         AiHubRun $run,
         string $replyText,
-        array $voice,
-        bool $speak
+        string $decision
     ): void {
+        // Now the answer exists, so the half of the policy that needed to read
+        // it can run: a host and a port, a password, a walkthrough — things
+        // nobody can act on by ear get the written version alongside the voice.
+        $final = AiDeliveryPolicy::reconsider($decision, $replyText, (bool) $run->handoff_triggered);
+
+        if ($final !== $decision) {
+            Log::info('FlowExecutor: AIAgent answer is not one to listen to, sending the text as well', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'run_id' => $run->id,
+                'from' => $decision,
+                'to' => $final,
+            ]);
+        }
+
+        $speak = AiDeliveryPolicy::speaks($final);
+
         // Written first when both are going out: reading is instant, and a
         // customer who has already read the answer can listen at their leisure.
-        $sent = (! $speak || $voice['delivery'] === AiVoiceReply::DELIVERY_AUDIO_AND_TEXT)
+        $sent = AiDeliveryPolicy::writes($final)
             ? $this->sendAiText($flowState, $conversation, $agent, $run, $replyText)
             : null;
 
@@ -2482,9 +2506,29 @@ class FlowExecutor
             $sent ??= $spoken;
         }
 
+        // Remembered for the next turn: two voice notes in a row at somebody
+        // who is typing reads as not listening.
+        $this->rememberDelivery($flowState, $node, $speak && $sent !== null);
+
         if ($sent) {
             $run->update(['message_id' => $sent->id]);
         }
+    }
+
+    /** Whether the agent's last turn was spoken — read by the dynamic policy. */
+    protected function rememberDelivery(FlowState $flowState, FlowNode $node, bool $spoken): void
+    {
+        $key = "_ai_last_spoken_{$node->id}";
+
+        $flowState->refresh();
+        $stateData = $flowState->state_data ?? [];
+
+        if ((bool) ($stateData[$key] ?? false) === $spoken) {
+            return;
+        }
+
+        $stateData[$key] = $spoken;
+        $flowState->update(['state_data' => $stateData]);
     }
 
     /** The agent's reply as a text message. */
