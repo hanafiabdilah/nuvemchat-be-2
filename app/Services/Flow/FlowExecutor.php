@@ -2363,11 +2363,22 @@ class FlowExecutor
             if (!empty($replyText)) {
                 $this->deliverAiReply($flowState, $node, $conversation, $agent, $run, $replyText, $voice, $speak);
             } else {
-                Log::warning('FlowExecutor: AIAgent run returned empty reply', [
+                // Nothing to send, and staying on the node means the customer
+                // waits for a bot that has already given up. A human takes it
+                // instead — the same ending as any other AI failure, because
+                // from where the customer is sitting it is the same failure.
+                Log::warning('FlowExecutor: AIAgent run returned empty reply, handing off to human', [
                     'node_id' => $node->id,
                     'run_id' => $run->id,
                     'status' => $run->status,
+                    'error' => $run->error,
                 ]);
+
+                $stateData[$reasonKey] = 'error';
+                $flowState->update(['state_data' => $stateData]);
+                $this->routeHandoff($flowState, $node, 'error', false);
+
+                return;
             }
 
             if ($run->handoff_triggered) {

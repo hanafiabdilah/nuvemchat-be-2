@@ -831,10 +831,28 @@ class AiAgentHubTenantService
             'conversation_id' => $conversation->id,
         ];
 
+        $carriesExtras = $attachments !== [] || $responseAudio !== [] || $inputAudio !== [];
+
+        // Strip everything optional and keep the words. Shared by both ways a
+        // run can fail — an HTTP error, and a 200 carrying a failed run.
+        $dropExtras = function () use (&$payload, &$metadata): void {
+            unset(
+                $payload['message']['attachments'],
+                $payload['inputAudio'],
+                $payload['responseAudio'],
+                $metadata['imageAttachments'],
+                $metadata['audioAttachments'],
+                $metadata['voiceRequested'],
+            );
+
+            $payload['metadata'] = $metadata ?: null;
+            $payload = array_filter($payload, fn ($value) => $value !== null);
+        };
+
         try {
             $data = $this->postRun($tenant, $payload, $context);
         } catch (\Throwable $th) {
-            if ($attachments === [] && $responseAudio === []) {
+            if (! $carriesExtras) {
                 throw $th;
             }
 
@@ -858,18 +876,40 @@ class AiAgentHubTenantService
                 'error' => $th->getMessage(),
             ]));
 
-            unset(
-                $payload['message']['attachments'],
-                $payload['inputAudio'],
-                $payload['responseAudio'],
-                $metadata['imageAttachments'],
-                $metadata['audioAttachments'],
-                $metadata['voiceRequested'],
-            );
-            $payload['metadata'] = $metadata ?: null;
-            $payload = array_filter($payload, fn ($value) => $value !== null);
+            $dropExtras();
 
             $data = $this->postRun($tenant, $payload, $context);
+        }
+
+        // A 200 can still carry a run that failed: the hub answers with
+        // `status: FAILED`, `output: null` and the stage that threw — an
+        // ElevenLabs key without the speech_to_text permission, a voice id
+        // that does not exist. Nothing above notices, because nothing threw,
+        // and the customer is left in silence, which is the one outcome always
+        // worth spending a second request to avoid.
+        if (self::runFailed($data)) {
+            $error = self::runError($data);
+
+            if (! $carriesExtras) {
+                throw new \RuntimeException("AI hub run failed: {$error}");
+            }
+
+            Log::warning('AiAgentHubTenantService: the hub failed the run, retrying without audio', array_merge($context, [
+                'attachments' => count($attachments),
+                'input_audio' => $inputAudio !== [],
+                'response_audio' => $responseAudio !== [],
+                'error' => $error,
+            ]));
+
+            $dropExtras();
+
+            $data = $this->postRun($tenant, $payload, $context);
+
+            if (self::runFailed($data)) {
+                // Twice, and the second time with nothing optional left to
+                // blame: the caller hands the conversation to a human.
+                throw new \RuntimeException('AI hub run failed: ' . self::runError($data));
+            }
         }
 
         return $this->persistRun(
@@ -881,6 +921,33 @@ class AiAgentHubTenantService
             $flowNodeId,
             $metadata
         );
+    }
+
+    /**
+     * True when the hub accepted the request and then could not run it.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    protected static function runFailed(array $data): bool
+    {
+        return strtoupper((string) ($data['status'] ?? '')) === 'FAILED'
+            || ($data['error'] ?? null) !== null;
+    }
+
+    /** Whatever the hub said went wrong, as one line for a log or an exception. */
+    protected static function runError(array $data): string
+    {
+        $error = $data['error'] ?? null;
+
+        if (is_string($error) && trim($error) !== '') {
+            return $error;
+        }
+
+        if (is_array($error)) {
+            return (string) ($error['message'] ?? json_encode($error));
+        }
+
+        return 'status ' . ($data['status'] ?? 'unknown');
     }
 
     /**

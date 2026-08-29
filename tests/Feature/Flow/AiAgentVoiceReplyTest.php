@@ -449,3 +449,84 @@ test('the stored file is named after what actually arrived, in either dialect', 
     ['opus', 'audio/mpeg', 'mp3'],
     ['something-new', null, 'mp3'],
 ]);
+
+test('a run the hub failed is retried without the audio, not left in silence', function () {
+    Storage::fake('local', ['serve' => true]);
+
+    // How this reached production: the hub answers 200, the run inside it is
+    // FAILED, and `output` is null — so nothing throws, nothing is sent, and
+    // the customer waits for a bot that already gave up.
+    Http::fake([
+        'api-ia.ipbr.pro/v1/media/*' => Http::response(opusBytes(), 200, ['Content-Type' => 'audio/ogg']),
+        'graph.facebook.com/*/media' => Http::response(['id' => 'wa-media-1']),
+        'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.OUT1']]]),
+        'api-ia.ipbr.pro/*' => Http::sequence()
+            ->push([
+                'id' => 'run_failed',
+                'status' => 'FAILED',
+                'output' => null,
+                'error' => ['name' => 'Error', 'message' => 'ElevenLabs transcription failed: 401 missing_permissions'],
+            ])
+            ->push([
+                'id' => 'run_ok',
+                'status' => 'COMPLETED',
+                'output' => ['message' => 'Claro, posso ajudar.', 'handoff' => false],
+            ]),
+    ]);
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    speakingNode($node, ['provider' => 'elevenlabs', 'voice_id' => 'v0iceId11labs']);
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/39_abc.ogg');
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), '');
+
+    $runs = AiAgentFixtures::hubRuns();
+
+    expect($runs)->toHaveCount(2)
+        ->and($runs[0])->toHaveKey('responseAudio')
+        // Second attempt keeps the words and drops everything optional.
+        ->and($runs[1])->not->toHaveKey('responseAudio')
+        ->and($runs[1])->not->toHaveKey('inputAudio')
+        ->and($runs[1]['message'])->not->toHaveKey('attachments');
+
+    expect(Message::where('sender_type', SenderType::Outgoing)->pluck('body')->all())
+        ->toContain('Claro, posso ajudar.');
+});
+
+test('a run that fails with nothing left to blame is routed away, not left hanging', function () {
+    Storage::fake('local', ['serve' => true]);
+
+    Http::fake([
+        'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.OUT1']]]),
+        'api-ia.ipbr.pro/*' => Http::response([
+            'id' => 'run_failed',
+            'status' => 'FAILED',
+            'output' => null,
+            'error' => ['message' => 'the model is on fire'],
+        ]),
+    ]);
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    $conversation->messages()->create([
+        'external_id' => 'wamid.typed',
+        'sender_type' => SenderType::Incoming,
+        'message_type' => MessageType::Text,
+        'body' => 'Bom dia',
+        'sent_at' => now(),
+    ]);
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), 'Bom dia');
+
+    // Where it goes from here is the node's own handoff setting; what matters
+    // is that the failure is routed at all. Before this, an empty reply left
+    // the turn parked on the node and the customer waiting on a bot that had
+    // already given up.
+    $state = FlowState::where('conversation_id', $conversation->id)->first();
+    expect($state->state_data["_ai_handoff_reason_{$node->id}"])->toBe('error');
+
+    // And nothing was invented to fill the silence.
+    expect(Message::where('sender_type', SenderType::Outgoing)->where('message_type', MessageType::Text)->count())
+        ->toBe(1);
+});
