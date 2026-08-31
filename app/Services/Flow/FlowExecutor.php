@@ -2762,7 +2762,7 @@ class FlowExecutor
                 $node->id,
                 attachments: $attachments,
                 responseAudio: $speak ? AiVoiceReply::options($voice, $conversation->connection->channel) : [],
-                inputAudio: AiTranscription::options($data, $attachments)
+                inputAudio: AiTranscription::options($data, $attachments, $conversation->connection->tenant)
             );
 
             // Before the reply is sent: the transcription belongs to the

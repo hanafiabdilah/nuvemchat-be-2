@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileCo
 use App\Http\Controllers\Api\AiHub\AgentSkillController as AiHubAgentSkillController;
 use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentTrainingExampleController;
 use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
+use App\Http\Controllers\Api\AiHub\VocabularyController as AiHubVocabularyController;
 use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
@@ -429,6 +430,12 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // The ElevenLabs voice library — shared, credential-free, and read by
         // the flow builder so a voice is chosen rather than pasted.
         Route::get('/voices', [AiHubVoiceController::class, 'index'])->middleware('permission:ai-agents.view|flows.update');
+
+        // The workspace's own words, so a voice note about "SOCKS5" is not
+        // transcribed as "socks five". Tenant-wide on purpose — see
+        // App\Services\AiAgentHub\AiVocabulary.
+        Route::get('/vocabulary', [AiHubVocabularyController::class, 'show'])->middleware('permission:ai-agents.view');
+        Route::put('/vocabulary', [AiHubVocabularyController::class, 'update'])->middleware('permission:ai-agents.update');
 
         Route::get('/provider-credentials', [AiHubProviderCredentialController::class, 'index'])->middleware('permission:ai-agents.view');
         Route::post('/provider-credentials', [AiHubProviderCredentialController::class, 'store'])->middleware('permission:ai-agents.create');

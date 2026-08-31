@@ -12,11 +12,13 @@ class Tenant extends Model
         'current_subscription_id',
         'lead_settings',
         'entitlement_overrides',
+        'audio_dictionary',
     ];
 
     protected $casts = [
         'lead_settings' => 'array',
         'entitlement_overrides' => 'array',
+        'audio_dictionary' => 'array',
     ];
 
     /**

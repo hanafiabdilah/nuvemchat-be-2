@@ -84,6 +84,11 @@ return [
         | sentence of context, ElevenLabs a list of terms. Both exist for one
         | reason — product names and jargon a general model spells
         | phonetically otherwise (SOCKS5 becomes "socks five").
+        |
+        | These two are the *platform's* floor. The words that actually vary
+        | belong to the business, and a workspace keeps its own list in
+        | `tenants.audio_dictionary` — see App\Services\AiAgentHub\AiVocabulary,
+        | which merges the two and is the only thing that reads either.
         */
 
         'prompt' => env('AI_TRANSCRIPTION_PROMPT'),
@@ -153,6 +158,25 @@ return [
 
         'elevenlabs_model' => env('AI_TTS_ELEVENLABS_MODEL', 'eleven_flash_v2_5'),
         'elevenlabs_voice_id' => env('AI_TTS_ELEVENLABS_VOICE_ID'),
+
+        /*
+        | How the reply is pronounced, as far as the hub lets us influence it —
+        | both ElevenLabs-only.
+        |
+        | `language` matters more than it looks: without it "HTTP", "link" and
+        | "site" in a Portuguese sentence are read with English phonemes.
+        | `text_normalization` ("auto", "on", "off") expands numbers, dates and
+        | abbreviations before the voice sees them.
+        |
+        | ⚠️ Both are fields on `responseAudio`. A hub that has not shipped them
+        | rejects the *whole* run over one unknown field, and the retry drops
+        | every optional part — so the symptom is not an error, it is every
+        | voice reply quietly arriving as text. Emptying either stops it being
+        | sent, which is the fix without a deploy.
+        */
+
+        'language' => env('AI_TTS_LANGUAGE', 'pt'),
+        'text_normalization' => env('AI_TTS_TEXT_NORMALIZATION', 'auto'),
 
         /*
         | Left unset on purpose: the format decides whether WhatsApp draws a

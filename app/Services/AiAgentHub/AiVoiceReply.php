@@ -232,6 +232,20 @@ class AiVoiceReply
                 'voiceId' => $config['voice_id'],
                 'outputFormat' => self::elevenLabsOutputFormat($channel),
                 'voiceSettings' => $config['voice_settings'] ?: null,
+                // The two levers the hub gives us over how the reply is
+                // *pronounced*. Naming the language is the bigger of them:
+                // left to guess, "HTTP" and "site" in a Portuguese sentence
+                // come out read in English. Normalisation expands numbers,
+                // dates and abbreviations before the voice sees them.
+                //
+                // Neither is a per-word dictionary, and there is no way to
+                // build one from here — the reply's text is written inside the
+                // same run that speaks it, so nothing on this side ever holds
+                // the sentence in between. The hub normalises its own fixed
+                // list (IPv6, SOCKS5, ProxyBR…); extending that per tenant
+                // needs a field on this block that does not exist yet.
+                'languageCode' => config('ai.voice.language'),
+                'applyTextNormalization' => config('ai.voice.text_normalization'),
             ]), fn ($value) => $value !== null && $value !== '');
         }
 

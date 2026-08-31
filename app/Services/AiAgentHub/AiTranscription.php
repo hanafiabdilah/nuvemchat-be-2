@@ -2,6 +2,7 @@
 
 namespace App\Services\AiAgentHub;
 
+use App\Models\Tenant;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -28,9 +29,10 @@ class AiTranscription
      *
      * @param  array<string, mixed>|null  $nodeData  the AIAgent node's data
      * @param  array<int, array<string, mixed>>  $attachments
+     * @param  Tenant|null  $tenant  whose vocabulary the provider should listen for
      * @return array<string, mixed>
      */
-    public static function options(?array $nodeData, array $attachments): array
+    public static function options(?array $nodeData, array $attachments, ?Tenant $tenant = null): array
     {
         if (! AiAttachments::audioEnabled() || ! self::carriesAudio($attachments)) {
             return [];
@@ -47,7 +49,7 @@ class AiTranscription
         if ($config['provider'] === self::ELEVENLABS) {
             return array_filter(array_merge($common, [
                 'model' => $config['model'] ?? config('ai.audio.elevenlabs_model'),
-                'keyterms' => config('ai.audio.keyterms') ?: null,
+                'keyterms' => AiVocabulary::keyterms($tenant) ?: null,
                 // Neither is wanted here: the transcript is read by a person
                 // skimming a thread, and word-level timestamps and "[laughs]"
                 // annotations are noise in that line.
@@ -58,7 +60,7 @@ class AiTranscription
 
         return array_filter(array_merge($common, [
             'transcriptionModel' => $config['model'] ?? config('ai.audio.transcription_model'),
-            'prompt' => config('ai.audio.prompt'),
+            'prompt' => AiVocabulary::prompt($tenant),
         ]), fn ($value) => $value !== null && $value !== '');
     }
 

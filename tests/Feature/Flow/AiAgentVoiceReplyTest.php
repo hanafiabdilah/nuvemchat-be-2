@@ -364,12 +364,41 @@ test('a node can speak through ElevenLabs, in ElevenLabs\' own spelling', functi
             'style' => 0.2,
             'useSpeakerBoost' => true,
         ])
+        // The two levers we have over pronunciation. Naming the language is
+        // the bigger one: without it "HTTP" and "site" in a Portuguese
+        // sentence are read with English phonemes.
+        ->and($block['languageCode'])->toBe('pt')
+        ->and($block['applyTextNormalization'])->toBe('auto')
         // OpenAI's fields would be meaningless here, and the hub validates.
         ->and($block)->not->toHaveKey('voice')
         ->and($block)->not->toHaveKey('format')
         ->and($block)->not->toHaveKey('instructions');
 
     expect(outgoing(MessageType::Audio))->toHaveCount(1);
+});
+
+test('the pronunciation fields can be emptied without a deploy', function () {
+    Storage::fake('local', ['serve' => true]);
+    // A hub that has not shipped them rejects the whole run over one unknown
+    // field, and the retry drops every optional part — so the symptom is not
+    // an error, it is every voice reply quietly arriving as text. Clearing the
+    // config is the way out, so it has to actually stop them being sent.
+    config(['ai.voice.language' => null, 'ai.voice.text_normalization' => '']);
+    AiAgentFixtures::fakeChannelsAndHub(extra: voiceReplyFakes(), output: hubSpokenAnswer());
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    speakingNode($node, ['provider' => 'elevenlabs', 'voice_id' => 'v0iceId11labs']);
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/36b_abc.ogg');
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), '');
+
+    $block = AiAgentFixtures::hubRuns()[0]['responseAudio'];
+
+    expect($block)->not->toHaveKey('languageCode')
+        ->and($block)->not->toHaveKey('applyTextNormalization')
+        // Still spoken: the switch is about the two hints, not about the voice.
+        ->and(outgoing(MessageType::Audio))->toHaveCount(1);
 });
 
 test('ElevenLabs without a voice id speaks with OpenAI, and leaves its fields behind', function () {

@@ -81,8 +81,10 @@ class AiSuggestService
             conversationExternalId: "suggest:{$conversation->id}:m{$lastMessageId}",
             attachments: $attachments,
             // No node behind a draft, so the platform default decides who
-            // listens — the same voice note, transcribed the same way.
-            inputAudio: AiTranscription::options(null, $attachments),
+            // listens — the same voice note, transcribed the same way. The
+            // workspace's vocabulary still travels: it belongs to the tenant,
+            // which is exactly why it is not stored on a node.
+            inputAudio: AiTranscription::options(null, $attachments, $conversation->connection->tenant),
         );
 
         // A draft the agent may well discard still leaves the thread better
