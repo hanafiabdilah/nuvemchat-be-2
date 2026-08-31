@@ -15,6 +15,7 @@ class Invoice extends Model
         'subscription_id',
         'purpose',
         'apiway_subscription_id',
+        'trained_agent_hire_id',
         'status',
         'payment_method',
         'amount_cents',
@@ -59,6 +60,11 @@ class Invoice extends Model
     public function apiwaySubscription()
     {
         return $this->belongsTo(ApiwaySubscription::class);
+    }
+
+    public function trainedAgentHire()
+    {
+        return $this->belongsTo(TrainedAgentHire::class);
     }
 
     public function scopePending(Builder $query): Builder

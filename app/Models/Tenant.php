@@ -87,6 +87,11 @@ class Tenant extends Model
         return $this->hasMany(ApiwayInstance::class);
     }
 
+    public function trainedAgentHires()
+    {
+        return $this->hasMany(TrainedAgentHire::class);
+    }
+
     public function users()
     {
         return $this->hasMany(User::class);

@@ -30,6 +30,11 @@ class PlatformRbacSeeder extends Seeder
         'bo.revenue.view',
         'bo.settings.manage',
         'bo.ai-usage.view',
+        // The trained-agent catalog: categories, blueprints and their prices.
+        // Separate from bo.plans.manage because it is content authoring as much
+        // as pricing — the person writing a medical-office prompt is not
+        // necessarily the person allowed to reprice the platform's plans.
+        'bo.trained-agents.manage',
         // Pausing another company's live campaign is an intervention, not a
         // read, so it is not folded into an existing view permission.
         'bo.broadcasts.manage',

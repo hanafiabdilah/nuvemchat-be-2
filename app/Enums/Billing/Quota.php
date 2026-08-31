@@ -16,6 +16,7 @@ enum Quota: string
     case MaxAgents = 'max_agents';
     case MaxAiRuns = 'max_ai_runs';
     case IncludedInstances = 'included_instances';
+    case IncludedTrainedAgents = 'included_trained_agents';
 
     /** @return list<string> */
     public static function values(): array
@@ -30,6 +31,7 @@ enum Quota: string
             self::MaxAgents => 'Agents',
             self::MaxAiRuns => 'AI runs / month',
             self::IncludedInstances => 'Included API Way instances',
+            self::IncludedTrainedAgents => 'Included trained agents',
         };
     }
 
@@ -40,6 +42,7 @@ enum Quota: string
             self::MaxAgents => 'User seats in the workspace.',
             self::MaxAiRuns => 'AI Hub runs per billing month. Resets with the subscription period.',
             self::IncludedInstances => 'API Way instances provisioned free with the plan.',
+            self::IncludedTrainedAgents => 'Pre-trained catalog agents the plan may hire at no extra cost.',
         };
     }
 
@@ -51,6 +54,7 @@ enum Quota: string
             self::MaxAgents => 'On inviting a new agent.',
             self::MaxAiRuns => 'On each AI agent run; over the limit, the flow hands off instead.',
             self::IncludedInstances => 'On provisioning; extra instances are billed per unit.',
+            self::IncludedTrainedAgents => 'On hiring from the catalog; past the limit the agent is a one-off purchase.',
         };
     }
 }

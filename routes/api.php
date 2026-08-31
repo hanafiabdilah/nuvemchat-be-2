@@ -12,6 +12,7 @@ use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
 use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
+use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
 use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
 use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
 use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
@@ -31,6 +32,7 @@ use App\Http\Controllers\Api\Admin\AdminReportController;
 use App\Http\Controllers\Api\Admin\AdminStorageController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
+use App\Http\Controllers\Api\Admin\AdminTrainedAgentController;
 use App\Http\Controllers\Api\Admin\AdminSettingsController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionController;
@@ -462,6 +464,24 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::patch('/agents/{agentId}/training-examples/{exampleId}', [AiHubAgentTrainingExampleController::class, 'update'])->middleware('permission:ai-agents.update');
         Route::delete('/agents/{agentId}/training-examples/{exampleId}', [AiHubAgentTrainingExampleController::class, 'destroy'])->middleware('permission:ai-agents.delete');
     });
+
+    // Trained agents — the platform's pre-trained catalog. Under the same
+    // `ai_agent_hub` feature gate as the hub itself: hiring one produces an
+    // ordinary AI Hub agent, so a workspace that cannot run agents has nothing
+    // to do with the catalog.
+    Route::prefix('trained-agents')->name('trained-agents.')->middleware('feature:ai_agent_hub')->group(function () {
+        Route::get('/', [TrainedAgentController::class, 'index'])
+            ->middleware('permission:ai-agents.view')->name('index');
+        // The paid path additionally requires billing.manage — checked in the
+        // controller, because whether this hire costs money depends on the
+        // plan's remaining allowance, not on the route.
+        Route::post('/{blueprint}/hire', [TrainedAgentController::class, 'hire'])
+            ->middleware('permission:ai-agents.create')->name('hire');
+        Route::post('/hires/{hire}/retry', [TrainedAgentController::class, 'retry'])
+            ->middleware('permission:ai-agents.create')->name('hires.retry');
+        Route::delete('/hires/{hire}', [TrainedAgentController::class, 'abandon'])
+            ->middleware('permission:ai-agents.create')->name('hires.abandon');
+    });
 });
 
 Route::prefix('/v1')->middleware(Auth::class)->group(function(){
@@ -609,6 +629,26 @@ Route::prefix('admin')->group(function () {
             Route::get('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'show']);
             Route::post('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'assign']);
             Route::delete('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'cancel']);
+        });
+
+        // Trained agent catalog — categories, blueprints, and who took what.
+        Route::middleware('permission:bo.trained-agents.manage')->group(function () {
+            Route::get('/trained-agents/categories', [AdminTrainedAgentController::class, 'categories']);
+            Route::post('/trained-agents/categories', [AdminTrainedAgentController::class, 'storeCategory']);
+            Route::put('/trained-agents/categories/{category}', [AdminTrainedAgentController::class, 'updateCategory']);
+            Route::delete('/trained-agents/categories/{category}', [AdminTrainedAgentController::class, 'destroyCategory']);
+
+            Route::get('/trained-agents/hires', [AdminTrainedAgentController::class, 'hires']);
+            // Books a manual refund against a purchase that was captured but
+            // never forked — clears it off the attention list.
+            Route::post('/trained-agents/hires/{hire}/settle-refund', [AdminTrainedAgentController::class, 'settleRefund']);
+
+            Route::get('/trained-agents', [AdminTrainedAgentController::class, 'index']);
+            Route::post('/trained-agents', [AdminTrainedAgentController::class, 'store']);
+            Route::get('/trained-agents/{blueprint}', [AdminTrainedAgentController::class, 'show']);
+            Route::put('/trained-agents/{blueprint}', [AdminTrainedAgentController::class, 'update']);
+            Route::post('/trained-agents/{blueprint}/duplicate', [AdminTrainedAgentController::class, 'duplicate']);
+            Route::delete('/trained-agents/{blueprint}', [AdminTrainedAgentController::class, 'destroy']);
         });
 
         // Billing — invoices. Backs both the Invoices and the Payments page:

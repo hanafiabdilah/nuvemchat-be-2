@@ -14,9 +14,11 @@ use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
+use App\Models\TrainedAgentHire;
 use App\Models\User;
 use App\Services\Billing\MercadoPago\MercadoPagoClient;
 use App\Services\Connection\Apiway\ApiwayService;
+use App\Services\TrainedAgent\TrainedAgentService;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -198,10 +200,11 @@ class BillingService
             return;
         }
 
-        // API Way invoices have no plan subscription behind them — their paid
-        // hook provisions/renews at ProxyBR (via queued jobs) instead.
-        if ($invoice->purpose !== null && $invoice->purpose !== InvoicePurpose::Subscription) {
-            $this->applyApiwayPaymentUpdate($invoice, $paymentId, $status);
+        // Asset purchases (API Way instances, trained agents) have no plan
+        // subscription behind them — their paid hook provisions the asset via
+        // queued jobs instead of moving subscription state.
+        if ($invoice->purpose !== null && $invoice->purpose->isAssetPurchase()) {
+            $this->applyAssetPaymentUpdate($invoice, $paymentId, $status);
 
             return;
         }
@@ -232,16 +235,20 @@ class BillingService
     }
 
     /**
-     * Settle a MercadoPago payment against an API Way invoice. Mirrors the
-     * subscription path's guards but never touches Subscription state; the
-     * paid hook only flips local status and dispatches provisioning/renew jobs
-     * (no partner HTTP inside the webhook transaction).
+     * Settle a MercadoPago payment against an asset invoice (API Way, trained
+     * agent). Mirrors the subscription path's guards but never touches
+     * Subscription state; the paid hook only flips local status and dispatches
+     * provisioning jobs (no partner/hub HTTP inside the webhook transaction).
      */
-    protected function applyApiwayPaymentUpdate(Invoice $invoice, string $paymentId, ?string $status): void
+    protected function applyAssetPaymentUpdate(Invoice $invoice, string $paymentId, ?string $status): void
     {
         DB::transaction(function () use ($invoice, $paymentId, $status) {
             if ($invoice->apiway_subscription_id) {
                 ApiwaySubscription::lockForUpdate()->find($invoice->apiway_subscription_id);
+            }
+
+            if ($invoice->trained_agent_hire_id) {
+                TrainedAgentHire::lockForUpdate()->find($invoice->trained_agent_hire_id);
             }
 
             $invoice->refresh();
@@ -261,9 +268,73 @@ class BillingService
             };
 
             if ($status === 'approved') {
-                app(ApiwayService::class)->handleApiwayInvoicePaid($invoice->fresh());
+                $fresh = $invoice->fresh();
+
+                match (true) {
+                    $fresh->purpose === InvoicePurpose::TrainedAgentPurchase
+                        => app(TrainedAgentService::class)->handleInvoicePaid($fresh),
+                    default => app(ApiwayService::class)->handleApiwayInvoicePaid($fresh),
+                };
             }
         });
+    }
+
+    /**
+     * Create a payable Pix charge for a one-off trained agent purchase.
+     *
+     * The amount comes from the hire row — which the caller priced from the
+     * blueprint, never from client input — and there is no period: the fork is
+     * permanent, so period_start/end would only be describing a subscription
+     * that does not exist.
+     */
+    public function createTrainedAgentPixInvoice(TrainedAgentHire $hire, ?string $payerEmail = null): Invoice
+    {
+        $expiresAt = now()->addDay();
+        $payerEmail ??= $hire->tenant->user?->email ?? 'no-reply@example.com';
+
+        $invoice = Invoice::create([
+            'tenant_id' => $hire->tenant_id,
+            'trained_agent_hire_id' => $hire->id,
+            'purpose' => InvoicePurpose::TrainedAgentPurchase,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Pix,
+            'amount_cents' => $hire->price_cents,
+            'currency' => $hire->currency ?: 'BRL',
+            'due_date' => $expiresAt->toDateString(),
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
+
+        $label = $hire->agent_name ?: ($hire->blueprint_snapshot['name'] ?? 'Agente treinado');
+
+        $payload = [
+            'transaction_amount' => $this->toAmount($invoice->amount_cents),
+            'description' => "Agente treinado — {$label} — fatura #{$invoice->id}",
+            'payment_method_id' => 'pix',
+            'payer' => ['email' => $payerEmail],
+            // Same millisecond-format requirement as createPixInvoice().
+            'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
+            'external_reference' => "tenant:{$hire->tenant_id}:trained-agent:inv:{$invoice->id}",
+        ];
+
+        try {
+            $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            throw $e;
+        }
+
+        $txData = $response['point_of_interaction']['transaction_data'] ?? [];
+
+        $invoice->update([
+            'mp_payment_id' => isset($response['id']) ? (string) $response['id'] : null,
+            'pix_qr_code' => $txData['qr_code'] ?? null,
+            'pix_qr_code_base64' => $txData['qr_code_base64'] ?? null,
+            'pix_copy_paste' => $txData['qr_code'] ?? null,
+            'pix_expires_at' => $expiresAt,
+        ]);
+
+        return $invoice->fresh();
     }
 
     /**

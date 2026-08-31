@@ -8,6 +8,7 @@ use App\Enums\Billing\Quota;
 use App\Models\AiHubRun;
 use App\Models\ApiwayInstance;
 use App\Models\Tenant;
+use App\Models\TrainedAgentHire;
 use Illuminate\Support\Facades\Cache;
 
 /**
@@ -100,6 +101,55 @@ class SubscriptionGate
         }
 
         return $this->aiRunsUsed($tenant) < $limit;
+    }
+
+    /**
+     * Included trained-agent slots the tenant has already spent.
+     *
+     * Only `included` hires count. A purchased one was paid for outright and
+     * is permanent, so charging it against the allowance would mean buying an
+     * agent made the next plan-included one unavailable.
+     */
+    public function trainedAgentsUsed(Tenant $tenant): int
+    {
+        return TrainedAgentHire::query()
+            ->where('tenant_id', $tenant->id)
+            ->consumingAllowance()
+            ->count();
+    }
+
+    /**
+     * Included trained-agent slots still available. Null = unlimited.
+     *
+     * Never negative: a plan downgrade leaves already-forked agents in place
+     * (they are the tenant's own agents now), and reporting "-2 remaining"
+     * would be an invitation to reconcile something that is working as
+     * intended.
+     */
+    public function trainedAgentsRemaining(Tenant $tenant): ?int
+    {
+        $limit = $this->quota($tenant, Quota::IncludedTrainedAgents->value);
+
+        if ($limit === null) {
+            return null;
+        }
+
+        return max(0, $limit - $this->trainedAgentsUsed($tenant));
+    }
+
+    /**
+     * Whether the tenant may take one more trained agent out of the plan.
+     *
+     * Unlike every other quota here, an unset limit means ZERO, not unlimited:
+     * `included_trained_agents` is an allowance a plan grants, and a plan that
+     * never mentions it has not granted any. Reading absence as unlimited would
+     * hand the whole catalog away free on every plan that predates the feature.
+     */
+    public function canHireIncludedTrainedAgent(Tenant $tenant): bool
+    {
+        $limit = $this->quota($tenant, Quota::IncludedTrainedAgents->value) ?? 0;
+
+        return $this->trainedAgentsUsed($tenant) < $limit;
     }
 
     /**
