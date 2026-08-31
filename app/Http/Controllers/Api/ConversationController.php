@@ -70,19 +70,30 @@ class ConversationController extends Controller
         // Eager-load everything ConversationResource touches (incl. the nested
         // MessageResource on last_message) — without this a 500-row sync page
         // explodes into thousands of lazy queries.
-        $query = Conversation::with([
+        //
+        // Both message relations, because `last_message` resolves through both:
+        // the preview skips system notes, and `lastInfoMessage` draws the row
+        // for a thread that has nothing but notes (a missed call opens one).
+        // Left out, exactly those rows would lazy-load one at a time.
+        $messageRelations = [
+            'repliedMessage',
+            'reactions.contact',
             'contact',
-            'tags',
-            'agent',
-            'flowState.currentNode',
-            'lastMessage.repliedMessage',
-            'lastMessage.reactions.contact',
-            'lastMessage.contact',
-            'lastMessage.sentByUser',
-            'lastMessage.sentByFlow',
-            'lastMessage.sentByAiHubAgent',
-            'lastMessage.conversation.connection',
-        ])
+            'sentByUser',
+            'sentByFlow',
+            'sentByAiHubAgent',
+            'conversation.connection',
+        ];
+
+        $with = ['contact', 'tags', 'agent', 'flowState.currentNode'];
+
+        foreach (['lastMessage', 'lastInfoMessage'] as $message) {
+            foreach ($messageRelations as $nested) {
+                $with[] = "{$message}.{$nested}";
+            }
+        }
+
+        $query = Conversation::with($with)
             ->withCount(['messages as unread_count' => function ($q) {
                 $q->where('sender_type', SenderType::Incoming)->whereNull('read_at');
             }, 'notes'])

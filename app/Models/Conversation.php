@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status;
 use App\Enums\Conversation\Type;
+use App\Enums\Message\MessageType;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
@@ -51,20 +52,53 @@ class Conversation extends Model
         return $this->muted_at !== null;
     }
 
-    // Eager-loadable variant of last_message (one query per page instead of one
-    // per conversation). Same ordering as the accessor below.
+    /**
+     * The message the conversation list previews. Eager-loadable (one query per
+     * page instead of one per row); same ordering as the accessor below.
+     *
+     * System notes are excluded. They are stored as messages so they take their
+     * place in the timeline, but nobody said them — and the preview line exists
+     * to show what was actually said. A row reading "Ana assumiu esta conversa."
+     * buries the customer's last sentence, which is the one an agent scans the
+     * list for, and it stands there until somebody writes again. Since accepting
+     * a thread, transferring it, resolving it, or a missed call each write one,
+     * that was most of a working inbox.
+     */
     public function lastMessage()
     {
-        return $this->hasOne(Message::class)->ofMany(['created_at' => 'max', 'id' => 'max']);
+        return $this->hasOne(Message::class)->ofMany(
+            ['created_at' => 'max', 'id' => 'max'],
+            fn (Builder $query) => $query->where('message_type', '!=', MessageType::Info->value),
+        );
+    }
+
+    /**
+     * Fallback for a thread that holds nothing but notes — a missed call from a
+     * number that never wrote opens one. `last_message` has never been null for
+     * a conversation that has messages (MessageResource would break on it), and
+     * a blank row is worse than the note that is genuinely all there is.
+     */
+    public function lastInfoMessage()
+    {
+        return $this->hasOne(Message::class)->ofMany(
+            ['created_at' => 'max', 'id' => 'max'],
+            fn (Builder $query) => $query->where('message_type', MessageType::Info->value),
+        );
     }
 
     public function getLastMessageAttribute()
     {
         if ($this->relationLoaded('lastMessage')) {
-            return $this->getRelation('lastMessage');
+            // getRelationValue, not getRelation: on the paths that eager-load
+            // only the preview relation (a broadcast, an accept) the fallback
+            // still resolves — and only for the rare row that needs it.
+            return $this->getRelation('lastMessage') ?? $this->getRelationValue('lastInfoMessage');
         }
 
-        return $this->messages()->latest('created_at')->latest('id')->first();
+        return $this->messages()->where('message_type', '!=', MessageType::Info->value)
+            ->latest('created_at')->latest('id')->first()
+            ?? $this->messages()->where('message_type', MessageType::Info->value)
+                ->latest('created_at')->latest('id')->first();
     }
 
     public function contact()
