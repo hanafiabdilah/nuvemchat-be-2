@@ -11,6 +11,8 @@ use App\Models\FlowEdge;
 use App\Models\FlowNode;
 use App\Services\Flow\ActionNodes;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Flow\MessageNodes;
+use App\Services\Flow\ResponseNodes;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -444,20 +446,35 @@ class FlowController extends Controller
     private function getValidationRulesForNodeType(string $type): array
     {
         return match ($type) {
+            // A message node holds a list of bubbles in `messages`; the flat
+            // body/message_type/attachment_url/delay are what nodes saved
+            // before that list looked like, and MessageNodes::items() reads
+            // whichever is there. Both are nullable for the same reason
+            // http_request's url is: the builder auto-saves a node the moment
+            // it lands on the canvas, and the executor skips a bubble with
+            // nothing in it rather than failing the save.
             'message' => [
-                'body' => ['required', 'string'],
-                'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
+                'body' => ['nullable', 'string'],
+                'message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
                 'attachment_url' => ['nullable', 'string'],
-                'delay' => ['nullable', 'integer', 'min:0'],
+                'delay' => ['nullable', 'integer', 'min:0', 'max:' . MessageNodes::MAX_DELAY_SECONDS],
                 'wait_for_reply' => ['nullable', 'boolean'],
+                'messages' => ['nullable', 'array', 'max:' . MessageNodes::MAX_ITEMS],
+                'messages.*.body' => ['nullable', 'string'],
+                'messages.*.message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
+                'messages.*.attachment_url' => ['nullable', 'string'],
+                'messages.*.delay' => ['nullable', 'integer', 'min:0', 'max:' . MessageNodes::MAX_DELAY_SECONDS],
             ],
             'response' => [
                 'body' => ['required', 'string'],
-                'message_type' => ['required', 'string', Rule::in(['text', 'image', 'audio', 'video', 'document'])],
+                'message_type' => ['required', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
                 'attachment_url' => ['nullable', 'string'],
                 'variable_key' => ['required', 'string'],
                 'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
                 'error_message' => ['nullable', 'string'],
+                // 0 (or absent) = wait forever, which is what this node did
+                // before it grew a second output.
+                'timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:' . ResponseNodes::MAX_TIMEOUT_SECONDS],
             ],
             // Resolved is the only status a flow may set; the reasoning is on
             // NodeType::data and FlowExecutor::executeStatusNode. Strict rather
