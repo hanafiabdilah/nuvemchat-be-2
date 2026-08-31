@@ -6,6 +6,7 @@ use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status;
 use App\Enums\Message\SenderType;
+use App\Events\AgentTyping;
 use App\Events\ConversationTakenOver;
 use App\Events\ConversationTransferred;
 use App\Events\ConversationUpdated;
@@ -29,6 +30,7 @@ use App\Services\Message\MessageService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
@@ -46,6 +48,12 @@ class ConversationController extends Controller
     public const INFO_TAKEN_OVER = 'conversation_taken_over';
 
     public const INFO_ASSIGNED = 'conversation_assigned';
+
+    /**
+     * Cache key prefix for the per-conversation gate on forwarding "typing" to
+     * the channel. Holds nothing but its own expiry — the window is the value.
+     */
+    private const TYPING_FORWARD_KEY = 'typing-fwd:';
 
     public function index(Request $request)
     {
@@ -604,14 +612,25 @@ class ConversationController extends Controller
     }
 
     /**
-     * Show the customer that an agent is writing. Called by the composer on a
-     * timer while an agent types, and once with `state=paused` when they stop.
+     * Someone is writing in this thread. Called by the composer on a timer
+     * while an agent types, and once with `state=paused` when they stop.
      *
-     * Every channel that can do this is covered (MessageService::sendTyping);
-     * the ones that cannot — TikTok, e-mail — are a silent no-op rather than an
-     * error, because the composer calls this blind and an agent must never see
-     * a failure for a decoration. The response is always 200 for the same
-     * reason: there is nothing the SPA could usefully do with a failure.
+     * It says so twice, to two different audiences:
+     *
+     *  - to the customer, over the channel (MessageService::sendTyping). The
+     *    channels that cannot hear it — TikTok, e-mail — are a silent no-op
+     *    rather than an error, because the composer calls this blind and an
+     *    agent must never see a failure for a decoration. The response is
+     *    always 200 for the same reason.
+     *  - to the other agents, over the connection's realtime channel. Nobody
+     *    on this side of the glass used to hear anything, which is how two
+     *    agents end up writing the same reply to the same thread.
+     *
+     * The two run on different clocks, so the pacing moved here from the
+     * client. The composer now calls every few seconds — fast enough for the
+     * agent-facing signal to look live — and the forward to the channel is
+     * throttled back to that channel's own refresh interval, so no platform
+     * sees more traffic than it did before.
      */
     public function typing(Request $request, int $id)
     {
@@ -622,8 +641,39 @@ class ConversationController extends Controller
         }
 
         $typing = $request->input('state', 'composing') !== 'paused';
+        $user = Auth::user();
+        $connection = $conversation->connection;
 
-        (new MessageService)->sendTyping($conversation, $typing);
+        if ($connection) {
+            broadcast(new AgentTyping(
+                conversationId: (int) $conversation->id,
+                connectionId: (int) $connection->id,
+                tenantId: (int) $connection->tenant_id,
+                userId: (int) $user->id,
+                userName: (string) $user->name,
+                typing: $typing,
+                ttl: (int) config('live.typing_ttl_seconds', 8),
+            ));
+
+            $interval = $connection->channel->typingRefreshSeconds();
+
+            // `paused` always goes through, and is the reason the gate is
+            // shaped this way rather than as a plain rate limit: API Way's
+            // `composing` has no timeout of its own, so a withdrawal that gets
+            // swallowed leaves the customer watching a phantom agent type
+            // forever. Cache::add is the throttle — it fails while a previous
+            // forward is still inside the channel's own refresh window.
+            if ($interval !== null
+                && (! $typing || Cache::add(self::TYPING_FORWARD_KEY.$conversation->id, true, max(1, $interval - 1)))) {
+                (new MessageService)->sendTyping($conversation, $typing);
+
+                if (! $typing) {
+                    // Let the next keystroke light the channel up immediately
+                    // instead of waiting out a window nobody is inside.
+                    Cache::forget(self::TYPING_FORWARD_KEY.$conversation->id);
+                }
+            }
+        }
 
         return response()->json(['message' => 'ok']);
     }

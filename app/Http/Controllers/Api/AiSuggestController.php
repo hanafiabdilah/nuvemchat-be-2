@@ -7,6 +7,7 @@ use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Services\AiSuggest\AiSuggestService;
+use App\Services\Live\LiveActivity;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 
@@ -41,6 +42,12 @@ class AiSuggestController extends Controller
             ], 400);
         }
 
+        // Announced to the other agents, not just run. The suggestion lands in
+        // one person's composer, but the seconds it takes look identical to a
+        // thread nobody has picked up — and that is exactly when a second agent
+        // starts writing the same reply by hand.
+        LiveActivity::aiSuggest($conversation, Auth::user());
+
         try {
             $suggestion = $service->suggest($conversation);
         } catch (AiRunQuotaExceededException $th) {
@@ -62,6 +69,11 @@ class AiSuggestController extends Controller
             return response()->json([
                 'message' => $th->getMessage(),
             ], 502);
+        } finally {
+            // Every exit clears it, including the two failures: an indicator
+            // left running by the quota path would say the AI is working on a
+            // thread it has just refused to touch.
+            LiveActivity::idle($conversation);
         }
 
         return response()->json([

@@ -32,6 +32,7 @@ use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\BusinessHours;
 use App\Services\Conversation\SystemMessage;
+use App\Services\Live\LiveActivity;
 use App\Services\Message\MessageService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -175,6 +176,14 @@ class FlowExecutor
             'node_id' => $node->id,
             'node_type' => $node->type->value,
         ]);
+
+        // Every node passes through here, so one emit covers all ten types.
+        // Most of them finish in under a millisecond and are superseded almost
+        // immediately — the panel's status line barely shows them. They are
+        // broadcast anyway because the client keeps a trail of the last few,
+        // and a Condition that silently took the wrong branch is exactly the
+        // thing that trail exists to make visible.
+        LiveActivity::flowNode($conversation, $node);
 
         // Handle different node types
         switch ($node->type) {
@@ -364,8 +373,12 @@ class FlowExecutor
 
         $flowState->update(['state_data' => $stateData]);
 
+        $firstDelay = (int) ($items[0]['delay'] ?? 0);
+
         RunFlowMessageNode::dispatch($flowState->id, $node->id, 0, $token)
-            ->delay(now()->addSeconds((int) ($items[0]['delay'] ?? 0)));
+            ->delay(now()->addSeconds($firstDelay));
+
+        LiveActivity::flowDelay($flowState->conversation, $node, $firstDelay, 0, count($items));
 
         Log::info('FlowExecutor: Message sequence queued', [
             'node_id' => $node->id,
@@ -425,8 +438,12 @@ class FlowExecutor
             return;
         }
 
+        $nextDelay = (int) ($next['delay'] ?? 0);
+
         RunFlowMessageNode::dispatch($flowStateId, $nodeId, $index + 1, $token)
-            ->delay(now()->addSeconds((int) ($next['delay'] ?? 0)));
+            ->delay(now()->addSeconds($nextDelay));
+
+        LiveActivity::flowDelay($conversation, $node, $nextDelay, $index + 1, count($items));
     }
 
     protected function messageChainKey(int $nodeId): string
@@ -502,6 +519,16 @@ class FlowExecutor
 
                 // Start the clock on the silence, if the author set one.
                 $this->armResponseTimeout($flowState, $node);
+
+                // The one phase that can last an afternoon, so it is also the
+                // one worth naming precisely: the panel shows which variable
+                // the flow is holding out for, and how long is left on it.
+                LiveActivity::flowAwaiting(
+                    $conversation,
+                    $node,
+                    ResponseNodes::timeoutSeconds($data ?? []),
+                    ['variable_key' => $data['variable_key'] ?? null],
+                );
 
                 // DON'T move to next node - stay on this Response node
                 // Wait for user to reply, which will be handled in resumeFlow()
@@ -584,6 +611,13 @@ class FlowExecutor
             $stateData = $flowState->state_data ?? [];
             $stateData["_interactive_sent_{$node->id}"] = true;
             $flowState->update(['state_data' => $stateData]);
+
+            // No timeout branch exists on this node, so there is no clock to
+            // show — only that the flow is holding for a tap, and on how many
+            // options.
+            LiveActivity::flowAwaiting($conversation, $node, null, [
+                'options' => count($options),
+            ]);
         } catch (\Throwable $th) {
             Log::error('FlowExecutor: Error executing interactive node', [
                 'node_id' => $node->id,
@@ -859,6 +893,12 @@ class FlowExecutor
 
         broadcast(new ConversationUpdated($conversation->fresh()));
 
+        // Terminal node: nothing follows it, so nothing will supersede the
+        // "executing" line this node emitted on its way in. Clear it here —
+        // stopFlow() is not on this path, the flow completed rather than
+        // being interrupted.
+        LiveActivity::idle($conversation);
+
         Log::info('FlowExecutor: Conversation resolved by status node', [
             'conversation_id' => $conversation->id,
             'node_id' => $node->id,
@@ -1128,6 +1168,12 @@ class FlowExecutor
                     }
                 }
             }
+
+            // Announced before the call, not after: a third-party endpoint that
+            // hangs for its full timeout is precisely the pause this is here to
+            // explain, and by the time the response lands there is nothing left
+            // to wait for.
+            LiveActivity::flowHttp($flowState->conversation, $node, $method, $url);
 
             $response = match ($method) {
                 'POST' => $jsonBody !== null ? $request->post($url, $jsonBody) : $request->post($url),
@@ -1561,6 +1607,10 @@ class FlowExecutor
                 'current_node_id' => $flowState->current_node_id,
                 'status' => 'stopped',
             ]);
+
+            // Whatever the flow was announcing, it is no longer true. Covers
+            // the handoff path too: transferToHuman() ends up here.
+            LiveActivity::idle($conversation);
 
             // Don't delete flow state - preserve context data
             // Flow will automatically stop executing due to status check
@@ -2151,6 +2201,12 @@ class FlowExecutor
         RunAiAgentTurn::dispatch($flowState->id, $node->id, $token)
             ->delay(now()->addSeconds($delay));
 
+        // The debounce window is silence with a reason, and it is the silence
+        // agents misread most often: nothing has been sent, nothing is being
+        // computed, the bot is simply letting the customer finish. Saying so
+        // is what stops somebody taking the thread over mid-turn.
+        LiveActivity::aiArmed($flowState->conversation, $node, $delay);
+
         Log::info('FlowExecutor: AIAgent turn armed', [
             'node_id' => $node->id,
             'conversation_id' => $flowState->conversation_id,
@@ -2287,6 +2343,8 @@ class FlowExecutor
                 'message_ids' => $messages->pluck('id')->all(),
             ]);
 
+            LiveActivity::aiMedia($flowState->conversation, $node);
+
             return;
         }
 
@@ -2308,14 +2366,24 @@ class FlowExecutor
 
         $spokenTo = $messages->contains(fn (Message $message) => $message->message_type === MessageType::Audio);
 
-        $this->handleAIAgentInput(
-            $flowState,
-            $node,
-            $text,
-            (int) $messages->last()->id,
-            $entries,
-            $spokenTo
-        );
+        // The hub round-trip is the longest silence in the whole path, and the
+        // only one where something really is happening. Cleared in `finally`
+        // so a run that throws does not leave the thread spinning — the ttl
+        // would eventually do it, but minutes later.
+        LiveActivity::aiThinking($flowState->conversation, $node);
+
+        try {
+            $this->handleAIAgentInput(
+                $flowState,
+                $node,
+                $text,
+                (int) $messages->last()->id,
+                $entries,
+                $spokenTo
+            );
+        } finally {
+            LiveActivity::idle($flowState->conversation);
+        }
 
         // Second pass over the same messages, now that their voice notes have
         // been written down: a request made out loud only becomes readable

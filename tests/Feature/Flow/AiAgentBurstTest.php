@@ -6,6 +6,7 @@ use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\NodeType;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Events\ConversationActivity;
 use App\Jobs\RunAiAgentTurn;
 use App\Models\AiHubAgent;
 use App\Models\AiHubApiKey;
@@ -21,7 +22,9 @@ use App\Models\Message;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Live\LiveActivity;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 
@@ -300,4 +303,87 @@ test('the wait is the node setting, then the configured default, and always boun
         // A value out of a form cannot park a live conversation for an hour.
         ->and(turnDelayFor($set(99999)))->toBe(300)
         ->and(turnDelayFor($set(-5)))->toBe(0);
+});
+
+/**
+ * The live-activity side of the same lifecycle.
+ *
+ * The wait these tests are about is invisible from the panel: nothing is sent,
+ * nothing is written, and for the eight seconds of the debounce plus however
+ * long the hub takes, a thread being actively worked on looks exactly like one
+ * the bot has abandoned. That is when an agent takes it over mid-turn.
+ */
+test('an armed turn is announced as a wait with an end, not as silence', function () {
+    fakeBurstChannelsAndHub();
+    Queue::fake([RunAiAgentTurn::class]);
+    Event::fake([ConversationActivity::class]);
+
+    [$conversation, $node] = burstFlowFixture();
+    openBurstWithWelcome($conversation);
+    burstIncoming($conversation, 'tenho uma dúvida');
+
+    $armed = collect(Event::dispatched(ConversationActivity::class))
+        ->map(fn ($d) => $d[0]->broadcastWith())
+        ->firstWhere('phase', LiveActivity::AI_ARMED);
+
+    expect($armed)->not->toBeNull();
+    expect($armed['conversation_id'])->toBe((int) $conversation->id);
+    expect($armed['node']['id'])->toBe((int) $node->id);
+    expect($armed['detail']['seconds'])->toBe(turnDelayFor($node));
+    // A countdown the agent can watch run out is the whole point.
+    expect($armed['detail']['resume_at'])->toBeGreaterThan(now()->timestamp);
+});
+
+test('the hub round-trip is announced, and cleared once the reply is out', function () {
+    fakeBurstChannelsAndHub();
+    Queue::fake([RunAiAgentTurn::class]);
+
+    [$conversation] = burstFlowFixture();
+    openBurstWithWelcome($conversation);
+    burstIncoming($conversation, 'sobre o pedido 123');
+
+    // Faked only now, so the arming above is not counted twice.
+    Event::fake([ConversationActivity::class]);
+
+    foreach (armedTurns() as $job) {
+        $job->handle();
+    }
+
+    $phases = collect(Event::dispatched(ConversationActivity::class))
+        ->map(fn ($d) => $d[0]->broadcastWith()['phase'])
+        ->all();
+
+    // Thinking, then idle — and in that order. Idle last is what stops the
+    // indicator; without it the thread would spin until the ttl expired.
+    expect($phases)->toContain(LiveActivity::AI_THINKING);
+    expect($phases)->toContain(LiveActivity::IDLE);
+    expect(array_search(LiveActivity::AI_THINKING, $phases, true))
+        ->toBeLessThan(array_search(LiveActivity::IDLE, $phases, true));
+});
+
+test('a turn that throws still clears the indicator', function () {
+    // The hub refuses, so handleAIAgentInput throws past its own handling.
+    Http::fake([
+        'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.OUTX']]]),
+        'api-ia.ipbr.pro/*' => Http::response(['message' => 'boom'], 500),
+    ]);
+    Queue::fake([RunAiAgentTurn::class]);
+
+    [$conversation] = burstFlowFixture();
+    openBurstWithWelcome($conversation);
+    burstIncoming($conversation, 'oi');
+
+    Event::fake([ConversationActivity::class]);
+
+    foreach (armedTurns() as $job) {
+        rescue(fn () => $job->handle(), null, report: false);
+    }
+
+    $phases = collect(Event::dispatched(ConversationActivity::class))
+        ->map(fn ($d) => $d[0]->broadcastWith()['phase'])
+        ->all();
+
+    // The `finally` earns its keep here: a failed run that left the spinner on
+    // would read as "still working" for the next three minutes.
+    expect($phases)->toContain(LiveActivity::IDLE);
 });
