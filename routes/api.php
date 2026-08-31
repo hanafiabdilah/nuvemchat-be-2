@@ -12,6 +12,8 @@ use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
 use App\Http\Controllers\Api\AiHub\VocabularyController as AiHubVocabularyController;
 use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
+use App\Http\Controllers\Api\AiHub\TokenRentalController as AiHubTokenRentalController;
+use App\Http\Controllers\Api\AiCredits\AiCreditController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
 use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
 use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
@@ -21,6 +23,8 @@ use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
+use App\Http\Controllers\Api\Admin\AdminAiCreditController;
+use App\Http\Controllers\Api\Admin\AdminAiTokenPoolController;
 use App\Http\Controllers\Api\Admin\AdminAiUsageController;
 use App\Http\Controllers\Api\Admin\AdminApiwayController;
 use App\Http\Controllers\Api\Admin\AdminBroadcastController;
@@ -442,6 +446,18 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::patch('/provider-credentials/{id}', [AiHubProviderCredentialController::class, 'update'])->middleware('permission:ai-agents.update');
         Route::delete('/provider-credentials/{id}', [AiHubProviderCredentialController::class, 'destroy'])->middleware('permission:ai-agents.delete');
 
+        // Renting a key from the platform instead of bringing your own. The
+        // result is an ordinary provider credential, which is why nothing else
+        // on this surface had to change.
+        //
+        // Renting is free — what it costs is the usage, out of the prepaid
+        // balance — so it sits behind the agent permissions rather than
+        // billing.manage. Buying the credit is the billing act, and that lives
+        // under /ai-credits.
+        Route::get('/rentals', [AiHubTokenRentalController::class, 'index'])->middleware('permission:ai-agents.view');
+        Route::post('/rentals', [AiHubTokenRentalController::class, 'store'])->middleware('permission:ai-agents.create');
+        Route::delete('/rentals/{id}', [AiHubTokenRentalController::class, 'destroy'])->middleware('permission:ai-agents.delete');
+
         // connections.update may also list: the Connections page needs the
         // agent roster for the "Respond with AI" link dropdown.
         Route::get('/agents', [AiHubAgentController::class, 'index'])->middleware('permission:ai-agents.view|connections.update');
@@ -470,6 +486,17 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/agents/{agentId}/training-examples', [AiHubAgentTrainingExampleController::class, 'store'])->middleware('permission:ai-agents.create');
         Route::patch('/agents/{agentId}/training-examples/{exampleId}', [AiHubAgentTrainingExampleController::class, 'update'])->middleware('permission:ai-agents.update');
         Route::delete('/agents/{agentId}/training-examples/{exampleId}', [AiHubAgentTrainingExampleController::class, 'destroy'])->middleware('permission:ai-agents.delete');
+    });
+
+    // Prepaid AI credit. Deliberately NOT behind `feature:ai_agent_hub`: a
+    // workspace whose plan lost the AI feature still has money sitting in a
+    // balance, and hiding the statement is how a refund request turns into a
+    // support ticket.
+    Route::prefix('ai-credits')->name('ai-credits.')->group(function () {
+        Route::get('/', [AiCreditController::class, 'index'])
+            ->middleware('permission:billing.view')->name('index');
+        Route::post('/topup', [AiCreditController::class, 'topup'])
+            ->middleware('permission:billing.manage')->name('topup');
     });
 
     // Trained agents — the platform's pre-trained catalog. Under the same
@@ -570,6 +597,25 @@ Route::prefix('admin')->group(function () {
         // tokens and provider cost since the AI Hub shipped.
         Route::get('/ai-usage', [AdminAiUsageController::class, 'index'])
             ->middleware('permission:bo.ai-usage.view');
+
+        // The pool of provider keys rented out to workspaces. Its own
+        // permission because this is where the platform's provider secrets are
+        // held: revoking a key here stops AI for every workspace sharing it.
+        Route::middleware('permission:bo.ai-tokens.manage')->group(function () {
+            Route::get('/ai-tokens', [AdminAiTokenPoolController::class, 'index']);
+            Route::post('/ai-tokens', [AdminAiTokenPoolController::class, 'store']);
+            Route::put('/ai-tokens/{key}', [AdminAiTokenPoolController::class, 'update']);
+            Route::delete('/ai-tokens/{key}', [AdminAiTokenPoolController::class, 'destroy']);
+        });
+
+        // The balances those rentals are spent from, and the ability to comp or
+        // claw back. Separate from the pool: support should be able to fix a
+        // balance without holding the keys.
+        Route::middleware('permission:bo.ai-credits.manage')->group(function () {
+            Route::get('/ai-credits', [AdminAiCreditController::class, 'index']);
+            Route::get('/customers/{tenant}/ai-credits', [AdminAiCreditController::class, 'show']);
+            Route::post('/customers/{tenant}/ai-credits/adjust', [AdminAiCreditController::class, 'adjust']);
+        });
 
         // Campaigns platform-wide, plus the ability to stop one. A bad blast
         // spends the platform's WhatsApp reputation, not just the tenant's.

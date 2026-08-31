@@ -20,6 +20,12 @@ class AiHubProviderCredentialResource extends JsonResource
             'key_preview' => $this->key_preview,
             'default_model' => $this->default_model,
             'status' => $this->status,
+            // What the dashboard needs to tell the two apart: a rented row is
+            // selectable like any other but cannot be edited, re-keyed or
+            // deleted, and its usage is billed. `ai_token_pool_key_id` itself
+            // never leaves the server — it names a platform asset the customer
+            // has no business identifying.
+            'is_rented' => $this->isRented(),
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];

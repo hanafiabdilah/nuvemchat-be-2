@@ -16,6 +16,7 @@ use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
 use App\Models\User;
+use App\Services\AiCredits\AiCreditService;
 use App\Services\Billing\MercadoPago\MercadoPagoClient;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\TrainedAgent\TrainedAgentService;
@@ -273,8 +274,20 @@ class BillingService
                 match (true) {
                     $fresh->purpose === InvoicePurpose::TrainedAgentPurchase
                         => app(TrainedAgentService::class)->handleInvoicePaid($fresh),
+                    $fresh->purpose === InvoicePurpose::AiCreditTopup
+                        => app(AiCreditService::class)->creditTopup($fresh),
                     default => app(ApiwayService::class)->handleApiwayInvoicePaid($fresh),
                 };
+            }
+
+            // A credit top-up is the one asset purchase that can be undone
+            // after delivery: the balance is still sitting there, so a refund
+            // or chargeback has to take it back out. The other purposes
+            // provision something the customer keeps — reversing those is a
+            // support decision, not an automatic one.
+            if (in_array($status, ['refunded', 'charged_back'], true)
+                && $invoice->purpose === InvoicePurpose::AiCreditTopup) {
+                app(AiCreditService::class)->reverseTopup($invoice->fresh());
             }
         });
     }
@@ -314,6 +327,72 @@ class BillingService
             // Same millisecond-format requirement as createPixInvoice().
             'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
             'external_reference' => "tenant:{$hire->tenant_id}:trained-agent:inv:{$invoice->id}",
+        ];
+
+        try {
+            $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            throw $e;
+        }
+
+        $txData = $response['point_of_interaction']['transaction_data'] ?? [];
+
+        $invoice->update([
+            'mp_payment_id' => isset($response['id']) ? (string) $response['id'] : null,
+            'pix_qr_code' => $txData['qr_code'] ?? null,
+            'pix_qr_code_base64' => $txData['qr_code_base64'] ?? null,
+            'pix_copy_paste' => $txData['qr_code'] ?? null,
+            'pix_expires_at' => $expiresAt,
+        ]);
+
+        return $invoice->fresh();
+    }
+
+    /**
+     * Create a payable Pix charge that tops up a workspace's AI credit balance.
+     *
+     * Pix only, and that is not a gap. The card path in this product is a
+     * MercadoPago Preapproval — a recurring authorisation for a fixed monthly
+     * amount — which is the wrong instrument for "put R$50 in, whenever you
+     * feel like it". A card top-up would need the one-off `/v1/payments` flow
+     * this application does not otherwise use.
+     *
+     * The amount comes from the caller, which is the first time that is true in
+     * this class: everywhere else the price belongs to a plan or a quote and
+     * client input would be a way to buy something cheaply. Here the customer
+     * genuinely chooses how much to deposit, so the only rule is a floor
+     * (`ai.credits.min_topup_cents`), enforced by the controller.
+     *
+     * There is no period. A balance is not a subscription: it does not expire,
+     * it does not renew, and `period_start`/`period_end` would only be
+     * describing a cycle that does not exist.
+     */
+    public function createAiCreditTopupPixInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
+    {
+        $expiresAt = now()->addDay();
+        $payerEmail ??= $tenant->user?->email ?? 'no-reply@example.com';
+
+        $invoice = Invoice::create([
+            'tenant_id' => $tenant->id,
+            'purpose' => InvoicePurpose::AiCreditTopup,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Pix,
+            'amount_cents' => $amountCents,
+            'currency' => 'BRL',
+            'due_date' => $expiresAt->toDateString(),
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
+
+        $payload = [
+            'transaction_amount' => $this->toAmount($invoice->amount_cents),
+            'description' => "Créditos de IA — fatura #{$invoice->id}",
+            'payment_method_id' => 'pix',
+            'payer' => ['email' => $payerEmail],
+            // Same millisecond-format requirement as createPixInvoice().
+            'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
+            'external_reference' => "tenant:{$tenant->id}:ai-credit:inv:{$invoice->id}",
         ];
 
         try {

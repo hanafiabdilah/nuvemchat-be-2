@@ -4,6 +4,7 @@ namespace App\Services\AiAgentHub;
 
 use App\Enums\Billing\Quota;
 use App\Enums\Connection\Channel;
+use App\Exceptions\Billing\AiCreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Models\AiHubAgent;
 use App\Models\AiHubAgentProfile;
@@ -14,6 +15,7 @@ use App\Models\AiHubSkill;
 use App\Models\AiHubTenant;
 use App\Models\AiHubTrainingExample;
 use App\Models\Conversation;
+use App\Services\AiCredits\AiCreditService;
 use App\Services\Billing\SubscriptionGate;
 use Carbon\Carbon;
 use Exception;
@@ -83,10 +85,17 @@ class AiAgentHubTenantService
      * $payload keys (per hub spec): provider, name, apiKey, defaultModel, metadata
      * Note: `apiKey` is forwarded to the hub but NOT stored locally —
      * we only retain the hub-returned `keyPreview`.
+     *
+     * `$metadata` overrides the default "this is the customer's own key"
+     * marking. The rental service passes its own so the hub's record says whose
+     * key it is holding; without the override every platform key would be
+     * filed there as a customer's.
+     *
+     * @param  array<string, mixed>|null  $metadata
      */
-    public function createProviderCredential(AiHubTenant $tenant, array $payload): AiHubProviderCredential
+    public function createProviderCredential(AiHubTenant $tenant, array $payload, ?array $metadata = null): AiHubProviderCredential
     {
-        $payload['metadata'] = [
+        $payload['metadata'] = $metadata ?? [
             'billingMode' => 'customer_token',
             'ownerType' => 'customer',
         ];
@@ -779,6 +788,7 @@ class AiAgentHubTenantService
         $conversation->loadMissing(['contact', 'connection']);
 
         $this->assertWithinRunQuota($agent);
+        $this->assertCanSpendCredit($agent);
 
         // Recorded on the run so "did the agent actually see the screenshot /
         // hear the voice note?" is answerable afterwards from the row alone.
@@ -912,7 +922,7 @@ class AiAgentHubTenantService
             }
         }
 
-        return $this->persistRun(
+        $run = $this->persistRun(
             $agent,
             $conversation,
             $userMessage,
@@ -921,6 +931,43 @@ class AiAgentHubTenantService
             $flowNodeId,
             $metadata
         );
+
+        $this->chargeRentedRun($agent, $run);
+
+        return $run;
+    }
+
+    /**
+     * Bill a completed run to the prepaid wallet, when it ran on a key the
+     * platform rents out.
+     *
+     * After the run, never before: the price is the provider's own cost, and
+     * the hub only reports that with the result. A workspace can therefore
+     * overdraw by at most one run — see AiCreditService::canSpend().
+     *
+     * Failures here are swallowed. The reply has already been generated and is
+     * on its way to a customer; throwing now would hand the conversation to a
+     * human over a bookkeeping problem, and lose the answer that was already
+     * paid for at the provider. An unbilled run is a line in the log and a
+     * reconcilable gap; a lost reply is not.
+     */
+    protected function chargeRentedRun(AiHubAgent $agent, AiHubRun $run): void
+    {
+        $agent->loadMissing('providerCredential');
+
+        if (! $agent->providerCredential?->isRented()) {
+            return;
+        }
+
+        try {
+            app(AiCreditService::class)->chargeRun($run);
+        } catch (\Throwable $e) {
+            Log::error('AiAgentHubTenantService: failed to charge a rented run to the wallet', [
+                'ai_hub_run_id' => $run->id,
+                'tenant_id' => $run->tenant_id,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -1033,6 +1080,53 @@ class AiAgentHubTenantService
         ]);
 
         throw new AiRunQuotaExceededException($limit, $used);
+    }
+
+    /**
+     * Refuse the run when it would be spent on a rented platform key with an
+     * empty wallet behind it.
+     *
+     * Only rented keys are gated. A workspace running on its own API key is
+     * spending its own money at the provider and owes the platform nothing per
+     * run — stopping it here would be inventing a limit nobody sold.
+     *
+     * Checked in the same place, and behind the same master switch, as the plan
+     * quota above: this is the only spot a billable run begins, so there is no
+     * caller that can reach the hub around it.
+     */
+    protected function assertCanSpendCredit(AiHubAgent $agent): void
+    {
+        if (! config('services.mercadopago.enforce')) {
+            return;
+        }
+
+        $agent->loadMissing('providerCredential');
+
+        if (! $agent->providerCredential?->isRented()) {
+            return;
+        }
+
+        $tenant = $agent->aiHubTenant?->tenant;
+
+        if ($tenant === null) {
+            return;
+        }
+
+        $credits = app(AiCreditService::class);
+
+        if ($credits->canSpend($tenant)) {
+            return;
+        }
+
+        $balance = $credits->balanceCents($tenant);
+
+        Log::warning('AiAgentHubTenantService: AI credit exhausted on a rented token', [
+            'tenant_id' => $tenant->id,
+            'ai_hub_agent_id' => $agent->id,
+            'balance_cents' => $balance,
+        ]);
+
+        throw new AiCreditExhaustedException($balance);
     }
 
     /**

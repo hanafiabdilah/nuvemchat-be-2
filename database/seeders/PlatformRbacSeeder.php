@@ -30,6 +30,16 @@ class PlatformRbacSeeder extends Seeder
         'bo.revenue.view',
         'bo.settings.manage',
         'bo.ai-usage.view',
+        // The pool of provider API keys the platform rents to workspaces. Its
+        // own permission because it is the one screen holding raw provider
+        // secrets, and because revoking a key there stops AI for every
+        // workspace sharing it.
+        'bo.ai-tokens.manage',
+        // The prepaid balances those rentals are spent from, including the
+        // ability to comp credit or claw a charge back. Deliberately apart from
+        // the pool: support fixing a balance should not also be holding the
+        // keys the whole platform runs on.
+        'bo.ai-credits.manage',
         // The trained-agent catalog: categories, blueprints and their prices.
         // Separate from bo.plans.manage because it is content authoring as much
         // as pricing — the person writing a medical-office prompt is not

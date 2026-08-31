@@ -198,4 +198,87 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Rented tokens & prepaid credit
+    |--------------------------------------------------------------------------
+    |
+    | A workspace can run its AI on a key the platform owns instead of pasting
+    | one of its own. The key is shared with other workspaces and picked at
+    | random from the pool; what the workspace pays for is the usage, out of a
+    | prepaid balance.
+    |
+    | Everything here is a default. The Back Office overrides the two commercial
+    | numbers (rate and markup) through the `settings` table, because they are
+    | priced by whoever runs the business, not redeployed.
+    |
+    */
+
+    'credits' => [
+
+        /*
+        | Master switch for the rental offering. Off, the pool is invisible to
+        | tenants and nothing can be rented — existing rentals keep working, so
+        | flipping this does not break live workspaces, it only closes the door
+        | to new ones.
+        */
+
+        'enabled' => (bool) env('AI_CREDITS_ENABLED', true),
+
+        /*
+        | Markup on the provider's own cost, in percent. 40 means a run the
+        | provider charged US$0.01 for is billed at US$0.014 converted to BRL.
+        |
+        | This is the entire margin of the offering: the platform is buying
+        | tokens at retail and reselling them, so a markup of 0 means running
+        | somebody else's AI for free and carrying the FX risk as well.
+        */
+
+        'markup_pct' => (float) env('AI_CREDITS_MARKUP_PCT', 40),
+
+        /*
+        | USD → BRL. A fixed rate, quoted by whoever sets the price, not a live
+        | feed: a balance whose purchasing power moves during the day is
+        | impossible for a customer to reason about, and the float would arrive
+        | in the ledger as unexplainable variation between two identical runs.
+        |
+        | Every debit stores the rate it used, so raising this never rewrites
+        | what an old charge means.
+        */
+
+        'usd_brl_rate' => (float) env('AI_CREDITS_USD_BRL_RATE', 5.60),
+
+        /*
+        | What a run costs when the hub reports no cost at all.
+        |
+        | Not a rounding detail: `ai_hub_runs.cost_usd` is already null for a
+        | share of rows (the Back Office AI Usage page reports `costed_runs`
+        | separately for exactly this reason — older hub versions, and stages
+        | that do not price themselves). Treating those as free would mean the
+        | rental model silently becomes a giveaway the moment the hub stops
+        | reporting, with nothing in the product to show it happened.
+        |
+        | Deliberately a floor rather than an average: it is a fallback for a
+        | broken signal, and it is logged every time it is used.
+        */
+
+        'fallback_run_cents' => (int) env('AI_CREDITS_FALLBACK_RUN_CENTS', 5),
+
+        /*
+        | Smallest top-up we will issue a Pix for. Below this the MercadoPago
+        | fee eats the transaction.
+        */
+
+        'min_topup_cents' => (int) env('AI_CREDITS_MIN_TOPUP_CENTS', 1000),
+
+        /*
+        | Balance under which the workspace is warned it is about to lose its
+        | AI. Warned once, cleared on the next top-up — see
+        | `ai_credit_wallets.low_balance_notified_at`.
+        */
+
+        'low_balance_cents' => (int) env('AI_CREDITS_LOW_BALANCE_CENTS', 500),
+
+    ],
+
 ];

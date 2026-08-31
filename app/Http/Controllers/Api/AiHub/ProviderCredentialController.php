@@ -61,6 +61,12 @@ class ProviderCredentialController extends Controller
 
         $credential = $this->findCredential($id);
 
+        // A rented credential is the platform's key, held in the tenant's hub
+        // scope. Letting this through would let a workspace overwrite the
+        // secret behind a key other workspaces are sharing, or disable it for
+        // everyone — through an endpoint that looks like it edits their own row.
+        $this->refuseIfRented($credential);
+
         $updated = $this->tenantService->updateProviderCredential($credential, $validated);
 
         return response()->json([
@@ -72,6 +78,11 @@ class ProviderCredentialController extends Controller
     public function destroy(int $id): JsonResponse
     {
         $credential = $this->findCredential($id);
+
+        // Giving a rented key back is a different operation with its own
+        // checks (nothing may still point at it) and its own endpoint. Sending
+        // the tenant there by name beats a generic 403.
+        $this->refuseIfRented($credential, 'Use the rental endpoint to give a rented token back.');
 
         $this->tenantService->deleteProviderCredential($credential);
 
@@ -88,5 +99,17 @@ class ProviderCredentialController extends Controller
         $aiHubTenant = $this->aiHubTenant();
 
         return $aiHubTenant->providerCredentials()->findOrFail($id);
+    }
+
+    /**
+     * Rented credentials are read-only to the workspace holding them.
+     */
+    protected function refuseIfRented(AiHubProviderCredential $credential, ?string $message = null): void
+    {
+        abort_if(
+            $credential->isRented(),
+            422,
+            $message ?? 'This token is rented from the platform and cannot be edited here.'
+        );
     }
 }
