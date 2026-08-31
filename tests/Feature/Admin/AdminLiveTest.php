@@ -3,6 +3,7 @@
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Models\Admin;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -16,7 +17,7 @@ use Spatie\Permission\Models\Role;
 uses(RefreshDatabase::class);
 
 /** @param list<string> $permissions */
-function liveAdmin(array $permissions = ['bo.live.view']): User
+function liveAdmin(array $permissions = ['bo.live.view']): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
@@ -25,10 +26,10 @@ function liveAdmin(array $permissions = ['bo.live.view']): User
         $role->givePermissionTo(Permission::findOrCreate($permission, 'web'));
     }
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user->fresh();
+    return $admin->fresh();
 }
 
 function liveWorkspace(string $ownerName = 'Acme Ltda'): array

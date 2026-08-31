@@ -2,7 +2,7 @@
 
 namespace Database\Seeders;
 
-use App\Models\User;
+use App\Models\Admin;
 use Illuminate\Database\Seeder;
 use Spatie\Permission\Models\Role;
 
@@ -21,27 +21,21 @@ class AdminSeeder extends Seeder
         // Make sure the role exists even if this seeder is run standalone.
         Role::firstOrCreate(
             ['name' => 'super-admin'],
-            ['guard_name' => 'web']
+            ['guard_name' => 'web', 'is_platform' => true]
         );
 
         $name = env('ADMIN_NAME', 'Back Office Admin');
         $email = env('ADMIN_EMAIL', 'admin@mail.com');
         $password = env('ADMIN_PASSWORD', '12345678');
 
-        $admin = User::firstOrCreate(
+        $admin = Admin::firstOrCreate(
             ['email' => $email],
             [
                 'name' => $name,
-                'password' => $password, // hashed via the User model cast
+                'password' => $password, // hashed via the Admin model cast
                 'email_verified_at' => now(),
             ]
         );
-
-        // A platform admin is never scoped to a tenant.
-        if (! is_null($admin->tenant_id)) {
-            $admin->tenant_id = null;
-            $admin->save();
-        }
 
         if (! $admin->hasRole('super-admin')) {
             $admin->assignRole('super-admin');

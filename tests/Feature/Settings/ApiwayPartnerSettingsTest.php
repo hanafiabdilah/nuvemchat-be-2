@@ -1,7 +1,7 @@
 <?php
 
+use App\Models\Admin;
 use App\Models\Setting;
-use App\Models\User;
 use App\Services\Connection\Proxy\ApiwayConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Spatie\Permission\Models\Permission;
@@ -9,13 +9,13 @@ use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
-function apiwaySettingsAdmin(): User
+function apiwaySettingsAdmin(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.settings.manage', 'web'));
 
-    $admin = User::factory()->create(['tenant_id' => null]);
+    $admin = Admin::factory()->create();
     $admin->assignRole($role);
 
     return $admin;

@@ -26,7 +26,9 @@ class ImpersonationController extends Controller
 
         $target = User::find($data['user_id']);
 
-        // Only tenant users can be impersonated — never another platform admin.
+        // Admins live in their own table now, so this can no longer reach one
+        // by id at all. The tenant check stays because a `users` row without a
+        // tenant has no workspace to be impersonated into.
         if (! $target || is_null($target->tenant_id)) {
             return response()->json([
                 'message' => 'Target user is not a tenant user and cannot be impersonated.',

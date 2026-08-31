@@ -34,8 +34,8 @@ class EnsureWhatsAppVerified
 
         $user = $request->user();
 
-        // Platform super-admins (no tenant) and legacy accounts without a number are
-        // never gated; only a captured-but-unverified number triggers the block.
+        // Accounts with no tenant yet (mid-registration) and legacy accounts without
+        // a number are never gated; only a captured-but-unverified number blocks.
         if ($user === null || $user->tenant === null || empty($user->whatsapp_number)) {
             return $next($request);
         }

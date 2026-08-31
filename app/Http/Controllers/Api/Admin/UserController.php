@@ -12,9 +12,10 @@ class UserController extends Controller
     /**
      * Paginated list of tenant users across every customer (platform-wide).
      *
-     * Only users that belong to a tenant are returned — platform admins
-     * (tenant_id = null) are excluded. Supports ?search=, ?tenant_id=,
-     * ?per_page= and ?sort= (newest|oldest).
+     * Only users that belong to a tenant are returned; a row without one is an
+     * account caught mid-registration, not a customer. Back Office admins are
+     * a separate table entirely (see the Admins page). Supports ?search=,
+     * ?tenant_id=, ?per_page= and ?sort= (newest|oldest).
      */
     public function index(Request $request)
     {

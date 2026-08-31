@@ -4,20 +4,19 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Admin\AdminResource;
+use App\Models\Admin;
 use App\Models\AuditLog;
-use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
 class AdminController extends Controller
 {
     /**
-     * List Back Office admins (platform users with a platform role).
+     * List Back Office admins.
      */
     public function index()
     {
-        $admins = User::query()
-            ->whereNull('tenant_id')
+        $admins = Admin::query()
             ->whereHas('roles', fn ($q) => $q->where('is_platform', true))
             ->with('roles')
             ->orderBy('id')
@@ -33,19 +32,20 @@ class AdminController extends Controller
     {
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'email', 'unique:users,email'],
+            // Unique among admins only. A customer signing in to their own
+            // workspace with the same address is a different account in a
+            // different table, and always was in every sense but this one.
+            'email' => ['required', 'email', 'unique:admins,email'],
             'password' => ['required', 'min:8'],
             'role' => ['required', 'string', Rule::exists('roles', 'name')->where('is_platform', true)],
         ]);
 
-        $admin = User::create([
+        $admin = Admin::create([
             'name' => $data['name'],
             'email' => $data['email'],
             'password' => $data['password'], // hashed via cast
         ]);
-        // Never tenant-scoped.
-        $admin->tenant_id = null;
-        $admin->save();
+
         $admin->syncRoles([$data['role']]);
         $admin->load('roles');
 
@@ -60,9 +60,9 @@ class AdminController extends Controller
     /**
      * Change an admin's platform role.
      */
-    public function updateRole(Request $request, User $admin)
+    public function updateRole(Request $request, Admin $admin)
     {
-        if (! $this->isPlatformAdmin($admin)) {
+        if (! $admin->isPlatformAdmin()) {
             return response()->json(['message' => 'Not a Back Office admin.'], 404);
         }
 
@@ -90,9 +90,9 @@ class AdminController extends Controller
     /**
      * Delete a Back Office admin.
      */
-    public function destroy(Request $request, User $admin)
+    public function destroy(Request $request, Admin $admin)
     {
-        if (! $this->isPlatformAdmin($admin)) {
+        if (! $admin->isPlatformAdmin()) {
             return response()->json(['message' => 'Not a Back Office admin.'], 404);
         }
 
@@ -102,9 +102,7 @@ class AdminController extends Controller
             ], 422);
         }
 
-        $remaining = User::whereNull('tenant_id')
-            ->whereHas('roles', fn ($q) => $q->where('is_platform', true))
-            ->count();
+        $remaining = Admin::whereHas('roles', fn ($q) => $q->where('is_platform', true))->count();
         if ($remaining <= 1) {
             return response()->json([
                 'message' => 'Cannot delete the last remaining admin.',
@@ -119,11 +117,5 @@ class AdminController extends Controller
         AuditLog::record('admin.delete', "Deleted admin {$name} ({$email})");
 
         return response()->json(['message' => 'Admin deleted successfully.']);
-    }
-
-    private function isPlatformAdmin(User $user): bool
-    {
-        return is_null($user->tenant_id)
-            && $user->roles()->where('is_platform', true)->exists();
     }
 }

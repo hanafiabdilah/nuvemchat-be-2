@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\Admin;
 use App\Models\AuditLog;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -27,7 +28,7 @@ class RoleController extends Controller
                 'id' => $role->id,
                 'name' => $role->name,
                 'permissions' => $role->permissions->pluck('name'),
-                'users_count' => $role->users()->count(),
+                'users_count' => Admin::role($role)->count(),
                 'is_protected' => $role->name === self::PROTECTED_ROLE,
             ]);
 
@@ -91,7 +92,7 @@ class RoleController extends Controller
         if ($role->name === self::PROTECTED_ROLE) {
             return response()->json(['message' => 'The super-admin role cannot be deleted.'], 403);
         }
-        if ($role->users()->count() > 0) {
+        if (Admin::role($role)->exists()) {
             return response()->json([
                 'message' => 'This role is still assigned to one or more admins.',
             ], 422);
@@ -119,7 +120,7 @@ class RoleController extends Controller
             'id' => $role->id,
             'name' => $role->name,
             'permissions' => $role->permissions->pluck('name'),
-            'users_count' => $role->users()->count(),
+            'users_count' => Admin::role($role)->count(),
             'is_protected' => $role->name === self::PROTECTED_ROLE,
         ];
     }

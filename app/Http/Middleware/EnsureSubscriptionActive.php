@@ -43,7 +43,9 @@ class EnsureSubscriptionActive
         $user = $request->user();
         $tenant = $user?->tenant;
 
-        // Platform super-admins (no tenant) are never gated here.
+        // A user without a tenant: mid-registration, before the workspace row
+        // exists. (Back Office admins are their own model and never reach
+        // this middleware — see EnsureUserIsSuperAdmin.)
         if ($tenant === null) {
             return $next($request);
         }

@@ -1,6 +1,7 @@
 <?php
 
 use App\Exceptions\Billing\AiRunQuotaExceededException;
+use App\Models\Admin;
 use App\Models\AiHubAgent;
 use App\Models\AiHubApiKey;
 use App\Models\AiHubRun;
@@ -21,16 +22,16 @@ use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
-function aiUsageAdmin(): User
+function aiUsageAdmin(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.ai-usage.view', 'web'));
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user;
+    return $admin;
 }
 
 /** A tenant with an AI agent wired up, on a plan with $runLimit AI runs. */
@@ -186,10 +187,10 @@ test('the biggest spender is identifiable by name', function () {
 test('an admin without the permission cannot read platform AI spend', function () {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    $this->actingAs($user, 'sanctum')->getJson('/api/admin/ai-usage')->assertForbidden();
+    $this->actingAs($admin, 'sanctum')->getJson('/api/admin/ai-usage')->assertForbidden();
 });
 
 test('a tenant over its AI run quota is refused before the hub is called', function () {

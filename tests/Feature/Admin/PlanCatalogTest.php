@@ -2,24 +2,24 @@
 
 use App\Enums\Billing\Feature;
 use App\Enums\Billing\Quota;
+use App\Models\Admin;
 use App\Models\Plan;
-use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
-function planAdmin(): User
+function planAdmin(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.plans.manage', 'web'));
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user;
+    return $admin;
 }
 
 function planPayload(array $overrides = []): array

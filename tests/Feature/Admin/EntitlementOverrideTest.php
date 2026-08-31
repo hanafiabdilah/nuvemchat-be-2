@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Admin;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
@@ -11,16 +12,16 @@ use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
-function entitlementAdmin(): User
+function entitlementAdmin(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.entitlements.manage', 'web'));
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user;
+    return $admin;
 }
 
 /** A tenant on a plan that has chat but not the funnel. */

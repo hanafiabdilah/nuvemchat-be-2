@@ -1,7 +1,7 @@
 <?php
 
+use App\Models\Admin;
 use App\Models\SystemHeartbeat;
-use App\Models\User;
 use App\Support\Heartbeat;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Schema;
@@ -10,16 +10,16 @@ use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
-function healthAdmin(): User
+function healthAdmin(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.health.view', 'web'));
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user;
+    return $admin;
 }
 
 function healthCheck(array $payload, string $key): ?array
@@ -98,8 +98,8 @@ test('a failing heartbeat write never breaks the process it monitors', function 
 test('an admin without the permission cannot read platform health', function () {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    $this->actingAs($user, 'sanctum')->getJson('/api/admin/health')->assertForbidden();
+    $this->actingAs($admin, 'sanctum')->getJson('/api/admin/health')->assertForbidden();
 });

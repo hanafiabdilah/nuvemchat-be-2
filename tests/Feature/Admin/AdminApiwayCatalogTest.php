@@ -1,7 +1,7 @@
 <?php
 
+use App\Models\Admin;
 use App\Models\Setting;
-use App\Models\User;
 use App\Services\Connection\Proxy\ApiwayConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -19,16 +19,16 @@ use Spatie\Permission\Models\Role;
  */
 uses(RefreshDatabase::class);
 
-function adminCatalogProber(): User
+function adminCatalogProber(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.settings.manage', 'web'));
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user;
+    return $admin;
 }
 
 beforeEach(function () {

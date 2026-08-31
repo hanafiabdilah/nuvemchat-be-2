@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Admin;
 use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -8,14 +9,14 @@ use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
-/** A Back Office admin: platform role, no tenant scope, may read customers. */
-function customersAdmin(): User
+/** A Back Office admin who may read customers. */
+function customersAdmin(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.customers.view', 'web'));
 
-    $admin = User::factory()->create(['tenant_id' => null]);
+    $admin = Admin::factory()->create();
     $admin->assignRole($role);
 
     return $admin;

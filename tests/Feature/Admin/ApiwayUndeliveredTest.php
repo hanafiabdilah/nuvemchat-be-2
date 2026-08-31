@@ -2,6 +2,7 @@
 
 use App\Enums\Apiway\ApiwaySubscriptionSource;
 use App\Enums\Apiway\ApiwaySubscriptionStatus;
+use App\Models\Admin;
 use App\Models\ApiwaySubscription;
 use App\Models\AuditLog;
 use App\Models\Tenant;
@@ -19,17 +20,17 @@ use Spatie\Permission\Models\Role;
  */
 uses(RefreshDatabase::class);
 
-function apiwayOpsAdmin(): User
+function apiwayOpsAdmin(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.health.view', 'web'));
     $role->givePermissionTo(Permission::findOrCreate('bo.subscriptions.manage', 'web'));
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user;
+    return $admin;
 }
 
 function apiwayOpsTenant(): Tenant

@@ -24,7 +24,7 @@ class EnsureFeatureEnabled
 
         $tenant = $request->user()?->tenant;
 
-        // No tenant (super-admin) or feature enabled → allow.
+        // No tenant yet (mid-registration) or feature enabled → allow.
         if ($tenant === null || $this->gate->feature($tenant, $feature)) {
             return $next($request);
         }

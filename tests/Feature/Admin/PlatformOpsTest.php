@@ -2,6 +2,7 @@
 
 use App\Enums\Broadcast\Status as BroadcastStatus;
 use App\Enums\Message\AttachmentStatus;
+use App\Models\Admin;
 use App\Models\Broadcast;
 use App\Models\Connection;
 use App\Models\Contact;
@@ -17,7 +18,7 @@ use Spatie\Permission\Models\Role;
 uses(RefreshDatabase::class);
 
 /** @param list<string> $permissions */
-function opsAdmin(array $permissions): User
+function opsAdmin(array $permissions): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
@@ -26,10 +27,10 @@ function opsAdmin(array $permissions): User
         $role->givePermissionTo(Permission::findOrCreate($permission, 'web'));
     }
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user;
+    return $admin;
 }
 
 function opsTenant(): Tenant

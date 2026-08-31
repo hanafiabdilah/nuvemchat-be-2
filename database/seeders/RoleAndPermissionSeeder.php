@@ -124,8 +124,8 @@ class RoleAndPermissionSeeder extends Seeder
         // Assign all permissions to owner role
         $ownerRole->syncPermissions(Permission::all());
 
-        // Platform-level Back Office admin role. Access is gated by the
-        // `super-admin` role + null tenant_id (EnsureUserIsSuperAdmin),
+        // Platform-level Back Office admin role. Access is gated by being an
+        // App\Models\Admin holding a platform role (EnsureUserIsSuperAdmin),
         // so it does not need the tenant-scoped permissions above.
         Role::firstOrCreate(
             ['name' => 'super-admin'],

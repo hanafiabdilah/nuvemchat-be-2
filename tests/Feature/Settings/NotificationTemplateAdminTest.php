@@ -1,6 +1,7 @@
 <?php
 
 use App\Enums\Notification\NotificationType;
+use App\Models\Admin;
 use App\Models\Setting;
 use App\Models\User;
 use App\Services\Notification\NotificationConfig;
@@ -11,17 +12,17 @@ use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
-/** A Back Office admin: platform role, no tenant scope. */
-function boAdmin(): User
+/** A Back Office admin: an `admins` row holding a platform role. */
+function boAdmin(): Admin
 {
     $role = Role::findOrCreate('super-admin', 'web');
     $role->forceFill(['is_platform' => true])->save();
     $role->givePermissionTo(Permission::findOrCreate('bo.settings.manage', 'web'));
 
-    $user = User::factory()->create(['tenant_id' => null]);
-    $user->assignRole($role);
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
 
-    return $user;
+    return $admin;
 }
 
 test('the settings payload exposes every notification event with its editable template', function () {
