@@ -1588,6 +1588,44 @@ class AiAgentHubTenantService
         $this->ensureSuccessful($response, $action, $context);
     }
 
+    /**
+     * Whatever the hub said went wrong, as one readable line.
+     *
+     * The hub's `message` comes back in three shapes and this exists because
+     * only one of them used to be handled: `['message'][0]` on a *string* takes
+     * its first character, so every plain-text rejection reached the customer as
+     * a single letter — "provider must be one of …" arrived as "p". A whole
+     * class of validation failure has been unexplainable for as long as that
+     * line has been there, in the one place whose entire job is explaining them.
+     *
+     * The shapes: a string; a list of strings (NestJS class-validator); or an
+     * object keyed by field, each holding a list.
+     */
+    protected static function hubMessage(Response $response, string $fallback): string
+    {
+        $message = $response->json()['message'] ?? null;
+
+        if (is_string($message) && trim($message) !== '') {
+            return $message;
+        }
+
+        if (is_array($message)) {
+            $flat = [];
+
+            array_walk_recursive($message, function ($value) use (&$flat) {
+                if (is_scalar($value)) {
+                    $flat[] = (string) $value;
+                }
+            });
+
+            if ($flat !== []) {
+                return implode(' ', $flat);
+            }
+        }
+
+        return $fallback;
+    }
+
     protected function ensureSuccessful(Response $response, string $action, array $context = []): void
     {
         if ($response->successful()) {
@@ -1600,7 +1638,7 @@ class AiAgentHubTenantService
                 'body' => $response->body(),
             ]));
 
-            throw ValidationException::withMessages(['message' => $response->json()['message'][0] ?? 'Bad Request']);
+            throw ValidationException::withMessages(['message' => self::hubMessage($response, 'Bad Request')]);
         }elseif($response->status() === 404){
             // Not an error we report — one we repair. See
             // AiHubObjectMissingException and the `repush*` methods.
@@ -1616,7 +1654,7 @@ class AiAgentHubTenantService
                 'body' => $response->body(),
             ]));
 
-            throw new Exception($response->json()['message'] ?? 'Conflict', 409);
+            throw new Exception(self::hubMessage($response, 'Conflict'), 409);
         }
 
         Log::error("AiAgentHubTenantService: Failed to {$action}", array_merge($context, [
