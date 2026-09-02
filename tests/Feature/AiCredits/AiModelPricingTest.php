@@ -140,3 +140,18 @@ it('shows the workspace what each model costs without needing billing permission
         ->assertJsonPath('models.0.model', 'gpt-4o-mini')
         ->assertJsonPath('models.0.input_cents_per_1m', 113);
 });
+
+it('resolves a dated model snapshot to its base price, not a costlier neighbour', function () {
+    // Providers ship `gpt-5-mini-2025-08-07` and friends. Longest-prefix, so
+    // this must not land on `gpt-5` — eight times the input price.
+    expect(\App\Services\AiCredits\KnownModelPrices::for('OPENAI', 'gpt-5-mini-2025-08-07'))
+        ->toBe(['input' => 0.25, 'output' => 2.00])
+        ->and(\App\Services\AiCredits\KnownModelPrices::for('ANTHROPIC', 'claude-sonnet-4-5-20250929'))
+        ->toBe(['input' => 3.00, 'output' => 15.00]);
+});
+
+it('says it does not know a model rather than guessing a price for it', function () {
+    // The catalogue always trails the providers. Null is what makes the Back
+    // Office leave the price fields empty instead of seeding a wrong number.
+    expect(\App\Services\AiCredits\KnownModelPrices::for('OPENAI', 'gpt-9-something'))->toBeNull();
+});

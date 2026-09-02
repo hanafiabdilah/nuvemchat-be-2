@@ -16,9 +16,14 @@ use Illuminate\Support\Facades\Log;
  * at a model the hub does not serve, and neither is discovered until a customer
  * hires the agent and it fails to run.
  *
- * Models come from the hub, which is the only thing that actually knows what it
- * will accept. Prices come from the hub too when it reports them, and otherwise
- * from KnownModelPrices — a shipped reference, clearly labelled as one.
+ * The list is **ours** (KnownModelPrices), with whatever the hub reports merged
+ * on top. It was the other way round for exactly one revision, and that was
+ * wrong: the hub's catalogue is incomplete, so models a workspace could run were
+ * missing from the form and could not be priced at all. Ours is always there;
+ * the hub can only add.
+ *
+ * Prices are pre-filled from the same place and labelled as a reference to
+ * verify — the row that gets saved is what counts. See KnownModelPrices.
  */
 class AiModelCatalog
 {
@@ -39,7 +44,14 @@ class AiModelCatalog
 
         $models = [];
 
-        foreach ($hubModels as $entry) {
+        // Our own list first, and unconditionally. The hub's is incomplete —
+        // models a workspace can perfectly well run are missing from it — so
+        // building the dropdown out of it left the Back Office unable to price
+        // things that exist. What the hub adds on top is welcome; what it omits
+        // must not disappear.
+        $entries = self::mergeCatalogs(KnownModelPrices::all(), $hubModels);
+
+        foreach ($entries as $entry) {
             $provider = strtoupper((string) ($entry['provider'] ?? ''));
             $id = (string) ($entry['id'] ?? '');
 
@@ -74,6 +86,38 @@ class AiModelCatalog
             // configured need different reactions.
             'hub_available' => $hubAvailable,
         ];
+    }
+
+    /**
+     * Ours plus the hub's, without duplicates.
+     *
+     * Keyed on (provider, model) case-insensitively, ours winning: a label and
+     * a price we curated beat an id echoed back with neither.
+     *
+     * @param  list<array{provider: string, id: string, name: string, input: float, output: float}>  $ours
+     * @param  list<array<string, mixed>>  $theirs
+     * @return list<array<string, mixed>>
+     */
+    private static function mergeCatalogs(array $ours, array $theirs): array
+    {
+        $merged = [];
+
+        foreach ($ours as $entry) {
+            $merged[strtoupper($entry['provider']) . '|' . strtolower($entry['id'])] = $entry;
+        }
+
+        foreach ($theirs as $entry) {
+            $provider = strtoupper((string) ($entry['provider'] ?? ''));
+            $id = (string) ($entry['id'] ?? '');
+
+            if ($provider === '' || $id === '') {
+                continue;
+            }
+
+            $merged[$provider . '|' . strtolower($id)] ??= $entry;
+        }
+
+        return array_values($merged);
     }
 
     /**
@@ -138,11 +182,18 @@ class AiModelCatalog
      */
     private function suggestionFor(string $provider, string $model, array $entry): array
     {
-        $input = $entry['inputPricePerMillion'] ?? $entry['inputUsdPerMillion'] ?? null;
-        $output = $entry['outputPricePerMillion'] ?? $entry['outputUsdPerMillion'] ?? null;
+        // Our own entry carries its price inline; a hub-only one may report one.
+        $input = $entry['input'] ?? $entry['inputPricePerMillion'] ?? $entry['inputUsdPerMillion'] ?? null;
+        $output = $entry['output'] ?? $entry['outputPricePerMillion'] ?? $entry['outputUsdPerMillion'] ?? null;
 
         if (is_numeric($input) && is_numeric($output)) {
-            return ['input' => (float) $input, 'output' => (float) $output, 'source' => 'hub'];
+            return [
+                'input' => (float) $input,
+                'output' => (float) $output,
+                // Everything we ship is a figure somebody should re-check
+                // against the provider before it is published.
+                'source' => isset($entry['input']) ? 'reference' : 'hub',
+            ];
         }
 
         $known = KnownModelPrices::for($provider, $model);

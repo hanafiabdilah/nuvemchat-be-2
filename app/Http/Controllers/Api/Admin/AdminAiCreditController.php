@@ -96,13 +96,21 @@ class AdminAiCreditController extends Controller
      */
     public function updatePricing(Request $request): JsonResponse
     {
+        // Each field is optional on its own, because the two halves of this
+        // block are set on different screens: the margin, the FX rate and the
+        // fallback price belong with the offering (AI Tokens, beside the model
+        // list they price), while the top-up floor and the low-balance warning
+        // belong with the balances. A screen must be able to save its half
+        // without resending the other's.
         $validated = $request->validate([
-            'markup_pct' => ['required', 'numeric', 'min:0', 'max:1000'],
-            'usd_brl_rate' => ['required', 'numeric', 'min:0.01', 'max:1000'],
-            'fallback_run_cents' => ['required', 'integer', 'min:0', 'max:100000'],
-            'min_topup_cents' => ['required', 'integer', 'min:1', 'max:10000000'],
-            'low_balance_cents' => ['required', 'integer', 'min:0', 'max:10000000'],
+            'markup_pct' => ['sometimes', 'numeric', 'min:0', 'max:1000'],
+            'usd_brl_rate' => ['sometimes', 'numeric', 'min:0.01', 'max:1000'],
+            'fallback_run_cents' => ['sometimes', 'integer', 'min:0', 'max:100000'],
+            'min_topup_cents' => ['sometimes', 'integer', 'min:1', 'max:10000000'],
+            'low_balance_cents' => ['sometimes', 'integer', 'min:0', 'max:10000000'],
         ]);
+
+        abort_if($validated === [], 422, 'Nothing to update.');
 
         $before = AiCreditPricing::settings();
 
@@ -110,7 +118,7 @@ class AdminAiCreditController extends Controller
 
         AuditLog::record(
             'ai_credit.pricing_updated',
-            "Markup {$before['markup_pct']}% → {$validated['markup_pct']}%, rate {$before['usd_brl_rate']} → {$validated['usd_brl_rate']}",
+            'Changed: ' . implode(', ', array_keys($validated)),
             ['before' => $before, 'after' => AiCreditPricing::settings()],
             $request->user(),
         );

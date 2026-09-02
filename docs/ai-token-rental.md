@@ -81,18 +81,15 @@ lives in the **AI Agent create/edit form** (`components/ai/AgentCredentialChoice
 
 - **My own key** — the credential dropdown, filtered to the workspace's own,
   non-audio keys. Unchanged behaviour.
-- **Rent from the platform** — every model the **hub** serves for a rentable
-  provider, grouped, each carrying its price *when one is published*; a
-  breakdown for the chosen one; and the credit balance, stated before the agent
-  is saved rather than discovered when it goes silent.
+- **Rent from the platform** — the models the platform has **put on sale**
+  (`ai_model_prices`, listed, for a provider with a pool key), grouped, each
+  carrying its price; a breakdown for the chosen one; and the credit balance,
+  stated before the agent is saved rather than discovered when it goes silent.
 
-  ⚠️ The options come from the hub's model list, **not** from `ai_model_prices`.
-  Deriving them from the price table made renting unusable until an admin had
-  priced something — which is the state every install starts in: the dropdown
-  came up empty, no model could be chosen, and the save failed with "the model
-  field is required" on a field the form never let anyone fill. An unpriced
-  model still runs and is still billed (provider cost + platform markup); it
-  simply carries no published figure, and saying so beats hiding it.
+  Only priced models are offered: a rented model with no published price is
+  something the customer would be agreeing to pay an unstated amount for. An
+  empty list means nothing has been put on sale yet, and the panel says so
+  rather than showing a dropdown that cannot be used.
 
 The same control powers **hiring a ready-made agent**
 (`TrainedAgentCatalog`), with `fixedModel` set: the blueprint decides the model,
@@ -114,6 +111,26 @@ mode is observed, never stored.
 refuses it as an agent provider, so offering it only bought a 409 at save time.
 It became worth fixing when renting arrived: a workspace can now hold such a key
 without ever having typed one. Shared rule in `lib/aiProviders.ts`.
+
+### Where the Back Office edits this
+
+| Screen | What it sets |
+|---|---|
+| **AI Tokens → Keys** | The pool: which provider keys exist, their weight and tenant cap |
+| **AI Tokens → Model prices** | What is on sale, each model's list price and margin, and the **default pricing** (markup, FX rate, fallback per run) |
+| **AI Credits** | Balances, the statement, manual adjustments, and the two balance-only settings (minimum top-up, low-balance warning) |
+
+Model pricing sits with the keys because both are the *offering*; a balance is
+what one customer has left to spend on it. The default markup lives there too,
+beside the table where every row reading "default" is showing its effect —
+setting it a page away from that is how it goes unexamined.
+
+⚠️ The model dropdown in those forms is fed by **`KnownModelPrices`**, our own
+catalogue, with the hub's `/models` merged on top. It was the other way round
+for one revision and that was wrong: the hub's list is incomplete, so models a
+workspace could run were missing from the form and could not be priced at all.
+Prices pre-fill from the same file and are labelled a reference to verify — the
+saved row is what counts.
 
 ### One credential per provider, not per model
 
