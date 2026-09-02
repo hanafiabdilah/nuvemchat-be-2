@@ -81,15 +81,22 @@ lives in the **AI Agent create/edit form** (`components/ai/AgentCredentialChoice
 
 - **My own key** — the credential dropdown, filtered to the workspace's own,
   non-audio keys. Unchanged behaviour.
-- **Rent from the platform** — the models the platform has **put on sale**
-  (`ai_model_prices`, listed, for a provider with a pool key), grouped, each
-  carrying its price; a breakdown for the chosen one; and the credit balance,
-  stated before the agent is saved rather than discovered when it goes silent.
+- **Rent from the platform** — every model a rentable provider can run
+  (`AiCreditPricing::rentableModels()`: our catalogue plus anything priced by
+  hand), grouped, each carrying its price *where one is published*; a breakdown
+  for the chosen one; and the credit balance, stated before the agent is saved
+  rather than discovered when it goes silent.
 
-  Only priced models are offered: a rented model with no published price is
-  something the customer would be agreeing to pay an unstated amount for. An
-  empty list means nothing has been put on sale yet, and the panel says so
-  rather than showing a dropdown that cannot be used.
+  ⚠️ Unpriced models are offered too, and that is deliberate: **an unpriced
+  model is not unbilled.** `priceRun()` charges it at the provider's cost plus
+  the platform's default markup, exactly like a priced one — so listing only the
+  priced ones hid working options behind a Back Office table the customer cannot
+  see, for no billing reason at all. What a published price adds is the *stated
+  figure*; where there is none the panel says how the run will be charged
+  instead of implying it is free.
+
+  Deliberately network-free — read on every AI Agents page load, where a hub
+  round-trip would buy marginal completeness at the cost of every visit.
 
 The same control powers **hiring a ready-made agent**
 (`TrainedAgentCatalog`), with `fixedModel` set: the blueprint decides the model,

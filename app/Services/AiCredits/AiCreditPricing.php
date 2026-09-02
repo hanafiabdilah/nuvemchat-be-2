@@ -225,6 +225,69 @@ class AiCreditPricing
     }
 
     /**
+     * Every model a workspace may rent for the given providers, priced where a
+     * price has been published.
+     *
+     * Wider than `priceList()` on purpose. Offering only the models an admin has
+     * got round to pricing hid working options behind a Back Office table the
+     * customer cannot see — and there was never a billing reason for it, because
+     * an unpriced model is not unbilled: `priceRun()` charges it at the
+     * provider's cost plus the platform markup, exactly like every other one.
+     * What it lacks is a published per-million figure, and saying so is honest.
+     *
+     * Deliberately network-free — our own catalogue plus whatever has been
+     * priced. This is read on every AI Agents page load, and a hub round-trip
+     * there would buy marginal completeness at the cost of every visit.
+     *
+     * @param  list<string>  $providers
+     * @return list<array{provider: string, model: string, label: ?string, input_cents_per_1m: ?int, output_cents_per_1m: ?int, example_reply_cents: ?int, priced: bool}>
+     */
+    public static function rentableModels(array $providers): array
+    {
+        $wanted = array_map('strtoupper', $providers);
+
+        if ($wanted === []) {
+            return [];
+        }
+
+        $priced = collect(self::priceList())
+            ->keyBy(fn (array $row) => strtoupper($row['provider']) . '|' . strtolower($row['model']));
+
+        $rows = [];
+
+        foreach (KnownModelPrices::all() as $model) {
+            $provider = strtoupper($model['provider']);
+
+            if (! in_array($provider, $wanted, true)) {
+                continue;
+            }
+
+            $rows[$provider . '|' . strtolower($model['id'])] = [
+                'provider' => $provider,
+                'model' => $model['id'],
+                'label' => $model['name'],
+                'input_cents_per_1m' => null,
+                'output_cents_per_1m' => null,
+                'example_reply_cents' => null,
+                'priced' => false,
+            ];
+        }
+
+        // Published prices win, and bring in anything priced by hand that our
+        // catalogue has never heard of — a model added through the picker's
+        // "other model" escape belongs on sale like any other.
+        foreach ($priced as $key => $row) {
+            if (! in_array(strtoupper($row['provider']), $wanted, true)) {
+                continue;
+            }
+
+            $rows[$key] = $row + ['priced' => true];
+        }
+
+        return array_values($rows);
+    }
+
+    /**
      * A stored number, or the config default when nothing has been set.
      *
      * `is_numeric` rather than a null check: the settings table stores strings,

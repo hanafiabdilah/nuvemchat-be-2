@@ -134,11 +134,20 @@ it('shows the workspace what each model costs without needing billing permission
 
     // Carried on the rentals endpoint because choosing a model happens in the
     // agent form, and the person building an agent may not hold billing.view.
-    $this->actingAs($user)
-        ->getJson('/api/ai-hub/rentals')
-        ->assertOk()
-        ->assertJsonPath('models.0.model', 'gpt-4o-mini')
-        ->assertJsonPath('models.0.input_cents_per_1m', 113);
+    $models = collect($this->actingAs($user)->getJson('/api/ai-hub/rentals')->assertOk()->json('models'));
+
+    $priced = $models->firstWhere('model', 'gpt-4o-mini');
+
+    expect($priced['input_cents_per_1m'])->toBe(113)
+        ->and($priced['priced'])->toBeTrue()
+        // Every other model the provider runs is offered too, unpriced. An
+        // unpriced model is not unbilled — it is charged at cost plus the
+        // platform markup — so withholding it hid a working option behind a
+        // Back Office table the customer cannot see.
+        ->and($models->firstWhere('model', 'gpt-5')['priced'])->toBeFalse()
+        ->and($models->firstWhere('model', 'gpt-5')['example_reply_cents'])->toBeNull()
+        // Only providers the platform can actually rent.
+        ->and($models->pluck('provider')->unique()->all())->toBe(['OPENAI']);
 });
 
 it('resolves a dated model snapshot to its base price, not a costlier neighbour', function () {

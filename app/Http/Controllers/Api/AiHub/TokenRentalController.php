@@ -56,17 +56,15 @@ class TokenRentalController extends Controller
             'available_providers' => $providers,
             'rentals' => AiHubProviderCredentialResource::collection($rentals),
             'balance_cents' => $this->credits->balanceCents($tenant),
-            // What renting would cost, model by model. This is the whole basis
-            // of the choice, so it travels with the offer rather than living on
-            // the billing page: the person building an agent decides here, and
-            // may not even hold `billing.view`.
+            // Every model these providers can run, with a price on the ones
+            // that have a published figure. This is the whole basis of the
+            // choice, so it travels with the offer rather than living on the
+            // billing page: the person building an agent decides here, and may
+            // not even hold `billing.view`.
             //
-            // Filtered to what can actually be rented — quoting a price for a
+            // Filtered to providers that can actually be rented — offering a
             // model with no key behind it is an offer we cannot honour.
-            'models' => array_values(array_filter(
-                AiCreditPricing::priceList(),
-                fn (array $model) => in_array(strtoupper($model['provider']), $offerable, true),
-            )),
+            'models' => AiCreditPricing::rentableModels($offerable),
         ]);
     }
 
