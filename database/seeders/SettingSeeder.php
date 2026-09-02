@@ -68,7 +68,9 @@ class SettingSeeder extends Seeder
             TikTokConfig::KEY_REDIRECT_URI => env('TIKTOK_REDIRECT_URI'),
 
             AiAgentHubConfig::KEY_BASE_URL => env('AI_AGENT_HUB_BASE_URL'),
-            AiAgentHubConfig::KEY_ADMIN_TOKEN => env('AI_AGENT_HUB_ADMIN_TOKEN'),
+            // The env var still carries the old name; the value it holds is,
+            // and always was, the platform's own tenant token at the hub.
+            AiAgentHubConfig::KEY_TENANT_TOKEN => env('AI_AGENT_HUB_TENANT_TOKEN') ?: env('AI_AGENT_HUB_ADMIN_TOKEN'),
         ];
         foreach ($envCredentials as $key => $value) {
             if (! empty($value) && Setting::get($key) === null) {

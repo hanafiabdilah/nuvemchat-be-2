@@ -34,7 +34,7 @@ class AdminSettingsController extends Controller
         $fbSecret = FacebookConfig::appSecret();
         $fbVerify = FacebookConfig::webhookVerifyToken();
         $ttSecret = TikTokConfig::appSecret();
-        $aiToken = AiAgentHubConfig::adminToken();
+        $aiToken = AiAgentHubConfig::tenantToken();
         $notifPinglyKey = NotificationConfig::pinglyApiKey();
         $notifToken = NotificationConfig::wapiToken();
         $notifProxyToken = NotificationConfig::proxybrToken();
@@ -88,6 +88,12 @@ class AdminSettingsController extends Controller
                 ],
                 'ai_agent_hub' => [
                     'base_url' => AiAgentHubConfig::baseUrl(),
+                    'tenant_token_set' => ! empty($aiToken),
+                    'tenant_token_preview' => $this->mask($aiToken),
+                    // Same value under its old, wrong name. It was never an
+                    // admin token — the hub's admin API is the hub operator's,
+                    // not ours. Kept so a Back Office build from before the
+                    // rename keeps rendering this section.
                     'admin_token_set' => ! empty($aiToken),
                     'admin_token_preview' => $this->mask($aiToken),
                 ],
@@ -169,6 +175,9 @@ class AdminSettingsController extends Controller
 
             'ai_agent_hub' => ['sometimes', 'array'],
             'ai_agent_hub.base_url' => ['nullable', 'url', 'max:255'],
+            'ai_agent_hub.tenant_token' => ['nullable', 'string', 'max:512'],
+            // Old field name for the same value, still sent by Back Office
+            // builds from before the rename.
             'ai_agent_hub.admin_token' => ['nullable', 'string', 'max:512'],
 
             'notifications' => ['sometimes', 'array'],
@@ -281,9 +290,14 @@ class AdminSettingsController extends Controller
             // Base URL: stored as-is (falls back to the default when empty).
             Setting::set(AiAgentHubConfig::KEY_BASE_URL, $ai['base_url'] ?? null);
 
-            // Secret: only replaced when a new value is supplied.
-            if (! empty($ai['admin_token'])) {
-                Setting::set(AiAgentHubConfig::KEY_ADMIN_TOKEN, $ai['admin_token']);
+            // Secret: only replaced when a new value is supplied. Always
+            // written under the current key, whichever field name carried it —
+            // an older Back Office still calls it `admin_token`, but the value
+            // has only ever been the platform's own tenant token.
+            $hubToken = $ai['tenant_token'] ?? $ai['admin_token'] ?? null;
+
+            if (! empty($hubToken)) {
+                Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, $hubToken);
             }
         }
 

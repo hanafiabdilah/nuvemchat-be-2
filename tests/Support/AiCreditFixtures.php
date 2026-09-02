@@ -7,7 +7,8 @@ use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Models\AiHubAgent;
-use App\Models\AiHubApiKey;
+use App\Models\Setting;
+use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Models\AiHubTenant;
 use App\Models\AiTokenPoolKey;
 use App\Models\Plan;
@@ -71,13 +72,9 @@ class AiCreditFixtures
             'status' => 'ACTIVE',
         ]);
 
-        AiHubApiKey::create([
-            'ai_hub_tenant_id' => $hubTenant->id,
-            'hub_api_key_id' => 'hub-key-'.uniqid(),
-            'name' => 'default',
-            'api_key' => 'tenant-api-key',
-            'status' => 'ACTIVE',
-        ]);
+        // Auth to the hub is platform-level: Pingly is one tenant there, so a
+        // single token stands behind every workspace's calls.
+        Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'platform-hub-token');
 
         app(SubscriptionGate::class)->forget($tenant->fresh());
 

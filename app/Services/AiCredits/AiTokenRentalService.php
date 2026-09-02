@@ -230,16 +230,15 @@ class AiTokenRentalService
      * Register a pool key inside the workspace's hub scope and record the
      * mirror row that results.
      *
-     * The workspace is provisioned on the hub first — renting is a plausible
-     * first AI action a workspace ever takes, and without this it would fail on
-     * a missing API key rather than produce one.
+     * The workspace's scope is opened first — renting is a plausible first AI
+     * action a workspace ever takes, and without this it would fail on a
+     * missing scope row rather than open one.
      */
     protected function materialize(Tenant $tenant, AiTokenPoolKey $key): AiHubProviderCredential
     {
         $aiHubTenant = $this->hubService->createTenant($tenant);
-        $this->hubService->createApiKey($aiHubTenant);
 
-        $credential = $this->tenantService->createProviderCredential($aiHubTenant->fresh(), [
+        $credential = $this->tenantService->createProviderCredential($aiHubTenant, [
             'provider' => $key->provider,
             // Named for what it is in the dropdown the customer picks from. The
             // pool key's own label is an internal name ("OpenAI #3") and would

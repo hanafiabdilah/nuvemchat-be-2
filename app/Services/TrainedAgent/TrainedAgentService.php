@@ -276,8 +276,6 @@ class TrainedAgentService
 
         $tenant = $hire->tenant;
         $aiHubTenant = $this->hub->createTenant($tenant);
-        $this->hub->createApiKey($aiHubTenant);
-        $aiHubTenant = $aiHubTenant->fresh();
 
         $progress = $hire->meta['progress'] ?? [];
 

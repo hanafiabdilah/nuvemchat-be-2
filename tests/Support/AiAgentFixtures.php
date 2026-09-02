@@ -10,7 +10,8 @@ use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\AiHubAgent;
-use App\Models\AiHubApiKey;
+use App\Models\Setting;
+use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Models\AiHubTenant;
 use App\Models\Connection;
 use App\Models\Contact;
@@ -53,13 +54,9 @@ class AiAgentFixtures
             'status' => 'ACTIVE',
         ]);
 
-        AiHubApiKey::create([
-            'ai_hub_tenant_id' => $hubTenant->id,
-            'hub_api_key_id' => 'hub-key-1',
-            'name' => 'default',
-            'api_key' => 'tenant-api-key',
-            'status' => 'ACTIVE',
-        ]);
+        // Auth to the hub is platform-level: Pingly is one tenant there, so a
+        // single token stands behind every workspace's calls.
+        Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'platform-hub-token');
 
         $agent = AiHubAgent::create([
             'ai_hub_tenant_id' => $hubTenant->id,

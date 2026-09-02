@@ -26,10 +26,13 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Tenant-scoped operations against the AI Agent Hub.
+ * Workspace-scoped operations against the AI Agent Hub.
  *
- * Uses the tenant's active API key for auth (not the admin token).
- * See `AiAgentHubService` for admin-level provisioning of tenants & keys.
+ * The `AiHubTenant` threaded through these methods is a **customer workspace
+ * of ours** — it says whose data a call concerns and where the local mirror
+ * row belongs. It is not a hub identity and carries no credential: auth is
+ * always the platform's own hub tenant token, because Pingly is a single
+ * tenant of the hub. See {@see AiAgentHubConfig} for that distinction.
  */
 class AiAgentHubTenantService
 {
@@ -45,12 +48,12 @@ class AiAgentHubTenantService
      * ------------------------------------------------------------------ */
 
     /**
-     * List all provider models available on the hub. Authenticated with
-     * the tenant's active API key.
+     * List all provider models available on the hub. The workspace is passed
+     * for log context only — the catalogue is the same for every one of them.
      */
     public function listModels(AiHubTenant $tenant): array
     {
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->get("{$this->baseUrl}/models");
 
         $this->ensureSuccessful($response, 'list models', [
@@ -69,7 +72,7 @@ class AiAgentHubTenantService
      */
     public function listProviderCredentials(AiHubTenant $tenant): array
     {
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->get("{$this->baseUrl}/provider-credentials");
 
         $this->ensureSuccessful($response, 'list provider credentials', [
@@ -108,7 +111,7 @@ class AiAgentHubTenantService
             $payload['metadata']['usage'] = ['speech_to_text', 'text_to_speech'];
         }
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/provider-credentials", $payload);
 
         $this->ensureSuccessful($response, 'create provider credential', [
@@ -147,7 +150,7 @@ class AiAgentHubTenantService
     {
         $tenant = $credential->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->patch("{$this->baseUrl}/provider-credentials/{$credential->hub_provider_credential_id}", $payload);
 
         $this->ensureSuccessful($response, 'update provider credential', [
@@ -184,7 +187,7 @@ class AiAgentHubTenantService
     {
         $tenant = $credential->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/provider-credentials/{$credential->hub_provider_credential_id}");
 
         $this->ensureSuccessful($response, 'delete provider credential', [
@@ -204,7 +207,7 @@ class AiAgentHubTenantService
      */
     public function listAgents(AiHubTenant $tenant): array
     {
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->get("{$this->baseUrl}/agents");
 
         $this->ensureSuccessful($response, 'list agents', [
@@ -228,10 +231,11 @@ class AiAgentHubTenantService
     public function createAgent(AiHubTenant $tenant, array $payload): AiHubAgent
     {
         $payload['externalId'] = $this->buildExternalId(
-            $this->normalizeAgentExternalId($payload['externalId'] ?? null, $payload['name'] ?? null)
+            $this->normalizeAgentExternalId($payload['externalId'] ?? null, $payload['name'] ?? null),
+            $tenant
         );
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/agents", $payload);
 
         $this->ensureSuccessful($response, 'create agent', [
@@ -283,13 +287,13 @@ class AiAgentHubTenantService
      */
     public function updateAgent(AiHubAgent $agent, array $payload): AiHubAgent
     {
-        if (isset($payload['externalId'])) {
-            $payload['externalId'] = $this->buildExternalId($payload['externalId']);
-        }
-
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        if (isset($payload['externalId'])) {
+            $payload['externalId'] = $this->buildExternalId($payload['externalId'], $tenant);
+        }
+
+        $response = Http::withHeaders($this->headers())
             ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}", $payload);
 
         $this->ensureSuccessful($response, 'update agent', [
@@ -332,7 +336,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}");
 
         $this->ensureSuccessful($response, 'delete agent', [
@@ -359,7 +363,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/profile", $payload);
 
         $this->ensureSuccessful($response, 'set agent profile', [
@@ -401,7 +405,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge");
 
         $this->ensureSuccessful($response, 'list agent knowledge', [
@@ -422,7 +426,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge", $payload);
 
         $this->ensureSuccessful($response, 'create agent knowledge', [
@@ -461,7 +465,7 @@ class AiAgentHubTenantService
         $agent = $knowledge->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge/{$knowledge->hub_knowledge_id}", $payload);
 
         $this->ensureSuccessful($response, 'update agent knowledge', [
@@ -495,7 +499,7 @@ class AiAgentHubTenantService
         $agent = $knowledge->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge/{$knowledge->hub_knowledge_id}");
 
         $this->ensureSuccessful($response, 'delete agent knowledge', [
@@ -517,7 +521,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills");
 
         $this->ensureSuccessful($response, 'list agent skills', [
@@ -538,7 +542,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills", $payload);
 
         $this->ensureSuccessful($response, 'create agent skill', [
@@ -577,7 +581,7 @@ class AiAgentHubTenantService
         $agent = $skill->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills/{$skill->hub_skill_id}", $payload);
 
         $this->ensureSuccessful($response, 'update agent skill', [
@@ -611,7 +615,7 @@ class AiAgentHubTenantService
         $agent = $skill->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills/{$skill->hub_skill_id}");
 
         $this->ensureSuccessful($response, 'delete agent skill', [
@@ -634,7 +638,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples");
 
         $this->ensureSuccessful($response, 'list agent training examples', [
@@ -655,7 +659,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples", $payload);
 
         $this->ensureSuccessful($response, 'create agent training example', [
@@ -695,7 +699,7 @@ class AiAgentHubTenantService
         $agent = $example->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples/{$example->hub_example_id}", $payload);
 
         $this->ensureSuccessful($response, 'update agent training example', [
@@ -730,7 +734,7 @@ class AiAgentHubTenantService
         $agent = $example->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples/{$example->hub_example_id}");
 
         $this->ensureSuccessful($response, 'delete agent training example', [
@@ -1008,7 +1012,7 @@ class AiAgentHubTenantService
      */
     protected function postRun(AiHubTenant $tenant, array $payload, array $context): array
     {
-        $response = Http::withHeaders($this->headers($tenant))
+        $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/runs", $payload);
 
         $this->ensureSuccessful($response, 'run agent', $context);
@@ -1204,16 +1208,19 @@ class AiAgentHubTenantService
      * ------------------------------------------------------------------ */
 
     /**
-     * Wrap a user-supplied external id with the app-name prefix.
-     * Mirrors `AiAgentHubService::buildTenantIdentifier()` — guarantees
-     * the hub's ≥ 2 character constraint on `externalId` and namespaces
-     * IDs across apps sharing the same hub.
+     * Wrap a user-supplied external id with the app name *and the workspace*.
+     *
+     * The workspace half is not decoration. Every workspace's agents now live
+     * in one hub scope — the platform's — so two customers who both name an
+     * agent "atendimento" would be reaching for the same external id. Under the
+     * old one-hub-tenant-per-workspace shape they could not collide; here they
+     * would, and the hub answers a collision with a 409 that reads like our bug.
      */
-    protected function buildExternalId(string $externalId): string
+    protected function buildExternalId(string $externalId, AiHubTenant $tenant): string
     {
         $appName = (string) config('app.name');
 
-        return "{$appName}_{$externalId}";
+        return "{$appName}_{$tenant->id}_{$externalId}";
     }
 
     /**
@@ -1238,30 +1245,37 @@ class AiAgentHubTenantService
     }
 
     /**
-     * Resolve the tenant's active API key (decrypted via cast).
+     * The platform's own key at the hub.
+     *
+     * Deliberately *not* per-workspace: Pingly is a single tenant of the hub,
+     * so one key authenticates everything we send there. A customer workspace
+     * is a local scope — it identifies whose data a call is about, never who
+     * is calling. Earlier this read a per-workspace row in `ai_hub_api_keys`,
+     * minted through the hub's admin API; that made the platform act as an
+     * operator of the hub rather than a tenant of it, and left keys that
+     * nothing could rotate once the hub stopped honouring them.
      */
-    protected function resolveApiKey(AiHubTenant $tenant): string
+    protected function resolveApiKey(): string
     {
-        $apiKey = $tenant->activeApiKey()->first();
+        $token = AiAgentHubConfig::tenantToken();
 
-        if (!$apiKey) {
+        if (!$token) {
             throw new Exception(
-                "AiHubTenant {$tenant->id} has no active API key. Call AiAgentHubService::ensureProvisioned() first."
+                'No AI Agent Hub tenant token configured. Set it in Back Office → Integrations → AI Hub.'
             );
         }
 
-        return $apiKey->api_key;
+        return $token;
     }
 
     /**
-     * Tenant-scoped headers. Auth uses the tenant's active API key as a
-     * Bearer token. Adjust here if the hub expects a different header
-     * (e.g. `x-hub-api-key`).
+     * Auth headers for every hub call. Adjust here if the hub expects a
+     * different header (e.g. `x-hub-api-key`).
      */
-    protected function headers(AiHubTenant $tenant): array
+    protected function headers(): array
     {
         return [
-            'Authorization' => 'Bearer ' . $this->resolveApiKey($tenant),
+            'Authorization' => 'Bearer ' . $this->resolveApiKey(),
             'Accept' => 'application/json',
         ];
     }

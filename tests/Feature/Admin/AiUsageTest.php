@@ -2,8 +2,9 @@
 
 use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Models\Admin;
+use App\Models\Setting;
+use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Models\AiHubAgent;
-use App\Models\AiHubApiKey;
 use App\Models\AiHubRun;
 use App\Models\AiHubTenant;
 use App\Models\Connection;
@@ -236,12 +237,9 @@ test('enforcement follows the billing master switch', function () {
     [$tenant, $agent] = tenantWithAiAgent(runLimit: 1);
     aiRun($tenant);
 
-    AiHubApiKey::create([
-        'ai_hub_tenant_id' => $agent->ai_hub_tenant_id,
-        'hub_api_key_id' => 'key-'.uniqid(),
-        'api_key' => 'secret',
-        'status' => 'ACTIVE',
-    ]);
+    // Auth to the hub is platform-level: Pingly is one tenant there, so a
+    // single token stands behind every workspace's calls.
+    Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'platform-hub-token');
 
     // Already over the limit, but with enforcement off quotas are advisory —
     // the same master switch every other entitlement check follows.
