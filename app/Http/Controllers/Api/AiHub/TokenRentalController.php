@@ -40,17 +40,33 @@ class TokenRentalController extends Controller
     {
         $tenant = $request->user()->tenant;
 
+        $rentals = $this->rentals->rentals($tenant);
+        $providers = $this->pool->availableProviders();
+
+        // Providers the workspace could start renting today, plus the ones it
+        // already rents — a pool key that has since filled up must not make an
+        // agent's current model vanish from the form that edits it.
+        $offerable = array_values(array_unique(array_merge(
+            $providers,
+            $rentals->pluck('provider')->map(fn ($p) => strtoupper($p))->all(),
+        )));
+
         return response()->json([
             'enabled' => (bool) config('ai.credits.enabled', true),
-            'available_providers' => $this->pool->availableProviders(),
-            'rentals' => AiHubProviderCredentialResource::collection($this->rentals->rentals($tenant)),
+            'available_providers' => $providers,
+            'rentals' => AiHubProviderCredentialResource::collection($rentals),
             'balance_cents' => $this->credits->balanceCents($tenant),
-            // The published price of each model, repeated here rather than left
-            // to /ai-credits: choosing a model happens in the agent form, which
-            // is behind the agent permissions, and somebody without
-            // `billing.view` still has to be able to see what they are about to
-            // commit their workspace to spending.
-            'models' => AiCreditPricing::priceList(),
+            // What renting would cost, model by model. This is the whole basis
+            // of the choice, so it travels with the offer rather than living on
+            // the billing page: the person building an agent decides here, and
+            // may not even hold `billing.view`.
+            //
+            // Filtered to what can actually be rented — quoting a price for a
+            // model with no key behind it is an offer we cannot honour.
+            'models' => array_values(array_filter(
+                AiCreditPricing::priceList(),
+                fn (array $model) => in_array(strtoupper($model['provider']), $offerable, true),
+            )),
         ]);
     }
 

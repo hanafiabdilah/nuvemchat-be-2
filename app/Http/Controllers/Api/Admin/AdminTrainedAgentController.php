@@ -9,6 +9,7 @@ use App\Models\AuditLog;
 use App\Models\TrainedAgentBlueprint;
 use App\Models\TrainedAgentCategory;
 use App\Models\TrainedAgentHire;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -64,6 +65,32 @@ class AdminTrainedAgentController extends Controller
      * category (the migration's nullOnDelete). Retiring a segment must never
      * silently take the agents people already bought out of the catalog.
      */
+    /**
+     * Persist a new order for the catalog, or for the segments.
+     *
+     * Takes ids in the order they should appear — what a drag produces. The
+     * blueprint and category forms no longer ask for a position at all: nobody
+     * should be computing integers to move a card one place to the left.
+     */
+    public function reorder(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => ['required', 'array', 'max:500'],
+            'ids.*' => ['integer'],
+            'type' => ['required', 'string', 'in:blueprints,categories'],
+        ]);
+
+        $model = $validated['type'] === 'categories'
+            ? TrainedAgentCategory::class
+            : TrainedAgentBlueprint::class;
+
+        foreach ($validated['ids'] as $position => $id) {
+            $model::whereKey($id)->update(['sort_order' => $position]);
+        }
+
+        return response()->json(['message' => 'Order saved']);
+    }
+
     public function destroyCategory(TrainedAgentCategory $category)
     {
         $name = $category->name;

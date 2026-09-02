@@ -6,12 +6,14 @@ use App\Enums\Flow\NodeType;
 use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
 use App\Models\AiTokenPoolKey;
+use App\Models\AiHubTenant;
 use App\Models\FlowNode;
 use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubService;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
@@ -75,7 +77,24 @@ class AiTokenRentalService
                 throw new RuntimeException("No {$provider} token is available to rent right now.");
             }
 
-            return $this->materialize($tenant, $key);
+            // Before minting anything: does the hub already hold a rented
+            // credential for this workspace that we have no local row for?
+            //
+            // That state is reachable — a half-finished attempt, a local
+            // database restored from before one — and it used to be terminal:
+            // the hub keys credentials on (tenant, provider, name), so every
+            // retry answered 409 and the workspace could never rent that
+            // provider again. Adopting is also the only outcome that leaves the
+            // two sides agreeing; minting a second one would work and quietly
+            // leave behind a credential nothing points at and nobody deletes.
+            //
+            // Deliberately only on this path. A rotation must always mint a
+            // fresh credential against the new key's secret — adopting a
+            // stranger there would label it with a pool key that did not issue
+            // it.
+            $adopted = $this->adoptOrphan($tenant->aiHubTenant ?? $this->hubService->createTenant($tenant), $key);
+
+            return $adopted ?? $this->materialize($tenant, $key);
         });
     }
 
@@ -240,28 +259,152 @@ class AiTokenRentalService
 
         $credential = $this->tenantService->createProviderCredential($aiHubTenant, [
             'provider' => $key->provider,
-            // Named for what it is in the dropdown the customer picks from. The
-            // pool key's own label is an internal name ("OpenAI #3") and would
-            // only invite questions we do not want to answer.
-            'name' => config('app.name') . ' — ' . $key->provider . ' (alugado)',
+            // Unique per credential, and it has to be: the hub keys credentials
+            // on (tenant, provider, name), while a rotation deliberately holds
+            // the replacement and the outgoing one at the same time. A name
+            // derived only from the provider made every rotation collide with
+            // 409 — and the rotation reported failure for every workspace on the
+            // key it was supposed to be rescuing.
+            'name' => $this->hubName($key),
             'apiKey' => $key->api_key,
             'defaultModel' => $key->default_model,
-        ], metadata: [
+        ], metadata: self::rentedMetadata($key));
+
+        return $this->finishRental($credential, $key, $tenant);
+    }
+
+    /**
+     * The name the hub stores. Never shown to anyone — `finishRental()`
+     * overwrites the local one with something a customer can read.
+     *
+     * The random tail is the whole point: it is what makes two credentials for
+     * the same provider able to coexist during a rotation.
+     */
+    protected function hubName(AiTokenPoolKey $key): string
+    {
+        return config('app.name') . ' rented ' . $key->provider . ' ' . Str::lower(Str::random(6));
+    }
+
+    /** What the customer sees in the credential dropdown. */
+    protected function displayName(AiTokenPoolKey $key): string
+    {
+        return config('app.name') . ' — ' . $key->provider . ' (alugado)';
+    }
+
+    /** @return array<string, mixed> */
+    protected static function rentedMetadata(AiTokenPoolKey $key): array
+    {
+        return [
             'billingMode' => 'rented_platform_token',
             'ownerType' => 'platform',
             'poolKeyId' => $key->id,
+        ];
+    }
+
+    /**
+     * Mark a freshly created mirror as rented and give it a readable name.
+     *
+     * The local name is deliberately not the hub's: the hub needs uniqueness,
+     * the dropdown needs a sentence. Keeping the two apart is what lets the
+     * first be ugly.
+     */
+    protected function finishRental(AiHubProviderCredential $credential, AiTokenPoolKey $key, ?Tenant $tenant = null): AiHubProviderCredential
+    {
+        $credential->update([
+            'ai_token_pool_key_id' => $key->id,
+            'name' => $this->displayName($key),
         ]);
 
-        $credential->update(['ai_token_pool_key_id' => $key->id]);
-
         Log::info('AiTokenRentalService: token rented', [
-            'tenant_id' => $tenant->id,
+            'tenant_id' => $tenant?->id ?? $credential->aiHubTenant?->tenant_id,
             'provider' => $key->provider,
             'ai_token_pool_key_id' => $key->id,
             'ai_hub_provider_credential_id' => $credential->id,
         ]);
 
         return $credential->fresh();
+    }
+
+    /**
+     * Find a rented credential the hub already holds for this workspace and
+     * build the missing local mirror for it.
+     *
+     * Only ever adopts a row that is (a) not already mirrored locally and (b)
+     * identifiably ours. That second test is not paranoia: the workspace's own
+     * keys are in the same list, and adopting one of those would put a customer's
+     * private key under the platform's billing and let us delete it out from
+     * under them.
+     *
+     * Matched on the metadata we write, with the name prefix as a fallback —
+     * whether the hub echoes metadata back on its list endpoint is not something
+     * this side can guarantee.
+     */
+    protected function adoptOrphan(AiHubTenant $aiHubTenant, AiTokenPoolKey $key): ?AiHubProviderCredential
+    {
+        try {
+            $remote = $this->tenantService->listProviderCredentials($aiHubTenant);
+        } catch (\Throwable $e) {
+            Log::warning('AiTokenRentalService: could not list hub credentials to adopt an orphan', [
+                'ai_hub_tenant_id' => $aiHubTenant->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $rows = $remote['data'] ?? $remote;
+
+        if (! is_array($rows)) {
+            return null;
+        }
+
+        $known = AiHubProviderCredential::query()
+            ->pluck('hub_provider_credential_id')
+            ->all();
+
+        $prefix = config('app.name') . ' rented ' . $key->provider;
+        $legacyName = $this->displayName($key);
+
+        foreach ($rows as $row) {
+            if (! is_array($row) || empty($row['id']) || in_array($row['id'], $known, true)) {
+                continue;
+            }
+
+            if (strtoupper((string) ($row['provider'] ?? '')) !== strtoupper($key->provider)) {
+                continue;
+            }
+
+            $name = (string) ($row['name'] ?? '');
+            $isOurs = ($row['metadata']['ownerType'] ?? null) === 'platform'
+                || str_starts_with($name, $prefix)
+                // Credentials minted before the name carried a random tail.
+                || $name === $legacyName;
+
+            if (! $isOurs) {
+                continue;
+            }
+
+            Log::warning('AiTokenRentalService: adopted an orphaned rented credential from the hub', [
+                'ai_hub_tenant_id' => $aiHubTenant->id,
+                'hub_provider_credential_id' => $row['id'],
+                'ai_token_pool_key_id' => $key->id,
+            ]);
+
+            /** @var AiHubProviderCredential $credential */
+            $credential = $aiHubTenant->providerCredentials()->create([
+                'hub_provider_credential_id' => $row['id'],
+                'provider' => $row['provider'] ?? $key->provider,
+                'name' => $name,
+                'key_preview' => $row['keyPreview'] ?? $key->key_preview,
+                'default_model' => $row['defaultModel'] ?? $key->default_model,
+                'status' => $row['status'] ?? 'ACTIVE',
+                'metadata' => $row['metadata'] ?? self::rentedMetadata($key),
+            ]);
+
+            return $this->finishRental($credential, $key);
+        }
+
+        return null;
     }
 
     /**

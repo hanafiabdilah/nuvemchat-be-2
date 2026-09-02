@@ -173,12 +173,23 @@ class AdminAiCreditController extends Controller
             // Null is meaningful: "use the platform markup", not "no margin".
             'markup_pct' => ['nullable', 'numeric', 'min:0', 'max:1000'],
             'is_listed' => ['boolean'],
-            'sort_order' => ['nullable', 'integer', 'min:0', 'max:10000'],
         ]);
+
+        $provider = strtoupper($validated['provider']);
+
+        // Position is not something the form asks for any more — it is set by
+        // dragging rows, not by computing integers — so a save must never touch
+        // it. An absent value used to mean zero, which sent every edited row to
+        // the top of the customer's price list.
+        $sortOrder = AiModelPrice::query()
+            ->whereRaw('UPPER(provider) = ?', [$provider])
+            ->whereRaw('LOWER(model) = ?', [strtolower($validated['model'])])
+            ->value('sort_order')
+            ?? ((int) AiModelPrice::max('sort_order') + 1);
 
         $price = AiModelPrice::updateOrCreate(
             [
-                'provider' => strtoupper($validated['provider']),
+                'provider' => $provider,
                 'model' => $validated['model'],
             ],
             [
@@ -187,7 +198,7 @@ class AdminAiCreditController extends Controller
                 'output_usd_per_1m' => $validated['output_usd_per_1m'] ?? null,
                 'markup_pct' => $validated['markup_pct'] ?? null,
                 'is_listed' => $validated['is_listed'] ?? true,
-                'sort_order' => $validated['sort_order'] ?? 0,
+                'sort_order' => $sortOrder,
             ],
         );
 
@@ -199,6 +210,27 @@ class AdminAiCreditController extends Controller
         );
 
         return response()->json(['message' => 'Model price saved', 'id' => $price->id]);
+    }
+
+    /**
+     * Persist a new order for the price list.
+     *
+     * Takes the ids in the order they should appear, because that is what a
+     * drag produces — asking the caller to compute per-row integers would just
+     * move the arithmetic somewhere else.
+     */
+    public function reorderModels(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ids' => ['required', 'array', 'max:500'],
+            'ids.*' => ['integer'],
+        ]);
+
+        foreach ($validated['ids'] as $position => $id) {
+            AiModelPrice::whereKey($id)->update(['sort_order' => $position]);
+        }
+
+        return response()->json(['message' => 'Order saved']);
     }
 
     /**

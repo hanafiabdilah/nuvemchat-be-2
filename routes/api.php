@@ -24,6 +24,7 @@ use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
 use App\Http\Controllers\Api\Admin\AdminAiCreditController;
+use App\Http\Controllers\Api\Admin\AdminAiModelController;
 use App\Http\Controllers\Api\Admin\AdminAiTokenPoolController;
 use App\Http\Controllers\Api\Admin\AdminAiUsageController;
 use App\Http\Controllers\Api\Admin\AdminApiwayController;
@@ -598,6 +599,13 @@ Route::prefix('admin')->group(function () {
         Route::get('/ai-usage', [AdminAiUsageController::class, 'index'])
             ->middleware('permission:bo.ai-usage.view');
 
+        // Providers and models, for every admin form that names one. Readable
+        // by any of the three permissions whose screens need it — this is a
+        // catalogue, not a secret, and gating it on one of them would break the
+        // other two.
+        Route::get('/ai-models', [AdminAiModelController::class, 'index'])
+            ->middleware('permission:bo.ai-tokens.manage|bo.ai-credits.manage|bo.trained-agents.manage');
+
         // The pool of provider keys rented out to workspaces. Its own
         // permission because this is where the platform's provider secrets are
         // held: revoking a key here stops AI for every workspace sharing it.
@@ -622,6 +630,7 @@ Route::prefix('admin')->group(function () {
             // see the ai_model_prices migration.
             Route::get('/ai-credits/models', [AdminAiCreditController::class, 'models']);
             Route::post('/ai-credits/models', [AdminAiCreditController::class, 'upsertModel']);
+            Route::post('/ai-credits/models/reorder', [AdminAiCreditController::class, 'reorderModels']);
             Route::delete('/ai-credits/models/{model}', [AdminAiCreditController::class, 'destroyModel']);
             Route::get('/customers/{tenant}/ai-credits', [AdminAiCreditController::class, 'show']);
             Route::post('/customers/{tenant}/ai-credits/adjust', [AdminAiCreditController::class, 'adjust']);
@@ -698,6 +707,9 @@ Route::prefix('admin')->group(function () {
         Route::middleware('permission:bo.trained-agents.manage')->group(function () {
             Route::get('/trained-agents/categories', [AdminTrainedAgentController::class, 'categories']);
             Route::post('/trained-agents/categories', [AdminTrainedAgentController::class, 'storeCategory']);
+            // Ordering is dragged, not typed. Declared before the {blueprint}
+            // routes so "reorder" is never read as a blueprint id.
+            Route::post('/trained-agents/reorder', [AdminTrainedAgentController::class, 'reorder']);
             Route::put('/trained-agents/categories/{category}', [AdminTrainedAgentController::class, 'updateCategory']);
             Route::delete('/trained-agents/categories/{category}', [AdminTrainedAgentController::class, 'destroyCategory']);
 

@@ -52,13 +52,15 @@ class AiAgentHubTenantService
      * List all provider models available on the hub. The workspace is passed
      * for log context only — the catalogue is the same for every one of them.
      */
-    public function listModels(AiHubTenant $tenant): array
+    public function listModels(?AiHubTenant $tenant = null): array
     {
         $response = Http::withHeaders($this->headers())
             ->get("{$this->baseUrl}/models");
 
+        // Nullable since the platform tenant token authenticates every call:
+        // the Back Office asks the same question with no workspace behind it.
         $this->ensureSuccessful($response, 'list models', [
-            'ai_hub_tenant_id' => $tenant->id,
+            'ai_hub_tenant_id' => $tenant?->id,
         ]);
 
         return $response->json() ?? [];

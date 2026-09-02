@@ -67,26 +67,58 @@ sharing it. **`weight`** pushes new workspaces toward the keys that can take the
 
 ## How a workspace actually connects a rented token
 
-Renting produces an ordinary provider credential, so the connection *is* the
-credential dropdown — but only after somebody rents. Two places offer it:
+**Renting is a mode of the agent, not a credential the workspace manages.**
 
-- **AI Agents → Provider Credentials → "Alugar um token"**.
-- **The agent form itself.** This is the one that matters: a workspace with no
-  key of its own meets the agent form first, and for a while the only thing it
-  was told there was "create a provider credential", which is the exact errand
-  renting exists to remove. The empty-state banner and a link under the
-  credential select now both offer it, and a key rented from inside the form is
-  selected on the spot.
+That sentence is the correction that produced the current design. Renting first
+shipped as one more row in the Provider Credentials list — which handed the
+customer a thing they could not edit, re-key or delete inside a screen whose
+entire purpose is editing, re-keying and deleting. Every guard that followed
+(refuse the PATCH, refuse the DELETE, badge the row) was a symptom of the wrong
+home rather than a feature.
 
-Once rented it behaves like any other credential — pickable on an agent, on a
-trained-agent fork, and in a flow node's audio settings — with two differences
-the UI makes visible: a **"Alugado"** badge, and no edit/delete (the server
-refuses both; it is a key other workspaces share).
+So the credentials page shows only the workspace's own keys, and the choice
+lives in the **AI Agent create/edit form** (`components/ai/AgentCredentialChoice.tsx`):
+
+- **My own key** — the credential dropdown, filtered to the workspace's own,
+  non-audio keys. Unchanged behaviour.
+- **Rent from the platform** — the models the platform can actually serve,
+  grouped by provider, each carrying its price; a breakdown for the chosen one
+  (per 1M in, per 1M out, a typical reply); and the credit balance, stated
+  before the agent is saved rather than discovered when it goes silent.
+
+The rental itself happens **on save**, silently: the form POSTs
+`/ai-hub/rentals {provider}` (idempotent — it returns the workspace's existing
+rental for that provider, or mints one) and uses the credential that comes back.
+From the customer's side the decision was "use the platform's key"; making them
+perform a second action to enact it was ceremony.
+
+Editing an agent recovers the mode from `provider_credential.is_rented` — the
+mode is observed, never stored.
 
 ⚠️ **ElevenLabs is filtered out of the agent dropdown.** The hub stores it but
 refuses it as an agent provider, so offering it only bought a 409 at save time.
 It became worth fixing when renting arrived: a workspace can now hold such a key
 without ever having typed one. Shared rule in `lib/aiProviders.ts`.
+
+### The hub keys credentials on (tenant, provider, name)
+
+Two failures came out of that, both fixed and both now covered by
+`AiTokenRentalConflictTest`:
+
+- **Rotation always collided.** `rotate()` deliberately holds the replacement
+  and the outgoing credential at once, so a name derived only from the provider
+  meant every rotation 409'd — a revoke that reported success while leaving
+  every workspace on a dead secret. The hub name now carries a random tail; the
+  local display name stays readable. The hub needs uniqueness, the dropdown
+  needs a sentence, and keeping the two apart is what lets the first be ugly.
+- **A lost local row was terminal.** If the hub kept a credential we no longer
+  mirrored, every retry answered 409 and that workspace could never rent that
+  provider again. `rent()` now looks for an orphan of ours first and adopts it.
+  Only ever a row that is not already mirrored **and** identifiably ours
+  (`metadata.ownerType = platform`, or our name prefix) — the workspace's own
+  keys are in the same list, and adopting one would put a customer's private key
+  under our billing. Adoption is deliberately not attempted during a rotation:
+  that must always mint against the new key's secret.
 
 ## Pricing
 
