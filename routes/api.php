@@ -148,6 +148,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/quote', [ApiwayCatalogController::class, 'quote'])->name('quote');
         Route::get('/instances', [ApiwayInstanceController::class, 'index'])->name('instances.index');
         Route::post('/instances', [ApiwayInstanceController::class, 'store'])->middleware('permission:billing.manage')->name('instances.store');
+        Route::patch('/instances/{instance}', [ApiwayInstanceController::class, 'rename'])->middleware('permission:connections.connect')->name('instances.rename');
         Route::post('/instances/{instance}/token/reveal', [ApiwayInstanceController::class, 'revealToken'])->middleware('permission:connections.connect')->name('instances.token');
         Route::post('/subscriptions/{subscription}/renew', [ApiwaySubscriptionController::class, 'renew'])->middleware('permission:billing.manage')->name('subscriptions.renew');
         Route::post('/subscriptions/{subscription}/abandon', [ApiwaySubscriptionController::class, 'abandon'])->middleware('permission:billing.manage')->name('subscriptions.abandon');

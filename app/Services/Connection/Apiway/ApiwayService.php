@@ -135,31 +135,54 @@ class ApiwayService
     // --- Purchase ----------------------------------------------------------
 
     /**
-     * Provision an instance covered by the plan's `included_instances` quota.
+     * Provision instances covered by the plan's `included_instances` quota.
      * No charge — the cost is part of the plan price. Renewed for free while
      * the plan subscription stays usable. The tenant still picks the location
      * (an invalid one is refused by the partner quote/create).
+     *
+     * Takes a quantity for the same reason the paid path does: a tenant whose
+     * plan includes four numbers was opening this dialog four times, and each
+     * pass was its own subscription, its own partner call and its own renewal.
+     * One row of four is what the allowance actually granted.
+     *
+     * ⚠️ The cap is `used + quantity`, not `used < quota`. Checking only that
+     * one is free would let a request for four go through on the last slot —
+     * ProxyBR would provision all four and the plan would be over its allowance
+     * with nothing charged for the excess.
      */
-    public function createIncludedInstance(Tenant $tenant, ?string $locationCode = null): ApiwaySubscription
-    {
+    public function createIncludedInstance(
+        Tenant $tenant,
+        ?string $locationCode = null,
+        int $quantity = 1,
+    ): ApiwaySubscription {
         if (! $tenant->currentSubscription?->isUsable()) {
             throw ValidationException::withMessages([
                 'included' => 'An active plan subscription is required for included instances.',
             ]);
         }
 
+        $quantity = max(1, $quantity);
         $usage = $this->usageSummary($tenant);
+        $remaining = max(0, $usage['included_quota'] - $usage['included_used']);
 
-        if ($usage['included_used'] >= $usage['included_quota']) {
+        if ($remaining === 0) {
             throw ValidationException::withMessages([
                 'included' => 'All instances included in your plan are already in use.',
+            ]);
+        }
+
+        if ($quantity > $remaining) {
+            // Says the number, because "not enough" leaves the customer to work
+            // out how many they may ask for by trying again.
+            throw ValidationException::withMessages([
+                'included' => "Your plan has {$remaining} included instance(s) left.",
             ]);
         }
 
         $row = $this->createLocalSubscription($tenant, [
             'source' => ApiwaySubscriptionSource::PlanIncluded,
             'status' => ApiwaySubscriptionStatus::Provisioning,
-            'quantity' => 1,
+            'quantity' => $quantity,
             'cycle' => $this->cycleForBillingCycle($tenant->currentSubscription->billing_cycle),
             'location_code' => $locationCode ?: $this->defaultLocationCode(),
         ]);

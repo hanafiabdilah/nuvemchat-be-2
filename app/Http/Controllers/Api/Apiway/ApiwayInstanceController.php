@@ -72,6 +72,9 @@ class ApiwayInstanceController extends Controller
     {
         $validated = $request->validate([
             'mode' => ['required', 'in:included,unit'],
+            // Optional on the included path — it defaults to one, and the real
+            // ceiling is the plan's remaining allowance, which only the service
+            // can see.
             'quantity' => ['required_if:mode,unit', 'integer', 'min:1', 'max:100'],
             'cycle' => ['required_if:mode,unit', 'in:mensal,anual'],
             'location_code' => ['required_if:mode,unit', 'nullable', 'string', 'max:20'],
@@ -81,7 +84,11 @@ class ApiwayInstanceController extends Controller
 
         try {
             $subscription = $validated['mode'] === 'included'
-                ? $this->apiway->createIncludedInstance($tenant, $validated['location_code'] ?? null)
+                ? $this->apiway->createIncludedInstance(
+                    $tenant,
+                    $validated['location_code'] ?? null,
+                    (int) ($validated['quantity'] ?? 1),
+                )
                 : $this->apiway->purchaseUnits(
                     $tenant,
                     $validated['quantity'],
@@ -109,6 +116,30 @@ class ApiwayInstanceController extends Controller
         return response()->json([
             'data' => new ApiwaySubscriptionResource($subscription->load('instances')),
         ], $subscription->status === ApiwaySubscriptionStatus::Active ? 201 : 202);
+    }
+
+    /**
+     * Rename an instance.
+     *
+     * The name ProxyBR provisions with ("Instancia 01", and the same for
+     * everyone) is a label from their side, not a choice anybody here made — so
+     * a pool of unlinked instances read as identical rows. This overwrites it
+     * locally only: the partner API has no rename, and the name matters to the
+     * person picking one out of a list, not to ProxyBR.
+     *
+     * Once an instance is linked, the connection's name is what the lists show;
+     * this is what identifies it before then.
+     */
+    public function rename(Request $request, int $instance)
+    {
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:120'],
+        ]);
+
+        $row = $this->findInstance($request, $instance);
+        $row->update(['name' => trim($validated['name'])]);
+
+        return response()->json(['data' => new ApiwayInstanceResource($row->fresh()->load(['subscription', 'connection']))]);
     }
 
     /**

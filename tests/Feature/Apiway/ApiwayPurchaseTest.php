@@ -18,6 +18,7 @@ use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\Proxy\ApiwayConfig;
 use App\Services\Credits\CreditService;
@@ -312,6 +313,62 @@ test('a capacity failure marks the row failed and flags a refund for unit purcha
     $row->refresh();
     expect($row->status)->toBe(ApiwaySubscriptionStatus::Failed)
         ->and($row->meta['needs_refund'])->toBeTrue();
+});
+
+test('several included instances can be taken in one go', function () {
+    fakePartnerCreate(['data' => [
+        'id' => 42, 'platform' => 'pingly', 'quantity' => 3, 'cycle' => 'mensal',
+        'unit_price' => 49.9, 'total_price' => 149.7, 'status' => 'active',
+        'expires_at' => now()->addDays(30)->toISOString(),
+        'instances' => [
+            ['id' => 'uuid-core-1', 'name' => 'Instancia 01', 'status' => 'aguardando_qr'],
+            ['id' => 'uuid-core-2', 'name' => 'Instancia 02', 'status' => 'aguardando_qr'],
+            ['id' => 'uuid-core-3', 'name' => 'Instancia 03', 'status' => 'aguardando_qr'],
+        ],
+    ]]);
+
+    $tenant = apiwayTenant();
+    apiwayPlanSubscription($tenant, ['included_instances' => 4]);
+
+    $row = app(ApiwayService::class)->createIncludedInstance($tenant, 'br', 3);
+
+    // One subscription of three, not three subscriptions — the same shape the
+    // paid path produces, and one partner call instead of three.
+    expect($row->quantity)->toBe(3)
+        ->and($row->instances)->toHaveCount(3)
+        ->and(ApiwaySubscription::count())->toBe(1)
+        ->and(Invoice::count())->toBe(0);
+
+    Http::assertSent(fn ($request) => str_contains($request->url(), '/subscriptions')
+        && $request['quantity'] === 3);
+
+    expect(app(ApiwayService::class)->usageSummary($tenant->fresh())['included_used'])->toBe(3);
+});
+
+test('an included request beyond the remaining allowance is refused whole', function () {
+    fakePartnerCreate();
+    $tenant = apiwayTenant();
+    apiwayPlanSubscription($tenant, ['included_instances' => 2]);
+
+    // Checking "is at least one free?" would let this through and provision
+    // three against a two-instance plan, with nothing charged for the excess.
+    expect(fn () => app(ApiwayService::class)->createIncludedInstance($tenant, 'br', 3))
+        ->toThrow(ValidationException::class);
+
+    expect(ApiwaySubscription::count())->toBe(0);
+});
+
+test('the included allowance counts what is already taken, not just rows', function () {
+    fakePartnerCreate();
+    $tenant = apiwayTenant();
+    apiwayPlanSubscription($tenant, ['included_instances' => 3]);
+
+    app(ApiwayService::class)->createIncludedInstance($tenant, 'br', 2);
+    app(SubscriptionGate::class)->forget($tenant);
+
+    // Two of three spent by a single row: only one may follow.
+    expect(fn () => app(ApiwayService::class)->createIncludedInstance($tenant->fresh(), 'br', 2))
+        ->toThrow(ValidationException::class);
 });
 
 // --- Included with explicit location ---------------------------------------
