@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\AiCredits;
+namespace App\Services\AiTokens;
 
 use App\Enums\Flow\NodeType;
 use App\Models\AiHubAgent;

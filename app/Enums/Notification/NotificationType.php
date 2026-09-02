@@ -25,6 +25,25 @@ enum NotificationType: string
     case ApiwayRenewalDue = 'apiway_renewal_due';
     case ApiwayExpired = 'apiway_expired';
     case ApiwayProvisionFailed = 'apiway_provision_failed';
+    /**
+     * Provisioning failed on a purchase paid from the prepaid balance, and the
+     * charge has already been given back.
+     *
+     * Its own case rather than a parameter on the one above, because the two
+     * say opposite things about what the customer has to do next: one asks
+     * them to wait for a call, this one tells them the money is already there
+     * and they can try again.
+     */
+    case ApiwayProvisionRefunded = 'apiway_provision_refunded';
+    /** A renewal is due and the balance will not cover it. */
+    case ApiwayRenewalNoCredit = 'apiway_renewal_no_credit';
+    /**
+     * The prepaid balance has fallen below the warning threshold.
+     *
+     * Sent once per drop and cleared by the next top-up, so a workspace sitting
+     * just under the line is not messaged on every run it pays for.
+     */
+    case CreditLowBalance = 'credit_low_balance';
 
     /** Human-readable label for the Back Office configuration UI. */
     public function label(): string
@@ -42,6 +61,9 @@ enum NotificationType: string
             self::ApiwayRenewalDue => 'API Way renewal due',
             self::ApiwayExpired => 'API Way subscription expired',
             self::ApiwayProvisionFailed => 'API Way provisioning failed',
+            self::ApiwayProvisionRefunded => 'API Way provisioning failed (credit returned)',
+            self::ApiwayRenewalNoCredit => 'API Way renewal blocked by balance',
+            self::CreditLowBalance => 'Prepaid balance running low',
         };
     }
 
@@ -64,6 +86,9 @@ enum NotificationType: string
             self::ApiwayRenewalDue => "Olá {{name}}, sua assinatura API Way vence em {{due_date}}. Valor: {{amount}}. Atenção: após o vencimento a instância é desativada permanentemente.",
             self::ApiwayExpired => "Olá {{name}}, sua assinatura API Way expirou e a(s) instância(s) foi(ram) desativada(s) permanentemente. Contrate uma nova instância para continuar.",
             self::ApiwayProvisionFailed => "Olá {{name}}, não conseguimos ativar sua instância API Way. Nossa equipe já foi acionada e entrará em contato.",
+            self::ApiwayProvisionRefunded => "Olá {{name}}, não conseguimos ativar sua instância API Way e devolvemos {{amount}} ao seu saldo. Você pode tentar novamente pelo painel.",
+            self::ApiwayRenewalNoCredit => "Olá {{name}}, sua assinatura API Way vence em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento: depois dele a instância é desativada permanentemente e não há como recuperá-la.",
+            self::CreditLowBalance => "Olá {{name}}, seu saldo está acabando: restam {{amount}}. Recarregue para o seu atendimento com IA e suas instâncias continuarem funcionando.",
         };
     }
 
@@ -88,6 +113,9 @@ enum NotificationType: string
             self::ApiwayRenewalDue => ['name', 'due_date', 'amount', 'quantity'],
             self::ApiwayExpired => ['name', 'quantity'],
             self::ApiwayProvisionFailed => ['name'],
+            self::ApiwayProvisionRefunded => ['name', 'amount'],
+            self::ApiwayRenewalNoCredit => ['name', 'due_date', 'amount'],
+            self::CreditLowBalance => ['name', 'amount'],
         };
     }
 

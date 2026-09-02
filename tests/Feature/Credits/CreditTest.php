@@ -1,25 +1,25 @@
 <?php
 
-use App\Enums\AiCredit\CreditTransactionType;
+use App\Enums\Credit\CreditTransactionType;
 use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
-use App\Exceptions\Billing\AiCreditExhaustedException;
-use App\Models\AiCreditTransaction;
+use App\Exceptions\Billing\CreditExhaustedException;
+use App\Models\CreditTransaction;
 use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
 use App\Models\AiHubRun;
 use App\Models\Invoice;
 use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
-use App\Services\AiCredits\AiCreditPricing;
-use App\Services\AiCredits\AiCreditService;
-use App\Services\AiCredits\AiTokenRentalService;
+use App\Services\Credits\CreditPricing;
+use App\Services\Credits\CreditService;
+use App\Services\AiTokens\AiTokenRentalService;
 use App\Services\Billing\BillingService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
-use Tests\Support\AiCreditFixtures;
+use Tests\Support\CreditFixtures;
 
 uses(RefreshDatabase::class);
 
@@ -39,7 +39,7 @@ function creditRun(Tenant $tenant, AiHubAgent $agent, ?float $costUsd): AiHubRun
     return AiHubRun::create([
         'tenant_id' => $tenant->id,
         'ai_hub_agent_id' => $agent->id,
-        'conversation_id' => AiCreditFixtures::conversation($tenant)->id,
+        'conversation_id' => CreditFixtures::conversation($tenant)->id,
         'hub_run_id' => 'run-'.uniqid(),
         'status' => 'COMPLETED',
         'provider' => 'OPENAI',
@@ -66,11 +66,11 @@ function creditGate(): object
 it('prices a run at the provider cost plus the markup, converted', function () {
     // US$0.01 × 5 × 1.5 = R$0.075 → 8 cents, rounded up so a cheap run is
     // never free and an empty wallet cannot keep talking.
-    expect(AiCreditPricing::priceRun(0.01)['cents'])->toBe(8);
+    expect(CreditPricing::priceRun(0.01)['cents'])->toBe(8);
 });
 
 it('charges the fallback rather than nothing when the hub reports no cost', function () {
-    $price = AiCreditPricing::priceRun(null);
+    $price = CreditPricing::priceRun(null);
 
     // `cost_usd` is already null for a share of rows — the Back Office AI Usage
     // page reports `costed_runs` separately for exactly this reason. Treating
@@ -81,14 +81,14 @@ it('charges the fallback rather than nothing when the hub reports no cost', func
 });
 
 it('debits the wallet for a run on a rented key', function () {
-    [$tenant, , $hubTenant] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::fakeHub();
+    [$tenant, , $hubTenant] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
+    CreditFixtures::fakeHub();
 
     $credential = app(AiTokenRentalService::class)->rent($tenant, 'OPENAI');
-    $agent = AiCreditFixtures::agent($hubTenant, $credential->id);
+    $agent = CreditFixtures::agent($hubTenant, $credential->id);
 
-    $credits = app(AiCreditService::class);
+    $credits = app(CreditService::class);
     $credits->adjust($tenant, 10000, 'seed');
 
     $transaction = $credits->chargeRun(creditRun($tenant, $agent, 0.02));
@@ -101,10 +101,10 @@ it('debits the wallet for a run on a rented key', function () {
 });
 
 it('never charges the same run twice', function () {
-    [$tenant, , $hubTenant] = AiCreditFixtures::workspace();
-    $agent = AiCreditFixtures::agent($hubTenant);
+    [$tenant, , $hubTenant] = CreditFixtures::workspace();
+    $agent = CreditFixtures::agent($hubTenant);
 
-    $credits = app(AiCreditService::class);
+    $credits = app(CreditService::class);
     $credits->adjust($tenant, 10000, 'seed');
 
     $run = creditRun($tenant, $agent, 0.02);
@@ -116,12 +116,12 @@ it('never charges the same run twice', function () {
     $second = $credits->chargeRun($run);
 
     expect($second)->toBeNull()
-        ->and(AiCreditTransaction::where('ai_hub_run_id', $run->id)->count())->toBe(1)
+        ->and(CreditTransaction::where('ai_hub_run_id', $run->id)->count())->toBe(1)
         ->and($credits->balanceCents($tenant->fresh()))->toBe(9985);
 });
 
 it('lets a run through on the workspace own key with an empty wallet', function () {
-    [, , $hubTenant] = AiCreditFixtures::workspace();
+    [, , $hubTenant] = CreditFixtures::workspace();
     config()->set('services.mercadopago.enforce', true);
 
     // No pool key behind this credential: the workspace is spending its own
@@ -135,29 +135,29 @@ it('lets a run through on the workspace own key with an empty wallet', function 
         'status' => 'ACTIVE',
     ]);
 
-    $agent = AiCreditFixtures::agent($hubTenant, $credential->id);
+    $agent = CreditFixtures::agent($hubTenant, $credential->id);
 
-    expect(fn () => creditGate()->check($agent))->not->toThrow(AiCreditExhaustedException::class);
+    expect(fn () => creditGate()->check($agent))->not->toThrow(CreditExhaustedException::class);
 });
 
 it('refuses a run on a rented key once the balance is spent', function () {
-    [$tenant, , $hubTenant] = AiCreditFixtures::workspace();
+    [$tenant, , $hubTenant] = CreditFixtures::workspace();
     config()->set('services.mercadopago.enforce', true);
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::fakeHub();
+    CreditFixtures::poolKey();
+    CreditFixtures::fakeHub();
 
     $credential = app(AiTokenRentalService::class)->rent($tenant, 'OPENAI');
-    $agent = AiCreditFixtures::agent($hubTenant, $credential->id);
+    $agent = CreditFixtures::agent($hubTenant, $credential->id);
 
-    expect(fn () => creditGate()->check($agent))->toThrow(AiCreditExhaustedException::class);
+    expect(fn () => creditGate()->check($agent))->toThrow(CreditExhaustedException::class);
 });
 
 it('credits the balance once when a top-up is paid, however often the webhook fires', function () {
-    [$tenant] = AiCreditFixtures::workspace();
+    [$tenant] = CreditFixtures::workspace();
 
     $invoice = Invoice::create([
         'tenant_id' => $tenant->id,
-        'purpose' => InvoicePurpose::AiCreditTopup,
+        'purpose' => InvoicePurpose::CreditTopup,
         'status' => InvoiceStatus::Pending,
         'payment_method' => PaymentMethod::Pix,
         'amount_cents' => 5000,
@@ -173,16 +173,16 @@ it('credits the balance once when a top-up is paid, however often the webhook fi
     // applied twice is money given away.
     $billing->applyPaymentUpdate(['id' => 'mp-1', 'status' => 'approved']);
 
-    expect(app(AiCreditService::class)->balanceCents($tenant->fresh()))->toBe(5000)
-        ->and(AiCreditTransaction::where('invoice_id', $invoice->id)->count())->toBe(1);
+    expect(app(CreditService::class)->balanceCents($tenant->fresh()))->toBe(5000)
+        ->and(CreditTransaction::where('invoice_id', $invoice->id)->count())->toBe(1);
 });
 
 it('takes the credit back when a top-up is refunded', function () {
-    [$tenant] = AiCreditFixtures::workspace();
+    [$tenant] = CreditFixtures::workspace();
 
     Invoice::create([
         'tenant_id' => $tenant->id,
-        'purpose' => InvoicePurpose::AiCreditTopup,
+        'purpose' => InvoicePurpose::CreditTopup,
         'status' => InvoiceStatus::Pending,
         'payment_method' => PaymentMethod::Pix,
         'amount_cents' => 5000,
@@ -197,17 +197,17 @@ it('takes the credit back when a top-up is refunded', function () {
 
     // Its own negative row, not a deleted credit: the money did arrive and then
     // leave, and the statement has to reconcile against MercadoPago's.
-    expect(app(AiCreditService::class)->balanceCents($tenant->fresh()))->toBe(0)
-        ->and(AiCreditTransaction::where('tenant_id', $tenant->id)
+    expect(app(CreditService::class)->balanceCents($tenant->fresh()))->toBe(0)
+        ->and(CreditTransaction::where('tenant_id', $tenant->id)
             ->where('type', CreditTransactionType::Refund->value)->count())->toBe(1);
 });
 
 it('exposes the balance and statement to the workspace, without the wholesale cost', function () {
-    [$tenant, $user] = AiCreditFixtures::workspace();
+    [$tenant, $user] = CreditFixtures::workspace();
 
-    app(AiCreditService::class)->adjust($tenant, 2500, 'cortesia');
+    app(CreditService::class)->adjust($tenant, 2500, 'cortesia');
 
-    $response = $this->actingAs($user)->getJson('/api/ai-credits');
+    $response = $this->actingAs($user)->getJson('/api/credits');
 
     $response->assertOk()
         ->assertJsonPath('data.balance_cents', 2500)
@@ -219,11 +219,11 @@ it('exposes the balance and statement to the workspace, without the wholesale co
 });
 
 it('refuses a top-up below the floor instead of issuing a Pix that loses money', function () {
-    [, $user] = AiCreditFixtures::workspace();
+    [, $user] = CreditFixtures::workspace();
     config()->set('ai.credits.min_topup_cents', 1000);
 
     $this->actingAs($user)
-        ->postJson('/api/ai-credits/topup', ['amount_cents' => 100])
+        ->postJson('/api/credits/topup', ['amount_cents' => 100])
         ->assertStatus(422)
         ->assertJsonValidationErrors('amount_cents');
 });

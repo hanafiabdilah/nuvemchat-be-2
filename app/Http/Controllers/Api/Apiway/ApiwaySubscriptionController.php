@@ -10,8 +10,6 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\Apiway\ApiwaySubscriptionResource;
 use App\Http\Resources\Billing\InvoiceResource;
 use App\Models\ApiwaySubscription;
-use App\Services\Billing\BillingService;
-use App\Services\Connection\Apiway\ApiwayPartnerClient;
 use App\Services\Connection\Apiway\ApiwayService;
 use Illuminate\Http\Request;
 
@@ -19,21 +17,25 @@ class ApiwaySubscriptionController extends Controller
 {
     public function __construct(
         private readonly ApiwayService $apiway,
-        private readonly ApiwayPartnerClient $partner,
-        private readonly BillingService $billing,
     ) {}
 
     /**
-     * Manual (early) renewal: re-quote at ProxyBR, price the row, emit a Pix
-     * invoice. Paying it triggers the partner renew via the payment webhook.
+     * Manual (early) renewal: re-quote at ProxyBR and charge the balance now.
+     *
+     * Worth keeping as a button even though apiway:renew does this on its own,
+     * because the scheduled charge only starts three days out — someone going on
+     * holiday, or who has just topped up after a warning, wants to settle it and
+     * stop thinking about it.
      */
-    public function renewInvoice(Request $request, int $subscription)
+    public function renew(Request $request, int $subscription)
     {
         $row = $this->findSubscription($request, $subscription);
 
         abort_if($row->source !== ApiwaySubscriptionSource::Unit, 422, 'Instâncias incluídas no plano são renovadas automaticamente.');
         abort_if($row->status->isTerminal() || ! $row->provider_subscription_id, 422, 'Esta assinatura não pode mais ser renovada. Contrate uma nova instância.');
 
+        // Legacy: a Pix renewal from before the balance, still open. Hand it back
+        // rather than charging as well — the customer may be about to pay it.
         $openRenewal = $row->invoices()
             ->where('purpose', InvoicePurpose::ApiwayRenewal->value)
             ->where('status', InvoiceStatus::Pending->value)
@@ -41,23 +43,11 @@ class ApiwaySubscriptionController extends Controller
             ->first();
 
         if ($openRenewal) {
-            return response()->json(['data' => new InvoiceResource($openRenewal)]);
+            return response()->json(['invoice' => new InvoiceResource($openRenewal)]);
         }
 
         try {
-            // Renewal price follows the CURRENT catalog (ProxyBR re-quotes at
-            // renew time as well) — refresh the row before charging.
-            $quote = $this->partner->quote($row->quantity, $row->location_code, $row->cycle);
-            $row->update([
-                'unit_price_cents' => (int) round(((float) ($quote['unit_price'] ?? 0)) * 100),
-                'total_price_cents' => (int) round(((float) ($quote['total_price'] ?? 0)) * 100),
-            ]);
-
-            $invoice = $this->billing->createApiwayPixInvoice(
-                $row->fresh(),
-                InvoicePurpose::ApiwayRenewal,
-                $request->user()->email,
-            );
+            $paid = $this->apiway->renewFromBalance($row);
         } catch (ApiwayPartnerException $e) {
             return response()->json([
                 'message' => $e->getMessage(),
@@ -65,7 +55,17 @@ class ApiwaySubscriptionController extends Controller
             ], in_array($e->getHttpStatus(), [400, 422], true) ? 422 : 502);
         }
 
-        return response()->json(['data' => new InvoiceResource($invoice)], 201);
+        $row = $row->fresh();
+
+        if (! $paid) {
+            return response()->json([
+                'message' => 'Seu saldo não cobre esta renovação. Recarregue para continuar.',
+                'code' => 'insufficient_credit',
+                'required_cents' => $row->total_price_cents,
+            ], 422);
+        }
+
+        return response()->json(['data' => new ApiwaySubscriptionResource($row->load('instances'))], 202);
     }
 
     /**

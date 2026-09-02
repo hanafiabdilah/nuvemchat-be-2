@@ -2,15 +2,15 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
-use App\Enums\AiCredit\CreditTransactionType;
+use App\Enums\Credit\CreditTransactionType;
 use App\Http\Controllers\Controller;
-use App\Models\AiCreditTransaction;
-use App\Models\AiCreditWallet;
+use App\Models\CreditTransaction;
+use App\Models\CreditWallet;
 use App\Models\AiModelPrice;
 use App\Models\AuditLog;
 use App\Models\Tenant;
-use App\Services\AiCredits\AiCreditPricing;
-use App\Services\AiCredits\AiCreditService;
+use App\Services\Credits\CreditPricing;
+use App\Services\Credits\CreditService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -23,12 +23,12 @@ use Illuminate\Http\Request;
  * but not the service, and leaves the ledger claiming the workspace spent
  * something it did not.
  */
-class AdminAiCreditController extends Controller
+class AdminCreditController extends Controller
 {
     private const PER_PAGE = 25;
 
     public function __construct(
-        private readonly AiCreditService $credits,
+        private readonly CreditService $credits,
     ) {}
 
     /**
@@ -40,12 +40,12 @@ class AdminAiCreditController extends Controller
      */
     public function index(): JsonResponse
     {
-        $wallets = AiCreditWallet::query()
+        $wallets = CreditWallet::query()
             ->with('tenant.user:id,name,email')
             ->orderByDesc('balance_cents')
             ->paginate(self::PER_PAGE);
 
-        $movement = AiCreditTransaction::query()
+        $movement = CreditTransaction::query()
             ->whereIn('tenant_id', collect($wallets->items())->pluck('tenant_id'))
             ->where('created_at', '>=', now()->subDays(30))
             ->selectRaw('tenant_id,
@@ -57,7 +57,7 @@ class AdminAiCreditController extends Controller
             ->keyBy('tenant_id');
 
         return response()->json([
-            'data' => collect($wallets->items())->map(fn (AiCreditWallet $wallet) => [
+            'data' => collect($wallets->items())->map(fn (CreditWallet $wallet) => [
                 'tenant_id' => $wallet->tenant_id,
                 'name' => $wallet->tenant?->user?->name ?? "Tenant #{$wallet->tenant_id}",
                 'email' => $wallet->tenant?->user?->email,
@@ -72,7 +72,7 @@ class AdminAiCreditController extends Controller
                 'last_page' => $wallets->lastPage(),
                 'total' => $wallets->total(),
             ],
-            'pricing' => AiCreditPricing::settings(),
+            'pricing' => CreditPricing::settings(),
         ]);
     }
 
@@ -112,20 +112,20 @@ class AdminAiCreditController extends Controller
 
         abort_if($validated === [], 422, 'Nothing to update.');
 
-        $before = AiCreditPricing::settings();
+        $before = CreditPricing::settings();
 
-        AiCreditPricing::store($validated);
+        CreditPricing::store($validated);
 
         AuditLog::record(
-            'ai_credit.pricing_updated',
+            'credit.pricing_updated',
             'Changed: ' . implode(', ', array_keys($validated)),
-            ['before' => $before, 'after' => AiCreditPricing::settings()],
+            ['before' => $before, 'after' => CreditPricing::settings()],
             $request->user(),
         );
 
         return response()->json([
             'message' => 'Pricing updated',
-            'pricing' => AiCreditPricing::settings(),
+            'pricing' => CreditPricing::settings(),
         ]);
     }
 
@@ -158,8 +158,8 @@ class AdminAiCreditController extends Controller
             // The list exactly as a customer sees it, so the effect of a margin
             // change is visible in the screen that made it rather than only in
             // the customer's.
-            'preview' => AiCreditPricing::priceList(),
-            'defaults' => AiCreditPricing::settings(),
+            'preview' => CreditPricing::priceList(),
+            'defaults' => CreditPricing::settings(),
         ]);
     }
 
@@ -211,7 +211,7 @@ class AdminAiCreditController extends Controller
         );
 
         AuditLog::record(
-            'ai_credit.model_priced',
+            'credit.model_priced',
             "{$price->provider} {$price->model}: markup " . ($price->markup_pct ?? 'default'),
             $price->only(['provider', 'model', 'markup_pct', 'input_usd_per_1m', 'output_usd_per_1m', 'is_listed']),
             $request->user(),
@@ -248,7 +248,7 @@ class AdminAiCreditController extends Controller
     public function destroyModel(Request $request, AiModelPrice $model): JsonResponse
     {
         AuditLog::record(
-            'ai_credit.model_price_removed',
+            'credit.model_price_removed',
             "{$model->provider} {$model->model}",
             $model->only(['provider', 'model']),
             $request->user(),
@@ -270,12 +270,12 @@ class AdminAiCreditController extends Controller
     {
         $wallet = $this->credits->wallet($tenant);
 
-        $transactions = AiCreditTransaction::query()
+        $transactions = CreditTransaction::query()
             ->where('tenant_id', $tenant->id)
             ->orderByDesc('id')
             ->limit(200)
             ->get()
-            ->map(fn (AiCreditTransaction $t) => [
+            ->map(fn (CreditTransaction $t) => [
                 'id' => $t->id,
                 'type' => $t->type->value,
                 'amount_cents' => $t->amount_cents,
@@ -322,7 +322,7 @@ class AdminAiCreditController extends Controller
         );
 
         AuditLog::record(
-            'ai_credit.adjusted',
+            'credit.adjusted',
             "Tenant #{$tenant->id}: " . $validated['amount_cents'] . ' cents — ' . $validated['reason'],
             [
                 'tenant_id' => $tenant->id,

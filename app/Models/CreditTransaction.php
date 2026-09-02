@@ -2,15 +2,15 @@
 
 namespace App\Models;
 
-use App\Enums\AiCredit\CreditTransactionType;
+use App\Enums\Credit\CreditTransactionType;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
- * One movement of a tenant's AI credit balance. Append-only: rows are never
+ * One movement of a tenant's prepaid balance. Append-only: rows are never
  * updated or deleted, corrections are new rows of type `adjustment`.
  */
-class AiCreditTransaction extends Model
+class CreditTransaction extends Model
 {
     protected $fillable = [
         'tenant_id',
@@ -20,6 +20,7 @@ class AiCreditTransaction extends Model
         'currency',
         'ai_hub_run_id',
         'invoice_id',
+        'reference',
         'cost_usd',
         'usd_brl_rate',
         'markup_pct',

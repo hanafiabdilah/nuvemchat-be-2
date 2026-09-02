@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\AiCredits;
+namespace App\Services\AiTokens;
 
 use App\Models\AiModelPrice;
 use App\Models\AiTokenPoolKey;

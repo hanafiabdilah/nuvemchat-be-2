@@ -16,7 +16,7 @@ use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
 use App\Models\User;
-use App\Services\AiCredits\AiCreditService;
+use App\Services\Credits\CreditService;
 use App\Services\Billing\MercadoPago\MercadoPagoClient;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\TrainedAgent\TrainedAgentService;
@@ -274,8 +274,8 @@ class BillingService
                 match (true) {
                     $fresh->purpose === InvoicePurpose::TrainedAgentPurchase
                         => app(TrainedAgentService::class)->handleInvoicePaid($fresh),
-                    $fresh->purpose === InvoicePurpose::AiCreditTopup
-                        => app(AiCreditService::class)->creditTopup($fresh),
+                    $fresh->purpose === InvoicePurpose::CreditTopup
+                        => app(CreditService::class)->creditTopup($fresh),
                     default => app(ApiwayService::class)->handleApiwayInvoicePaid($fresh),
                 };
             }
@@ -286,72 +286,14 @@ class BillingService
             // provision something the customer keeps — reversing those is a
             // support decision, not an automatic one.
             if (in_array($status, ['refunded', 'charged_back'], true)
-                && $invoice->purpose === InvoicePurpose::AiCreditTopup) {
-                app(AiCreditService::class)->reverseTopup($invoice->fresh());
+                && $invoice->purpose === InvoicePurpose::CreditTopup) {
+                app(CreditService::class)->reverseTopup($invoice->fresh());
             }
         });
     }
 
     /**
-     * Create a payable Pix charge for a one-off trained agent purchase.
-     *
-     * The amount comes from the hire row — which the caller priced from the
-     * blueprint, never from client input — and there is no period: the fork is
-     * permanent, so period_start/end would only be describing a subscription
-     * that does not exist.
-     */
-    public function createTrainedAgentPixInvoice(TrainedAgentHire $hire, ?string $payerEmail = null): Invoice
-    {
-        $expiresAt = now()->addDay();
-        $payerEmail ??= $hire->tenant->user?->email ?? 'no-reply@example.com';
-
-        $invoice = Invoice::create([
-            'tenant_id' => $hire->tenant_id,
-            'trained_agent_hire_id' => $hire->id,
-            'purpose' => InvoicePurpose::TrainedAgentPurchase,
-            'status' => InvoiceStatus::Pending,
-            'payment_method' => PaymentMethod::Pix,
-            'amount_cents' => $hire->price_cents,
-            'currency' => $hire->currency ?: 'BRL',
-            'due_date' => $expiresAt->toDateString(),
-            'idempotency_key' => (string) Str::uuid(),
-        ]);
-
-        $label = $hire->agent_name ?: ($hire->blueprint_snapshot['name'] ?? 'Agente treinado');
-
-        $payload = [
-            'transaction_amount' => $this->toAmount($invoice->amount_cents),
-            'description' => "Agente treinado — {$label} — fatura #{$invoice->id}",
-            'payment_method_id' => 'pix',
-            'payer' => ['email' => $payerEmail],
-            // Same millisecond-format requirement as createPixInvoice().
-            'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
-            'external_reference' => "tenant:{$hire->tenant_id}:trained-agent:inv:{$invoice->id}",
-        ];
-
-        try {
-            $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
-        } catch (\Throwable $e) {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
-
-            throw $e;
-        }
-
-        $txData = $response['point_of_interaction']['transaction_data'] ?? [];
-
-        $invoice->update([
-            'mp_payment_id' => isset($response['id']) ? (string) $response['id'] : null,
-            'pix_qr_code' => $txData['qr_code'] ?? null,
-            'pix_qr_code_base64' => $txData['qr_code_base64'] ?? null,
-            'pix_copy_paste' => $txData['qr_code'] ?? null,
-            'pix_expires_at' => $expiresAt,
-        ]);
-
-        return $invoice->fresh();
-    }
-
-    /**
-     * Create a payable Pix charge that tops up a workspace's AI credit balance.
+     * Create a payable Pix charge that tops up a workspace's prepaid balance.
      *
      * Pix only, and that is not a gap. The card path in this product is a
      * MercadoPago Preapproval — a recurring authorisation for a fixed monthly
@@ -369,14 +311,14 @@ class BillingService
      * it does not renew, and `period_start`/`period_end` would only be
      * describing a cycle that does not exist.
      */
-    public function createAiCreditTopupPixInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
+    public function createCreditTopupPixInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
     {
         $expiresAt = now()->addDay();
         $payerEmail ??= $tenant->user?->email ?? 'no-reply@example.com';
 
         $invoice = Invoice::create([
             'tenant_id' => $tenant->id,
-            'purpose' => InvoicePurpose::AiCreditTopup,
+            'purpose' => InvoicePurpose::CreditTopup,
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Pix,
             'amount_cents' => $amountCents,
@@ -392,78 +334,7 @@ class BillingService
             'payer' => ['email' => $payerEmail],
             // Same millisecond-format requirement as createPixInvoice().
             'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
-            'external_reference' => "tenant:{$tenant->id}:ai-credit:inv:{$invoice->id}",
-        ];
-
-        try {
-            $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
-        } catch (\Throwable $e) {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
-
-            throw $e;
-        }
-
-        $txData = $response['point_of_interaction']['transaction_data'] ?? [];
-
-        $invoice->update([
-            'mp_payment_id' => isset($response['id']) ? (string) $response['id'] : null,
-            'pix_qr_code' => $txData['qr_code'] ?? null,
-            'pix_qr_code_base64' => $txData['qr_code_base64'] ?? null,
-            'pix_copy_paste' => $txData['qr_code'] ?? null,
-            'pix_expires_at' => $expiresAt,
-        ]);
-
-        return $invoice->fresh();
-    }
-
-    /**
-     * Create a payable Pix charge for an API Way purchase or renewal. The
-     * amount always comes from the subscription row, which the caller has just
-     * priced from a fresh ProxyBR quote — never from client input.
-     */
-    public function createApiwayPixInvoice(
-        ApiwaySubscription $apiwaySubscription,
-        InvoicePurpose $purpose,
-        ?string $payerEmail = null,
-    ): Invoice {
-        $expiresAt = now()->addDay();
-        $payerEmail ??= $apiwaySubscription->tenant->user?->email ?? 'no-reply@example.com';
-
-        $isRenewal = $purpose === InvoicePurpose::ApiwayRenewal;
-        $periodStart = $isRenewal && $apiwaySubscription->expires_at?->isFuture()
-            ? $apiwaySubscription->expires_at->copy()
-            : now();
-        $periodEnd = $periodStart->copy()->addDays($apiwaySubscription->cycle === 'anual' ? 365 : 30);
-
-        $invoice = Invoice::create([
-            'tenant_id' => $apiwaySubscription->tenant_id,
-            'apiway_subscription_id' => $apiwaySubscription->id,
-            'purpose' => $purpose,
-            'status' => InvoiceStatus::Pending,
-            'payment_method' => PaymentMethod::Pix,
-            'amount_cents' => $apiwaySubscription->total_price_cents,
-            'currency' => 'BRL',
-            'period_start' => $periodStart,
-            'period_end' => $periodEnd,
-            // Renewals must settle BEFORE the ProxyBR expiry (no grace there).
-            'due_date' => $isRenewal
-                ? $apiwaySubscription->expires_at?->toDateString()
-                : $expiresAt->toDateString(),
-            'idempotency_key' => (string) Str::uuid(),
-        ]);
-
-        $description = $isRenewal
-            ? "Renovação API Way — fatura #{$invoice->id}"
-            : "API Way — {$apiwaySubscription->quantity} instância(s) — fatura #{$invoice->id}";
-
-        $payload = [
-            'transaction_amount' => $this->toAmount($invoice->amount_cents),
-            'description' => $description,
-            'payment_method_id' => 'pix',
-            'payer' => ['email' => $payerEmail],
-            // Same millisecond-format requirement as createPixInvoice().
-            'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
-            'external_reference' => "tenant:{$apiwaySubscription->tenant_id}:apiway:inv:{$invoice->id}",
+            'external_reference' => "tenant:{$tenant->id}:credit:inv:{$invoice->id}",
         ];
 
         try {

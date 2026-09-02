@@ -1,10 +1,10 @@
 <?php
 
 use App\Models\AiHubProviderCredential;
-use App\Services\AiCredits\AiTokenRentalService;
+use App\Services\AiTokens\AiTokenRentalService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
-use Tests\Support\AiCreditFixtures;
+use Tests\Support\CreditFixtures;
 
 uses(RefreshDatabase::class);
 
@@ -69,9 +69,9 @@ beforeEach(function () {
 });
 
 it('rotates against a hub that refuses duplicate names', function () {
-    [$tenant, , $hubTenant] = AiCreditFixtures::workspace();
-    $doomed = AiCreditFixtures::poolKey(['label' => 'doomed']);
-    $spare = AiCreditFixtures::poolKey(['label' => 'spare']);
+    [$tenant, , $hubTenant] = CreditFixtures::workspace();
+    $doomed = CreditFixtures::poolKey(['label' => 'doomed']);
+    $spare = CreditFixtures::poolKey(['label' => 'spare']);
 
     $store = [];
     fakeHubWithUniqueNames($store);
@@ -80,7 +80,7 @@ it('rotates against a hub that refuses duplicate names', function () {
     $original = $service->rent($tenant, 'OPENAI');
     $original->update(['ai_token_pool_key_id' => $doomed->id]);
 
-    AiCreditFixtures::agent($hubTenant, $original->id);
+    CreditFixtures::agent($hubTenant, $original->id);
 
     // Before the name carried a random tail this returned {moved: 0, failed: 1}
     // for every workspace on the key — a revoke that reported success while
@@ -93,8 +93,8 @@ it('rotates against a hub that refuses duplicate names', function () {
 });
 
 it('adopts the hub credential it already has instead of getting stuck on 409', function () {
-    [$tenant] = AiCreditFixtures::workspace();
-    $key = AiCreditFixtures::poolKey();
+    [$tenant] = CreditFixtures::workspace();
+    $key = CreditFixtures::poolKey();
 
     // A rental the hub kept and we lost: a half-finished attempt, or a local
     // database restored from before it. Named the old way, on purpose — the
@@ -122,8 +122,8 @@ it('adopts the hub credential it already has instead of getting stuck on 409', f
 });
 
 it('never adopts a credential the workspace pasted itself', function () {
-    [$tenant] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
+    [$tenant] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
 
     // The customer's own key, sitting in the same hub list. Adopting it would
     // put their private key under our billing and let us delete it out from
@@ -146,9 +146,9 @@ it('never adopts a credential the workspace pasted itself', function () {
 });
 
 it('lets two workspaces rent the same provider without colliding', function () {
-    [$first] = AiCreditFixtures::workspace();
-    [$second] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
+    [$first] = CreditFixtures::workspace();
+    [$second] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
 
     // One shared fake stands in for a hub that scopes names per tenant; the
     // point is that our own names do not collide even under the stricter rule.
@@ -166,9 +166,9 @@ it('lets two workspaces rent the same provider without colliding', function () {
 });
 
 it('reuses the rental for a provider instead of minting a second one', function () {
-    [$tenant] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::poolKey();
+    [$tenant] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
+    CreditFixtures::poolKey();
 
     $store = [];
     fakeHubWithUniqueNames($store);
@@ -191,8 +191,8 @@ it('reuses the rental for a provider instead of minting a second one', function 
 });
 
 it('never adopts a credential the hub has disabled', function () {
-    [$tenant] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
+    [$tenant] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
 
     // Adopting this succeeds and then poisons every agent built on it: the hub
     // answers "Provider credential not found or disabled" at save time, which
@@ -215,15 +215,15 @@ it('never adopts a credential the hub has disabled', function () {
 });
 
 it('re-mints a rental the hub no longer has, and moves the agents with it', function () {
-    [$tenant, , $hubTenant] = AiCreditFixtures::workspace();
-    $key = AiCreditFixtures::poolKey();
+    [$tenant, , $hubTenant] = CreditFixtures::workspace();
+    $key = CreditFixtures::poolKey();
 
     $store = [];
     fakeHubWithUniqueNames($store);
 
     $service = app(AiTokenRentalService::class);
     $credential = $service->rent($tenant, 'OPENAI');
-    $agent = AiCreditFixtures::agent($hubTenant, $credential->id);
+    $agent = CreditFixtures::agent($hubTenant, $credential->id);
 
     // The hub lost it — a reset, or somebody disabling it there. We still hold
     // the key, so unlike a customer's own credential this one can be rebuilt.
@@ -240,8 +240,8 @@ it('re-mints a rental the hub no longer has, and moves the agents with it', func
 });
 
 it('leaves a healthy rental alone', function () {
-    [$tenant] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
+    [$tenant] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
 
     $store = [];
     fakeHubWithUniqueNames($store);

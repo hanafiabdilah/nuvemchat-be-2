@@ -9,6 +9,8 @@ use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Jobs\ProvisionApiwaySubscription;
 use App\Models\ApiwaySubscription;
+use App\Models\CreditTransaction;
+use App\Models\CreditWallet;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Setting;
@@ -18,6 +20,10 @@ use App\Models\User;
 use App\Services\Billing\BillingService;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\Credits\CreditService;
+use App\Enums\Credit\CreditTransactionType;
+use App\Exceptions\Billing\InsufficientCreditException;
+use Illuminate\Support\Str;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
@@ -62,6 +68,61 @@ function apiwayPlanSubscription(Tenant $tenant, array $quotas = ['included_insta
     $tenant->forceFill(['current_subscription_id' => $subscription->id])->save();
 
     return $subscription;
+}
+
+/** A tenant with money in the wallet — the only way to buy an instance now. */
+function apiwayCredit(Tenant $tenant, int $cents): void
+{
+    CreditWallet::create(['tenant_id' => $tenant->id, 'balance_cents' => $cents, 'currency' => 'BRL']);
+}
+
+/** Quote + create: the two partner calls a unit purchase makes, in order. */
+function fakePartnerPurchase(): void
+{
+    Http::fake([
+        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
+            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
+        ]]),
+        'portal.proxybr.com.br/api/partner/v1/apiway/subscriptions' => Http::response([
+            'data' => [
+                'id' => 42, 'platform' => 'pingly', 'quantity' => 1, 'cycle' => 'mensal',
+                'unit_price' => 49.9, 'total_price' => 49.9, 'status' => 'active',
+                'expires_at' => now()->addDays(30)->toISOString(),
+                'instances' => [
+                    ['id' => 'uuid-core-1', 'name' => 'Instancia 01', 'status' => 'aguardando_qr', 'ip_address' => '10.0.0.9'],
+                ],
+            ],
+            'meta' => ['idempotent_replay' => false],
+        ], 201),
+    ]);
+}
+
+/**
+ * A purchase in the shape the Pix flow used to leave behind: pending payment,
+ * open invoice, no instance. Nothing creates these any more — they exist in
+ * production from before the balance, and the code paths that finish them are
+ * kept alive for exactly that reason.
+ *
+ * @return array{0: ApiwaySubscription, 1: Invoice}
+ */
+function legacyPendingPurchase(Tenant $tenant, string $paymentId): array
+{
+    $row = ApiwaySubscription::create([
+        'tenant_id' => $tenant->id, 'external_ref' => 'pingly-apw-legacy-' . uniqid(),
+        'source' => ApiwaySubscriptionSource::Unit, 'cycle' => 'mensal', 'quantity' => 1,
+        'unit_price_cents' => 4990, 'total_price_cents' => 4990, 'location_code' => 'br',
+        'status' => ApiwaySubscriptionStatus::PendingPayment,
+    ]);
+
+    $invoice = Invoice::create([
+        'tenant_id' => $tenant->id, 'apiway_subscription_id' => $row->id,
+        'purpose' => InvoicePurpose::ApiwayPurchase, 'status' => InvoiceStatus::Pending,
+        'payment_method' => PaymentMethod::Pix, 'amount_cents' => 4990, 'currency' => 'BRL',
+        'due_date' => now()->addDay()->toDateString(), 'mp_payment_id' => $paymentId,
+        'idempotency_key' => (string) Str::uuid(),
+    ]);
+
+    return [$row, $invoice];
 }
 
 function fakePartnerCreate(array $overrides = []): void
@@ -149,85 +210,78 @@ test('included instances require a usable plan subscription', function () {
 
 // --- Unit purchase: Pix ----------------------------------------------------
 
-test('a pix unit purchase quotes at ProxyBR and issues a payable invoice', function () {
-    Http::fake([
-        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
-            'quantity' => 2, 'cycle' => 'mensal', 'duration_days' => 30,
-            'unit_price' => 49.9, 'total_price' => 99.8,
-        ]]),
-        'api.mercadopago.com/v1/payments' => Http::response([
-            'id' => 555, 'status' => 'pending',
-            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR', 'qr_code_base64' => 'B64']],
-        ]),
-    ]);
-
+test('a unit purchase is charged to the balance and provisions straight away', function () {
+    fakePartnerPurchase();
     $tenant = apiwayTenant();
+    apiwayCredit($tenant, 20_000);
 
-    $result = app(ApiwayService::class)->startUnitPurchase(
-        $tenant, 2, 'mensal', 'br', PaymentMethod::Pix,
-    );
+    $row = app(ApiwayService::class)->purchaseUnits($tenant, 1, 'mensal', 'br');
 
-    $row = $result['subscription'];
-    $invoice = $result['invoice'];
+    expect($row->status)->toBe(ApiwaySubscriptionStatus::Active)
+        ->and($row->source)->toBe(ApiwaySubscriptionSource::Unit)
+        ->and($row->total_price_cents)->toBe(4990)
+        ->and($row->instances)->toHaveCount(1);
 
-    expect($row->status)->toBe(ApiwaySubscriptionStatus::PendingPayment)
-        ->and($row->total_price_cents)->toBe(9980)
-        ->and($invoice->purpose)->toBe(InvoicePurpose::ApiwayPurchase)
-        ->and($invoice->subscription_id)->toBeNull()
-        ->and($invoice->apiway_subscription_id)->toBe($row->id)
-        ->and($invoice->pix_qr_code)->toBe('QR');
+    // No invoice, no Pix QR, no pending state — the balance IS the payment.
+    expect(Invoice::count())->toBe(0);
+
+    $debit = CreditTransaction::where('tenant_id', $tenant->id)->sole();
+    expect($debit->type)->toBe(CreditTransactionType::Purchase)
+        ->and($debit->amount_cents)->toBe(-4990)
+        ->and($debit->reference)->toBe("apiway:buy:{$row->id}")
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(15_010);
 });
 
-test('paying the pix invoice moves the row to provisioning and queues the job once', function () {
+test('a purchase the balance cannot cover is refused and leaves nothing behind', function () {
     Http::fake([
         'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
             'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
         ]]),
-        'api.mercadopago.com/v1/payments' => Http::response([
-            'id' => 556, 'status' => 'pending',
-            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
-        ]),
     ]);
 
     $tenant = apiwayTenant();
-    $result = app(ApiwayService::class)->startUnitPurchase($tenant, 1, 'mensal', 'br', PaymentMethod::Pix);
-    $invoice = $result['invoice'];
+    apiwayCredit($tenant, 1_000);
 
-    $payment = ['id' => '556', 'status' => 'approved'];
-    app(BillingService::class)->applyPaymentUpdate($payment);
-    app(BillingService::class)->applyPaymentUpdate($payment); // duplicate webhook
+    expect(fn () => app(ApiwayService::class)->purchaseUnits($tenant, 1, 'mensal', 'br'))
+        ->toThrow(InsufficientCreditException::class);
 
-    expect($invoice->fresh()->status)->toBe(InvoiceStatus::Paid)
-        ->and($result['subscription']->fresh()->status)->toBe(ApiwaySubscriptionStatus::Provisioning);
-
-    Bus::assertDispatchedTimes(ProvisionApiwaySubscription::class, 1);
+    // Nothing half-made: no subscription row pretending an instance is coming,
+    // and not a cent moved. ProxyBR was never called — the request would have
+    // been a stray one, which this suite fails on.
+    expect(ApiwaySubscription::count())->toBe(0)
+        ->and(CreditTransaction::count())->toBe(0)
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(1_000);
 });
 
-// --- Unit purchase: card ---------------------------------------------------
-
-test('a card unit purchase creates a preapproval and provisions on authorization', function () {
+test('a purchase that fails to provision gives the money back to the balance', function () {
     Http::fake([
         'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
-            'quantity' => 1, 'cycle' => 'anual', 'unit_price' => 41.9, 'total_price' => 502.8,
+            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
         ]]),
-        'api.mercadopago.com/preapproval' => Http::response(['id' => 'PA-77', 'status' => 'authorized']),
+        'portal.proxybr.com.br/api/partner/v1/apiway/subscriptions' => Http::response([
+            'error' => 'no_enabled_subnet_capacity',
+            'message' => 'Sem capacidade IPv4 disponível.',
+        ], 422),
     ]);
 
     $tenant = apiwayTenant();
+    apiwayCredit($tenant, 20_000);
 
-    $result = app(ApiwayService::class)->startUnitPurchase(
-        $tenant, 1, 'anual', 'br', PaymentMethod::Card, 'card-token-1', 'apw@example.test',
-    );
+    expect(fn () => app(ApiwayService::class)->purchaseUnits($tenant, 1, 'mensal', 'br'))
+        ->toThrow(ValidationException::class);
 
-    $row = $result['subscription']->fresh();
+    $row = ApiwaySubscription::sole();
 
-    expect($result['authorized'])->toBeTrue()
-        ->and($row->mp_preapproval_id)->toBe('PA-77')
-        ->and($row->status)->toBe(ApiwaySubscriptionStatus::Provisioning)
-        ->and($row->invoices()->where('purpose', InvoicePurpose::ApiwayPurchase->value)
-            ->where('status', InvoiceStatus::Paid->value)->count())->toBe(1);
+    expect($row->status)->toBe(ApiwaySubscriptionStatus::Failed)
+        // The refund happened. Nothing is waiting for a human, which is the
+        // whole difference from the Pix era.
+        ->and($row->meta['needs_refund'] ?? null)->toBeNull()
+        ->and($row->meta['refunded_cents'])->toBe(4990)
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(20_000);
 
-    Bus::assertDispatched(ProvisionApiwaySubscription::class);
+    // Both halves stay on the statement: charged, then given back.
+    expect(CreditTransaction::where('tenant_id', $tenant->id)->pluck('type')->all())
+        ->toBe([CreditTransactionType::Purchase, CreditTransactionType::Reversal]);
 });
 
 // --- Provisioning failure --------------------------------------------------
@@ -277,22 +331,11 @@ test('an included instance can pick its location', function () {
 
 // --- Abandoned checkouts ----------------------------------------------------
 
-test('abandoning an unpaid purchase voids the pix charge and deletes the row', function () {
-    Http::fake([
-        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
-            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
-        ]]),
-        'api.mercadopago.com/v1/payments/557' => Http::response(['status' => 'cancelled']),
-        'api.mercadopago.com/v1/payments' => Http::response([
-            'id' => 557, 'status' => 'pending',
-            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
-        ]),
-    ]);
+test('abandoning a legacy unpaid purchase voids the pix charge and deletes the row', function () {
+    Http::fake(['api.mercadopago.com/v1/payments/557' => Http::response(['status' => 'cancelled'])]);
 
     $tenant = apiwayTenant();
-    $result = app(ApiwayService::class)->startUnitPurchase($tenant, 1, 'mensal', 'br', PaymentMethod::Pix);
-    $row = $result['subscription'];
-    $invoice = $result['invoice'];
+    [$row, $invoice] = legacyPendingPurchase($tenant, '557');
 
     expect(app(ApiwayService::class)->abandonPendingPurchase($row))->toBeTrue()
         ->and(ApiwaySubscription::find($row->id))->toBeNull()
@@ -300,20 +343,9 @@ test('abandoning an unpaid purchase voids the pix charge and deletes the row', f
         ->and($invoice->fresh()->apiway_subscription_id)->toBeNull();
 });
 
-test('a purchase that settled meanwhile refuses to be abandoned', function () {
-    Http::fake([
-        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
-            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
-        ]]),
-        'api.mercadopago.com/v1/payments' => Http::response([
-            'id' => 558, 'status' => 'pending',
-            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
-        ]),
-    ]);
-
+test('a legacy purchase that settled meanwhile refuses to be abandoned', function () {
     $tenant = apiwayTenant();
-    $result = app(ApiwayService::class)->startUnitPurchase($tenant, 1, 'mensal', 'br', PaymentMethod::Pix);
-    $row = $result['subscription'];
+    [$row] = legacyPendingPurchase($tenant, '558');
 
     // Pix approved before the user closed the modal.
     app(BillingService::class)->applyPaymentUpdate(['id' => '558', 'status' => 'approved']);
@@ -322,19 +354,9 @@ test('a purchase that settled meanwhile refuses to be abandoned', function () {
         ->and($row->fresh()->status)->toBe(ApiwaySubscriptionStatus::Provisioning);
 });
 
-test('pending_payment purchases are hidden from the instance list', function () {
-    Http::fake([
-        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
-            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 49.9, 'total_price' => 49.9,
-        ]]),
-        'api.mercadopago.com/v1/payments' => Http::response([
-            'id' => 559, 'status' => 'pending',
-            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
-        ]),
-    ]);
-
+test('legacy pending_payment purchases stay hidden from the instance list', function () {
     $tenant = apiwayTenant();
-    app(ApiwayService::class)->startUnitPurchase($tenant, 1, 'mensal', 'br', PaymentMethod::Pix);
+    legacyPendingPurchase($tenant, '559');
 
     Sanctum::actingAs($tenant->user()->first());
 

@@ -1,12 +1,19 @@
 <?php
 
-namespace App\Services\AiCredits;
+namespace App\Services\Credits;
 
 use App\Models\AiModelPrice;
 use App\Models\Setting;
+use App\Services\AiTokens\KnownModelPrices;
 
 /**
- * What a run costs the customer, and where those numbers come from.
+ * What the balance costs to fill and what spending it buys — every commercial
+ * number of the offering, and where each one comes from.
+ *
+ * Both halves live here rather than in a wallet class and a run class, because
+ * the Back Office edits them in one form and they are read from one settings
+ * table. A boundary nothing enforces is a boundary that only shows up as two
+ * imports.
  *
  * Every commercial number of the rental offering lives in the `settings` table
  * so the Back Office can move it without a deploy — the same pattern as the
@@ -22,8 +29,14 @@ use App\Models\Setting;
  * arithmetic that decides how much money changes hands has a single home, and
  * so a test can state the price of a run in one line.
  */
-class AiCreditPricing
+class CreditPricing
 {
+    // ⚠️ The `ai_credits.` prefix stayed behind when the class was renamed, and
+    // that is deliberate: these strings are not identifiers, they are the
+    // primary keys of rows already sitting in the `settings` table. Renaming
+    // them would silently reset every number an admin has set — the read would
+    // miss and fall back to config — to fix a prefix no reader of the product
+    // ever sees.
     public const KEY_MARKUP_PCT = 'ai_credits.markup_pct';
     public const KEY_USD_BRL_RATE = 'ai_credits.usd_brl_rate';
     public const KEY_FALLBACK_RUN_CENTS = 'ai_credits.fallback_run_cents';

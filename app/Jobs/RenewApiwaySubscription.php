@@ -63,5 +63,30 @@ class RenewApiwaySubscription implements ShouldQueue
             'idempotency_key' => $this->idempotencyKey,
             'error' => $e->getMessage(),
         ]);
+
+        // The renewal was charged before this job ran, so giving up owes the
+        // customer their money back. `failed()` is the only hook that knows the
+        // attempt is over rather than between retries.
+        //
+        // The idempotency key IS the ledger reference for balance-paid renewals
+        // — one string for one cycle, deliberately shared so the partner's
+        // "charge once" and ours cannot drift. Legacy keys (invoice- and
+        // card-paid renewals) match no ledger row and reverse nothing, which is
+        // right: that money was never in the wallet.
+        $row = ApiwaySubscription::find($this->apiwaySubscriptionId);
+
+        if ($row) {
+            try {
+                app(ApiwayService::class)->reverseRenewalCharge($row, $this->idempotencyKey);
+            } catch (\Throwable $reversalError) {
+                // Never let the refund's failure bury the renewal's: this hook
+                // is the last place either problem gets recorded.
+                Log::error('Failed to reverse an apiway renewal charge', [
+                    'apiway_subscription_id' => $this->apiwaySubscriptionId,
+                    'reference' => $this->idempotencyKey,
+                    'error' => $reversalError->getMessage(),
+                ]);
+            }
+        }
     }
 }

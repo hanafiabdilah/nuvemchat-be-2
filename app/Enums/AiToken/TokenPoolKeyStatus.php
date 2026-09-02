@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Enums\AiCredit;
+namespace App\Enums\AiToken;
 
 /**
  * Lifecycle of a platform-owned provider key in the rental pool.

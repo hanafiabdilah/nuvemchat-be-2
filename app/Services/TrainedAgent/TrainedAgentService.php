@@ -3,6 +3,8 @@
 namespace App\Services\TrainedAgent;
 
 use App\Enums\Billing\InvoicePurpose;
+use App\Enums\Credit\CreditTransactionType;
+use App\Exceptions\Billing\InsufficientCreditException;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\Quota;
 use App\Enums\TrainedAgent\HireSource;
@@ -10,7 +12,7 @@ use App\Enums\TrainedAgent\HireStatus;
 use App\Events\TrainedAgentHireUpdated;
 use App\Jobs\TrainedAgent\FulfillTrainedAgentHire;
 use App\Models\AiHubProviderCredential;
-use App\Services\AiCredits\AiTokenRentalService;
+use App\Services\AiTokens\AiTokenRentalService;
 use App\Models\Invoice;
 use App\Models\Tenant;
 use App\Models\TrainedAgentBlueprint;
@@ -19,6 +21,7 @@ use App\Services\AiAgentHub\AiAgentHubService;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Credits\CreditService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -45,6 +48,7 @@ class TrainedAgentService
         private readonly BillingService $billing,
         private readonly AiAgentHubService $hub,
         private readonly AiAgentHubTenantService $hubTenant,
+        private readonly CreditService $credits,
     ) {}
 
     /* ------------------------------------------------------------------
@@ -110,22 +114,38 @@ class TrainedAgentService
      * ------------------------------------------------------------------ */
 
     /**
-     * Take a blueprint. Free while the plan's included slots last, a one-off
-     * Pix charge after that.
+     * The ledger reference for a hire's charge, for the attempt it is on.
+     *
+     * Numbered because a failed fork is refunded and a retry is charged again.
+     * A single reference per hire would make the second charge look like a
+     * duplicate of the first and be silently dropped — the tenant would get the
+     * agent without paying for it.
+     */
+    public static function chargeReference(TrainedAgentHire $hire): string
+    {
+        return "trained-agent:{$hire->id}:".(int) ($hire->meta['charge_attempt'] ?? 1);
+    }
+
+    /**
+     * Take a blueprint. Free while the plan's included slots last, charged to
+     * the prepaid balance after that.
      *
      * The caller does not choose which: letting the client ask for the free
      * path would make "included" a request parameter. The allowance is read
      * here, from the gate, and the returned hire says what actually happened.
      *
-     * @return array{hire: TrainedAgentHire, invoice: ?Invoice}
+     * Both paths now end in the same place — a `provisioning` row with the fork
+     * queued — because the balance settles in this request. There is no waiting
+     * for a payment any more, which is what `pending_payment` was for.
+     *
+     * @throws InsufficientCreditException when a paid hire outruns the balance
      */
     public function hire(
         Tenant $tenant,
         TrainedAgentBlueprint $blueprint,
         int $providerCredentialId,
         ?string $agentName = null,
-        ?string $payerEmail = null,
-    ): array {
+    ): TrainedAgentHire {
         $credential = $this->resolveCredential($tenant, $providerCredentialId);
 
         $useIncluded = $this->gate->canHireIncludedTrainedAgent($tenant);
@@ -138,7 +158,15 @@ class TrainedAgentService
             ]);
         }
 
-        $hire = DB::transaction(function () use ($tenant, $blueprint, $credential, $agentName, $useIncluded) {
+        $priceCents = $useIncluded ? 0 : $blueprint->price_cents;
+
+        // Checked before the row exists so an unaffordable attempt leaves
+        // nothing behind. The debit re-checks under its own lock.
+        if ($priceCents > 0 && ! $this->credits->canAfford($tenant, $priceCents)) {
+            throw new InsufficientCreditException($this->credits->balanceCents($tenant), $priceCents);
+        }
+
+        $hire = DB::transaction(function () use ($tenant, $blueprint, $credential, $agentName, $useIncluded, $priceCents) {
             /** @var TrainedAgentHire $hire */
             $hire = TrainedAgentHire::create([
                 'tenant_id' => $tenant->id,
@@ -146,9 +174,9 @@ class TrainedAgentService
                 'ai_hub_provider_credential_id' => $credential->id,
                 'external_ref' => 'pending',
                 'source' => $useIncluded ? HireSource::Included : HireSource::Purchased,
-                'status' => $useIncluded ? HireStatus::Provisioning : HireStatus::PendingPayment,
+                'status' => HireStatus::Provisioning,
                 'agent_name' => $agentName ?: $blueprint->name,
-                'price_cents' => $useIncluded ? 0 : $blueprint->price_cents,
+                'price_cents' => $priceCents,
                 'currency' => $blueprint->currency ?: 'BRL',
                 'blueprint_snapshot' => $blueprint->snapshot(),
             ]);
@@ -159,26 +187,29 @@ class TrainedAgentService
             return $hire;
         });
 
-        if ($useIncluded) {
-            FulfillTrainedAgentHire::dispatch($hire->id);
-            TrainedAgentHireUpdated::dispatch($hire->fresh());
+        if ($priceCents > 0) {
+            try {
+                $this->credits->debit(
+                    $tenant,
+                    $priceCents,
+                    CreditTransactionType::Purchase,
+                    self::chargeReference($hire),
+                    'Agente treinado — '.($hire->agent_name ?: $blueprint->name),
+                    ['trained_agent_hire_id' => $hire->id, 'blueprint_id' => $blueprint->id],
+                );
+            } catch (InsufficientCreditException $e) {
+                // Lost the race with a concurrent purchase. Nothing was charged,
+                // so the row must not survive looking like an agent on its way.
+                $hire->delete();
 
-            return ['hire' => $hire->fresh(), 'invoice' => null];
+                throw $e;
+            }
         }
 
-        try {
-            $invoice = $this->billing->createTrainedAgentPixInvoice($hire, $payerEmail);
-        } catch (\Throwable $e) {
-            // No charge exists, so leaving the row behind would only show the
-            // tenant a card they can neither pay nor explain.
-            $hire->delete();
-
-            throw $e;
-        }
-
+        FulfillTrainedAgentHire::dispatch($hire->id);
         TrainedAgentHireUpdated::dispatch($hire->fresh());
 
-        return ['hire' => $hire->fresh(), 'invoice' => $invoice];
+        return $hire->fresh();
     }
 
     /**
@@ -235,6 +266,14 @@ class TrainedAgentService
     /**
      * Put a failed fork back in flight. Safe to call repeatedly: fulfil()
      * resumes from whatever it already managed to copy.
+     *
+     * A paid hire is charged again, because failing gave the money back. That
+     * pairing is the point: at no moment does the platform hold money for an
+     * agent that does not exist, and at no moment does a tenant get one without
+     * paying. In the ordinary case the refund is sitting in their balance and
+     * the retry is invisible to them.
+     *
+     * @throws InsufficientCreditException when the balance no longer covers it
      */
     public function retry(TrainedAgentHire $hire): void
     {
@@ -244,6 +283,26 @@ class TrainedAgentService
 
         $meta = $hire->meta ?? [];
         unset($meta['failure']);
+
+        if ($hire->source === HireSource::Purchased && $hire->price_cents > 0
+            && ! empty($meta['refunded_to_balance_at'])) {
+            // Only when the previous attempt was actually refunded. A hire that
+            // failed before the balance existed was never given back, so
+            // charging now would be the second time they paid.
+            $meta['charge_attempt'] = (int) ($meta['charge_attempt'] ?? 1) + 1;
+            unset($meta['refunded_to_balance_at'], $meta['refunded_cents']);
+
+            $hire->fill(['meta' => $meta]);
+
+            $this->credits->debit(
+                $hire->tenant,
+                $hire->price_cents,
+                CreditTransactionType::Purchase,
+                self::chargeReference($hire),
+                'Agente treinado — '.($hire->agent_name ?: 'nova tentativa'),
+                ['trained_agent_hire_id' => $hire->id, 'attempt' => $meta['charge_attempt']],
+            );
+        }
 
         $hire->update(['status' => HireStatus::Provisioning, 'meta' => $meta ?: null]);
 
@@ -375,18 +434,45 @@ class TrainedAgentService
     /**
      * Record a fork that ran out of retries.
      *
-     * A paid hire additionally gets `meta.needs_refund` — money was captured
-     * and nothing was delivered. It is the same flag API Way writes, and it is
-     * read the same way: by the Back Office, so a paying customer who heard
-     * nothing is a row someone can act on rather than a line in a log file.
+     * A paid hire gets its charge back the moment we give up — the money never
+     * left the platform, so returning it is a ledger row rather than a Pix
+     * refund somebody has to remember to make. `meta.needs_refund` is only
+     * written when there is no wallet charge to reverse, which means a hire
+     * bought before the balance: those still need the Back Office button.
+     *
+     * The slot is not held either way. A failed fork delivers nothing, and
+     * `HireStatus::Failed` is deliberately outside `consumesAllowance()` — but
+     * the row stays so the tenant can retry it, which is why the reversal has
+     * to be idempotent: a retry that fails again must not pay twice.
      */
     public function markFailed(TrainedAgentHire $hire, string $reason): void
     {
         $meta = $hire->meta ?? [];
         $meta['failure'] = ['reason' => $reason, 'at' => now()->toISOString()];
+        $refunded = null;
 
         if ($hire->source === HireSource::Purchased && $hire->price_cents > 0) {
-            $meta['needs_refund'] = true;
+            $refunded = $this->credits->reverseByReference(
+                $hire->tenant,
+                self::chargeReference($hire),
+                'Devolução — agente treinado não entregue',
+                ['trained_agent_hire_id' => $hire->id, 'reason' => $reason],
+            );
+
+            if ($refunded !== null) {
+                $meta['refunded_to_balance_at'] = now()->toISOString();
+                $meta['refunded_cents'] = $refunded->amount_cents;
+            } elseif (empty($meta['refunded_to_balance_at'])) {
+                // Nothing to reverse and nothing reversed before: a hire paid
+                // outside the wallet, by Pix, before the balance existed. Those
+                // still need a human, and the Back Office finds them by this.
+                //
+                // The `elseif` is not defensive noise: markFailed() can run
+                // twice for one attempt, and the second reversal is refused as a
+                // duplicate — reading that as "never refunded" would raise a
+                // refund flag on money already given back.
+                $meta['needs_refund'] = true;
+            }
         }
 
         $hire->update(['status' => HireStatus::Failed, 'meta' => $meta]);
@@ -395,6 +481,7 @@ class TrainedAgentService
             'hire_id' => $hire->id,
             'tenant_id' => $hire->tenant_id,
             'reason' => $reason,
+            'refunded_to_balance' => $refunded !== null,
             'needs_refund' => $meta['needs_refund'] ?? false,
         ]);
 

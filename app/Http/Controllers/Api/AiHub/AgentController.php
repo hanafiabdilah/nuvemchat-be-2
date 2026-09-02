@@ -8,7 +8,7 @@ use App\Http\Resources\AiHubAgentResource;
 use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
-use App\Services\AiCredits\AiTokenRentalService;
+use App\Services\AiTokens\AiTokenRentalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 

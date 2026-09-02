@@ -16,12 +16,12 @@ namespace App\Exceptions\Billing;
  * (never leaves the customer talking to silence); a draft suggestion returns
  * 402 and the agent writes the reply themselves.
  */
-class AiCreditExhaustedException extends \RuntimeException
+class CreditExhaustedException extends \RuntimeException
 {
     public function __construct(
         public readonly int $balanceCents,
         public readonly string $currency = 'BRL',
     ) {
-        parent::__construct("AI credit balance exhausted ({$balanceCents} cents {$currency}).");
+        parent::__construct("Credit balance exhausted ({$balanceCents} cents {$currency}).");
     }
 }

@@ -212,7 +212,7 @@ return [
     | Office overrides all five commercial numbers through the `settings` table
     | (Back Office → AI Credits → Pricing), because they are priced by whoever
     | runs the business, not redeployed. Read them through
-    | `App\Services\AiCredits\AiCreditPricing`, never with `config()` directly —
+    | `App\Services\Credits\CreditPricing`, never with `config()` directly —
     | a floor enforced by the API and a different floor printed on the customer's
     | page is a customer told one number and refused for another.
     |
@@ -278,7 +278,7 @@ return [
         /*
         | Balance under which the workspace is warned it is about to lose its
         | AI. Warned once, cleared on the next top-up — see
-        | `ai_credit_wallets.low_balance_notified_at`.
+        | `credit_wallets.low_balance_notified_at`.
         */
 
         'low_balance_cents' => (int) env('AI_CREDITS_LOW_BALANCE_CENTS', 500),

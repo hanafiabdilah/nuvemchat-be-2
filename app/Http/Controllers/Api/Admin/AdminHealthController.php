@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\Apiway\ApiwaySubscriptionSource;
 use App\Enums\Apiway\ApiwaySubscriptionStatus;
 use App\Enums\Broadcast\Status as BroadcastStatus;
 use App\Enums\Connection\Channel;
@@ -11,6 +12,7 @@ use App\Models\ApiwaySubscription;
 use App\Models\Broadcast;
 use App\Models\Connection;
 use App\Models\SystemHeartbeat;
+use App\Services\Connection\Apiway\ApiwayService;
 use App\Support\Heartbeat;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -196,18 +198,41 @@ class AdminHealthController extends Controller
             ->where('expires_at', '<', now())
             ->count();
 
+        // Which of those are actually in trouble. Since renewals are charged to
+        // the prepaid balance they now happen on their own, so "expiring in
+        // three days" is the healthy case and warning on it would leave this
+        // check permanently yellow — which is the same as switched off. What
+        // deserves attention is a renewal the balance will not cover.
+        $atRisk = app(ApiwayService::class)->renewalsAtRisk();
+
         return $this->check(
             'apiway:renewals',
             'API Way',
-            'Instances near expiry',
+            'Renewals that will not go through',
             match (true) {
                 $alreadyOverdue > 0 => 'down',
-                $expiringSoon > 0 => 'warn',
+                $atRisk->isNotEmpty() => 'warn',
                 default => 'ok',
             },
-            (string) ($expiringSoon + $alreadyOverdue),
-            'ProxyBR has no grace period — an instance past its expiry is revoked permanently, not suspended.',
-            ['expiring_3d' => $expiringSoon, 'overdue' => $alreadyOverdue],
+            (string) ($atRisk->count() + $alreadyOverdue),
+            'ProxyBR has no grace period — an instance past its expiry is revoked permanently, not suspended. These tenants do not have the balance to cover their renewal; a call before the date is the only thing that saves the number.',
+            [
+                'at_risk' => $atRisk->count(),
+                'expiring_3d' => $expiringSoon,
+                'overdue' => $alreadyOverdue,
+                // Named, not counted: nobody can phone a number.
+                'rows' => $atRisk->take(25)->map(fn (ApiwaySubscription $row) => [
+                    'id' => $row->id,
+                    'tenant_id' => $row->tenant_id,
+                    'tenant' => $row->tenant?->user?->name,
+                    'quantity' => $row->quantity,
+                    'amount_cents' => $row->total_price_cents,
+                    'expires_at' => $row->expires_at?->toDateString(),
+                    'reason' => $row->source === ApiwaySubscriptionSource::PlanIncluded
+                        ? 'plan_lapsed'
+                        : 'insufficient_credit',
+                ])->values(),
+            ],
         );
     }
 

@@ -12,6 +12,8 @@ use App\Models\AiHubProviderCredential;
 use App\Models\Setting;
 use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Models\AiHubTenant;
+use App\Models\CreditTransaction;
+use App\Models\CreditWallet;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
@@ -22,6 +24,9 @@ use App\Models\TrainedAgentHire;
 use App\Models\User;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Credits\CreditService;
+use App\Enums\Credit\CreditTransactionType;
+use App\Exceptions\Billing\InsufficientCreditException;
 use App\Services\TrainedAgent\TrainedAgentService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
@@ -132,6 +137,15 @@ function trainedAgentBlueprint(array $overrides = []): TrainedAgentBlueprint
  * `$failKnowledgeOnce` reproduces a fork that dies halfway, which is the case
  * the resume logic exists for.
  */
+/** Money in the wallet — the only way to buy a hire past the plan allowance. */
+function trainedAgentCredit(Tenant $tenant, int $cents): void
+{
+    CreditWallet::updateOrCreate(
+        ['tenant_id' => $tenant->id],
+        ['balance_cents' => $cents, 'currency' => 'BRL'],
+    );
+}
+
 function fakeHubFork(bool $failKnowledgeOnce = false): void
 {
     $knowledgeCalls = 0;
@@ -171,14 +185,12 @@ test('an included hire is free, spends a plan slot and queues the fork', functio
     [$tenant, $user, $credential] = trainedAgentWorkspace(includedAgents: 2);
     $blueprint = trainedAgentBlueprint();
 
-    $result = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id);
-
-    $hire = $result['hire'];
+    $hire = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id);
 
     expect($hire->source)->toBe(HireSource::Included)
         ->and($hire->status)->toBe(HireStatus::Provisioning)
         ->and($hire->price_cents)->toBe(0)
-        ->and($result['invoice'])->toBeNull()
+        ->and(CreditTransaction::count())->toBe(0)
         // The snapshot is what was sold — it has to survive a later edit.
         ->and($hire->blueprint_snapshot['system_prompt'])->toBe($blueprint->system_prompt);
 
@@ -188,38 +200,52 @@ test('an included hire is free, spends a plan slot and queues the fork', functio
     expect(app(SubscriptionGate::class)->trainedAgentsUsed($tenant))->toBe(1);
 });
 
-test('hiring past the included allowance creates a pix charge instead', function () {
+test('hiring past the included allowance is charged to the balance', function () {
     Bus::fake();
     [$tenant, $user, $credential] = trainedAgentWorkspace(includedAgents: 1);
     $blueprint = trainedAgentBlueprint();
+    trainedAgentCredit($tenant, 50_000);
 
     $service = app(TrainedAgentService::class);
     $service->hire($tenant, $blueprint, $credential->id);
 
     app(SubscriptionGate::class)->forget($tenant);
 
-    // The second one has to be paid for. MercadoPago is the only outbound call.
-    Http::fake(['*/v1/payments*' => Http::response([
-        'id' => 987654,
-        'status' => 'pending',
-        'point_of_interaction' => ['transaction_data' => [
-            'qr_code' => '00020126',
-            'qr_code_base64' => 'BASE64',
-        ]],
-    ], 201)]);
+    $hire = $service->hire($tenant, $blueprint, $credential->id);
 
-    $result = $service->hire($tenant, $blueprint, $credential->id);
+    expect($hire->source)->toBe(HireSource::Purchased)
+        // No waiting for a payment: the balance settled it in the same request.
+        ->and($hire->status)->toBe(HireStatus::Provisioning)
+        ->and($hire->price_cents)->toBe(14900)
+        ->and(Invoice::count())->toBe(0);
 
-    expect($result['hire']->source)->toBe(HireSource::Purchased)
-        ->and($result['hire']->status)->toBe(HireStatus::PendingPayment)
-        ->and($result['hire']->price_cents)->toBe(14900)
-        ->and($result['invoice']->purpose)->toBe(InvoicePurpose::TrainedAgentPurchase)
-        ->and($result['invoice']->trained_agent_hire_id)->toBe($result['hire']->id)
-        ->and($result['invoice']->pix_copy_paste)->toBe('00020126');
+    $debit = CreditTransaction::sole();
+    expect($debit->type)->toBe(CreditTransactionType::Purchase)
+        ->and($debit->amount_cents)->toBe(-14900)
+        ->and($debit->reference)->toBe("trained-agent:{$hire->id}:1")
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(35_100);
+
+    Bus::assertDispatched(FulfillTrainedAgentHire::class);
 
     // A purchase must never quietly eat a plan slot on top of the money.
     app(SubscriptionGate::class)->forget($tenant);
     expect(app(SubscriptionGate::class)->trainedAgentsUsed($tenant))->toBe(1);
+});
+
+test('a hire the balance cannot cover is refused and leaves no row behind', function () {
+    Bus::fake();
+    [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 0);
+    $blueprint = trainedAgentBlueprint();
+    trainedAgentCredit($tenant, 1_000);
+
+    expect(fn () => app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id))
+        ->toThrow(InsufficientCreditException::class);
+
+    expect(TrainedAgentHire::count())->toBe(0)
+        ->and(CreditTransaction::count())->toBe(0)
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(1_000);
+
+    Bus::assertNotDispatched(FulfillTrainedAgentHire::class);
 });
 
 test('a free blueprint outside the allowance is refused rather than sold for nothing', function () {
@@ -243,36 +269,12 @@ test('a credential from another workspace is refused', function () {
         ->toThrow(\Illuminate\Validation\ValidationException::class);
 });
 
-test('the paid webhook moves the hire to provisioning and queues the fork', function () {
-    Bus::fake();
-    [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 0);
-    $blueprint = trainedAgentBlueprint();
-
-    Http::fake(['*/v1/payments*' => Http::response([
-        'id' => 987654,
-        'status' => 'pending',
-        'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
-    ], 201)]);
-
-    $result = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id);
-
-    app(BillingService::class)->applyPaymentUpdate([
-        'id' => (string) $result['invoice']->mp_payment_id,
-        'status' => 'approved',
-    ]);
-
-    expect($result['invoice']->fresh()->status)->toBe(InvoiceStatus::Paid)
-        ->and($result['hire']->fresh()->status)->toBe(HireStatus::Provisioning);
-
-    Bus::assertDispatched(FulfillTrainedAgentHire::class);
-});
-
 test('fulfilment forks the whole blueprint into the tenant workspace', function () {
     [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 1);
     $blueprint = trainedAgentBlueprint();
 
     Bus::fake();
-    $hire = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id)['hire'];
+    $hire = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id);
 
     fakeHubFork();
     app(TrainedAgentService::class)->fulfill($hire->fresh());
@@ -297,7 +299,7 @@ test('a resumed fulfilment continues instead of creating a second agent', functi
     $blueprint = trainedAgentBlueprint();
 
     Bus::fake();
-    $hire = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id)['hire'];
+    $hire = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id);
 
     // First attempt: the agent and profile land, the first knowledge item
     // blows up. Re-running must continue, not mint a second agent.
@@ -324,7 +326,7 @@ test('a failed included fork releases the slot and is not flagged for refund', f
     $blueprint = trainedAgentBlueprint();
 
     $service = app(TrainedAgentService::class);
-    $included = $service->hire($tenant, $blueprint, $credential->id)['hire'];
+    $included = $service->hire($tenant, $blueprint, $credential->id);
     $service->markFailed($included->fresh(), 'hub down');
 
     expect($included->fresh()->status)->toBe(HireStatus::Failed)
@@ -335,23 +337,85 @@ test('a failed included fork releases the slot and is not flagged for refund', f
     expect(app(SubscriptionGate::class)->trainedAgentsUsed($tenant))->toBe(0);
 });
 
-test('a failed paid fork is flagged for refund', function () {
+test('a failed paid fork gives the money back instead of flagging a refund', function () {
     Bus::fake();
     [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 0);
     $blueprint = trainedAgentBlueprint();
-
-    Http::fake(['*/v1/payments*' => Http::response([
-        'id' => 111, 'status' => 'pending',
-        'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
-    ], 201)]);
+    trainedAgentCredit($tenant, 50_000);
 
     $service = app(TrainedAgentService::class);
-    $paid = $service->hire($tenant, $blueprint, $credential->id)['hire'];
-    $paid->update(['status' => HireStatus::Provisioning]);
+    $paid = $service->hire($tenant, $blueprint, $credential->id);
+    $service->markFailed($paid->fresh(), 'hub down');
+
+    $paid->refresh();
+
+    expect($paid->status)->toBe(HireStatus::Failed)
+        // Nothing left for a human to chase — that is the point of the wallet.
+        ->and($paid->needsAttention())->toBeFalse()
+        ->and($paid->meta['refunded_cents'])->toBe(14900)
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(50_000);
+
+    expect(CreditTransaction::pluck('type')->all())
+        ->toBe([CreditTransactionType::Purchase, CreditTransactionType::Reversal]);
+});
+
+test('a hire paid before the balance existed still asks for a manual refund', function () {
+    Bus::fake();
+    [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 0);
+    $blueprint = trainedAgentBlueprint();
+    trainedAgentCredit($tenant, 50_000);
+
+    $service = app(TrainedAgentService::class);
+    $paid = $service->hire($tenant, $blueprint, $credential->id);
+
+    // Erase the wallet charge to stand in for a Pix-era hire: money was taken,
+    // but not from here, so there is nothing this code can give back.
+    CreditTransaction::query()->delete();
+
     $service->markFailed($paid->fresh(), 'hub down');
 
     expect($paid->fresh()->needsAttention())->toBeTrue()
         ->and(TrainedAgentHire::query()->needsAttention()->count())->toBe(1);
+});
+
+test('retrying a refunded hire charges it again', function () {
+    Bus::fake();
+    [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 0);
+    $blueprint = trainedAgentBlueprint();
+    trainedAgentCredit($tenant, 50_000);
+
+    $service = app(TrainedAgentService::class);
+    $paid = $service->hire($tenant, $blueprint, $credential->id);
+    $service->markFailed($paid->fresh(), 'hub down');
+
+    // Refunded, so the balance is whole again.
+    expect(app(CreditService::class)->balanceCents($tenant))->toBe(50_000);
+
+    $service->retry($paid->fresh());
+
+    $paid->refresh();
+
+    // Charged a second time, under its own reference — without the attempt
+    // number the ledger would refuse this as a duplicate and hand over a free
+    // agent.
+    expect($paid->status)->toBe(HireStatus::Provisioning)
+        ->and($paid->meta['charge_attempt'])->toBe(2)
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(35_100)
+        ->and(CreditTransaction::where('reference', "trained-agent:{$paid->id}:2")->exists())->toBeTrue();
+});
+
+test('retrying an included hire is still free', function () {
+    Bus::fake();
+    [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 1);
+    $blueprint = trainedAgentBlueprint();
+
+    $service = app(TrainedAgentService::class);
+    $hire = $service->hire($tenant, $blueprint, $credential->id);
+    $service->markFailed($hire->fresh(), 'hub down');
+    $service->retry($hire->fresh());
+
+    expect($hire->fresh()->status)->toBe(HireStatus::Provisioning)
+        ->and(CreditTransaction::count())->toBe(0);
 });
 
 test('the catalog never ships the prompt or knowledge bodies to a tenant', function () {
@@ -370,23 +434,44 @@ test('the catalog never ships the prompt or knowledge bodies to a tenant', funct
         ->and(json_encode($response->json()))->not->toContain('DAS vence dia 20');
 });
 
-test('abandoning an unpaid hire voids its charge and removes the row', function () {
+test('abandoning a legacy unpaid hire voids its charge and removes the row', function () {
     Bus::fake();
     [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 0);
     $blueprint = trainedAgentBlueprint();
 
-    Http::fake([
-        '*/v1/payments/*' => Http::response(['id' => 222, 'status' => 'cancelled'], 200),
-        '*/v1/payments*' => Http::response([
-            'id' => 222, 'status' => 'pending',
-            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
-        ], 201),
+    Http::fake(['*/v1/payments/*' => Http::response(['id' => 222, 'status' => 'cancelled'], 200)]);
+
+    // Built by hand: nothing creates pending_payment hires any more. These exist
+    // in production from before the balance, and abandonPending() is kept alive
+    // for exactly them.
+    $hire = TrainedAgentHire::create([
+        'tenant_id' => $tenant->id,
+        'trained_agent_blueprint_id' => $blueprint->id,
+        'ai_hub_provider_credential_id' => $credential->id,
+        'external_ref' => 'pingly-ta-legacy',
+        'source' => HireSource::Purchased,
+        'status' => HireStatus::PendingPayment,
+        'agent_name' => $blueprint->name,
+        'price_cents' => 14900,
+        'currency' => 'BRL',
+        'blueprint_snapshot' => $blueprint->snapshot(),
     ]);
 
-    $result = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id);
+    $invoice = Invoice::create([
+        'tenant_id' => $tenant->id,
+        'trained_agent_hire_id' => $hire->id,
+        'purpose' => InvoicePurpose::TrainedAgentPurchase,
+        'status' => InvoiceStatus::Pending,
+        'payment_method' => PaymentMethod::Pix,
+        'amount_cents' => 14900,
+        'currency' => 'BRL',
+        'due_date' => now()->addDay()->toDateString(),
+        'mp_payment_id' => '222',
+        'idempotency_key' => (string) \Illuminate\Support\Str::uuid(),
+    ]);
 
-    expect(app(TrainedAgentService::class)->abandonPending($result['hire']->fresh()))->toBeTrue()
-        ->and(TrainedAgentHire::find($result['hire']->id))->toBeNull()
+    expect(app(TrainedAgentService::class)->abandonPending($hire->fresh()))->toBeTrue()
+        ->and(TrainedAgentHire::find($hire->id))->toBeNull()
         // The charge record survives with a null FK — an audit trail, not a card.
-        ->and(Invoice::find($result['invoice']->id)->status)->toBe(InvoiceStatus::Cancelled);
+        ->and(Invoice::find($invoice->id)->status)->toBe(InvoiceStatus::Cancelled);
 });

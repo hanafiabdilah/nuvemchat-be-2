@@ -1,11 +1,11 @@
 <?php
 
 use App\Models\AiHubProviderCredential;
-use App\Services\AiCredits\AiTokenPool;
-use App\Services\AiCredits\AiTokenRentalService;
+use App\Services\AiTokens\AiTokenPool;
+use App\Services\AiTokens\AiTokenRentalService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
-use Tests\Support\AiCreditFixtures;
+use Tests\Support\CreditFixtures;
 
 uses(RefreshDatabase::class);
 
@@ -14,8 +14,8 @@ beforeEach(function () {
 });
 
 it('rents a pool key by registering it in the workspace hub scope', function () {
-    [$tenant] = AiCreditFixtures::workspace();
-    $key = AiCreditFixtures::poolKey();
+    [$tenant] = CreditFixtures::workspace();
+    $key = CreditFixtures::poolKey();
 
     $sent = null;
     Http::fake([
@@ -44,9 +44,9 @@ it('rents a pool key by registering it in the workspace hub scope', function () 
 });
 
 it('never stores or returns the platform secret to the tenant', function () {
-    [$tenant, $user] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::fakeHub();
+    [$tenant, $user] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
+    CreditFixtures::fakeHub();
 
     app(AiTokenRentalService::class)->rent($tenant, 'OPENAI');
 
@@ -59,10 +59,10 @@ it('never stores or returns the platform secret to the tenant', function () {
 });
 
 it('hands back the existing rental instead of renting a second key', function () {
-    [$tenant] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::fakeHub();
+    [$tenant] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
+    CreditFixtures::poolKey();
+    CreditFixtures::fakeHub();
 
     $service = app(AiTokenRentalService::class);
 
@@ -77,9 +77,9 @@ it('hands back the existing rental instead of renting a second key', function ()
 });
 
 it('spreads workspaces across the pool rather than stacking on one key', function () {
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::poolKey();
+    CreditFixtures::poolKey();
+    CreditFixtures::poolKey();
+    CreditFixtures::poolKey();
 
     $picked = collect(range(1, 60))
         ->map(fn () => app(AiTokenPool::class)->pick('OPENAI')?->id)
@@ -91,10 +91,10 @@ it('spreads workspaces across the pool rather than stacking on one key', functio
 });
 
 it('honours the per-key tenant cap instead of overloading a key', function () {
-    [$first] = AiCreditFixtures::workspace();
-    [$second] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey(['max_tenants' => 1]);
-    AiCreditFixtures::fakeHub();
+    [$first] = CreditFixtures::workspace();
+    [$second] = CreditFixtures::workspace();
+    CreditFixtures::poolKey(['max_tenants' => 1]);
+    CreditFixtures::fakeHub();
 
     app(AiTokenRentalService::class)->rent($first, 'OPENAI');
 
@@ -105,9 +105,9 @@ it('honours the per-key tenant cap instead of overloading a key', function () {
 });
 
 it('refuses to edit or delete a rented credential through the ordinary endpoints', function () {
-    [$tenant, $user] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::fakeHub();
+    [$tenant, $user] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
+    CreditFixtures::fakeHub();
 
     $credential = app(AiTokenRentalService::class)->rent($tenant, 'OPENAI');
 
@@ -124,12 +124,12 @@ it('refuses to edit or delete a rented credential through the ordinary endpoints
 });
 
 it('refuses to release a rented key an agent still points at', function () {
-    [$tenant, $user, $hubTenant] = AiCreditFixtures::workspace();
-    AiCreditFixtures::poolKey();
-    AiCreditFixtures::fakeHub();
+    [$tenant, $user, $hubTenant] = CreditFixtures::workspace();
+    CreditFixtures::poolKey();
+    CreditFixtures::fakeHub();
 
     $credential = app(AiTokenRentalService::class)->rent($tenant, 'OPENAI');
-    AiCreditFixtures::agent($hubTenant, $credential->id);
+    CreditFixtures::agent($hubTenant, $credential->id);
 
     $this->actingAs($user)
         ->deleteJson("/api/ai-hub/rentals/{$credential->id}")
@@ -140,9 +140,9 @@ it('refuses to release a rented key an agent still points at', function () {
 });
 
 it('moves every workspace off a revoked key and re-points their agents', function () {
-    [$tenant, , $hubTenant] = AiCreditFixtures::workspace();
-    $doomed = AiCreditFixtures::poolKey(['label' => 'doomed']);
-    $spare = AiCreditFixtures::poolKey(['label' => 'spare']);
+    [$tenant, , $hubTenant] = CreditFixtures::workspace();
+    $doomed = CreditFixtures::poolKey(['label' => 'doomed']);
+    $spare = CreditFixtures::poolKey(['label' => 'spare']);
 
     $credentials = 0;
     $agentPatch = null;
@@ -174,7 +174,7 @@ it('moves every workspace off a revoked key and re-points their agents', functio
     // random draw went.
     $original->update(['ai_token_pool_key_id' => $doomed->id]);
 
-    $agent = AiCreditFixtures::agent($hubTenant, $original->id);
+    $agent = CreditFixtures::agent($hubTenant, $original->id);
 
     $result = $service->rotateAllFrom($doomed->fresh());
 
@@ -190,9 +190,9 @@ it('moves every workspace off a revoked key and re-points their agents', functio
 });
 
 it('rewrites the audio credential a flow node had pinned when it rotates', function () {
-    [$tenant, , $hubTenant] = AiCreditFixtures::workspace();
-    $doomed = AiCreditFixtures::poolKey(['label' => 'doomed']);
-    AiCreditFixtures::poolKey(['label' => 'spare']);
+    [$tenant, , $hubTenant] = CreditFixtures::workspace();
+    $doomed = CreditFixtures::poolKey(['label' => 'doomed']);
+    CreditFixtures::poolKey(['label' => 'spare']);
 
     $credentials = 0;
     Http::fake([

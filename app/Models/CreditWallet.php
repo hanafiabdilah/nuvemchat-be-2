@@ -7,12 +7,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
- * A tenant's prepaid balance for AI run on rented platform keys.
+ * A tenant's prepaid balance.
+ *
+ * Built for AI runs on rented platform keys and since widened to everything the
+ * workspace buys as it goes — API Way instances, trained agent hires — which is
+ * why it is one wallet and not one per product: a customer holding three
+ * balances has to guess which one to top up before they can do anything.
  *
  * The row is created lazily, on the first read or movement, so workspaces that
- * never rent anything never get one.
+ * never buy anything never get one.
  */
-class AiCreditWallet extends Model
+class CreditWallet extends Model
 {
     protected $fillable = [
         'tenant_id',
@@ -33,7 +38,7 @@ class AiCreditWallet extends Model
 
     public function transactions(): HasMany
     {
-        return $this->hasMany(AiCreditTransaction::class, 'tenant_id', 'tenant_id');
+        return $this->hasMany(CreditTransaction::class, 'tenant_id', 'tenant_id');
     }
 
     /**

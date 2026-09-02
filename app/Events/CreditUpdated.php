@@ -9,7 +9,7 @@ use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
 /**
- * The AI credit balance moved.
+ * The prepaid credit balance moved.
  *
  * Two readers, and they want it for opposite reasons: the top-up modal closes
  * when the Pix settles (same job `subscription-updated` does for a plan), and
@@ -21,7 +21,7 @@ use Illuminate\Queue\SerializesModels;
  * channel, so everything on it is visible to every member of the workspace, and
  * a balance is the whole of what they need.
  */
-class AiCreditUpdated implements ShouldBroadcast
+class CreditUpdated implements ShouldBroadcast
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
@@ -45,7 +45,7 @@ class AiCreditUpdated implements ShouldBroadcast
 
     public function broadcastAs(): string
     {
-        return 'ai-credit-updated';
+        return 'credit-updated';
     }
 
     public function broadcastWith(): array

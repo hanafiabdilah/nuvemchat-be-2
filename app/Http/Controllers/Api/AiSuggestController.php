@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Conversation\Status;
-use App\Exceptions\Billing\AiCreditExhaustedException;
+use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
@@ -61,14 +61,14 @@ class AiSuggestController extends Controller
                 'limit' => $th->limit,
                 'used' => $th->used,
             ], 402);
-        } catch (AiCreditExhaustedException $th) {
+        } catch (CreditExhaustedException $th) {
             // Same 402, different code and different fix: this workspace runs
             // on a rented platform key and has nothing left in its balance.
             // Top up, not upgrade — and the button that appears has to lead to
             // the right screen.
             return response()->json([
-                'message' => 'Your AI credit balance is empty. Top it up to keep using AI.',
-                'code' => 'ai_credit_exhausted',
+                'message' => 'Your credit balance is empty. Top it up to keep using AI.',
+                'code' => 'credit_exhausted',
                 'balance_cents' => $th->balanceCents,
             ], 402);
         } catch (\Throwable $th) {

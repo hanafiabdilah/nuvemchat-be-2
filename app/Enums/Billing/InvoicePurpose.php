@@ -17,11 +17,14 @@ enum InvoicePurpose: string
     case TrainedAgentPurchase = 'trained_agent_purchase';
 
     /**
-     * A top-up of the prepaid AI credit balance, for workspaces running on a
-     * rented platform key. Like the trained agent it has no period and no
-     * renewal — the customer buys an amount, spends it, and buys again.
+     * A top-up of the prepaid balance. No period and no renewal — the customer
+     * buys an amount, spends it, and buys again.
+     *
+     * ⚠️ The case was renamed when the wallet stopped being AI-only; the stored
+     * value was not. It names rows already sitting in `invoices.purpose`, and a
+     * value renamed in code is a set of historical invoices that stop casting.
      */
-    case AiCreditTopup = 'ai_credit_topup';
+    case CreditTopup = 'ai_credit_topup';
 
     public function isApiway(): bool
     {

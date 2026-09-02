@@ -34,7 +34,7 @@ class SyncApiwaySubscriptions extends Command
 
         $result = $apiway->syncStatuses();
 
-        $this->info("Expired locally: {$result['expired']}, held purchases retried: {$result['retried']}, reconciled from partner: {$result['synced']}.");
+        $this->info("Expired locally: {$result['expired']}, unprovisioned purchases retried: {$result['retried']}, reconciled from partner: {$result['synced']}.");
 
         return self::SUCCESS;
     }

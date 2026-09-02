@@ -10,7 +10,7 @@ use App\Enums\Message\SenderType;
 use App\Events\ConversationHandoff;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
-use App\Exceptions\Billing\AiCreditExhaustedException;
+use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunFlowMessageNode;
@@ -2839,20 +2839,20 @@ class FlowExecutor
             $stateData[$reasonKey] = 'ai_quota_exceeded';
             $flowState->update(['state_data' => $stateData]);
             $this->routeHandoff($flowState, $node, 'ai_quota_exceeded', false);
-        } catch (AiCreditExhaustedException $th) {
+        } catch (CreditExhaustedException $th) {
             // Its own reason for the same reason the quota has one: "the plan's
             // runs are spent" and "the prepaid balance is empty" are fixed on
             // different screens, and a workspace pointed at the wrong one loses
             // the afternoon before it finds out.
-            Log::warning('FlowExecutor: AI credit exhausted, handing off to human', [
+            Log::warning('FlowExecutor: credit exhausted, handing off to human', [
                 'node_id' => $node->id,
                 'ai_hub_agent_id' => $agent->id,
                 'balance_cents' => $th->balanceCents,
             ]);
 
-            $stateData[$reasonKey] = 'ai_credit_exhausted';
+            $stateData[$reasonKey] = 'credit_exhausted';
             $flowState->update(['state_data' => $stateData]);
-            $this->routeHandoff($flowState, $node, 'ai_credit_exhausted', false);
+            $this->routeHandoff($flowState, $node, 'credit_exhausted', false);
         } catch (\Throwable $th) {
             Log::error('FlowExecutor: Error running AIAgent, handing off to human', [
                 'node_id' => $node->id,

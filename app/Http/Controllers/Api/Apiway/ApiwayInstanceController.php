@@ -3,12 +3,11 @@
 namespace App\Http\Controllers\Api\Apiway;
 
 use App\Enums\Apiway\ApiwaySubscriptionStatus;
-use App\Enums\Billing\PaymentMethod;
 use App\Exceptions\ApiwayPartnerException;
+use App\Exceptions\Billing\InsufficientCreditException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Apiway\ApiwayInstanceResource;
 use App\Http\Resources\Apiway\ApiwaySubscriptionResource;
-use App\Http\Resources\Billing\InvoiceResource;
 use App\Models\ApiwayInstance;
 use App\Models\AuditLog;
 use App\Services\Connection\Apiway\ApiwayService;
@@ -62,8 +61,12 @@ class ApiwayInstanceController extends Controller
     }
 
     /**
-     * Create an instance: either from the plan's included allotment (free) or
-     * as a unit purchase (Pix invoice / card preapproval) at catalog price.
+     * Create an instance: either from the plan's included allotment (free) or as
+     * a unit purchase at catalog price, charged to the prepaid balance.
+     *
+     * No payment method to choose any more — the balance is the payment method,
+     * and there is no pending state to return: by the time this responds the
+     * charge has settled and provisioning has either finished or been queued.
      */
     public function store(Request $request)
     {
@@ -72,31 +75,30 @@ class ApiwayInstanceController extends Controller
             'quantity' => ['required_if:mode,unit', 'integer', 'min:1', 'max:100'],
             'cycle' => ['required_if:mode,unit', 'in:mensal,anual'],
             'location_code' => ['required_if:mode,unit', 'nullable', 'string', 'max:20'],
-            'method' => ['required_if:mode,unit', 'in:pix,card'],
-            'card_token_id' => ['required_if:method,card', 'nullable', 'string'],
-            'payer_email' => ['nullable', 'email'],
         ]);
 
         $tenant = $request->user()->tenant;
 
         try {
-            if ($validated['mode'] === 'included') {
-                $subscription = $this->apiway->createIncludedInstance($tenant, $validated['location_code'] ?? null);
-
-                return response()->json([
-                    'data' => new ApiwaySubscriptionResource($subscription->load('instances')),
-                ], $subscription->status === ApiwaySubscriptionStatus::Active ? 201 : 202);
-            }
-
-            $result = $this->apiway->startUnitPurchase(
-                $tenant,
-                $validated['quantity'],
-                $validated['cycle'],
-                $validated['location_code'],
-                PaymentMethod::from($validated['method']),
-                $validated['card_token_id'] ?? null,
-                $validated['payer_email'] ?? $request->user()->email,
-            );
+            $subscription = $validated['mode'] === 'included'
+                ? $this->apiway->createIncludedInstance($tenant, $validated['location_code'] ?? null)
+                : $this->apiway->purchaseUnits(
+                    $tenant,
+                    $validated['quantity'],
+                    $validated['cycle'],
+                    $validated['location_code'],
+                );
+        } catch (InsufficientCreditException $e) {
+            // 422 with the numbers, not a bare "insufficient balance": the page
+            // that made this request has to tell the customer how much to add,
+            // and it should not have to subtract two figures to find out.
+            return response()->json([
+                'message' => 'Seu saldo não cobre esta compra. Recarregue para continuar.',
+                'code' => 'insufficient_credit',
+                'balance_cents' => $e->balanceCents,
+                'required_cents' => $e->requiredCents,
+                'shortfall_cents' => $e->shortfallCents(),
+            ], 422);
         } catch (ApiwayPartnerException $e) {
             return response()->json([
                 'message' => $e->getMessage(),
@@ -105,10 +107,8 @@ class ApiwayInstanceController extends Controller
         }
 
         return response()->json([
-            'data' => new ApiwaySubscriptionResource($result['subscription']->load('instances')),
-            'invoice' => $result['invoice'] ? new InvoiceResource($result['invoice']) : null,
-            'authorized' => $result['authorized'],
-        ], 201);
+            'data' => new ApiwaySubscriptionResource($subscription->load('instances')),
+        ], $subscription->status === ApiwaySubscriptionStatus::Active ? 201 : 202);
     }
 
     /**

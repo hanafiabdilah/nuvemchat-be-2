@@ -13,7 +13,7 @@ use App\Http\Controllers\Api\AiHub\VocabularyController as AiHubVocabularyContro
 use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\TokenRentalController as AiHubTokenRentalController;
-use App\Http\Controllers\Api\AiCredits\AiCreditController;
+use App\Http\Controllers\Api\Credits\CreditController;
 use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
 use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
 use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
@@ -23,7 +23,7 @@ use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
-use App\Http\Controllers\Api\Admin\AdminAiCreditController;
+use App\Http\Controllers\Api\Admin\AdminCreditController;
 use App\Http\Controllers\Api\Admin\AdminAiModelController;
 use App\Http\Controllers\Api\Admin\AdminAiTokenPoolController;
 use App\Http\Controllers\Api\Admin\AdminAiUsageController;
@@ -149,7 +149,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/instances', [ApiwayInstanceController::class, 'index'])->name('instances.index');
         Route::post('/instances', [ApiwayInstanceController::class, 'store'])->middleware('permission:billing.manage')->name('instances.store');
         Route::post('/instances/{instance}/token/reveal', [ApiwayInstanceController::class, 'revealToken'])->middleware('permission:connections.connect')->name('instances.token');
-        Route::post('/subscriptions/{subscription}/renew-invoice', [ApiwaySubscriptionController::class, 'renewInvoice'])->middleware('permission:billing.manage')->name('subscriptions.renew-invoice');
+        Route::post('/subscriptions/{subscription}/renew', [ApiwaySubscriptionController::class, 'renew'])->middleware('permission:billing.manage')->name('subscriptions.renew');
         Route::post('/subscriptions/{subscription}/abandon', [ApiwaySubscriptionController::class, 'abandon'])->middleware('permission:billing.manage')->name('subscriptions.abandon');
         Route::post('/subscriptions/{subscription}/cancel', [ApiwaySubscriptionController::class, 'cancel'])->middleware('permission:billing.manage')->name('subscriptions.cancel');
     });
@@ -454,7 +454,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // Renting is free — what it costs is the usage, out of the prepaid
         // balance — so it sits behind the agent permissions rather than
         // billing.manage. Buying the credit is the billing act, and that lives
-        // under /ai-credits.
+        // under /credits.
         Route::get('/rentals', [AiHubTokenRentalController::class, 'index'])->middleware('permission:ai-agents.view');
         Route::post('/rentals', [AiHubTokenRentalController::class, 'store'])->middleware('permission:ai-agents.create');
         Route::delete('/rentals/{id}', [AiHubTokenRentalController::class, 'destroy'])->middleware('permission:ai-agents.delete');
@@ -489,14 +489,20 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::delete('/agents/{agentId}/training-examples/{exampleId}', [AiHubAgentTrainingExampleController::class, 'destroy'])->middleware('permission:ai-agents.delete');
     });
 
-    // Prepaid AI credit. Deliberately NOT behind `feature:ai_agent_hub`: a
-    // workspace whose plan lost the AI feature still has money sitting in a
-    // balance, and hiding the statement is how a refund request turns into a
-    // support ticket.
-    Route::prefix('ai-credits')->name('ai-credits.')->group(function () {
-        Route::get('/', [AiCreditController::class, 'index'])
+    // The prepaid balance, and the only way to add to it. Never behind
+    // `feature:ai_agent_hub` — it started as an AI-only wallet but now also pays
+    // for API Way instances and trained agent hires, so a workspace whose plan
+    // has no AI feature at all still spends from here. Even without that, money
+    // sitting in a balance whose statement is hidden is how a refund request
+    // turns into a support ticket.
+    Route::prefix('credits')->name('credits.')->group(function () {
+        Route::get('/', [CreditController::class, 'index'])
             ->middleware('permission:billing.view')->name('index');
-        Route::post('/topup', [AiCreditController::class, 'topup'])
+        // Read on every dashboard load by the balance banner, so it is kept
+        // apart from the statement above rather than sharing its payload.
+        Route::get('/alerts', [CreditController::class, 'alerts'])
+            ->middleware('permission:billing.view')->name('alerts');
+        Route::post('/topup', [CreditController::class, 'topup'])
             ->middleware('permission:billing.manage')->name('topup');
     });
 
@@ -604,7 +610,7 @@ Route::prefix('admin')->group(function () {
         // catalogue, not a secret, and gating it on one of them would break the
         // other two.
         Route::get('/ai-models', [AdminAiModelController::class, 'index'])
-            ->middleware('permission:bo.ai-tokens.manage|bo.ai-credits.manage|bo.trained-agents.manage');
+            ->middleware('permission:bo.ai-tokens.manage|bo.credits.manage|bo.trained-agents.manage');
 
         // The pool of provider keys rented out to workspaces. Its own
         // permission because this is where the platform's provider secrets are
@@ -619,29 +625,29 @@ Route::prefix('admin')->group(function () {
         // The balances those rentals are spent from, and the ability to comp or
         // claw back. Separate from the pool: support should be able to fix a
         // balance without holding the keys.
-        Route::middleware('permission:bo.ai-credits.manage')->group(function () {
-            Route::get('/ai-credits', [AdminAiCreditController::class, 'index']);
+        Route::middleware('permission:bo.credits.manage')->group(function () {
+            Route::get('/credits', [AdminCreditController::class, 'index']);
             // The markup and FX rate the whole offering is priced on. Under the
             // credits permission rather than the token pool's: setting a price
             // is a commercial act, not custody of the platform's secrets.
-            Route::put('/ai-credits/pricing', [AdminAiCreditController::class, 'updatePricing'])
-                ->withoutMiddleware('permission:bo.ai-credits.manage')
-                ->middleware('permission:bo.ai-tokens.manage|bo.ai-credits.manage');
+            Route::put('/credits/pricing', [AdminCreditController::class, 'updatePricing'])
+                ->withoutMiddleware('permission:bo.credits.manage')
+                ->middleware('permission:bo.ai-tokens.manage|bo.credits.manage');
             // Per-model list prices and margins. The margin is real (it prices
             // the run); the list price is shown to customers but never billed —
             // see the ai_model_prices migration.
             // The model catalogue lives on the AI Tokens page — it is the
             // offering, not a balance — so that permission has to reach it.
-            Route::middleware(['permission:bo.ai-tokens.manage|bo.ai-credits.manage'])
-                ->withoutMiddleware('permission:bo.ai-credits.manage')
+            Route::middleware(['permission:bo.ai-tokens.manage|bo.credits.manage'])
+                ->withoutMiddleware('permission:bo.credits.manage')
                 ->group(function () {
-                    Route::get('/ai-credits/models', [AdminAiCreditController::class, 'models']);
-                    Route::post('/ai-credits/models', [AdminAiCreditController::class, 'upsertModel']);
-                    Route::post('/ai-credits/models/reorder', [AdminAiCreditController::class, 'reorderModels']);
-                    Route::delete('/ai-credits/models/{model}', [AdminAiCreditController::class, 'destroyModel']);
+                    Route::get('/credits/models', [AdminCreditController::class, 'models']);
+                    Route::post('/credits/models', [AdminCreditController::class, 'upsertModel']);
+                    Route::post('/credits/models/reorder', [AdminCreditController::class, 'reorderModels']);
+                    Route::delete('/credits/models/{model}', [AdminCreditController::class, 'destroyModel']);
                 });
-            Route::get('/customers/{tenant}/ai-credits', [AdminAiCreditController::class, 'show']);
-            Route::post('/customers/{tenant}/ai-credits/adjust', [AdminAiCreditController::class, 'adjust']);
+            Route::get('/customers/{tenant}/credits', [AdminCreditController::class, 'show']);
+            Route::post('/customers/{tenant}/credits/adjust', [AdminCreditController::class, 'adjust']);
         });
 
         // Campaigns platform-wide, plus the ability to stop one. A bad blast

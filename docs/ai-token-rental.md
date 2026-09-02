@@ -35,14 +35,14 @@ exist before; everywhere else a key is write-only.
 
 | Piece | Where |
 |---|---|
-| The pool | `ai_token_pool_keys` · `App\Services\AiCredits\AiTokenPool` |
-| Renting / releasing / rotating | `App\Services\AiCredits\AiTokenRentalService` |
-| Price of a run | `App\Services\AiCredits\AiCreditPricing` |
-| Balance + ledger | `ai_credit_wallets`, `ai_credit_transactions` · `AiCreditService` |
+| The pool | `ai_token_pool_keys` · `App\Services\AiTokens\AiTokenPool` |
+| Renting / releasing / rotating | `App\Services\AiTokens\AiTokenRentalService` |
+| Price of a run | `App\Services\Credits\CreditPricing` |
+| Balance + ledger | `credit_wallets`, `credit_transactions` · `CreditService` |
 | Gate + debit | `AiAgentHubTenantService::{assertCanSpendCredit,chargeRentedRun}` |
-| Top-up charge | `BillingService::createAiCreditTopupPixInvoice` (`InvoicePurpose::AiCreditTopup`) |
-| Tenant UI | `pages/AiAgents/{AiAgentCredentials,AiCredits}.tsx` |
-| Back Office | `pages/{AiTokens,AiCredits}.tsx` · `bo.ai-tokens.manage`, `bo.ai-credits.manage` |
+| Top-up charge | `BillingService::createCreditTopupPixInvoice` (`InvoicePurpose::CreditTopup`) |
+| Tenant UI | `pages/AiAgents/{AiAgentCredentials,Credits}.tsx` |
+| Back Office | `pages/{AiTokens,Credits}.tsx` · `bo.ai-tokens.manage`, `bo.credits.manage` |
 
 ---
 
@@ -82,7 +82,7 @@ lives in the **AI Agent create/edit form** (`components/ai/AgentCredentialChoice
 - **My own key** — the credential dropdown, filtered to the workspace's own,
   non-audio keys. Unchanged behaviour.
 - **Rent from the platform** — every model a rentable provider can run
-  (`AiCreditPricing::rentableModels()`: our catalogue plus anything priced by
+  (`CreditPricing::rentableModels()`: our catalogue plus anything priced by
   hand), grouped, each carrying its price *where one is published*; a breakdown
   for the chosen one; and the credit balance, stated before the agent is saved
   rather than discovered when it goes silent.
@@ -205,8 +205,8 @@ cents = ceil( cost_usd × usd_brl_rate × (1 + markup_pct/100) × 100 )
 
 `cost_usd` is what the hub reported the provider charged. Every number in that
 formula lives in the `settings` table and is edited in **Back Office → AI
-Credits → Pricing** (`bo.ai-credits.manage`), falling back to `config/ai.php`
-until an admin has touched it. Read them through `AiCreditPricing`, never with
+Credits → Pricing** (`bo.credits.manage`), falling back to `config/ai.php`
+until an admin has touched it. Read them through `CreditPricing`, never with
 `config()` — a floor enforced by the API and a different floor printed on the
 customer's page is a customer told one number and refused for another.
 
@@ -226,7 +226,7 @@ must not be confused:
 Models are not equally worth reselling — a cheap one carries almost no absolute
 margin at the default percentage — so the override is the real feature. The list
 prices are there so a workspace can *see* what it is choosing before it chooses:
-`GET /api/ai-credits` and `GET /api/ai-hub/rentals` both publish the computed
+`GET /api/credits` and `GET /api/ai-hub/rentals` both publish the computed
 BRL figures (the second one because choosing a model happens in the agent form,
 behind the agent permissions, and that person may not hold `billing.view`).
 
@@ -249,7 +249,7 @@ being shorter.
 Two things worth knowing:
 
 - **Rounding is guarded.** `0.02 × 5 × 1.5` is `0.15000000000000002` in binary
-  floating point; ceiling that gives 16 cents instead of 15. `AiCreditPricing`
+  floating point; ceiling that gives 16 cents instead of 15. `CreditPricing`
   rounds to six places before the ceiling. Without it every price carries an
   extra cent it cannot justify.
 - **A run with no reported cost is not free.** `ai_hub_runs.cost_usd` is already
@@ -285,7 +285,7 @@ as a red badge rather than clamping it to zero.
 
 ## Idempotency is the database's job
 
-`ai_credit_transactions.ai_hub_run_id` and `.invoice_id` are **unique**.
+`credit_transactions.ai_hub_run_id` and `.invoice_id` are **unique**.
 
 - A retried job that already persisted the run cannot bill for it twice.
 - MercadoPago delivers the same webhook more than once; a credit applied twice
@@ -293,7 +293,7 @@ as a red badge rather than clamping it to zero.
 
 Both are enforced by the index, not by a check-then-write — webhook deliveries
 and queue workers are concurrent by nature. A duplicate insert is swallowed and
-logged (`AiCreditService: movement already recorded`), because from the caller's
+logged (`CreditService: movement already recorded`), because from the caller's
 point of view the movement already happened.
 
 ---
@@ -334,15 +334,15 @@ is what moves them. The Back Office form says so at the field.
 
 ## When the balance runs out
 
-`assertCanSpendCredit()` throws `AiCreditExhaustedException` **before** the hub
+`assertCanSpendCredit()` throws `CreditExhaustedException` **before** the hub
 is called, so an empty wallet costs the platform nothing. It follows the same
 `BILLING_ENFORCE` master switch as every other entitlement check.
 
 Consequences, decided by the caller:
 
-- **Flow** → `routeHandoff(reason: 'ai_credit_exhausted')`. The customer is
+- **Flow** → `routeHandoff(reason: 'credit_exhausted')`. The customer is
   handed to a human, never left talking to silence.
-- **"Respond with AI"** → `402` with code `ai_credit_exhausted`.
+- **"Respond with AI"** → `402` with code `credit_exhausted`.
 
 Kept apart from `ai_quota_exceeded` on purpose: both stop the AI for an account
 reason, but they are fixed on different screens — one by upgrading the plan, one
@@ -396,5 +396,5 @@ grep 'failed to charge a rented run' storage/logs/laravel.log
 
 ## Tests
 
-`tests/Feature/AiCredits/{AiTokenRentalTest,AiCreditTest}.php`, fixtures in
-`tests/Support/AiCreditFixtures.php`.
+`tests/Feature/Credits/{AiTokenRentalTest,CreditTest,CreditLedgerTest}.php`, fixtures in
+`tests/Support/CreditFixtures.php`.

@@ -5,7 +5,7 @@ namespace App\Services\AiAgentHub;
 use App\Enums\Billing\Quota;
 use App\Enums\Connection\Channel;
 use App\Exceptions\AiHubObjectMissingException;
-use App\Exceptions\Billing\AiCreditExhaustedException;
+use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Models\AiHubAgent;
 use App\Models\AiHubAgentProfile;
@@ -16,7 +16,7 @@ use App\Models\AiHubSkill;
 use App\Models\AiHubTenant;
 use App\Models\AiHubTrainingExample;
 use App\Models\Conversation;
-use App\Services\AiCredits\AiCreditService;
+use App\Services\Credits\CreditService;
 use App\Services\Billing\SubscriptionGate;
 use Carbon\Carbon;
 use Exception;
@@ -978,7 +978,7 @@ class AiAgentHubTenantService
      *
      * After the run, never before: the price is the provider's own cost, and
      * the hub only reports that with the result. A workspace can therefore
-     * overdraw by at most one run — see AiCreditService::canSpend().
+     * overdraw by at most one run — see CreditService::canSpend().
      *
      * Failures here are swallowed. The reply has already been generated and is
      * on its way to a customer; throwing now would hand the conversation to a
@@ -995,7 +995,7 @@ class AiAgentHubTenantService
         }
 
         try {
-            app(AiCreditService::class)->chargeRun($run);
+            app(CreditService::class)->chargeRun($run);
         } catch (\Throwable $e) {
             Log::error('AiAgentHubTenantService: failed to charge a rented run to the wallet', [
                 'ai_hub_run_id' => $run->id,
@@ -1147,7 +1147,7 @@ class AiAgentHubTenantService
             return;
         }
 
-        $credits = app(AiCreditService::class);
+        $credits = app(CreditService::class);
 
         if ($credits->canSpend($tenant)) {
             return;
@@ -1155,13 +1155,13 @@ class AiAgentHubTenantService
 
         $balance = $credits->balanceCents($tenant);
 
-        Log::warning('AiAgentHubTenantService: AI credit exhausted on a rented token', [
+        Log::warning('AiAgentHubTenantService: credit exhausted on a rented token', [
             'tenant_id' => $tenant->id,
             'ai_hub_agent_id' => $agent->id,
             'balance_cents' => $balance,
         ]);
 
-        throw new AiCreditExhaustedException($balance);
+        throw new CreditExhaustedException($balance);
     }
 
     /**

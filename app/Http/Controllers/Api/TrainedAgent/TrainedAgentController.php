@@ -3,8 +3,8 @@
 namespace App\Http\Controllers\Api\TrainedAgent;
 
 use App\Enums\TrainedAgent\HireStatus;
+use App\Exceptions\Billing\InsufficientCreditException;
 use App\Http\Controllers\Controller;
-use App\Http\Resources\Billing\InvoiceResource;
 use App\Http\Resources\TrainedAgent\TrainedAgentCatalogResource;
 use App\Http\Resources\TrainedAgent\TrainedAgentCategoryResource;
 use App\Http\Resources\TrainedAgent\TrainedAgentHireResource;
@@ -47,39 +47,41 @@ class TrainedAgentController extends Controller
     }
 
     /**
-     * Hire a blueprint. Free while the plan's included slots last, otherwise a
-     * one-off Pix charge — the server decides which, from the allowance.
+     * Hire a blueprint. Free while the plan's included slots last, otherwise
+     * charged to the prepaid balance — the server decides which, from the
+     * allowance.
      */
     public function hire(Request $request, TrainedAgentBlueprint $blueprint)
     {
         $validated = $request->validate([
             'provider_credential_id' => ['required', 'integer'],
             'agent_name' => ['nullable', 'string', 'max:150'],
-            'payer_email' => ['nullable', 'email'],
         ]);
 
         abort_unless($blueprint->is_active && $blueprint->is_public, 404);
 
         $tenant = $request->user()->tenant;
 
-        // A paid hire is a charge, and creating charges is a billing act even
-        // for someone allowed to manage agents. The free path stays open to
+        // A paid hire is a charge, and spending the balance is a billing act
+        // even for someone allowed to manage agents. The free path stays open to
         // anyone with ai-agents.create, which is the common case.
         if (! $this->service->usageSummary($tenant)['can_hire_included']) {
             abort_unless($request->user()->can('billing.manage'), 403, 'Your included agents are used up; buying another requires billing permission.');
         }
 
-        $result = $this->service->hire(
-            $tenant,
-            $blueprint,
-            (int) $validated['provider_credential_id'],
-            $validated['agent_name'] ?? null,
-            $validated['payer_email'] ?? $request->user()->email,
-        );
+        try {
+            $hire = $this->service->hire(
+                $tenant,
+                $blueprint,
+                (int) $validated['provider_credential_id'],
+                $validated['agent_name'] ?? null,
+            );
+        } catch (InsufficientCreditException $e) {
+            return response()->json($this->shortfall($e), 422);
+        }
 
         return response()->json([
-            'data' => new TrainedAgentHireResource($result['hire']->load('blueprint.category')),
-            'invoice' => $result['invoice'] ? new InvoiceResource($result['invoice']) : null,
+            'data' => new TrainedAgentHireResource($hire->load('blueprint.category')),
             'usage' => $this->service->usageSummary($tenant),
         ], 201);
     }
@@ -98,8 +100,12 @@ class TrainedAgentController extends Controller
     }
 
     /**
-     * Re-run a fork that failed. The tenant already paid (or already spent the
-     * slot), so the alternative to a retry button is a support ticket.
+     * Re-run a fork that failed. Without this button the alternative is a
+     * support ticket.
+     *
+     * A paid hire is charged again, because failing refunded it — normally
+     * invisible, since the refund is sitting in the same balance. It can still
+     * come back 422 if the tenant spent that money in between.
      */
     public function retry(Request $request, int $hire)
     {
@@ -107,7 +113,11 @@ class TrainedAgentController extends Controller
 
         abort_unless($row->status === HireStatus::Failed, 409, 'This agent is not in a failed state.');
 
-        $this->service->retry($row);
+        try {
+            $this->service->retry($row);
+        } catch (InsufficientCreditException $e) {
+            return response()->json($this->shortfall($e), 422);
+        }
 
         return response()->json([
             'data' => new TrainedAgentHireResource($row->fresh()->load('blueprint.category')),
@@ -119,5 +129,22 @@ class TrainedAgentController extends Controller
         return TrainedAgentHire::query()
             ->where('tenant_id', $request->user()->tenant_id)
             ->findOrFail($id);
+    }
+
+    /**
+     * The refusal a page can act on: the amount still missing, not just the
+     * fact that something was missing.
+     *
+     * @return array<string, mixed>
+     */
+    private function shortfall(InsufficientCreditException $e): array
+    {
+        return [
+            'message' => 'Seu saldo não cobre esta contratação. Recarregue para continuar.',
+            'code' => 'insufficient_credit',
+            'balance_cents' => $e->balanceCents,
+            'required_cents' => $e->requiredCents,
+            'shortfall_cents' => $e->shortfallCents(),
+        ];
     }
 }

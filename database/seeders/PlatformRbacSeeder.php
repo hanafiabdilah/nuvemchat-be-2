@@ -39,7 +39,7 @@ class PlatformRbacSeeder extends Seeder
         // ability to comp credit or claw a charge back. Deliberately apart from
         // the pool: support fixing a balance should not also be holding the
         // keys the whole platform runs on.
-        'bo.ai-credits.manage',
+        'bo.credits.manage',
         // The trained-agent catalog: categories, blueprints and their prices.
         // Separate from bo.plans.manage because it is content authoring as much
         // as pricing — the person writing a medical-office prompt is not

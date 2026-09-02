@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Http\Resources\AiCredit;
+namespace App\Http\Resources\Credit;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -15,7 +15,7 @@ use Illuminate\Http\Resources\Json\JsonResource;
  * exist for the Back Office and for reconciliation, which is where they are
  * read.
  */
-class AiCreditTransactionResource extends JsonResource
+class CreditTransactionResource extends JsonResource
 {
     public function toArray(Request $request): array
     {

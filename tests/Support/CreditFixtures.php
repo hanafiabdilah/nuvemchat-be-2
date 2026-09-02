@@ -2,7 +2,7 @@
 
 namespace Tests\Support;
 
-use App\Enums\AiCredit\TokenPoolKeyStatus;
+use App\Enums\AiToken\TokenPoolKeyStatus;
 use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
@@ -25,7 +25,7 @@ use Illuminate\Support\Facades\Http;
  * rather than global functions in one of the files so neither suite depends on
  * the other having been loaded first.
  */
-class AiCreditFixtures
+class CreditFixtures
 {
     /**
      * A workspace with the AI hub already provisioned, so renting exercises the

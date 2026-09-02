@@ -2,12 +2,12 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
-use App\Enums\AiCredit\TokenPoolKeyStatus;
+use App\Enums\AiToken\TokenPoolKeyStatus;
 use App\Http\Controllers\Controller;
 use App\Models\AiHubRun;
 use App\Models\AiTokenPoolKey;
 use App\Models\AuditLog;
-use App\Services\AiCredits\AiTokenRentalService;
+use App\Services\AiTokens\AiTokenRentalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -186,7 +186,7 @@ class AdminAiTokenPoolController extends Controller
      * key its agent is re-pointed, so its past runs follow it and are counted
      * against the new key. Fine for what this column is for — spotting which
      * key is being hammered — and deliberately not the money record: that is
-     * `ai_credit_transactions`, which prices each run when it happens and never
+     * `credit_transactions`, which prices each run when it happens and never
      * moves afterwards.
      *
      * @param  list<int>  $keyIds

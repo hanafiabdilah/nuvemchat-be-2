@@ -2,7 +2,7 @@
 
 namespace App\Models;
 
-use App\Enums\AiCredit\TokenPoolKeyStatus;
+use App\Enums\AiToken\TokenPoolKeyStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;

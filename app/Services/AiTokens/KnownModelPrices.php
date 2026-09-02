@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\AiCredits;
+namespace App\Services\AiTokens;
 
 /**
  * The models the Back Office can price, and what their providers list them at

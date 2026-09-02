@@ -5,10 +5,10 @@ namespace App\Http\Controllers\Api\AiHub;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\AiHubProviderCredentialResource;
 use App\Models\AiHubProviderCredential;
-use App\Services\AiCredits\AiCreditPricing;
-use App\Services\AiCredits\AiCreditService;
-use App\Services\AiCredits\AiTokenPool;
-use App\Services\AiCredits\AiTokenRentalService;
+use App\Services\Credits\CreditPricing;
+use App\Services\Credits\CreditService;
+use App\Services\AiTokens\AiTokenPool;
+use App\Services\AiTokens\AiTokenRentalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -26,7 +26,7 @@ class TokenRentalController extends Controller
     public function __construct(
         private readonly AiTokenRentalService $rentals,
         private readonly AiTokenPool $pool,
-        private readonly AiCreditService $credits,
+        private readonly CreditService $credits,
     ) {}
 
     /**
@@ -64,7 +64,7 @@ class TokenRentalController extends Controller
             //
             // Filtered to providers that can actually be rented — offering a
             // model with no key behind it is an offer we cannot honour.
-            'models' => AiCreditPricing::rentableModels($offerable),
+            'models' => CreditPricing::rentableModels($offerable),
         ]);
     }
 

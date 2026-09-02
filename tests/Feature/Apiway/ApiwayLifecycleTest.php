@@ -13,6 +13,8 @@ use App\Jobs\RenewApiwaySubscription;
 use App\Models\ApiwayInstance;
 use App\Models\ApiwaySubscription;
 use App\Models\Connection;
+use App\Models\CreditTransaction;
+use App\Models\CreditWallet;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Setting;
@@ -22,6 +24,9 @@ use App\Models\User;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\Credits\CreditService;
+use App\Enums\Credit\CreditTransactionType;
+use App\Enums\Notification\NotificationType;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
@@ -164,29 +169,70 @@ test('included subscriptions stop renewing once the plan is suspended', function
     Bus::assertNotDispatched(RenewApiwaySubscription::class);
 });
 
-test('a unit pix subscription near expiry gets a renewal invoice priced from a fresh quote', function () {
+test('a unit subscription near expiry is charged to the balance at a freshly quoted price', function () {
     Http::fake([
         'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
             'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 59.9, 'total_price' => 59.9,
         ]]),
-        'api.mercadopago.com/v1/payments' => Http::response([
-            'id' => 900, 'status' => 'pending',
-            'point_of_interaction' => ['transaction_data' => ['qr_code' => 'QR']],
-        ]),
     ]);
 
     $tenant = lifecycleTenant();
+    CreditWallet::create(['tenant_id' => $tenant->id, 'balance_cents' => 20_000, 'currency' => 'BRL']);
     $row = lifecycleSubscription($tenant, ['expires_at' => now()->addDays(2)]);
 
     $this->artisan('apiway:renew')->assertSuccessful();
-    // Second run must not duplicate the open invoice.
+    // A second run inside the same cycle must not charge again: the reference
+    // carries the expiry, which has not moved because the renew is still queued.
     $this->artisan('apiway:renew')->assertSuccessful();
 
-    $invoices = $row->invoices()->where('purpose', InvoicePurpose::ApiwayRenewal->value)->get();
+    $debits = CreditTransaction::where('tenant_id', $tenant->id)->get();
 
-    expect($invoices)->toHaveCount(1)
-        ->and($invoices->first()->amount_cents)->toBe(5990)  // re-quoted price, not the stale one
+    expect($debits)->toHaveCount(1)
+        ->and($debits->first()->type)->toBe(CreditTransactionType::Renewal)
+        // The re-quoted price, not the stale one stored on the row.
+        ->and($debits->first()->amount_cents)->toBe(-5990)
+        ->and($debits->first()->reference)->toBe("apiway:renew:{$row->id}:" . $row->expires_at->toDateString())
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(14_010)
+        ->and(Invoice::count())->toBe(0);
+
+    Bus::assertDispatched(RenewApiwaySubscription::class);
+});
+
+test('a renewal the balance cannot cover warns instead of charging', function () {
+    Http::fake([
+        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
+            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 59.9, 'total_price' => 59.9,
+        ]]),
+    ]);
+
+    $tenant = lifecycleTenant();
+    CreditWallet::create(['tenant_id' => $tenant->id, 'balance_cents' => 500, 'currency' => 'BRL']);
+    $row = lifecycleSubscription($tenant, ['expires_at' => now()->addDays(2)]);
+
+    $this->artisan('apiway:renew')->assertSuccessful();
+
+    // Nothing taken, nothing renewed — and a reminder stamped so the warning
+    // repeats daily rather than once.
+    expect(CreditTransaction::count())->toBe(0)
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(500)
         ->and($row->fresh()->renewal_reminder_sent_at)->not->toBeNull();
+
+    Bus::assertNotDispatched(RenewApiwaySubscription::class);
+});
+
+test('an insufficient balance is warned about a week out, before anything is charged', function () {
+    $tenant = lifecycleTenant();
+    CreditWallet::create(['tenant_id' => $tenant->id, 'balance_cents' => 0, 'currency' => 'BRL']);
+    // Outside the three-day charge window, inside the seven-day warning window.
+    $row = lifecycleSubscription($tenant, ['expires_at' => now()->addDays(6)]);
+
+    // No quote is faked on purpose: the early warning must price itself from the
+    // row it already has rather than calling the partner for every subscription
+    // every day. A stray request fails this suite.
+    $this->artisan('apiway:renew')->assertSuccessful();
+
+    expect($row->fresh()->renewal_reminder_sent_at)->not->toBeNull()
+        ->and(CreditTransaction::count())->toBe(0);
 });
 
 test('a unit card subscription with live auto-debit is left to MercadoPago', function () {

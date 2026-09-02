@@ -9,10 +9,12 @@ use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Connection\Status as ConnectionStatus;
+use App\Enums\Credit\CreditTransactionType;
 use App\Enums\Notification\NotificationType;
 use App\Events\ApiwaySubscriptionUpdated;
 use App\Events\ConnectionUpdated;
 use App\Exceptions\ApiwayPartnerException;
+use App\Exceptions\Billing\InsufficientCreditException;
 use App\Jobs\ProvisionApiwaySubscription;
 use App\Jobs\RenewApiwaySubscription;
 use App\Models\ApiwayInstance;
@@ -21,8 +23,8 @@ use App\Models\Invoice;
 use App\Models\Tenant;
 use App\Services\Billing\BillingNotifier;
 use App\Services\Billing\BillingService;
-use App\Services\Billing\MercadoPago\MercadoPagoConfig;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Credits\CreditService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -50,7 +52,27 @@ class ApiwayService
         protected BillingService $billing,
         protected SubscriptionGate $gate,
         protected BillingNotifier $notifier,
+        protected CreditService $credits,
     ) {}
+
+    /** The ledger reference for the first charge of a purchase. */
+    public static function purchaseReference(ApiwaySubscription $row): string
+    {
+        return "apiway:buy:{$row->id}";
+    }
+
+    /**
+     * The ledger reference for one cycle's renewal.
+     *
+     * Carries the expiry it is paying to move, because that is what makes the
+     * charge unique: the same subscription is renewed again next month, and a
+     * reference naming only the subscription would let the ledger refuse the
+     * second renewal as a duplicate of the first.
+     */
+    public static function renewalReference(ApiwaySubscription $row): string
+    {
+        return "apiway:renew:{$row->id}:".($row->expires_at?->toDateString() ?? 'none');
+    }
 
     // --- Catalog -----------------------------------------------------------
 
@@ -142,12 +164,96 @@ class ApiwayService
             'location_code' => $locationCode ?: $this->defaultLocationCode(),
         ]);
 
+        $this->provisionOrQueue($row, 'included');
+
+        return $row->fresh();
+    }
+
+    /**
+     * Buy instances at catalog price, paid from the prepaid balance.
+     *
+     * There is no pending-payment step any more: the balance is already the
+     * customer's money, so the charge settles in the same request and the row
+     * goes straight to provisioning. That removes the state where an instance
+     * existed locally but had not been paid for — which is what `pending_payment`,
+     * the Pix QR, the abandon endpoint and the daily sweep of dead checkouts all
+     * existed to manage.
+     *
+     * Charged BEFORE ProxyBR is called, deliberately. Provisioning after the
+     * money lands is the rule this whole surface was built on, and it is
+     * affordable here in a way it never was with Pix because a failure gives the
+     * money straight back to the balance — see markProvisionFailed().
+     *
+     * @throws InsufficientCreditException when the balance will not cover it
+     */
+    public function purchaseUnits(
+        Tenant $tenant,
+        int $quantity,
+        string $cycle,
+        string $locationCode,
+    ): ApiwaySubscription {
+        // ProxyBR is the price authority — never trust a client-provided total.
+        $quote = $this->partner->quote($quantity, $locationCode, $cycle);
+        $totalCents = $this->toCents($quote['total_price'] ?? 0);
+
+        // Checked here as well as inside the debit's lock: this one exists to
+        // fail before a subscription row is created, so an unaffordable attempt
+        // leaves nothing behind. The one in the lock is the real gate.
+        if (! $this->credits->canAfford($tenant, $totalCents)) {
+            throw new InsufficientCreditException($this->credits->balanceCents($tenant), $totalCents);
+        }
+
+        $row = $this->createLocalSubscription($tenant, [
+            'source' => ApiwaySubscriptionSource::Unit,
+            'status' => ApiwaySubscriptionStatus::Provisioning,
+            'quantity' => $quantity,
+            'cycle' => $this->normalizeCycle($quote['cycle'] ?? $cycle),
+            'location_code' => $locationCode,
+            'unit_price_cents' => $this->toCents($quote['unit_price'] ?? 0),
+            'total_price_cents' => $totalCents,
+            'meta' => ['quote' => $quote],
+        ]);
+
+        try {
+            $this->credits->debit(
+                $tenant,
+                $totalCents,
+                CreditTransactionType::Purchase,
+                self::purchaseReference($row),
+                "API Way — {$quantity} instância(s)",
+                ['apiway_subscription_id' => $row->id, 'quantity' => $quantity, 'cycle' => $row->cycle],
+            );
+        } catch (InsufficientCreditException $e) {
+            // Lost the race against a concurrent purchase. Nothing was charged,
+            // so the row must not survive to look like an instance being made.
+            $row->delete();
+
+            throw $e;
+        }
+
+        ApiwaySubscriptionUpdated::dispatch($row->fresh());
+
+        $this->provisionOrQueue($row, 'unit');
+
+        return $row->fresh();
+    }
+
+    /**
+     * Provision now if we can, hand it to the queue if we cannot.
+     *
+     * Doing it inline first is what lets a normal purchase come back already
+     * active, so the customer sees an instance rather than a spinner. Every way
+     * that can fail ends with the work queued or already parked — the one thing
+     * that must never happen is a paid row nobody comes back to.
+     */
+    protected function provisionOrQueue(ApiwaySubscription $row, string $context): void
+    {
         try {
             $this->provision($row);
         } catch (ApiwayPartnerException $e) {
             if (! $e->isCapacityHold() && ! $e->isRetriable()) {
-                // provision() already marked the row failed + notified.
-                throw ValidationException::withMessages(['included' => $e->getMessage()]);
+                // provision() already marked it failed, refunded and notified.
+                throw ValidationException::withMessages([$context => $e->getMessage()]);
             }
 
             // A hold is already parked by provision() and retried hourly by
@@ -156,95 +262,14 @@ class ApiwayService
                 ProvisionApiwaySubscription::dispatch($row->id);
             }
         } catch (\Throwable $e) {
-            Log::warning('Included apiway provisioning deferred to queue', [
+            Log::warning('Apiway provisioning deferred to queue', [
                 'apiway_subscription_id' => $row->id,
+                'context' => $context,
                 'error' => $e->getMessage(),
             ]);
 
             ProvisionApiwaySubscription::dispatch($row->id);
         }
-
-        return $row->fresh();
-    }
-
-    /**
-     * Start a unit purchase at catalog price. Pix returns a payable invoice;
-     * card creates a MercadoPago preapproval (auto-debit every cycle).
-     *
-     * @return array{subscription: ApiwaySubscription, invoice: ?Invoice, authorized: bool}
-     */
-    public function startUnitPurchase(
-        Tenant $tenant,
-        int $quantity,
-        string $cycle,
-        string $locationCode,
-        PaymentMethod $method,
-        ?string $cardTokenId = null,
-        ?string $payerEmail = null,
-    ): array {
-        // ProxyBR is the price authority — never trust a client-provided total.
-        $quote = $this->partner->quote($quantity, $locationCode, $cycle);
-
-        $row = $this->createLocalSubscription($tenant, [
-            'source' => ApiwaySubscriptionSource::Unit,
-            'status' => ApiwaySubscriptionStatus::PendingPayment,
-            'quantity' => $quantity,
-            'cycle' => $this->normalizeCycle($quote['cycle'] ?? $cycle),
-            'location_code' => $locationCode,
-            'unit_price_cents' => $this->toCents($quote['unit_price'] ?? 0),
-            'total_price_cents' => $this->toCents($quote['total_price'] ?? 0),
-            'meta' => ['quote' => $quote],
-        ]);
-
-        $payerEmail ??= $tenant->user?->email ?? 'no-reply@example.com';
-
-        if ($method === PaymentMethod::Pix) {
-            $invoice = $this->billing->createApiwayPixInvoice($row, InvoicePurpose::ApiwayPurchase, $payerEmail);
-
-            return ['subscription' => $row->fresh(), 'invoice' => $invoice, 'authorized' => false];
-        }
-
-        return $this->startUnitCardPurchase($row, $cardTokenId, $payerEmail);
-    }
-
-    /** Card path: one preapproval per unit purchase → auto-debit renews it. */
-    protected function startUnitCardPurchase(ApiwaySubscription $row, ?string $cardTokenId, string $payerEmail): array
-    {
-        $payload = [
-            'reason' => "API Way — {$row->quantity} instância(s)",
-            'auto_recurring' => array_merge(
-                $this->mpFrequencyForCycle($row->cycle),
-                [
-                    'transaction_amount' => round($row->total_price_cents / 100, 2),
-                    'currency_id' => 'BRL',
-                ],
-            ),
-            'payer_email' => $payerEmail,
-            'card_token_id' => $cardTokenId,
-            'back_url' => MercadoPagoConfig::backUrl(),
-            'status' => 'authorized',
-            'external_reference' => "tenant:{$row->tenant_id}:apw:{$row->id}",
-        ];
-
-        $response = $this->billing->mercadoPago()->createPreapproval($payload, (string) Str::uuid());
-
-        $row->mp_preapproval_id = $response['id'] ?? null;
-        $authorized = ($response['status'] ?? null) === 'authorized';
-
-        if ($authorized) {
-            $row->status = ApiwaySubscriptionStatus::Provisioning;
-            $row->save();
-
-            $this->recordPaidCardInvoice($row, InvoicePurpose::ApiwayPurchase);
-            ProvisionApiwaySubscription::dispatch($row->id);
-        } else {
-            // Pending authorization — the preapproval webhook completes the flow.
-            $row->save();
-        }
-
-        ApiwaySubscriptionUpdated::dispatch($row->fresh());
-
-        return ['subscription' => $row->fresh(), 'invoice' => null, 'authorized' => $authorized];
     }
 
     // --- Provisioning ------------------------------------------------------
@@ -387,35 +412,82 @@ class ApiwayService
     }
 
     /**
-     * Re-attempt purchases parked by markCapacityHold(). Driven by apiway:sync
-     * rather than the job's own retries: five attempts across eight minutes buy
-     * nothing against a ceiling only a human raises.
+     * How long a `provisioning` row may sit with nothing happening to it before
+     * apiway:sync assumes nobody is coming back for it.
+     *
+     * Comfortably longer than the provision job's own retry ladder (five
+     * attempts over about eight minutes), so this only ever picks up work that
+     * has genuinely been dropped rather than racing a job still trying.
      */
-    public function retryHeldProvisions(?Tenant $tenant = null): int
+    private const STALLED_PROVISION_MINUTES = 20;
+
+    /**
+     * Re-attempt purchases that are paid for but not provisioned. Driven by
+     * apiway:sync rather than the job's own retries: five attempts across eight
+     * minutes buy nothing against a ceiling only a human raises.
+     *
+     * Two kinds of row, and the second matters more now than it used to.
+     * Capacity holds are parked deliberately by markCapacityHold(). Stalled rows
+     * are the accidents — a worker killed between the charge and the dispatch, a
+     * job that exhausted its retries on network errors and left `failed()` to
+     * write a log line nobody reads. Both mean money has been taken and no
+     * instance exists, which since the balance became the payment method is a
+     * debit sitting in a customer's statement with nothing to show for it.
+     */
+    public function retryPendingProvisions(?Tenant $tenant = null): int
     {
-        $held = ApiwaySubscription::query()
+        $rows = ApiwaySubscription::query()
             ->where('status', ApiwaySubscriptionStatus::Provisioning->value)
+            ->whereNull('provider_subscription_id')
             ->when($tenant, fn ($q) => $q->where('tenant_id', $tenant->id))
             ->get()
             // Filtered here, not in SQL: provisioning rows are transient and
             // few, and a JSON path predicate would differ per DB driver.
-            ->filter(fn (ApiwaySubscription $row) => isset($row->meta['capacity_hold']));
+            ->filter(fn (ApiwaySubscription $row) => isset($row->meta['capacity_hold'])
+                || $row->updated_at?->lt(now()->subMinutes(self::STALLED_PROVISION_MINUTES)));
 
-        foreach ($held as $row) {
+        foreach ($rows as $row) {
+            if (! isset($row->meta['capacity_hold'])) {
+                Log::warning('Apiway provisioning stalled, re-queuing', [
+                    'apiway_subscription_id' => $row->id,
+                    'tenant_id' => $row->tenant_id,
+                    'stalled_since' => $row->updated_at?->toISOString(),
+                ]);
+            }
+
             ProvisionApiwaySubscription::dispatch($row->id);
         }
 
-        return $held->count();
+        return $rows->count();
     }
 
     protected function markProvisionFailed(ApiwaySubscription $row, ApiwayPartnerException $e): void
     {
         $meta = $row->meta ?? [];
         $meta['failure'] = ['code' => $e->getErrorCode(), 'message' => $e->getMessage(), 'at' => now()->toISOString()];
+        $refunded = null;
 
-        // Money was already captured on unit purchases — flag for manual refund.
         if ($row->source === ApiwaySubscriptionSource::Unit) {
-            $meta['needs_refund'] = true;
+            // Paid from the balance: give it straight back. This is the whole
+            // reason charging before provisioning is defensible here — the money
+            // never left the platform, so undoing it is a ledger row rather than
+            // a Pix refund somebody has to remember to make.
+            $refunded = $this->credits->reverseByReference(
+                $row->tenant,
+                self::purchaseReference($row),
+                'Devolução — instância API Way não ativada',
+                ['apiway_subscription_id' => $row->id, 'reason' => $e->getErrorCode()],
+            );
+
+            if ($refunded === null) {
+                // No wallet charge behind this row — a purchase from before the
+                // balance, paid by Pix or card. Those still need a human, and the
+                // Back Office button that finds them reads this flag.
+                $meta['needs_refund'] = true;
+            } else {
+                $meta['refunded_to_balance_at'] = now()->toISOString();
+                $meta['refunded_cents'] = $refunded->amount_cents;
+            }
         }
 
         $row->update(['status' => ApiwaySubscriptionStatus::Failed, 'meta' => $meta]);
@@ -424,11 +496,46 @@ class ApiwayService
             'apiway_subscription_id' => $row->id,
             'tenant_id' => $row->tenant_id,
             'code' => $e->getErrorCode(),
+            'refunded_to_balance' => $refunded !== null,
             'needs_refund' => $meta['needs_refund'] ?? false,
         ]);
 
         ApiwaySubscriptionUpdated::dispatch($row->fresh());
-        $this->notifier->notifyTenant(NotificationType::ApiwayProvisionFailed, $row->tenant);
+
+        // Two different messages because two different things are true. Telling
+        // someone "our team will contact you" when their money is already back
+        // in their balance sends them to support for a problem that is over.
+        $refunded === null
+            ? $this->notifier->notifyTenant(NotificationType::ApiwayProvisionFailed, $row->tenant)
+            : $this->notifier->notifyTenant(NotificationType::ApiwayProvisionRefunded, $row->tenant, [
+                'amount' => 'R$ '.number_format($refunded->amount_cents / 100, 2, ',', '.'),
+            ]);
+    }
+
+    /**
+     * Give back a renewal charge whose renewal never happened at ProxyBR.
+     *
+     * Called from the job's `failed()` hook, which is the only place that knows
+     * the attempt is over rather than between retries. The reference is passed
+     * in rather than recomputed because `expires_at` may have moved underneath
+     * us by then — and a reversal that misses its debit silently keeps the money.
+     */
+    public function reverseRenewalCharge(ApiwaySubscription $row, string $reference): void
+    {
+        $reversal = $this->credits->reverseByReference(
+            $row->tenant,
+            $reference,
+            'Devolução — renovação API Way não concluída',
+            ['apiway_subscription_id' => $row->id],
+        );
+
+        if ($reversal !== null) {
+            Log::warning('Apiway renewal charge reversed after the renew failed', [
+                'apiway_subscription_id' => $row->id,
+                'reference' => $reference,
+                'cents' => $reversal->amount_cents,
+            ]);
+        }
     }
 
     // --- Payment hooks (called from BillingService, no partner HTTP here) ---
@@ -526,6 +633,122 @@ class ApiwayService
     }
 
     // --- Renewal / cancel / sync ------------------------------------------
+
+    /**
+     * Renewals coming up that the balance will not cover.
+     *
+     * The one question worth asking ahead of an API Way expiry, because it is
+     * the only one with an irreversible answer: ProxyBR revokes on the day, so
+     * a renewal nobody can pay for is a WhatsApp number that stops existing.
+     *
+     * ⚠️ Cumulative per tenant, in expiry order. Several subscriptions share one
+     * balance, and checking each against the full balance would report three
+     * instances as safe when the money only stretches to one. Ordering by expiry
+     * makes the arithmetic match what will actually happen: the earliest renewal
+     * is charged first and the later ones are the ones that fall off.
+     *
+     * @return \Illuminate\Support\Collection<int, ApiwaySubscription>
+     */
+    public function renewalsAtRisk(?Tenant $tenant = null, int $days = 7): \Illuminate\Support\Collection
+    {
+        $rows = ApiwaySubscription::query()
+            ->renewable()
+            ->whereNotNull('provider_subscription_id')
+            ->whereNotNull('expires_at')
+            ->whereBetween('expires_at', [now(), now()->addDays($days)])
+            ->when($tenant, fn ($q) => $q->where('tenant_id', $tenant->id))
+            ->with('tenant.currentSubscription')
+            ->orderBy('expires_at')
+            ->get();
+
+        if ($rows->isEmpty()) {
+            return collect();
+        }
+
+        // Legacy rows still being paid elsewhere. Loaded in one query rather
+        // than per row: this runs on every dashboard load.
+        $withOpenInvoice = Invoice::query()
+            ->whereIn('apiway_subscription_id', $rows->pluck('id'))
+            ->where('purpose', InvoicePurpose::ApiwayRenewal->value)
+            ->where('status', InvoiceStatus::Pending->value)
+            ->pluck('apiway_subscription_id')
+            ->all();
+
+        $balances = [];
+        $committed = [];
+
+        return $rows->filter(function (ApiwaySubscription $row) use (&$balances, &$committed, $withOpenInvoice) {
+            if ($row->source === ApiwaySubscriptionSource::PlanIncluded) {
+                // Free while the plan lives, so money is not the risk — the plan
+                // lapsing is.
+                return ! $row->tenant?->currentSubscription?->isUsable();
+            }
+
+            if ($row->mp_preapproval_id && ! ($row->meta['autopay_off'] ?? false)) {
+                return false;
+            }
+
+            if (in_array($row->id, $withOpenInvoice, true)) {
+                return false;
+            }
+
+            $balances[$row->tenant_id] ??= $this->credits->balanceCents($row->tenant);
+            $committed[$row->tenant_id] = ($committed[$row->tenant_id] ?? 0) + $row->total_price_cents;
+
+            return $balances[$row->tenant_id] < $committed[$row->tenant_id];
+        })->values();
+    }
+
+    /**
+     * Charge one cycle to the balance and hand the renewal to the queue.
+     *
+     * The charge is what this method is for; the renewal itself is the job's
+     * job, because ProxyBR can be slow or down and a customer clicking "renew"
+     * must not wait on it. The ledger reference doubles as the partner's
+     * idempotency key — both need exactly the same thing (one renewal per
+     * cycle), and deriving them separately is how they drift apart.
+     *
+     * ⚠️ Re-quoted first, always. ProxyBR prices the renewal at call time from
+     * the current catalog, so charging the price stored on the row would take an
+     * amount their invoice then disagrees with.
+     *
+     * @return bool false when the balance will not cover it — the caller decides
+     *              what that means, because it means different things to a
+     *              scheduled renewal and to a person who just clicked a button.
+     */
+    public function renewFromBalance(ApiwaySubscription $row, ?string $cycle = null): bool
+    {
+        $quote = $this->partner->quote($row->quantity, $row->location_code, $cycle ?? $row->cycle);
+
+        $row->update([
+            'unit_price_cents' => $this->toCents($quote['unit_price'] ?? 0),
+            'total_price_cents' => $this->toCents($quote['total_price'] ?? 0),
+        ]);
+
+        $row->refresh();
+        $reference = self::renewalReference($row);
+
+        try {
+            // A null return means this cycle was already charged — a run that
+            // died between the debit and the dispatch. The work still has to
+            // happen, so it falls through to the dispatch below rather than
+            // reporting success and doing nothing.
+            $this->credits->debit(
+                $row->tenant,
+                $row->total_price_cents,
+                CreditTransactionType::Renewal,
+                $reference,
+                "Renovação API Way — {$row->quantity} instância(s)",
+                ['apiway_subscription_id' => $row->id, 'expires_at' => $row->expires_at?->toDateString()],
+            );
+        } catch (InsufficientCreditException) {
+            return false;
+        }
+
+        RenewApiwaySubscription::dispatch($row->id, $reference, $cycle);
+
+        return true;
+    }
 
     /**
      * Renew at ProxyBR. Price is re-quoted by them at call time; the local row
@@ -688,7 +911,7 @@ class ApiwayService
 
         return [
             'expired' => $expired,
-            'retried' => $this->retryHeldProvisions($tenant),
+            'retried' => $this->retryPendingProvisions($tenant),
             'synced' => $this->reconcileWithPartner($tenant),
         ];
     }
