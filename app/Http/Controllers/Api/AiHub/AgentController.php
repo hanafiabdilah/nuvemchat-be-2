@@ -8,6 +8,7 @@ use App\Http\Resources\AiHubAgentResource;
 use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\AiCredits\AiTokenRentalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -112,14 +113,27 @@ class AgentController extends Controller
             return $payload;
         }
 
-        $hubId = AiHubProviderCredential::query()
+        $credential = AiHubProviderCredential::query()
             ->where('ai_hub_tenant_id', $aiHubTenantId)
-            ->where('id', $payload['providerCredentialId'])
-            ->value('hub_provider_credential_id');
+            ->find($payload['providerCredentialId']);
 
-        abort_unless($hubId, 422, 'providerCredentialId does not belong to this tenant');
+        abort_unless($credential, 422, 'providerCredentialId does not belong to this tenant');
 
-        $payload['providerCredentialId'] = $hubId;
+        // A rented credential is repaired before it is used, because it can be:
+        // the platform still holds the key, so a hub record that has gone
+        // missing or been disabled can simply be minted again. Left alone, the
+        // hub answers "Provider credential not found or disabled" — a sentence
+        // about its bookkeeping, shown to somebody who was naming an agent, with
+        // nothing they could do about it.
+        //
+        // Only the rented ones. A customer's own key was never kept here, so
+        // there is nothing to rebuild it from, and pretending otherwise would
+        // put a placeholder behind an agent that then fails at the provider.
+        if ($credential->isRented()) {
+            $credential = app(AiTokenRentalService::class)->ensureUsable($credential);
+        }
+
+        $payload['providerCredentialId'] = $credential->hub_provider_credential_id;
 
         return $payload;
     }

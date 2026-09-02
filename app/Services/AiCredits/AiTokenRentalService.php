@@ -246,6 +246,84 @@ class AiTokenRentalService
     }
 
     /**
+     * Make sure a rented credential is one the hub will actually accept, and
+     * repair it in place when it is not.
+     *
+     * A local row can outlive the hub record it names — the hub was reset, the
+     * credential was disabled, an adoption took a stale one. For a key of the
+     * customer's own there is nothing to be done: we never kept the secret. A
+     * rented one is different, and that difference is the whole point of this
+     * method — the pool still holds the key, so the credential can simply be
+     * minted again and everything re-pointed at it.
+     *
+     * Without this the failure surfaces as `Provider credential not found or
+     * disabled` when an agent is saved: a message about the hub's bookkeeping,
+     * shown to somebody who was naming an agent.
+     */
+    public function ensureUsable(AiHubProviderCredential $credential): AiHubProviderCredential
+    {
+        if (! $credential->isRented()) {
+            return $credential;
+        }
+
+        $key = $credential->poolKey;
+        $aiHubTenant = $credential->aiHubTenant;
+
+        if ($key === null || $aiHubTenant === null) {
+            return $credential;
+        }
+
+        try {
+            $remote = $this->tenantService->listProviderCredentials($aiHubTenant);
+        } catch (\Throwable $e) {
+            // Unreachable hub: let the save proceed and fail on its own terms
+            // rather than turning a transient outage into a re-mint.
+            Log::warning('AiTokenRentalService: could not verify a rental before use', [
+                'ai_hub_provider_credential_id' => $credential->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return $credential;
+        }
+
+        $rows = $remote['data'] ?? $remote;
+        $live = null;
+
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            if (is_array($row) && ($row['id'] ?? null) === $credential->hub_provider_credential_id) {
+                $live = $row;
+                break;
+            }
+        }
+
+        if ($live !== null && strtoupper((string) ($live['status'] ?? 'ACTIVE')) === 'ACTIVE') {
+            return $credential;
+        }
+
+        Log::warning('AiTokenRentalService: re-minting a rental the hub cannot serve', [
+            'ai_hub_provider_credential_id' => $credential->id,
+            'hub_provider_credential_id' => $credential->hub_provider_credential_id,
+            'reason' => $live === null ? 'missing' : 'disabled',
+        ]);
+
+        // Same key, fresh record. Not `rotate()`: nothing is wrong with the key
+        // itself, so sending this workspace to a different one would spread it
+        // across the pool for a reason that has nothing to do with load.
+        $replacement = $this->materialize($aiHubTenant->tenant, $key);
+
+        $this->repoint($credential, $replacement);
+
+        try {
+            $this->tenantService->deleteProviderCredential($credential);
+        } catch (\Throwable $e) {
+            // Already gone, most likely — which is how we got here.
+            $credential->delete();
+        }
+
+        return $replacement;
+    }
+
+    /**
      * Register a pool key inside the workspace's hub scope and record the
      * mirror row that results.
      *
@@ -371,6 +449,14 @@ class AiTokenRentalService
             }
 
             if (strtoupper((string) ($row['provider'] ?? '')) !== strtoupper($key->provider)) {
+                continue;
+            }
+
+            // Adopting a disabled credential is worse than not adopting one:
+            // it succeeds here and then fails on every agent built against it,
+            // with "provider credential not found or disabled" — a message
+            // about the hub, arriving nowhere near the decision that caused it.
+            if (strtoupper((string) ($row['status'] ?? 'ACTIVE')) !== 'ACTIVE') {
                 continue;
             }
 

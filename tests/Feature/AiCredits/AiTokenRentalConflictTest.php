@@ -189,3 +189,68 @@ it('reuses the rental for a provider instead of minting a second one', function 
         ->and(AiHubProviderCredential::rented()->count())->toBe(1)
         ->and($store)->toHaveCount(1);
 });
+
+it('never adopts a credential the hub has disabled', function () {
+    [$tenant] = AiCreditFixtures::workspace();
+    AiCreditFixtures::poolKey();
+
+    // Adopting this succeeds and then poisons every agent built on it: the hub
+    // answers "Provider credential not found or disabled" at save time, which
+    // is a sentence about its bookkeeping shown to someone naming an agent.
+    $store = [[
+        'id' => 'hub-cred-dead',
+        'provider' => 'OPENAI',
+        'name' => config('app.name') . ' — OPENAI (alugado)',
+        'keyPreview' => '••••0000',
+        'status' => 'DISABLED',
+        'metadata' => ['ownerType' => 'platform'],
+    ]];
+
+    fakeHubWithUniqueNames($store);
+
+    $credential = app(AiTokenRentalService::class)->rent($tenant, 'OPENAI');
+
+    expect($credential->hub_provider_credential_id)->not->toBe('hub-cred-dead')
+        ->and($credential->status)->toBe('ACTIVE');
+});
+
+it('re-mints a rental the hub no longer has, and moves the agents with it', function () {
+    [$tenant, , $hubTenant] = AiCreditFixtures::workspace();
+    $key = AiCreditFixtures::poolKey();
+
+    $store = [];
+    fakeHubWithUniqueNames($store);
+
+    $service = app(AiTokenRentalService::class);
+    $credential = $service->rent($tenant, 'OPENAI');
+    $agent = AiCreditFixtures::agent($hubTenant, $credential->id);
+
+    // The hub lost it — a reset, or somebody disabling it there. We still hold
+    // the key, so unlike a customer's own credential this one can be rebuilt.
+    $store = [];
+    fakeHubWithUniqueNames($store);
+
+    $repaired = $service->ensureUsable($credential->fresh());
+
+    expect($repaired->id)->not->toBe($credential->id)
+        ->and($repaired->ai_token_pool_key_id)->toBe($key->id)
+        // The agent has to come along, or the repair just moves the failure.
+        ->and($agent->fresh()->ai_hub_provider_credential_id)->toBe($repaired->id)
+        ->and(AiHubProviderCredential::whereKey($credential->id)->exists())->toBeFalse();
+});
+
+it('leaves a healthy rental alone', function () {
+    [$tenant] = AiCreditFixtures::workspace();
+    AiCreditFixtures::poolKey();
+
+    $store = [];
+    fakeHubWithUniqueNames($store);
+
+    $service = app(AiTokenRentalService::class);
+    $credential = $service->rent($tenant, 'OPENAI');
+
+    // Nothing is wrong, so nothing is minted: a verification that re-mints on
+    // every save would churn hub records and re-point agents for no reason.
+    expect($service->ensureUsable($credential->fresh())->id)->toBe($credential->id)
+        ->and($store)->toHaveCount(1);
+});

@@ -115,6 +115,21 @@ refuses it as an agent provider, so offering it only bought a 409 at save time.
 It became worth fixing when renting arrived: a workspace can now hold such a key
 without ever having typed one. Shared rule in `lib/aiProviders.ts`.
 
+### One credential per provider, not per model
+
+Renting does create a hub credential — hidden from the customer, who never
+manages it — and it is created **once**. Once per *provider*, though, not once
+per model, and that grain is deliberate:
+
+- The model lives on the **agent**; the credential only carries the key. One
+  rented OpenAI credential backs an agent on `gpt-4o` and another on
+  `gpt-4o-mini` at the same time.
+- `max_tenants` counts credentials minted from a pool key. One per model would
+  make a single workspace running three models count as three against the cap,
+  so the rate-limit fence would fire at a third of the load it was set for.
+- Every extra hub record is one more thing to re-point on a revoke and one more
+  thing to go stale.
+
 ### The hub keys credentials on (tenant, provider, name)
 
 Two failures came out of that, both fixed and both now covered by
@@ -134,6 +149,29 @@ Two failures came out of that, both fixed and both now covered by
   keys are in the same list, and adopting one would put a customer's private key
   under our billing. Adoption is deliberately not attempted during a rotation:
   that must always mint against the new key's secret.
+
+  ⚠️ Adoption skips anything the hub has **disabled**. Adopting one succeeds and
+  then poisons every agent built on it — the hub answers *"Provider credential
+  not found or disabled"* at save time, a sentence about its own bookkeeping
+  shown to somebody who was naming an agent.
+
+### A rented credential repairs itself
+
+`AiTokenRentalService::ensureUsable()` is called before a rented credential is
+handed to an agent (`AgentController::resolveProviderCredentialId`) or to a
+trained-agent fork (`TrainedAgentService::resolveCredential`). If the hub no
+longer has the record, or has disabled it, the credential is minted again from
+the same pool key and everything pointing at it is re-pointed.
+
+This is only possible **because it is rented**: the platform still holds the
+secret. A customer's own key was never kept here, which is why the same failure
+on their credential can only be reported, not fixed — see
+`repushProviderCredential` and its placeholder.
+
+Same key, not a rotation: nothing is wrong with the key itself, so sending the
+workspace to a different one would spread it across the pool for a reason that
+has nothing to do with load. An unreachable hub is left alone rather than
+treated as a missing record — a transient outage must not trigger a re-mint.
 
 ## Pricing
 

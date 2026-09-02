@@ -10,6 +10,7 @@ use App\Enums\TrainedAgent\HireStatus;
 use App\Events\TrainedAgentHireUpdated;
 use App\Jobs\TrainedAgent\FulfillTrainedAgentHire;
 use App\Models\AiHubProviderCredential;
+use App\Services\AiCredits\AiTokenRentalService;
 use App\Models\Invoice;
 use App\Models\Tenant;
 use App\Models\TrainedAgentBlueprint;
@@ -425,7 +426,13 @@ class TrainedAgentService
             ]);
         }
 
-        return $credential;
+        // A rented credential is repaired before the fork uses it — the fork is
+        // a queued job, so a hub record that has gone missing would otherwise
+        // fail somewhere the customer only sees as a hire stuck in provisioning.
+        // See AiTokenRentalService::ensureUsable.
+        return $credential->isRented()
+            ? app(AiTokenRentalService::class)->ensureUsable($credential)
+            : $credential;
     }
 
     /** The hub's profile payload is camelCase; the blueprint stores it as given. */
