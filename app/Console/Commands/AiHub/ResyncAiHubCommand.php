@@ -78,34 +78,36 @@ class ResyncAiHubCommand extends Command
                 ->get();
 
             foreach ($agents as $agent) {
-                if (in_array($agent->hub_agent_id, $hubAgentIds, true)) {
-                    $this->line("  agent '{$agent->name}' is already on the hub");
-
-                    continue;
-                }
+                $onHub = in_array($agent->hub_agent_id, $hubAgentIds, true);
 
                 // An agent is created *against* a credential, so a workspace
                 // that has not re-entered its key yet cannot have its agents
                 // back — and saying so beats a 400 from the hub.
-                $credentialId = $agent->providerCredential?->hub_provider_credential_id;
+                if (! $onHub) {
+                    $credentialId = $agent->providerCredential?->hub_provider_credential_id;
 
-                if (! $credentialId || ! in_array($credentialId, $hubCredentialIds, true)) {
-                    $this->warn("  agent '{$agent->name}' is waiting on its provider credential — re-enter the key first, then run this again");
+                    if (! $credentialId || ! in_array($credentialId, $hubCredentialIds, true)) {
+                        $this->warn("  agent '{$agent->name}' is waiting on its provider credential — re-enter the key first, then run this again");
 
-                    continue;
+                        continue;
+                    }
                 }
 
-                $children = $agent->knowledge->count() + $agent->skills->count() + $agent->trainingExamples->count();
-
                 if ($dryRun) {
-                    $this->line("  would re-push agent '{$agent->name}' + {$children} training item(s)");
+                    $pending = $agent->knowledge->count() + $agent->skills->count() + $agent->trainingExamples->count();
+                    $this->line($onHub
+                        ? "  would check agent '{$agent->name}' and re-push whichever of its {$pending} training item(s) the hub is missing"
+                        : "  would re-push agent '{$agent->name}' + {$pending} training item(s)");
 
                     continue;
                 }
 
                 try {
-                    $repushed += $this->repush($hub, $agent);
-                    $this->info("  re-pushed agent '{$agent->name}' + {$children} training item(s)");
+                    $sent = $this->repush($hub, $agent, $onHub);
+                    $repushed++;
+                    $this->info($onHub
+                        ? "  agent '{$agent->name}' was already on the hub; re-pushed {$sent} missing training item(s)"
+                        : "  re-pushed agent '{$agent->name}' + {$sent} training item(s)");
                 } catch (Throwable $e) {
                     $this->error("  agent '{$agent->name}' failed: {$e->getMessage()}");
                     $failed++;
@@ -132,11 +134,22 @@ class ResyncAiHubCommand extends Command
     /**
      * Push one agent and everything hanging off it. The agent goes first: its
      * new hub id is the address the training items are posted to.
+     *
+     * Each item is checked against what the hub actually holds rather than
+     * pushed blindly, which is what makes a second run finish a first one that
+     * died halfway. Without it an agent that got created but lost its last few
+     * knowledge items would read as "already on the hub" forever, and the gap
+     * would be invisible — an agent answering from half its material.
+     *
+     * @return int  how many training items were sent
      */
-    protected function repush(AiAgentHubTenantService $hub, AiHubAgent $agent): int
+    protected function repush(AiAgentHubTenantService $hub, AiHubAgent $agent, bool $onHub): int
     {
-        $hub->repushAgent($agent);
+        if (! $onHub) {
+            $hub->repushAgent($agent);
+        }
 
+        // A PUT, so it is safe either way, and cheaper than reading it first.
         if ($profile = $agent->profile) {
             $hub->setAgentProfile($agent, array_filter([
                 'language' => $profile->language,
@@ -148,19 +161,35 @@ class ResyncAiHubCommand extends Command
             ], fn ($v) => $v !== null));
         }
 
+        // A freshly created agent has nothing on the hub yet, so skip the reads.
+        $haveKnowledge = $onHub ? $this->ids($hub->listAgentKnowledge($agent)) : [];
+        $haveSkills = $onHub ? $this->ids($hub->listAgentSkills($agent)) : [];
+        $haveExamples = $onHub ? $this->ids($hub->listAgentTrainingExamples($agent)) : [];
+
+        $sent = 0;
+
         foreach ($agent->knowledge as $knowledge) {
-            $hub->repushKnowledge($knowledge);
+            if (! in_array($knowledge->hub_knowledge_id, $haveKnowledge, true)) {
+                $hub->repushKnowledge($knowledge);
+                $sent++;
+            }
         }
 
         foreach ($agent->skills as $skill) {
-            $hub->repushSkill($skill);
+            if (! in_array($skill->hub_skill_id, $haveSkills, true)) {
+                $hub->repushSkill($skill);
+                $sent++;
+            }
         }
 
         foreach ($agent->trainingExamples as $example) {
-            $hub->repushTrainingExample($example);
+            if (! in_array($example->hub_example_id, $haveExamples, true)) {
+                $hub->repushTrainingExample($example);
+                $sent++;
+            }
         }
 
-        return 1;
+        return $sent;
     }
 
     /**

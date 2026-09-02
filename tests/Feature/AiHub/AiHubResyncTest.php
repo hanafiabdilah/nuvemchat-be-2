@@ -112,6 +112,63 @@ it('re-pushes an agent the hub no longer has, keeping one local row', function (
         ->and($agent->trainingExamples()->first()->hub_example_id)->toBe('example-new');
 });
 
+it('finishes a run that died halfway instead of calling the agent done', function () {
+    [$tenant, , , $agent] = resyncScope();
+
+    // The state a failed first run leaves behind: the agent made it across,
+    // and its skill, but the knowledge and the example did not.
+    $agent->update(['hub_agent_id' => 'agent-new']);
+    $agent->skills()->first()->update(['hub_skill_id' => 'skill-new']);
+
+    $posted = [];
+
+    Http::fake([
+        '*/provider-credentials' => Http::response([['id' => 'cred-live']], 200),
+        '*/agents/*/knowledge' => function ($request) use (&$posted) {
+            if ($request->method() === 'GET') {
+                return Http::response([], 200);
+            }
+            $posted[] = 'knowledge';
+
+            return Http::response(['id' => 'knowledge-new'], 201);
+        },
+        '*/agents/*/skills' => function ($request) use (&$posted) {
+            if ($request->method() === 'GET') {
+                return Http::response([['id' => 'skill-new']], 200);
+            }
+            $posted[] = 'skill';
+
+            return Http::response(['id' => 'skill-again'], 201);
+        },
+        '*/agents/*/training-examples' => function ($request) use (&$posted) {
+            if ($request->method() === 'GET') {
+                return Http::response([], 200);
+            }
+            $posted[] = 'example';
+
+            return Http::response(['id' => 'example-new'], 201);
+        },
+        '*/agents/*/profile' => Http::response(['language' => 'pt-BR'], 200),
+        '*/agents' => function ($request) use (&$posted) {
+            if ($request->method() === 'GET') {
+                return Http::response([['id' => 'agent-new']], 200);
+            }
+            $posted[] = 'agent';
+
+            return Http::response(['id' => 'agent-duplicated'], 201);
+        },
+    ]);
+
+    $this->artisan('ai-hub:resync', ['--tenant' => $tenant->id])->assertSuccessful();
+
+    // Only what was actually missing — the agent is not created twice and the
+    // skill the hub already holds is not duplicated.
+    expect($posted)->toBe(['knowledge', 'example']);
+    expect($agent->fresh()->hub_agent_id)->toBe('agent-new')
+        ->and($agent->knowledge()->first()->hub_knowledge_id)->toBe('knowledge-new')
+        ->and($agent->trainingExamples()->first()->hub_example_id)->toBe('example-new');
+});
+
 it('leaves the agent alone while its provider credential is still missing', function () {
     [$tenant, , , $agent] = resyncScope();
 
