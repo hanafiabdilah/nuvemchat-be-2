@@ -26,6 +26,11 @@ class AiHubProviderCredentialResource extends JsonResource
             // never leaves the server — it names a platform asset the customer
             // has no business identifying.
             'is_rented' => $this->isRented(),
+            // The row exists and looks ACTIVE, but the key behind it is a
+            // placeholder we registered to rebuild the workspace — every run
+            // on it will be rejected by the provider until a real one is
+            // entered. Unbadged, that reads as an agent that stopped working.
+            'needs_key' => (bool) ($this->metadata['needs_key'] ?? false),
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];

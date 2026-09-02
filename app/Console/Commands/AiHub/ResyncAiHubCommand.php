@@ -17,11 +17,17 @@ use Throwable;
  * prompts, profiles, knowledge, skills and training examples are all mirrored
  * here — so most of it can simply be pushed back.
  *
- * The one thing that cannot: **provider API keys**. They are forwarded to the
- * hub and deliberately never stored locally (we keep only `keyPreview`), so a
- * missing credential has to be entered again by the workspace that owns it.
- * The command reports those instead of pretending it can fix them — and after
- * a breach they should be *rotated at the provider*, not merely re-pasted.
+ * Provider API keys are the exception: they are forwarded to the hub and never
+ * stored here, so there is nothing to send back. Rather than leave the whole
+ * workspace broken around that one missing value, the credential is registered
+ * again with a **placeholder key** — which keeps its name, its default model
+ * and every agent pointing at it, and reduces the customer\'s part to the one
+ * thing only they can supply. They update a key, in the place they would have
+ * updated a key; they never learn that anything was rebuilt.
+ *
+ * ⚠️ Until that key arrives the credential is live-looking but cannot run, so
+ * it is marked `needs_key` and badged in the dashboard. And after a breach it
+ * should be *rotated at the provider*, not the old one pasted back.
  */
 class ResyncAiHubCommand extends Command
 {
@@ -63,13 +69,29 @@ class ResyncAiHubCommand extends Command
                 continue;
             }
 
+            // Credentials first: an agent is created against one, so rebuilding
+            // agents before their credentials would fail on every single one.
             foreach ($scope->providerCredentials as $credential) {
                 if (in_array($credential->hub_provider_credential_id, $hubCredentialIds, true)) {
                     continue;
                 }
 
-                $needReentry[] = "#{$scope->tenant_id}  {$credential->provider}  {$credential->name}  ({$credential->key_preview})";
-                $this->warn("  credential '{$credential->name}' is gone from the hub — the API key must be entered again");
+                if ($dryRun) {
+                    $this->line("  would re-register credential '{$credential->name}' with a placeholder key");
+                    $needReentry[] = "#{$scope->tenant_id}  {$credential->provider}  {$credential->name}  (was {$credential->key_preview})";
+
+                    continue;
+                }
+
+                try {
+                    $hub->repushProviderCredential($credential);
+                    $hubCredentialIds[] = $credential->fresh()->hub_provider_credential_id;
+                    $needReentry[] = "#{$scope->tenant_id}  {$credential->provider}  {$credential->name}  (was {$credential->key_preview})";
+                    $this->warn("  re-registered credential '{$credential->name}' — it holds a placeholder until the key is updated");
+                } catch (Throwable $e) {
+                    $this->error("  credential '{$credential->name}' failed: {$e->getMessage()}");
+                    $failed++;
+                }
             }
 
             $agents = AiHubAgent::query()
@@ -80,14 +102,15 @@ class ResyncAiHubCommand extends Command
             foreach ($agents as $agent) {
                 $onHub = in_array($agent->hub_agent_id, $hubAgentIds, true);
 
-                // An agent is created *against* a credential, so a workspace
-                // that has not re-entered its key yet cannot have its agents
-                // back — and saying so beats a 400 from the hub.
+                // Credentials were rebuilt above, so reaching here without one
+                // means that rebuild failed. Attempting the agent anyway just
+                // trades a clear message for the hub\'s "Provider credential
+                // not found or disabled", which names the wrong object.
                 if (! $onHub) {
-                    $credentialId = $agent->providerCredential?->hub_provider_credential_id;
+                    $credentialId = $agent->providerCredential?->fresh()?->hub_provider_credential_id;
 
                     if (! $credentialId || ! in_array($credentialId, $hubCredentialIds, true)) {
-                        $this->warn("  agent '{$agent->name}' is waiting on its provider credential — re-enter the key first, then run this again");
+                        $this->warn("  agent '{$agent->name}' skipped — its provider credential could not be registered");
 
                         continue;
                     }
@@ -117,7 +140,9 @@ class ResyncAiHubCommand extends Command
 
         if ($needReentry) {
             $this->newLine();
-            $this->line('<options=bold>Provider credentials to enter again</> (their keys were never stored here):');
+            $this->line('<options=bold>Credentials now holding a placeholder key</> — every agent on them is back, but no');
+            $this->line('run will succeed until their owner enters a real key. After a breach that key should be');
+            $this->line('<options=bold>rotated at the provider</>, not the old one pasted back:');
             foreach ($needReentry as $row) {
                 $this->line("  {$row}");
             }

@@ -169,35 +169,97 @@ it('finishes a run that died halfway instead of calling the agent done', functio
         ->and($agent->trainingExamples()->first()->hub_example_id)->toBe('example-new');
 });
 
-it('leaves the agent alone while its provider credential is still missing', function () {
-    [$tenant, , , $agent] = resyncScope();
+it('re-registers a missing credential with a placeholder and brings its agents back', function () {
+    [$tenant, , $credential, $agent] = resyncScope();
+
+    $posted = [];
 
     Http::fake([
-        // The key was never stored here, so the credential cannot come back on
-        // its own — and an agent created against a missing one is a 400.
-        '*/provider-credentials' => Http::response([], 200),
-        '*/agents' => Http::response([], 200),
+        '*/provider-credentials' => function ($request) use (&$posted) {
+            if ($request->method() === 'GET') {
+                // Empty first, then holding whatever was just registered — the
+                // hub as it looked after being rebuilt from nothing.
+                return Http::response($posted ? [['id' => 'cred-new']] : [], 200);
+            }
+            $posted[] = $request['apiKey'];
+
+            return Http::response(['id' => 'cred-new', 'keyPreview' => 'placeh...aB3x', 'status' => 'ACTIVE'], 201);
+        },
+        '*/agents/*/knowledge' => Http::response(['id' => 'knowledge-new'], 201),
+        '*/agents/*/skills' => Http::response(['id' => 'skill-new'], 201),
+        '*/agents/*/training-examples' => Http::response(['id' => 'example-new'], 201),
+        '*/agents/*/profile' => Http::response(['language' => 'pt-BR'], 200),
+        '*/agents' => fn ($request) => $request->method() === 'GET'
+            ? Http::response([], 200)
+            : Http::response(['id' => 'agent-new', 'externalId' => $request['externalId']], 201),
     ]);
 
-    $this->artisan('ai-hub:resync', ['--tenant' => $tenant->id])
-        ->expectsOutputToContain('waiting on its provider credential')
-        ->assertSuccessful();
+    $this->artisan('ai-hub:resync', ['--tenant' => $tenant->id])->assertSuccessful();
 
-    expect($agent->fresh()->hub_agent_id)->toBe('agent-that-the-hub-lost');
-    Http::assertNotSent(fn ($request) => $request->method() === 'POST');
+    // A placeholder went out — long enough for the hub's 8-character floor, and
+    // recognisable for whoever reads the key preview there.
+    expect($posted)->toHaveCount(1)
+        ->and($posted[0])->toStartWith('placeholder-key-')
+        ->and(strlen($posted[0]))->toBeGreaterThan(8);
+
+    $credential->refresh();
+    expect($credential->hub_provider_credential_id)->toBe('cred-new')
+        ->and($credential->metadata['needs_key'])->toBeTrue()
+        // The old preview survives: it is the only remaining hint of which key
+        // this row held, and the customer needs it to know which one to rotate.
+        ->and($credential->key_preview)->toBe('••••1234');
+
+    // And the agent came back with it, so the customer's only task is the key.
+    expect($agent->fresh()->hub_agent_id)->toBe('agent-new');
 });
 
-it('reports credentials whose keys have to be entered again', function () {
-    [$tenant] = resyncScope();
+it('clears the placeholder marking once a real key is entered', function () {
+    [, , $credential] = resyncScope();
+
+    $credential->update(['metadata' => ['needs_key' => true]]);
 
     Http::fake([
-        '*/provider-credentials' => Http::response([], 200),
-        '*/agents' => Http::response([], 200),
+        // The hub echoes back the metadata it was given at creation — including
+        // the placeholder marking. Clearing the flag before this lands would be
+        // silently undone, leaving the badge up on a working credential.
+        '*/provider-credentials/*' => Http::response([
+            'id' => 'cred-live',
+            'keyPreview' => 'sk-abc...9xyz',
+            'status' => 'ACTIVE',
+            'metadata' => ['needs_key' => true],
+        ], 200),
     ]);
 
-    $this->artisan('ai-hub:resync', ['--tenant' => $tenant->id])
-        ->expectsOutputToContain('Chave do cliente')
-        ->assertSuccessful();
+    app(AiAgentHubTenantService::class)
+        ->updateProviderCredential($credential, ['apiKey' => 'sk-'.str_repeat('a', 40)]);
+
+    expect($credential->fresh()->metadata['needs_key'])->toBeFalse();
+});
+
+it('rebuilds an agent the hub lost instead of failing the edit', function () {
+    [, , , $agent] = resyncScope();
+
+    $patched = false;
+
+    Http::fake([
+        // The credential is still there; only the agent went missing.
+        '*/provider-credentials' => Http::response([['id' => 'cred-live']], 200),
+        '*/agents/*' => function ($request) use (&$patched) {
+            if ($patched) {
+                return Http::response(['id' => 'agent-new', 'name' => 'Atendimento'], 200);
+            }
+            $patched = true;
+
+            return Http::response(['message' => 'Agent not found.'], 404);
+        },
+        '*/agents' => Http::response(['id' => 'agent-new', 'externalId' => 'Pingly_1_atendimento'], 201),
+    ]);
+
+    // The person editing knows a name and a prompt, not an id — so this has to
+    // succeed rather than report an object they cannot see.
+    app(AiAgentHubTenantService::class)->updateAgent($agent, ['name' => 'Atendimento']);
+
+    expect($agent->fresh()->hub_agent_id)->toBe('agent-new');
 });
 
 it('writes nothing on a dry run', function () {

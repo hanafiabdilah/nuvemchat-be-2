@@ -4,6 +4,7 @@ namespace App\Services\AiAgentHub;
 
 use App\Enums\Billing\Quota;
 use App\Enums\Connection\Channel;
+use App\Exceptions\AiHubObjectMissingException;
 use App\Exceptions\Billing\AiCreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Models\AiHubAgent;
@@ -150,8 +151,22 @@ class AiAgentHubTenantService
     {
         $tenant = $credential->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
-            ->patch("{$this->baseUrl}/provider-credentials/{$credential->hub_provider_credential_id}", $payload);
+        $patch = function () use ($credential, $payload) {
+            return Http::withHeaders($this->headers())
+                ->patch("{$this->baseUrl}/provider-credentials/{$credential->hub_provider_credential_id}", $payload);
+        };
+
+        $response = $patch();
+
+        // The hub lost the record — put it back and apply the edit to the new
+        // one. Someone changing the name of their key has no idea an id exists,
+        // let alone that it stopped resolving; an error here would be about our
+        // bookkeeping, in their way.
+        if ($response->status() === 404) {
+            $this->repushProviderCredential($credential, $payload['apiKey'] ?? null);
+            $credential->refresh();
+            $response = $patch();
+        }
 
         $this->ensureSuccessful($response, 'update provider credential', [
             'ai_hub_tenant_id' => $tenant->id,
@@ -167,6 +182,14 @@ class AiAgentHubTenantService
             'status' => $data['status'] ?? null,
             'metadata' => $data['metadata'] ?? null,
         ], fn ($v) => $v !== null));
+
+        // After the write-back, not before: the hub echoes the metadata we gave
+        // it, placeholder marking and all, so clearing the flag first would
+        // simply be undone by the line above — and the badge would stay up on a
+        // credential that has just been given a working key.
+        if (! empty($payload['apiKey'])) {
+            $this->markCredentialKeyed($credential);
+        }
 
         return $credential->refresh();
     }
@@ -293,8 +316,11 @@ class AiAgentHubTenantService
             $payload['externalId'] = $this->buildExternalId($payload['externalId'], $tenant);
         }
 
-        $response = Http::withHeaders($this->headers())
-            ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}", $payload);
+        $response = $this->healingAgentCall(
+            $agent,
+            fn () => Http::withHeaders($this->headers())
+                ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}", $payload)
+        );
 
         $this->ensureSuccessful($response, 'update agent', [
             'ai_hub_tenant_id' => $tenant->id,
@@ -363,8 +389,11 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
-            ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/profile", $payload);
+        $response = $this->healingAgentCall(
+            $agent,
+            fn () => Http::withHeaders($this->headers())
+                ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/profile", $payload)
+        );
 
         $this->ensureSuccessful($response, 'set agent profile', [
             'ai_hub_tenant_id' => $tenant->id,
@@ -1203,9 +1232,140 @@ class AiAgentHubTenantService
         ]);
     }
 
+    /**
+     * Run a call against an agent, and if the hub says it has no such agent,
+     * put the agent back and run it once more.
+     *
+     * The retry is deliberately single and deliberately silent. An agent whose
+     * hub copy vanished is not something the person editing it can act on —
+     * they know a name and a prompt, not an id — and everything needed to
+     * rebuild it is already here. If the second attempt fails too, that is a
+     * genuine fault and it surfaces normally.
+     */
+    protected function healingAgentCall(AiHubAgent $agent, callable $call): Response
+    {
+        $response = $call();
+
+        if ($response->status() !== 404) {
+            return $response;
+        }
+
+        Log::warning('AiAgentHubTenantService: the hub lost this agent, rebuilding it', [
+            'ai_hub_tenant_id' => $agent->ai_hub_tenant_id,
+            'ai_hub_agent_id' => $agent->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        $this->repushAgent($agent);
+        $agent->refresh();
+
+        return $call();
+    }
+
     /* ------------------------------------------------------------------
      | Re-push — rebuilding hub-side objects from the local mirror
      * ------------------------------------------------------------------ */
+
+    /**
+     * Make sure a credential still exists at the hub, re-registering it with a
+     * placeholder key if not. Cheap enough to do before a repush, and the only
+     * way the rebuild can be ordered correctly without the caller knowing it.
+     */
+    protected function ensureCredentialOnHub(?AiHubProviderCredential $credential): void
+    {
+        if (! $credential) {
+            return;
+        }
+
+        // Membership in the list, not GET by id: a read-by-id route we have
+        // not proven would answer 404 both when the record is gone and when
+        // the route does not exist, and the second case would have us minting
+        // a duplicate credential on every single call.
+        $rows = $this->listProviderCredentials($credential->aiHubTenant);
+        $rows = $rows['data'] ?? $rows;
+        $ids = is_array($rows)
+            ? array_column(array_filter($rows, 'is_array'), 'id')
+            : [];
+
+        if (! in_array($credential->hub_provider_credential_id, $ids, true)) {
+            $this->repushProviderCredential($credential);
+        }
+    }
+
+    /**
+     * Re-register a provider credential the hub no longer holds.
+     *
+     * The provider secret is forwarded to the hub and never kept here, so
+     * unless the caller happens to be supplying a new one there is nothing to
+     * send but a placeholder. That is deliberate, and it is what lets a
+     * workspace be put back together without its owner doing anything: the
+     * record, its name, its default model and every agent pointing at it
+     * survive, and the only thing left for the customer is the one thing only
+     * they can provide — the key itself, entered where they would have entered
+     * it anyway.
+     *
+     * ⚠️ A placeholder credential is ACTIVE and looks ordinary, but no run on
+     * it can succeed until the key is replaced — the provider will reject it.
+     * `metadata.needs_key` marks that, and it is what the dashboard badges;
+     * without the mark the failure would surface as an agent that mysteriously
+     * stopped answering.
+     */
+    public function repushProviderCredential(AiHubProviderCredential $credential, ?string $apiKey = null): AiHubProviderCredential
+    {
+        $tenant = $credential->aiHubTenant;
+        $placeholder = $apiKey === null || $apiKey === '';
+
+        $metadata = $credential->metadata ?? [];
+        $metadata['needs_key'] = $placeholder;
+
+        $payload = array_filter([
+            'provider' => $credential->provider,
+            'name' => $credential->name,
+            // Long enough to clear the hub's 8-character minimum, and shaped so
+            // that anyone reading the key preview there sees what it is.
+            'apiKey' => $placeholder ? 'placeholder-key-' . Str::random(32) : $apiKey,
+            'defaultModel' => $credential->default_model,
+            'metadata' => $metadata,
+        ], fn ($v) => $v !== null);
+
+        $response = Http::withHeaders($this->headers())
+            ->post("{$this->baseUrl}/provider-credentials", $payload);
+
+        $this->ensureSuccessful($response, 'repush provider credential', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'ai_hub_provider_credential_id' => $credential->id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        $credential->update(array_filter([
+            'hub_provider_credential_id' => $data['id'] ?? null,
+            // The old preview is kept when we sent a placeholder: it is the
+            // only remaining hint of *which* key this row used to hold, and the
+            // customer needs it to know which one to rotate. Overwriting it
+            // with "placeh...aB3x" would throw that away and read like a key.
+            'key_preview' => $placeholder ? null : ($data['keyPreview'] ?? null),
+            'status' => $data['status'] ?? null,
+            'metadata' => $metadata,
+        ], fn ($v) => $v !== null));
+
+        return $credential->refresh();
+    }
+
+    /**
+     * Drop the "waiting for its key" marking once a real one has been stored.
+     */
+    protected function markCredentialKeyed(AiHubProviderCredential $credential): void
+    {
+        $metadata = $credential->metadata ?? [];
+
+        if (! ($metadata['needs_key'] ?? false)) {
+            return;
+        }
+
+        $metadata['needs_key'] = false;
+        $credential->update(['metadata' => $metadata]);
+    }
 
     /**
      * Re-create an agent at the hub from what we already hold locally, and
@@ -1220,6 +1380,14 @@ class AiAgentHubTenantService
     public function repushAgent(AiHubAgent $agent): AiHubAgent
     {
         $tenant = $agent->aiHubTenant;
+
+        // An agent is created *against* a credential, and the hub refuses one
+        // it cannot find. When the hub lost the agent it almost certainly lost
+        // the credential too, so check that first — otherwise this fails with
+        // "Provider credential not found or disabled", which points at the
+        // wrong object entirely.
+        $this->ensureCredentialOnHub($agent->providerCredential);
+        $agent->load('providerCredential');
 
         $payload = array_filter([
             'externalId' => $this->buildExternalId(
@@ -1431,6 +1599,15 @@ class AiAgentHubTenantService
             ]));
 
             throw ValidationException::withMessages(['message' => $response->json()['message'][0] ?? 'Bad Request']);
+        }elseif($response->status() === 404){
+            // Not an error we report — one we repair. See
+            // AiHubObjectMissingException and the `repush*` methods.
+            Log::warning("AiAgentHubTenantService: the hub does not have what we asked to {$action}", array_merge($context, [
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]));
+
+            throw new AiHubObjectMissingException("The hub no longer has the object needed to {$action}");
         }elseif($response->status() === 409){
             Log::warning("AiAgentHubTenantService: Conflict occurred trying to {$action}", array_merge($context, [
                 'status' => $response->status(),
