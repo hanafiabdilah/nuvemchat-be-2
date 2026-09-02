@@ -190,7 +190,7 @@ class AiAgentHubTenantService
         $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/provider-credentials/{$credential->hub_provider_credential_id}");
 
-        $this->ensureSuccessful($response, 'delete provider credential', [
+        $this->ensureDeleted($response, 'delete provider credential', [
             'ai_hub_tenant_id' => $tenant->id,
             'hub_provider_credential_id' => $credential->hub_provider_credential_id,
         ]);
@@ -339,7 +339,7 @@ class AiAgentHubTenantService
         $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}");
 
-        $this->ensureSuccessful($response, 'delete agent', [
+        $this->ensureDeleted($response, 'delete agent', [
             'ai_hub_tenant_id' => $tenant->id,
             'hub_agent_id' => $agent->hub_agent_id,
         ]);
@@ -502,7 +502,7 @@ class AiAgentHubTenantService
         $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge/{$knowledge->hub_knowledge_id}");
 
-        $this->ensureSuccessful($response, 'delete agent knowledge', [
+        $this->ensureDeleted($response, 'delete agent knowledge', [
             'ai_hub_tenant_id' => $tenant->id,
             'hub_knowledge_id' => $knowledge->hub_knowledge_id,
         ]);
@@ -618,7 +618,7 @@ class AiAgentHubTenantService
         $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills/{$skill->hub_skill_id}");
 
-        $this->ensureSuccessful($response, 'delete agent skill', [
+        $this->ensureDeleted($response, 'delete agent skill', [
             'ai_hub_tenant_id' => $tenant->id,
             'hub_skill_id' => $skill->hub_skill_id,
         ]);
@@ -737,7 +737,7 @@ class AiAgentHubTenantService
         $response = Http::withHeaders($this->headers())
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples/{$example->hub_example_id}");
 
-        $this->ensureSuccessful($response, 'delete agent training example', [
+        $this->ensureDeleted($response, 'delete agent training example', [
             'ai_hub_tenant_id' => $tenant->id,
             'hub_example_id' => $example->hub_example_id,
         ]);
@@ -1204,6 +1204,123 @@ class AiAgentHubTenantService
     }
 
     /* ------------------------------------------------------------------
+     | Re-push — rebuilding hub-side objects from the local mirror
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Re-create an agent at the hub from what we already hold locally, and
+     * repoint the existing row at it.
+     *
+     * Distinct from {@see createAgent()} on purpose: that one *opens* an agent
+     * and inserts a local row for it. This one has the local row already —
+     * with its prompt, model and training intact — and only needs the hub to
+     * hold a copy again. Creating instead would leave the workspace with two
+     * rows for one agent, and orphan the knowledge hanging off the first.
+     */
+    public function repushAgent(AiHubAgent $agent): AiHubAgent
+    {
+        $tenant = $agent->aiHubTenant;
+
+        $payload = array_filter([
+            'externalId' => $this->buildExternalId(
+                $this->normalizeAgentExternalId($agent->external_id, $agent->name),
+                $tenant
+            ),
+            'name' => $agent->name,
+            'description' => $agent->description,
+            'model' => $agent->model,
+            'systemPrompt' => $agent->system_prompt,
+            'temperature' => $agent->temperature,
+            'maxTokens' => $agent->max_tokens,
+            'handoffRules' => $agent->handoff_rules,
+            'metadata' => $agent->metadata,
+            'providerCredentialId' => $agent->providerCredential?->hub_provider_credential_id,
+        ], fn ($v) => $v !== null);
+
+        $response = Http::withHeaders($this->headers())
+            ->post("{$this->baseUrl}/agents", $payload);
+
+        $this->ensureSuccessful($response, 'repush agent', [
+            'ai_hub_tenant_id' => $tenant->id,
+            'ai_hub_agent_id' => $agent->id,
+        ]);
+
+        $data = $response->json() ?? [];
+
+        $agent->update([
+            'hub_agent_id' => $data['id'] ?? null,
+            'external_id' => $data['externalId'] ?? $payload['externalId'],
+        ]);
+
+        return $agent->refresh();
+    }
+
+    /**
+     * Re-push one knowledge item, skill or training example, repointing the
+     * local row at the copy the hub now holds. Same reasoning as
+     * {@see repushAgent()}: the content is ours, only the id was lost.
+     */
+    public function repushKnowledge(AiHubKnowledge $knowledge): void
+    {
+        $agent = $knowledge->aiHubAgent;
+
+        $data = $this->repushChild($agent, 'knowledge', 'repush agent knowledge', array_filter([
+            'title' => $knowledge->title,
+            'content' => $knowledge->content,
+            'tags' => $knowledge->tags,
+            'metadata' => $knowledge->metadata,
+        ], fn ($v) => $v !== null));
+
+        $knowledge->update(['hub_knowledge_id' => $data['id'] ?? null]);
+    }
+
+    public function repushSkill(AiHubSkill $skill): void
+    {
+        $agent = $skill->aiHubAgent;
+
+        $data = $this->repushChild($agent, 'skills', 'repush agent skill', array_filter([
+            'name' => $skill->name,
+            'description' => $skill->description,
+            'instructions' => $skill->instructions,
+            'metadata' => $skill->metadata,
+        ], fn ($v) => $v !== null));
+
+        $skill->update(['hub_skill_id' => $data['id'] ?? null]);
+    }
+
+    public function repushTrainingExample(AiHubTrainingExample $example): void
+    {
+        $agent = $example->aiHubAgent;
+
+        $data = $this->repushChild($agent, 'training-examples', 'repush agent training example', array_filter([
+            'type' => $example->type,
+            'input' => $example->input,
+            'expectedOutput' => $example->expected_output,
+            'notes' => $example->notes,
+            'metadata' => $example->metadata,
+        ], fn ($v) => $v !== null));
+
+        $example->update(['hub_example_id' => $data['id'] ?? null]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    protected function repushChild(AiHubAgent $agent, string $segment, string $action, array $payload): array
+    {
+        $response = Http::withHeaders($this->headers())
+            ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/{$segment}", $payload);
+
+        $this->ensureSuccessful($response, $action, [
+            'ai_hub_tenant_id' => $agent->ai_hub_tenant_id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+
+        return $response->json() ?? [];
+    }
+
+    /* ------------------------------------------------------------------
      | Internals
      * ------------------------------------------------------------------ */
 
@@ -1278,6 +1395,27 @@ class AiAgentHubTenantService
             'Authorization' => 'Bearer ' . $this->resolveApiKey(),
             'Accept' => 'application/json',
         ];
+    }
+
+    /**
+     * Same as {@see ensureSuccessful()}, but a 404 counts as done.
+     *
+     * A delete asks for a thing to stop existing at the hub, and a hub that
+     * never had it has already answered that. Treating the 404 as failure
+     * strands the local mirror row: it cannot be updated (404), cannot be
+     * deleted (404), and the workspace has no way to clear it — which is
+     * exactly what happened when the hub was rebuilt and every id we held
+     * stopped resolving.
+     */
+    protected function ensureDeleted(Response $response, string $action, array $context = []): void
+    {
+        if ($response->status() === 404) {
+            Log::info("AiAgentHubTenantService: nothing to {$action}, the hub does not have it", $context);
+
+            return;
+        }
+
+        $this->ensureSuccessful($response, $action, $context);
     }
 
     protected function ensureSuccessful(Response $response, string $action, array $context = []): void
