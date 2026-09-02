@@ -208,9 +208,13 @@ return [
     | random from the pool; what the workspace pays for is the usage, out of a
     | prepaid balance.
     |
-    | Everything here is a default. The Back Office overrides the two commercial
-    | numbers (rate and markup) through the `settings` table, because they are
-    | priced by whoever runs the business, not redeployed.
+    | Everything below `enabled` is a **default**, not the live value. The Back
+    | Office overrides all five commercial numbers through the `settings` table
+    | (Back Office → AI Credits → Pricing), because they are priced by whoever
+    | runs the business, not redeployed. Read them through
+    | `App\Services\AiCredits\AiCreditPricing`, never with `config()` directly —
+    | a floor enforced by the API and a different floor printed on the customer's
+    | page is a customer told one number and refused for another.
     |
     */
 

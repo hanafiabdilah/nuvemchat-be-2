@@ -6,6 +6,7 @@ use App\Enums\AiCredit\CreditTransactionType;
 use App\Http\Controllers\Controller;
 use App\Models\AiCreditTransaction;
 use App\Models\AiCreditWallet;
+use App\Models\AiModelPrice;
 use App\Models\AuditLog;
 use App\Models\Tenant;
 use App\Services\AiCredits\AiCreditPricing;
@@ -37,7 +38,7 @@ class AdminAiCreditController extends Controller
      * and has not started from one that deposits R$200 every week — and only
      * the second is a customer.
      */
-    public function index(Request $request): JsonResponse
+    public function index(): JsonResponse
     {
         $wallets = AiCreditWallet::query()
             ->with('tenant.user:id,name,email')
@@ -71,11 +72,151 @@ class AdminAiCreditController extends Controller
                 'last_page' => $wallets->lastPage(),
                 'total' => $wallets->total(),
             ],
-            'pricing' => [
-                'markup_pct' => AiCreditPricing::markupPct(),
-                'usd_brl_rate' => AiCreditPricing::usdBrlRate(),
-            ],
+            'pricing' => AiCreditPricing::settings(),
         ]);
+    }
+
+    /**
+     * Change the commercial numbers of the rental offering.
+     *
+     * These are prices, and prices are set by whoever runs the business — a
+     * markup that needs a deploy is a markup nobody adjusts. Stored in the
+     * `settings` table, the same DB-only pattern as the MercadoPago and ProxyBR
+     * credentials.
+     *
+     * ⚠️ Changing them is not retroactive, and that is the point: every debit
+     * copies the rate and markup it used onto its own ledger row, so a charge
+     * from March still explains itself in July.
+     *
+     * `markup_pct` may be zero — running the offering at cost is a legitimate
+     * decision (a promotion, a migration) — but the rate may not: a zero rate
+     * would price every run at the fallback and read as if the hub had stopped
+     * reporting cost, which is a misconfiguration disguised as a different
+     * problem.
+     */
+    public function updatePricing(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'markup_pct' => ['required', 'numeric', 'min:0', 'max:1000'],
+            'usd_brl_rate' => ['required', 'numeric', 'min:0.01', 'max:1000'],
+            'fallback_run_cents' => ['required', 'integer', 'min:0', 'max:100000'],
+            'min_topup_cents' => ['required', 'integer', 'min:1', 'max:10000000'],
+            'low_balance_cents' => ['required', 'integer', 'min:0', 'max:10000000'],
+        ]);
+
+        $before = AiCreditPricing::settings();
+
+        AiCreditPricing::store($validated);
+
+        AuditLog::record(
+            'ai_credit.pricing_updated',
+            "Markup {$before['markup_pct']}% → {$validated['markup_pct']}%, rate {$before['usd_brl_rate']} → {$validated['usd_brl_rate']}",
+            ['before' => $before, 'after' => AiCreditPricing::settings()],
+            $request->user(),
+        );
+
+        return response()->json([
+            'message' => 'Pricing updated',
+            'pricing' => AiCreditPricing::settings(),
+        ]);
+    }
+
+    /**
+     * Per-model prices and margins.
+     *
+     * Returned raw (USD list price, markup or null) rather than as the computed
+     * BRL figures the customer sees: this is the editor, and an editor that
+     * shows the output instead of the input cannot be edited.
+     */
+    public function models(): JsonResponse
+    {
+        return response()->json([
+            'data' => AiModelPrice::query()
+                ->orderBy('sort_order')
+                ->orderBy('provider')
+                ->orderBy('model')
+                ->get()
+                ->map(fn (AiModelPrice $price) => [
+                    'id' => $price->id,
+                    'provider' => $price->provider,
+                    'model' => $price->model,
+                    'label' => $price->label,
+                    'input_usd_per_1m' => $price->input_usd_per_1m === null ? null : (float) $price->input_usd_per_1m,
+                    'output_usd_per_1m' => $price->output_usd_per_1m === null ? null : (float) $price->output_usd_per_1m,
+                    'markup_pct' => $price->markup_pct === null ? null : (float) $price->markup_pct,
+                    'is_listed' => $price->is_listed,
+                    'sort_order' => $price->sort_order,
+                ])->values(),
+            // The list exactly as a customer sees it, so the effect of a margin
+            // change is visible in the screen that made it rather than only in
+            // the customer's.
+            'preview' => AiCreditPricing::priceList(),
+            'defaults' => AiCreditPricing::settings(),
+        ]);
+    }
+
+    /**
+     * Create or update one model's price row.
+     *
+     * Upsert on (provider, model) rather than a plain create: that pair is the
+     * identity, and a second row for the same model would make "which markup
+     * applies?" unanswerable.
+     */
+    public function upsertModel(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'provider' => ['required', 'string', 'max:50'],
+            'model' => ['required', 'string', 'max:120'],
+            'label' => ['nullable', 'string', 'max:120'],
+            'input_usd_per_1m' => ['nullable', 'numeric', 'min:0', 'max:100000'],
+            'output_usd_per_1m' => ['nullable', 'numeric', 'min:0', 'max:100000'],
+            // Null is meaningful: "use the platform markup", not "no margin".
+            'markup_pct' => ['nullable', 'numeric', 'min:0', 'max:1000'],
+            'is_listed' => ['boolean'],
+            'sort_order' => ['nullable', 'integer', 'min:0', 'max:10000'],
+        ]);
+
+        $price = AiModelPrice::updateOrCreate(
+            [
+                'provider' => strtoupper($validated['provider']),
+                'model' => $validated['model'],
+            ],
+            [
+                'label' => $validated['label'] ?? null,
+                'input_usd_per_1m' => $validated['input_usd_per_1m'] ?? null,
+                'output_usd_per_1m' => $validated['output_usd_per_1m'] ?? null,
+                'markup_pct' => $validated['markup_pct'] ?? null,
+                'is_listed' => $validated['is_listed'] ?? true,
+                'sort_order' => $validated['sort_order'] ?? 0,
+            ],
+        );
+
+        AuditLog::record(
+            'ai_credit.model_priced',
+            "{$price->provider} {$price->model}: markup " . ($price->markup_pct ?? 'default'),
+            $price->only(['provider', 'model', 'markup_pct', 'input_usd_per_1m', 'output_usd_per_1m', 'is_listed']),
+            $request->user(),
+        );
+
+        return response()->json(['message' => 'Model price saved', 'id' => $price->id]);
+    }
+
+    /**
+     * Remove a model's row. The model keeps working — it simply falls back to
+     * the platform markup and stops appearing on the price list.
+     */
+    public function destroyModel(Request $request, AiModelPrice $model): JsonResponse
+    {
+        AuditLog::record(
+            'ai_credit.model_price_removed',
+            "{$model->provider} {$model->model}",
+            $model->only(['provider', 'model']),
+            $request->user(),
+        );
+
+        $model->delete();
+
+        return response()->json(['message' => 'Model price removed']);
     }
 
     /**

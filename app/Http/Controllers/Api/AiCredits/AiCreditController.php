@@ -45,14 +45,17 @@ class AiCreditController extends Controller
             'data' => [
                 'balance_cents' => $wallet->balance_cents,
                 'currency' => $wallet->currency,
-                'low_balance_cents' => (int) config('ai.credits.low_balance_cents', 500),
-                'min_topup_cents' => (int) config('ai.credits.min_topup_cents', 1000),
-                // Published so the page can say what a run roughly costs before
-                // anyone has spent anything. Withholding it would make the
-                // first top-up a purchase with no stated price.
-                'markup_pct' => AiCreditPricing::markupPct(),
-                'usd_brl_rate' => AiCreditPricing::usdBrlRate(),
-            ],
+                // Straight from AiCreditPricing, never from config: the floor
+                // printed on the page has to be the floor the API enforces, or
+                // a customer is told one number and refused for another. The
+                // markup and rate are published for the same reason — a first
+                // top-up with no stated price is a purchase in the dark.
+            ] + AiCreditPricing::settings(),
+            // What each model costs, in the currency the balance is held in.
+            // Shipped with the balance rather than behind its own endpoint
+            // because "how long will R$50 last me" is the question the page
+            // exists to answer, and neither half answers it alone.
+            'models' => AiCreditPricing::priceList(),
             'transactions' => AiCreditTransactionResource::collection($transactions),
         ]);
     }
@@ -65,7 +68,7 @@ class AiCreditController extends Controller
      */
     public function topup(Request $request): JsonResponse
     {
-        $min = (int) config('ai.credits.min_topup_cents', 1000);
+        $min = AiCreditPricing::minTopupCents();
 
         $validated = $request->validate([
             'amount_cents' => ['required', 'integer', "min:{$min}", 'max:10000000'],

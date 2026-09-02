@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\AiHub;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\AiHubProviderCredentialResource;
 use App\Models\AiHubProviderCredential;
+use App\Services\AiCredits\AiCreditPricing;
 use App\Services\AiCredits\AiCreditService;
 use App\Services\AiCredits\AiTokenPool;
 use App\Services\AiCredits\AiTokenRentalService;
@@ -44,6 +45,12 @@ class TokenRentalController extends Controller
             'available_providers' => $this->pool->availableProviders(),
             'rentals' => AiHubProviderCredentialResource::collection($this->rentals->rentals($tenant)),
             'balance_cents' => $this->credits->balanceCents($tenant),
+            // The published price of each model, repeated here rather than left
+            // to /ai-credits: choosing a model happens in the agent form, which
+            // is behind the agent permissions, and somebody without
+            // `billing.view` still has to be able to see what they are about to
+            // commit their workspace to spending.
+            'models' => AiCreditPricing::priceList(),
         ]);
     }
 

@@ -65,14 +65,77 @@ sharing it. **`weight`** pushes new workspaces toward the keys that can take the
 
 ---
 
+## How a workspace actually connects a rented token
+
+Renting produces an ordinary provider credential, so the connection *is* the
+credential dropdown — but only after somebody rents. Two places offer it:
+
+- **AI Agents → Provider Credentials → "Alugar um token"**.
+- **The agent form itself.** This is the one that matters: a workspace with no
+  key of its own meets the agent form first, and for a while the only thing it
+  was told there was "create a provider credential", which is the exact errand
+  renting exists to remove. The empty-state banner and a link under the
+  credential select now both offer it, and a key rented from inside the form is
+  selected on the spot.
+
+Once rented it behaves like any other credential — pickable on an agent, on a
+trained-agent fork, and in a flow node's audio settings — with two differences
+the UI makes visible: a **"Alugado"** badge, and no edit/delete (the server
+refuses both; it is a key other workspaces share).
+
+⚠️ **ElevenLabs is filtered out of the agent dropdown.** The hub stores it but
+refuses it as an agent provider, so offering it only bought a 409 at save time.
+It became worth fixing when renting arrived: a workspace can now hold such a key
+without ever having typed one. Shared rule in `lib/aiProviders.ts`.
+
 ## Pricing
 
 ```
 cents = ceil( cost_usd × usd_brl_rate × (1 + markup_pct/100) × 100 )
 ```
 
-`cost_usd` is what the hub reported the provider charged. Rate and markup come
-from the `settings` table (Back Office), falling back to `config/ai.php`.
+`cost_usd` is what the hub reported the provider charged. Every number in that
+formula lives in the `settings` table and is edited in **Back Office → AI
+Credits → Pricing** (`bo.ai-credits.manage`), falling back to `config/ai.php`
+until an admin has touched it. Read them through `AiCreditPricing`, never with
+`config()` — a floor enforced by the API and a different floor printed on the
+customer's page is a customer told one number and refused for another.
+
+Changing them is **not retroactive**, and that is the point: every debit copies
+the rate and markup it used onto its own ledger row.
+
+### Per model
+
+`ai_model_prices` holds one row per (provider, model), and it does two jobs that
+must not be confused:
+
+| Column | Moves money? |
+|---|---|
+| `markup_pct` | **Yes.** Overrides the platform margin for that model. |
+| `input_usd_per_1m`, `output_usd_per_1m` | **No.** The provider's list price, shown to customers. |
+
+Models are not equally worth reselling — a cheap one carries almost no absolute
+margin at the default percentage — so the override is the real feature. The list
+prices are there so a workspace can *see* what it is choosing before it chooses:
+`GET /api/ai-credits` and `GET /api/ai-hub/rentals` both publish the computed
+BRL figures (the second one because choosing a model happens in the agent form,
+behind the agent permissions, and that person may not hold `billing.view`).
+
+⚠️ **The list price is never the bill.** The charge is the cost of the run that
+really happened. A table of list prices drifts the moment a provider changes
+theirs, and a bill computed from stale numbers is quietly wrong in one direction
+or the other.
+
+**USD in, BRL out.** Admins type dollars because that is how providers publish;
+customers see reais. Storing the converted value instead would mean re-typing
+every row each time the rate moves, when the point of a single rate is that one
+change re-prices the whole list. The Back Office echoes the resulting BRL live
+beside each USD field so nobody converts in their head.
+
+A model with no row still works — it is billed at the platform markup and simply
+does not appear on the price list. A model with a markup but no list price is
+billed at that markup and also stays off the list: quoting free is worse than
+being shorter.
 
 Two things worth knowing:
 

@@ -81,7 +81,9 @@ class AiCreditService
         }
 
         $price = AiCreditPricing::priceRun(
-            $run->cost_usd === null ? null : (float) $run->cost_usd
+            $run->cost_usd === null ? null : (float) $run->cost_usd,
+            $run->provider,
+            $run->model,
         );
 
         if ($price['estimated']) {

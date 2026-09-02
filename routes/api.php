@@ -613,6 +613,16 @@ Route::prefix('admin')->group(function () {
         // balance without holding the keys.
         Route::middleware('permission:bo.ai-credits.manage')->group(function () {
             Route::get('/ai-credits', [AdminAiCreditController::class, 'index']);
+            // The markup and FX rate the whole offering is priced on. Under the
+            // credits permission rather than the token pool's: setting a price
+            // is a commercial act, not custody of the platform's secrets.
+            Route::put('/ai-credits/pricing', [AdminAiCreditController::class, 'updatePricing']);
+            // Per-model list prices and margins. The margin is real (it prices
+            // the run); the list price is shown to customers but never billed —
+            // see the ai_model_prices migration.
+            Route::get('/ai-credits/models', [AdminAiCreditController::class, 'models']);
+            Route::post('/ai-credits/models', [AdminAiCreditController::class, 'upsertModel']);
+            Route::delete('/ai-credits/models/{model}', [AdminAiCreditController::class, 'destroyModel']);
             Route::get('/customers/{tenant}/ai-credits', [AdminAiCreditController::class, 'show']);
             Route::post('/customers/{tenant}/ai-credits/adjust', [AdminAiCreditController::class, 'adjust']);
         });
