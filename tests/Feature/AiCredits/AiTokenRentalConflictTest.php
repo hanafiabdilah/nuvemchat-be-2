@@ -164,3 +164,28 @@ it('lets two workspaces rent the same provider without colliding', function () {
         // the customer needs a sentence.
         ->and($a->name)->toBe($b->name);
 });
+
+it('reuses the rental for a provider instead of minting a second one', function () {
+    [$tenant] = AiCreditFixtures::workspace();
+    AiCreditFixtures::poolKey();
+    AiCreditFixtures::poolKey();
+
+    $store = [];
+    fakeHubWithUniqueNames($store);
+
+    $service = app(AiTokenRentalService::class);
+
+    // Two agents on the same rented provider — the second save must find the
+    // rental the first one made, not create a credential the workspace could
+    // never tell apart from it in a dropdown.
+    $first = $service->rent($tenant, 'OPENAI');
+    $second = $service->rent($tenant, 'OPENAI');
+    $third = $service->rent($tenant, 'openai');
+
+    expect($second->id)->toBe($first->id)
+        // Case is not identity: the provider arrives uppercased from the pool
+        // and lowercased from a hand-written request.
+        ->and($third->id)->toBe($first->id)
+        ->and(AiHubProviderCredential::rented()->count())->toBe(1)
+        ->and($store)->toHaveCount(1);
+});

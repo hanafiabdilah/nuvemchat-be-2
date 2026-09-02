@@ -81,14 +81,29 @@ lives in the **AI Agent create/edit form** (`components/ai/AgentCredentialChoice
 
 - **My own key** — the credential dropdown, filtered to the workspace's own,
   non-audio keys. Unchanged behaviour.
-- **Rent from the platform** — the models the platform can actually serve,
-  grouped by provider, each carrying its price; a breakdown for the chosen one
-  (per 1M in, per 1M out, a typical reply); and the credit balance, stated
-  before the agent is saved rather than discovered when it goes silent.
+- **Rent from the platform** — every model the **hub** serves for a rentable
+  provider, grouped, each carrying its price *when one is published*; a
+  breakdown for the chosen one; and the credit balance, stated before the agent
+  is saved rather than discovered when it goes silent.
 
-The rental itself happens **on save**, silently: the form POSTs
-`/ai-hub/rentals {provider}` (idempotent — it returns the workspace's existing
-rental for that provider, or mints one) and uses the credential that comes back.
+  ⚠️ The options come from the hub's model list, **not** from `ai_model_prices`.
+  Deriving them from the price table made renting unusable until an admin had
+  priced something — which is the state every install starts in: the dropdown
+  came up empty, no model could be chosen, and the save failed with "the model
+  field is required" on a field the form never let anyone fill. An unpriced
+  model still runs and is still billed (provider cost + platform markup); it
+  simply carries no published figure, and saying so beats hiding it.
+
+The same control powers **hiring a ready-made agent**
+(`TrainedAgentCatalog`), with `fixedModel` set: the blueprint decides the model,
+so the only open question there is whose key runs it, and the rented side asks
+for a provider instead.
+
+The rental itself happens **on save**, silently, through
+`lib/aiRentals.ts::resolveRentedCredential()`: it reuses a rental the workspace
+already holds for that provider and only asks the server when there is none.
+`rent()` is idempotent anyway, so this is not what makes it safe — it is what
+stops a save that changes nothing from spending a round-trip to be told so.
 From the customer's side the decision was "use the platform's key"; making them
 perform a second action to enact it was ceremony.
 
