@@ -41,7 +41,13 @@ class FlowController extends Controller
      */
     public function index(): JsonResponse
     {
-        $flows = Flow::where('tenant_id', auth()->user()->tenant_id)->orderBy('name', 'ASC')->get();
+        // withCount, not with('nodes'): the list needs the size of each flow,
+        // and loading every node of every flow to count them in PHP would ship
+        // the whole builder payload to a screen that draws one line per flow.
+        $flows = Flow::where('tenant_id', auth()->user()->tenant_id)
+            ->withCount('nodes')
+            ->orderBy('name', 'ASC')
+            ->get();
 
         return response()->json([
             'data' => FlowResource::collection($flows),

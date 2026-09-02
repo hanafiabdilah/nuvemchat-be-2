@@ -18,6 +18,9 @@ class FlowResource extends JsonResource
             'id' => $this->id,
             'name' => $this->name,
             'nodes' => FlowNodeResource::collection($this->whenLoaded('nodes')),
+            // Present only where the query asked for it (the index): how big a
+            // flow is, without sending the flow.
+            'nodes_count' => $this->whenCounted('nodes'),
             'edges' => FlowEdgeResource::collection($this->whenLoaded('edges')),
             'last_updated_at' => $this->last_updated_at,
             'created_at' => $this->created_at,
