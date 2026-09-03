@@ -34,6 +34,26 @@ class AgentController extends Controller
         ]);
     }
 
+    /**
+     * One agent.
+     *
+     * Added when creating, editing and training each got its own URL: a page
+     * addressed by id has to be able to load that id, and fetching the whole
+     * list to pick one row out of it is a request that grows with the
+     * workspace to answer a question about a single agent.
+     *
+     * Scoped through the tenant's own hub relation, so an id belonging to
+     * another workspace is a 404 rather than a leak.
+     */
+    public function show(int $id): JsonResponse
+    {
+        $agent = $this->aiHubTenant()->agents()
+            ->with('providerCredential')
+            ->findOrFail($id);
+
+        return response()->json(['data' => new AiHubAgentResource($agent)]);
+    }
+
     public function store(Request $request): JsonResponse
     {
         $validated = $this->validatePayload($request, requiredCore: true);

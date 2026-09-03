@@ -464,6 +464,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // agent roster for the "Respond with AI" link dropdown.
         Route::get('/agents', [AiHubAgentController::class, 'index'])->middleware('permission:ai-agents.view|connections.update');
         Route::post('/agents', [AiHubAgentController::class, 'store'])->middleware('permission:ai-agents.create');
+        Route::get('/agents/{id}', [AiHubAgentController::class, 'show'])->middleware('permission:ai-agents.view');
         Route::patch('/agents/{id}', [AiHubAgentController::class, 'update'])->middleware('permission:ai-agents.update');
         Route::delete('/agents/{id}', [AiHubAgentController::class, 'destroy'])->middleware('permission:ai-agents.delete');
 
