@@ -140,12 +140,16 @@ it('shows the workspace what each model costs without needing billing permission
 
     expect($priced['input_cents_per_1m'])->toBe(113)
         ->and($priced['priced'])->toBeTrue()
-        // Every other model the provider runs is offered too, unpriced. An
-        // unpriced model is not unbilled — it is charged at cost plus the
-        // platform markup — so withholding it hid a working option behind a
-        // Back Office table the customer cannot see.
+        // Every other model the provider runs is offered too — and quoted.
+        // `priced` false still means "no admin has typed a row for this one",
+        // which is what the Back Office list and the per-model margin key off;
+        // it never meant we could not say what it costs. The catalogue carries
+        // the provider's USD figures, so the estimate comes from those at the
+        // platform rate and markup, and a picker no longer quotes half its
+        // options and leaves the rest blank.
         ->and($models->firstWhere('model', 'gpt-5')['priced'])->toBeFalse()
-        ->and($models->firstWhere('model', 'gpt-5')['example_reply_cents'])->toBeNull()
+        ->and($models->firstWhere('model', 'gpt-5')['example_reply_cents'])->toBeGreaterThan(0)
+        ->and($models->firstWhere('model', 'gpt-5')['input_cents_per_1m'])->toBeGreaterThan(0)
         // Only providers the platform can actually rent.
         ->and($models->pluck('provider')->unique()->all())->toBe(['OPENAI']);
 });

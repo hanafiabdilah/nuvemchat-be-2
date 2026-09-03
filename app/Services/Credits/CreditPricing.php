@@ -266,6 +266,8 @@ class CreditPricing
         $priced = collect(self::priceList())
             ->keyBy(fn (array $row) => strtoupper($row['provider']) . '|' . strtolower($row['model']));
 
+        $rate = self::usdBrlRate();
+        $platformMarkup = self::markupPct();
         $rows = [];
 
         foreach (KnownModelPrices::all() as $model) {
@@ -275,13 +277,30 @@ class CreditPricing
                 continue;
             }
 
+            // Priced from the catalogue's own USD figures at the platform rate
+            // and markup — the same arithmetic priceList() does, on the numbers
+            // this file has always carried. Returning nulls here was throwing
+            // away a price we already knew: "no admin has typed a row for this
+            // model yet" is not the same as "we cannot say what it costs", and
+            // a picker that quotes nothing for half its options makes the half
+            // it does quote look like the only ones that are billed.
+            $factor = $rate * (1 + $platformMarkup / 100);
+            $inputPerM = (float) $model['input'] * $factor;
+            $outputPerM = (float) $model['output'] * $factor;
+
             $rows[$provider . '|' . strtolower($model['id'])] = [
                 'provider' => $provider,
                 'model' => $model['id'],
                 'label' => $model['name'],
-                'input_cents_per_1m' => null,
-                'output_cents_per_1m' => null,
-                'example_reply_cents' => null,
+                'input_cents_per_1m' => (int) round($inputPerM * 100),
+                'output_cents_per_1m' => (int) round($outputPerM * 100),
+                'example_reply_cents' => (int) max(1, ceil(
+                    ($inputPerM * self::EXAMPLE_INPUT_TOKENS + $outputPerM * self::EXAMPLE_OUTPUT_TOKENS) / 1_000_000 * 100
+                )),
+                // False still means "no admin has priced this": the Back Office
+                // list and the margin override both key off it. What changed is
+                // that an unpriced model now carries an estimate rather than a
+                // blank.
                 'priced' => false,
             ];
         }
