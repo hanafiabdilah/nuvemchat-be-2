@@ -6,6 +6,7 @@ use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\NodeType;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\FlowResource;
+use App\Http\Resources\FlowSummaryResource;
 use App\Models\Flow;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
@@ -41,16 +42,22 @@ class FlowController extends Controller
      */
     public function index(): JsonResponse
     {
-        // withCount, not with('nodes'): the list needs the size of each flow,
-        // and loading every node of every flow to count them in PHP would ship
-        // the whole builder payload to a screen that draws one line per flow.
+        // Shape, not content. The list draws a thumbnail of each flow, which
+        // needs the node types, where they sit and what joins them — and
+        // nothing else. `data` is the whole builder payload (message bodies, AI
+        // prompts, HTTP headers) and is deliberately excluded from the select:
+        // a screen showing twenty flows must not ship twenty flows.
         $flows = Flow::where('tenant_id', auth()->user()->tenant_id)
             ->withCount('nodes')
+            ->with([
+                'nodes' => fn ($query) => $query->select(['id', 'flow_id', 'type', 'position_x', 'position_y']),
+                'edges',
+            ])
             ->orderBy('name', 'ASC')
             ->get();
 
         return response()->json([
-            'data' => FlowResource::collection($flows),
+            'data' => FlowSummaryResource::collection($flows),
         ]);
     }
 
