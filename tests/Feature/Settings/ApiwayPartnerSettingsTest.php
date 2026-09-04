@@ -60,6 +60,33 @@ test('saving with a blank token keeps the stored one; a new value replaces it', 
     expect(ApiwayConfig::partnerToken())->toBe('rotated-token');
 });
 
+test('the reseller half and the channel half are saved independently', function () {
+    Setting::set(ApiwayConfig::KEY_BASE_URL, 'https://whats-api.ipbr.pro');
+    Setting::set(ApiwayConfig::KEY_PARTNER_BASE_URL, 'https://portal.proxybr.com.br');
+    Setting::set(ApiwayConfig::KEY_PARTNER_TOKEN, 'partner-token');
+    $admin = apiwaySettingsAdmin();
+
+    // Proxy BR tab: partner fields only. The core endpoint must survive.
+    $this->actingAs($admin, 'sanctum')
+        ->putJson('/api/admin/settings', [
+            'apiway' => ['partner_base_url' => 'https://staging.proxybr.com.br'],
+        ])->assertOk();
+
+    expect(ApiwayConfig::baseUrl())->toBe('https://whats-api.ipbr.pro')
+        ->and(ApiwayConfig::partnerBaseUrl())->toBe('https://staging.proxybr.com.br')
+        ->and(ApiwayConfig::partnerToken())->toBe('partner-token');
+
+    // API Way channel tab: core fields only. The partner credentials must survive.
+    $this->actingAs($admin, 'sanctum')
+        ->putJson('/api/admin/settings', [
+            'apiway' => ['base_url' => 'https://core.example.com/'],
+        ])->assertOk();
+
+    expect(ApiwayConfig::baseUrl())->toBe('https://core.example.com')
+        ->and(ApiwayConfig::partnerBaseUrl())->toBe('https://staging.proxybr.com.br')
+        ->and(ApiwayConfig::partnerToken())->toBe('partner-token');
+});
+
 test('the partner base url is normalized and falls back to the default when cleared', function () {
     $admin = apiwaySettingsAdmin();
 

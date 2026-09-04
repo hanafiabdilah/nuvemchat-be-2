@@ -135,8 +135,12 @@ class AdminSettingsController extends Controller
     public function update(Request $request)
     {
         $validated = $request->validate([
+            // Each key is independently optional: the channel side (core base URL +
+            // integrator token) and the reseller side (partner base URL + token) are
+            // edited on separate Back Office tabs, so a payload carrying only one
+            // half must leave the other half alone rather than be rejected.
             'apiway' => ['sometimes', 'array'],
-            'apiway.base_url' => ['required_with:apiway', 'url', 'max:255'],
+            'apiway.base_url' => ['sometimes', 'url', 'max:255'],
             'apiway.integrator_token' => ['nullable', 'string', 'max:255'],
             'apiway.partner_base_url' => ['nullable', 'url', 'max:255'],
             'apiway.partner_token' => ['nullable', 'string', 'max:512'],
@@ -144,7 +148,7 @@ class AdminSettingsController extends Controller
             // Legacy payload key accepted from Back Office builds that predate the
             // API Way rebrand. Drop once all clients update.
             'proxyhub' => ['sometimes', 'array'],
-            'proxyhub.base_url' => ['required_with:proxyhub', 'url', 'max:255'],
+            'proxyhub.base_url' => ['sometimes', 'url', 'max:255'],
             'proxyhub.integrator_token' => ['nullable', 'string', 'max:255'],
             'proxyhub.partner_base_url' => ['nullable', 'url', 'max:255'],
             'proxyhub.partner_token' => ['nullable', 'string', 'max:512'],
@@ -204,7 +208,9 @@ class AdminSettingsController extends Controller
         $apiway = $validated['apiway'] ?? $validated['proxyhub'] ?? null;
 
         if ($apiway !== null) {
-            Setting::set(ApiwayConfig::KEY_BASE_URL, rtrim($apiway['base_url'], '/'));
+            if (array_key_exists('base_url', $apiway)) {
+                Setting::set(ApiwayConfig::KEY_BASE_URL, rtrim($apiway['base_url'], '/'));
+            }
 
             if (array_key_exists('partner_base_url', $apiway)) {
                 Setting::set(
