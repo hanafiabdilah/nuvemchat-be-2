@@ -17,20 +17,37 @@ class ContactController extends Controller
     {
         $per_page = $request->query('per_page', 50);
         $search = $request->query('search');
-        $channel = $request->query('channel');
+        // One value or many. The contact book filters on several channels at
+        // once — "WhatsApp and Telegram" is an ordinary question — while the
+        // broadcast picker still sends a single one.
+        $channels = array_filter((array) $request->query('channel', []));
         $addressType = $request->query('address_type');
+        $optedOut = $request->query('opted_out');
 
         // Group contacts represent group chats, not people — keep them out of
         // the contact book (and out of the new-conversation picker).
         $contacts = Contact::where('tenant_id', $request->user()->tenant_id)
             ->where('is_group', false)
             ->when($search, function ($query, $search) {
-                $query->where('name', 'like', "%{$search}%")
-                      ->orWhere('username', 'like', "%{$search}%")
-                      ->orWhere('external_id', 'like', "%{$search}%");
+                // Grouped: without the closure the OR branches escape the
+                // tenant and is_group conditions and the search returns every
+                // workspace's contacts.
+                $query->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('username', 'like', "%{$search}%")
+                        ->orWhere('external_id', 'like', "%{$search}%");
+                });
             })
-            ->when($channel, function ($query, $channel) {
-                $query->where('channel', $channel);
+            ->when($channels, function ($query, $channels) {
+                $query->whereIn('channel', $channels);
+            })
+            // Who has asked to be left out of campaigns. Nothing in the product
+            // could list them before: the flag was writable in the edit form and
+            // readable nowhere, so "who did we exclude" had no answer.
+            ->when($optedOut !== null && $optedOut !== '', function ($query) use ($optedOut) {
+                filter_var($optedOut, FILTER_VALIDATE_BOOLEAN)
+                    ? $query->whereNotNull('broadcast_opted_out_at')
+                    : $query->whereNull('broadcast_opted_out_at');
             })
             // Broader than `channel`, for the broadcast recipient picker: a
             // contact saved under API Way is reachable by a WhatsApp Official
