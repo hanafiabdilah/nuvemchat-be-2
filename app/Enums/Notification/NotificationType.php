@@ -45,6 +45,21 @@ enum NotificationType: string
      */
     case CreditLowBalance = 'credit_low_balance';
 
+    /**
+     * A rented number is about to renew and the balance will not cover it.
+     *
+     * Repeated daily inside the window, like its API Way counterpart: the only
+     * remedy is a person noticing and topping up, and the number is deleted at
+     * the deadline.
+     */
+    case VirtualNumberRenewalNoCredit = 'virtual_number_renewal_no_credit';
+
+    /** A rented number was cancelled because the renewal could not be paid. */
+    case VirtualNumberCancelledNoCredit = 'virtual_number_cancelled_no_credit';
+
+    /** A number was charged for and never delivered; the money is already back. */
+    case VirtualNumberRefunded = 'virtual_number_refunded';
+
     /** Human-readable label for the Back Office configuration UI. */
     public function label(): string
     {
@@ -64,6 +79,9 @@ enum NotificationType: string
             self::ApiwayProvisionRefunded => 'API Way provisioning failed (credit returned)',
             self::ApiwayRenewalNoCredit => 'API Way renewal blocked by balance',
             self::CreditLowBalance => 'Prepaid balance running low',
+            self::VirtualNumberRenewalNoCredit => 'Virtual number renewal blocked by balance',
+            self::VirtualNumberCancelledNoCredit => 'Virtual number cancelled (no balance)',
+            self::VirtualNumberRefunded => 'Virtual number not delivered (credit returned)',
         };
     }
 
@@ -89,6 +107,9 @@ enum NotificationType: string
             self::ApiwayProvisionRefunded => "Olá {{name}}, não conseguimos ativar sua instância API Way e devolvemos {{amount}} ao seu saldo. Você pode tentar novamente pelo painel.",
             self::ApiwayRenewalNoCredit => "Olá {{name}}, sua assinatura API Way vence em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento: depois dele a instância é desativada permanentemente e não há como recuperá-la.",
             self::CreditLowBalance => "Olá {{name}}, seu saldo está acabando: restam {{amount}}. Recarregue para o seu atendimento com IA e suas instâncias continuarem funcionando.",
+            self::VirtualNumberRenewalNoCredit => "Olá {{name}}, seu número {{msisdn}} renova em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento: sem saldo o número é cancelado e não pode ser recuperado.",
+            self::VirtualNumberCancelledNoCredit => "Olá {{name}}, seu número {{msisdn}} foi cancelado porque não havia saldo para a renovação. Contrate um novo número pelo painel quando quiser.",
+            self::VirtualNumberRefunded => "Olá {{name}}, não conseguimos ativar o número virtual e devolvemos {{amount}} ao seu saldo. Você pode tentar novamente pelo painel.",
         };
     }
 
@@ -116,6 +137,9 @@ enum NotificationType: string
             self::ApiwayProvisionRefunded => ['name', 'amount'],
             self::ApiwayRenewalNoCredit => ['name', 'due_date', 'amount'],
             self::CreditLowBalance => ['name', 'amount'],
+            self::VirtualNumberRenewalNoCredit => ['name', 'msisdn', 'due_date', 'amount'],
+            self::VirtualNumberCancelledNoCredit => ['name', 'msisdn'],
+            self::VirtualNumberRefunded => ['name', 'amount'],
         };
     }
 

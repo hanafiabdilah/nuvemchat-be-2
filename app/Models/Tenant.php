@@ -94,6 +94,12 @@ class Tenant extends Model
         return $this->hasMany(TrainedAgentHire::class);
     }
 
+    /** Virtual numbers rented from API Way (SMS / OTP reception). */
+    public function virtualNumbers()
+    {
+        return $this->hasMany(VirtualNumber::class);
+    }
+
     public function users()
     {
         return $this->hasMany(User::class);

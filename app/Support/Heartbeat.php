@@ -36,6 +36,8 @@ class Heartbeat
         'media:purge' => ['Media purge', 7200, 'Deletes expired media. Storage only grows without it.'],
         'apiway:renew' => ['API Way renewal', 7200, 'ProxyBR gives no grace period — a missed renewal is a permanent revoke.'],
         'apiway:sync' => ['API Way sync', 7200, 'Expires and releases instances whose subscription ended.'],
+        'numbers:renew' => ['Virtual number renewal', 90000, 'Charges rented numbers and cancels unpaid ones before API Way bills us again.'],
+        'numbers:sync' => ['Virtual number sync', 7200, 'Refreshes renewal dates and finds numbers we pay for that nobody owns.'],
         'emails:fetch' => ['Email inbox sync', 900, 'IMAP polling. Without it, e-mail conversations stop arriving.'],
     ];
 

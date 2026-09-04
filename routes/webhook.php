@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Webhook\ApiwayNumbersController;
 use App\Http\Controllers\Webhook\ChatController;
 use App\Http\Controllers\Webhook\FacebookController;
 use App\Http\Controllers\Webhook\InstagramController;
@@ -29,3 +30,9 @@ Route::post('/webhook/tiktok', [TikTokController::class, 'handle'])->name('webho
 // MercadoPago payment / preapproval notifications. CSRF-exempt via the
 // `/webhook/*` glob in bootstrap/app.php.
 Route::post('/webhook/mercadopago', [MercadoPagoWebhookController::class, 'handle'])->name('webhook.mercadopago');
+
+// API Way pushes every SMS received on a rented virtual number here. One
+// webhook per account, and the platform has one account, so this single route
+// carries every tenant's codes; the payload's `number_id` is what routes it.
+// Signed with HMAC-SHA256 over the raw body (X-ApiWay-Signature).
+Route::post('/webhook/apiway-numbers', [ApiwayNumbersController::class, 'handle'])->name('webhook.apiway-numbers');

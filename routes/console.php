@@ -131,6 +131,25 @@ Schedule::command('apiway:sync')
     ->hourlyAt(20)
     ->onFailure(fn () => logger()->error('API Way sync failed'));
 
+// --- Virtual numbers (API Way) -------------------------------------------
+
+// Charge the coming month of every rented number to the tenant's balance —
+// and delete the ones nobody can pay for. There is no upstream renew call: an
+// API Way number renews itself and bills the platform on renews_at, so missing
+// this window does not lose the number, it buys another month of it with the
+// platform's money.
+Schedule::command('numbers:renew --days-before=3')
+    ->dailyAt('08:45')
+    ->timezone('America/Sao_Paulo')
+    ->onFailure(fn () => logger()->error('Virtual number renewal pass failed'));
+
+// Reconcile with the account: renewal dates, numbers cancelled upstream,
+// purchases that timed out (adopted or refunded), and numbers we are billed for
+// that no workspace owns.
+Schedule::command('numbers:sync')
+    ->hourlyAt(35)
+    ->onFailure(fn () => logger()->error('Virtual number sync failed'));
+
 // --- Broadcasts ----------------------------------------------------------
 
 // Start campaigns whose scheduled time has come, and revive any whose pump job

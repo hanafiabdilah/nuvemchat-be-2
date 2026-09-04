@@ -16,9 +16,12 @@ class EnsureSubscriptionActive
     /**
      * Route-name prefixes that remain accessible while suspended. `apiway.`
      * stays open so a tenant with no (or lapsed) plan can still buy and manage
-     * unit-purchased API Way instances — mode 1 of that offering.
+     * unit-purchased API Way instances — mode 1 of that offering. `numbers.`
+     * for the same reason, plus one of its own: a rented number keeps costing
+     * the platform money every month, so locking the customer out of the screen
+     * that cancels it would be charging them for a page they cannot open.
      */
-    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'apiway.'];
+    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'apiway.', 'numbers.'];
 
     /**
      * Exact route URIs (relative) that remain accessible.

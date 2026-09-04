@@ -19,6 +19,7 @@ use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
 use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
 use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
 use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
+use App\Http\Controllers\Api\Numbers\VirtualNumberController;
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
@@ -34,6 +35,7 @@ use App\Http\Controllers\Api\Admin\AdminEntitlementController;
 use App\Http\Controllers\Api\Admin\AdminHealthController;
 use App\Http\Controllers\Api\Admin\AdminInvoiceController;
 use App\Http\Controllers\Api\Admin\AdminLiveController;
+use App\Http\Controllers\Api\Admin\AdminNumbersController;
 use App\Http\Controllers\Api\Admin\AdminReportController;
 use App\Http\Controllers\Api\Admin\AdminStorageController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
@@ -153,6 +155,19 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/subscriptions/{subscription}/renew', [ApiwaySubscriptionController::class, 'renew'])->middleware('permission:billing.manage')->name('subscriptions.renew');
         Route::post('/subscriptions/{subscription}/abandon', [ApiwaySubscriptionController::class, 'abandon'])->middleware('permission:billing.manage')->name('subscriptions.abandon');
         Route::post('/subscriptions/{subscription}/cancel', [ApiwaySubscriptionController::class, 'cancel'])->middleware('permission:billing.manage')->name('subscriptions.cancel');
+    });
+
+    // Virtual numbers rented from API Way (SMS / OTP reception). Same exemption
+    // from the subscription.active gate as `apiway.`, and for the same reason:
+    // these are prepaid assets the workspace already owns, and a plan that
+    // lapses must not lock somebody out of a code arriving on a number they
+    // paid for — nor out of cancelling it before it renews.
+    Route::prefix('numbers')->name('numbers.')->group(function () {
+        Route::get('/catalog', [VirtualNumberController::class, 'catalog'])->middleware('permission:numbers.view')->name('catalog');
+        Route::get('/', [VirtualNumberController::class, 'index'])->middleware('permission:numbers.view')->name('index');
+        Route::post('/', [VirtualNumberController::class, 'store'])->middleware('permission:numbers.manage')->name('store');
+        Route::get('/{id}', [VirtualNumberController::class, 'show'])->middleware('permission:numbers.view')->name('show');
+        Route::post('/{id}/cancel', [VirtualNumberController::class, 'cancel'])->middleware('permission:numbers.manage')->name('cancel');
     });
 
     Route::middleware('feature:' . Feature::Chat->value)->group(function () {
@@ -599,9 +614,26 @@ Route::prefix('admin')->group(function () {
             // ProxyBR partner catalog — doubles as the "test connection" probe.
             Route::get('/apiway/catalog', [AdminApiwayController::class, 'catalog']);
 
+            // API Way *numbers* — a different account and a different API from
+            // the ProxyBR partner surface above. These sit with the settings
+            // because they are the credential's own proof and plumbing: log in
+            // and read the catalog, and register the one webhook the platform
+            // account has.
+            Route::get('/numbers/test', [AdminNumbersController::class, 'test']);
+            Route::get('/numbers/webhook', [AdminNumbersController::class, 'webhook']);
+            Route::post('/numbers/webhook', [AdminNumbersController::class, 'registerWebhook']);
+
             // WhatsApp message logs + issued OTPs (monitoring).
             Route::get('/whatsapp-logs', [AdminWhatsappLogController::class, 'index']);
             Route::get('/otps', [AdminOtpController::class, 'index']);
+        });
+
+        // Rented numbers, across every workspace. Its own permission because
+        // it is an operations view of a shared upstream account — one ceiling,
+        // one monthly bill — rather than a credentials screen.
+        Route::middleware('permission:bo.numbers.view')->group(function () {
+            Route::get('/numbers', [AdminNumbersController::class, 'index']);
+            Route::get('/numbers/summary', [AdminNumbersController::class, 'summary']);
         });
 
         // AI spend. The platform's largest variable cost, and until this

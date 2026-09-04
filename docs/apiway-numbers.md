@@ -1,0 +1,157 @@
+# Virtual numbers (API Way) — runbook
+
+Renting Brazilian phone numbers from API Way and reselling them to tenants for
+receiving SMS and verification codes.
+
+> ⚠️ **Two products share the name "API Way".** *Instances* are bought through
+> the **ProxyBR partner API** (`ApiwayConfig`, `proxyhub.*` settings). *Numbers*
+> are bought **straight from API Way** with an account of Pingly's own
+> (`ApiwayNumbersConfig`, `apiway_numbers.*` settings). Neither credential works
+> on the other's endpoints, and nothing is shared but the brand and the wallet.
+
+---
+
+## The three facts the design comes from
+
+1. **A number is a monthly subscription, not one OTP.** API Way bills the
+   platform every month until the number is deleted. A customer who gets their
+   code in ten seconds still paid for the month, and so did we — which is why
+   cancelling refunds nothing, and why the UI says so before the click.
+2. **There is no upstream "renew" call.** The subscription renews itself and
+   charges us on `renews_at`. So that date is a deadline on *our* side: by then
+   the tenant has been charged for the next month, or `numbers:renew` deletes the
+   number. Missing it does not lose the number — it buys another month of it
+   with the platform's money.
+3. **One account, one cap, one webhook.** Every tenant's numbers live in the
+   same API Way account. `422` with a `cap` body means the platform is full
+   (not the customer's fault, and not fixable on their form → surfaced as 409
+   "out of stock"), and the single registered webhook carries every workspace's
+   codes, routed locally by `number_id`.
+
+---
+
+## Setup (once, in the Back Office)
+
+**Integrations → API Way Numbers**
+
+1. **Portal base URL** — `https://portal.apiway.com.br/api` (seeded).
+2. **Account e-mail + password** of the reseller account. Stored encrypted in
+   `settings`; the portal only issues session tokens (`POST /login`), so a token
+   we cannot re-mint would stop sales the first time it is rotated.
+3. **Test connection** — logs in and reads the catalog. Shows the cost per
+   number, and the sale price and margin of every app.
+4. **Resale pricing** — default markup (%) plus an optional fixed price per app.
+   A fixed price is a *price, not a floor*: below cost the margin shows red and
+   nothing stops the sale.
+5. **Register webhook** — points API Way at `POST /webhook/apiway-numbers` and
+   stores the signing secret. ⚠️ The raw secret is returned **only** by this
+   call; the GET returns a preview forever after. Without a stored secret every
+   push is rejected at our door and codes only arrive when somebody presses
+   refresh.
+
+---
+
+## Money
+
+Paid from the prepaid balance (`credit_wallets`), same as API Way instances and
+trained agent hires.
+
+| Event | Ledger reference | Type |
+|---|---|---|
+| Rental (first month) | `numbers:buy:{id}` | `purchase` |
+| Renewal | `numbers:renew:{id}:{renews_at date}` | `renewal` |
+| Undelivered → refund | `reversal:numbers:buy:{id}` | `reversal` |
+
+The renewal reference carries the date it pays to move past — that is what makes
+the daily pass safe to run twice, and what stops next month's charge being
+refused as a duplicate of this month's.
+
+**Charged before the number exists**, deliberately, because every failure path
+gives it straight back:
+
+- upstream refusal (cap reached, sales disabled, bad request) → immediate
+  reversal, row `failed`, `VirtualNumberRefunded` notification;
+- timeout / connection error → row stays `pending` with `meta.unconfirmed`, and
+  **no refund yet**: the number may exist. `numbers:sync` resolves it.
+
+---
+
+## Scheduler
+
+| Command | When | What |
+|---|---|---|
+| `numbers:renew` | daily 08:45 (America/Sao_Paulo) | Warns from D-7, charges from D-3, and **cancels** an unpaid number within 24h of `renews_at` — before API Way bills us again. |
+| `numbers:sync` | hourly at :35 | Refreshes `renews_at` and statuses; adopts numbers that exist upstream into unconfirmed purchases; refunds purchases stalled >30 min with nothing to adopt; logs numbers nobody owns. |
+
+Both ping `Heartbeat`, so the Back Office → Health page shows them.
+
+**Orphans are never deleted automatically.** A number upstream with no local
+owner is logged as an error (`API Way numbers with no local owner`) because one
+of them may be a purchase whose row was lost — deleting it would take a number a
+customer is using. Deciding is a human's job.
+
+---
+
+## Receiving codes
+
+Two routes, and the same message may arrive by both:
+
+- **Webhook** (`POST /webhook/apiway-numbers`) — HMAC-SHA256 over the raw body,
+  header `X-ApiWay-Signature: sha256=<hex>`, event `X-ApiWay-Event: sms.received`.
+  Handled inline (not queued): somebody is watching a verification form.
+- **Poll** — `GET /api/numbers/{id}?refresh=1` pulls `/numbers/{id}/sms`.
+
+Deduplicated on a content hash (sender + text + timestamp) per number, because
+neither route carries a usable id. Broadcast to the tenant channel as
+`virtual-number-sms` (`ShouldBroadcastNow`), relayed by the SPA to a window
+event and shown as a toast with the code in it.
+
+---
+
+## Diagnosing
+
+```bash
+# Is the credential working at all?
+#   BO → Integrations → API Way Numbers → Test connection
+
+# Codes not arriving:
+grep 'API Way SMS webhook rejected' storage/logs/laravel.log      # signature / no secret
+grep 'SMS webhook for an unknown API Way number' storage/logs/laravel.log
+
+# Purchases:
+grep 'Virtual number purchase failed' storage/logs/laravel.log
+grep 'Virtual number purchase left unconfirmed' storage/logs/laravel.log
+grep 'Adopted an API Way number' storage/logs/laravel.log
+
+# Money leaking upstream:
+grep 'Could not cancel an unpaid virtual number' storage/logs/laravel.log
+grep 'API Way numbers with no local owner' storage/logs/laravel.log
+
+php artisan numbers:sync            # safe to run by hand, idempotent
+php artisan numbers:renew           # same; charges are reference-deduped
+```
+
+---
+
+## Permissions
+
+| Permission | Who | What |
+|---|---|---|
+| `numbers.view` | tenant | See numbers and the codes on them (an OTP is a credential). |
+| `numbers.manage` | tenant | Rent (spends the balance) and cancel. |
+| `bo.numbers.view` | platform | The ledger of every rented number, with cost and margin. |
+| `bo.settings.manage` | platform | Credentials, pricing and the webhook. |
+
+Tenant permissions are granted to existing `owner` roles by migration
+(`2026_09_04_000300`), because deploys only run `migrate --force`.
+
+---
+
+## Tests
+
+- `tests/Feature/Numbers/VirtualNumberPurchaseTest.php` — charging, refusals,
+  refunds, pricing, and that cost is never exposed to a tenant.
+- `tests/Feature/Numbers/VirtualNumberSmsTest.php` — webhook signature, routing,
+  dedupe across both routes, tenant isolation.
+- `tests/Feature/Numbers/VirtualNumberRenewalTest.php` — the renewal window, the
+  cancel-before-billing rule, adoption and stalled-purchase refunds.

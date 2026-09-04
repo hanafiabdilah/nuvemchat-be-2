@@ -106,6 +106,12 @@ class RoleAndPermissionSeeder extends Seeder
             'instagram-posts.publish',
             'instagram-posts.delete',
             'instagram-comments.manage',
+
+            // Virtual numbers rented from API Way. `view` reads the codes that
+            // arrive (an OTP is a credential); `manage` spends the prepaid
+            // balance and cancels a rental somebody may still be waiting on.
+            'numbers.view',
+            'numbers.manage',
         ];
 
         foreach ($permissions as $permission) {

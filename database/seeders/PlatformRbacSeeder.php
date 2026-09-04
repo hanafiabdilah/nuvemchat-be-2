@@ -55,6 +55,11 @@ class PlatformRbacSeeder extends Seeder
         // but kept separate so a NOC screen can be handed out without the
         // per-customer volume reporting alongside it.
         'bo.live.view',
+        // Virtual numbers rented from API Way, across every workspace. An
+        // operations view of one shared upstream account: a single cap and a
+        // single monthly bill, so it belongs beside health and storage rather
+        // than behind the credentials screen that configures it.
+        'bo.numbers.view',
         'bo.reports.export',
         // Granting a feature outside the plan bypasses billing; kept apart from
         // bo.subscriptions.manage so it can be handed out separately.

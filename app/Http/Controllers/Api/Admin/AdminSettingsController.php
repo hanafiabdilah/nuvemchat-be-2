@@ -11,6 +11,8 @@ use App\Services\Billing\MercadoPago\MercadoPagoConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\VirtualNumbers\ApiwayNumbersConfig;
+use App\Services\VirtualNumbers\NumberPricing;
 use App\Services\Connection\TikTok\TikTokConfig;
 use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationProviderFactory;
@@ -38,6 +40,8 @@ class AdminSettingsController extends Controller
         $notifPinglyKey = NotificationConfig::pinglyApiKey();
         $notifToken = NotificationConfig::wapiToken();
         $notifProxyToken = NotificationConfig::proxybrToken();
+        $numbersPassword = ApiwayNumbersConfig::password();
+        $numbersWebhookSecret = ApiwayNumbersConfig::webhookSecret();
 
         $apiway = [
             'base_url' => ApiwayConfig::baseUrl(),
@@ -51,6 +55,23 @@ class AdminSettingsController extends Controller
         return response()->json([
             'data' => [
                 'apiway' => $apiway,
+                // A different product on a different account: numbers are
+                // bought straight from API Way, not through ProxyBR, and the
+                // credential is a login rather than a token — see
+                // ApiwayNumbersConfig for why the password has to be stored.
+                'apiway_numbers' => [
+                    'base_url' => ApiwayNumbersConfig::baseUrl(),
+                    'email' => ApiwayNumbersConfig::email(),
+                    'password_set' => ! empty($numbersPassword),
+                    'webhook_url' => ApiwayNumbersConfig::webhookUrl(),
+                    'webhook_secret_set' => ! empty($numbersWebhookSecret),
+                    'webhook_secret_preview' => $this->mask($numbersWebhookSecret),
+                    // Commercial half, edited on the same tab: the markup is
+                    // meaningless without the catalog cost beside it, which the
+                    // test-connection call supplies.
+                    'markup_pct' => NumberPricing::markupPct(),
+                    'app_prices' => NumberPricing::appPrices(),
+                ],
                 // Legacy alias kept so a Back Office build from before the API Way
                 // rebrand keeps rendering this section. Drop once all clients update.
                 'proxyhub' => $apiway,
@@ -153,6 +174,14 @@ class AdminSettingsController extends Controller
             'proxyhub.partner_base_url' => ['nullable', 'url', 'max:255'],
             'proxyhub.partner_token' => ['nullable', 'string', 'max:512'],
 
+            'apiway_numbers' => ['sometimes', 'array'],
+            'apiway_numbers.base_url' => ['sometimes', 'url', 'max:255'],
+            'apiway_numbers.email' => ['nullable', 'email', 'max:255'],
+            'apiway_numbers.password' => ['nullable', 'string', 'max:255'],
+            'apiway_numbers.markup_pct' => ['sometimes', 'numeric', 'min:0', 'max:1000'],
+            'apiway_numbers.app_prices' => ['sometimes', 'array'],
+            'apiway_numbers.app_prices.*' => ['nullable', 'integer', 'min:0', 'max:10000000'],
+
             'mercadopago' => ['sometimes', 'array'],
             'mercadopago.public_key' => ['nullable', 'string', 'max:255'],
             'mercadopago.back_url' => ['nullable', 'url', 'max:255'],
@@ -226,6 +255,30 @@ class AdminSettingsController extends Controller
             if (! empty($apiway['partner_token'])) {
                 Setting::set(ApiwayConfig::KEY_PARTNER_TOKEN, $apiway['partner_token']);
             }
+        }
+
+        if ($request->has('apiway_numbers')) {
+            $numbers = $validated['apiway_numbers'];
+
+            if (array_key_exists('base_url', $numbers)) {
+                Setting::set(ApiwayNumbersConfig::KEY_BASE_URL, rtrim($numbers['base_url'], '/'));
+            }
+
+            // The e-mail is not a secret and is what the operator recognises the
+            // account by, so it is stored as sent — including cleared.
+            if (array_key_exists('email', $numbers)) {
+                Setting::set(ApiwayNumbersConfig::KEY_EMAIL, $numbers['email']);
+            }
+
+            // Secret: only replaced when a new value is supplied, so saving the
+            // markup alone cannot wipe the password that sells numbers.
+            if (! empty($numbers['password'])) {
+                Setting::set(ApiwayNumbersConfig::KEY_PASSWORD, $numbers['password']);
+                // The cached session belongs to the old credential.
+                app(\App\Services\VirtualNumbers\ApiwayNumbersClient::class)->forgetToken();
+            }
+
+            NumberPricing::store($numbers);
         }
 
         if ($request->has('mercadopago')) {

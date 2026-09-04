@@ -8,6 +8,7 @@ use App\Services\Billing\MercadoPago\MercadoPagoConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\VirtualNumbers\ApiwayNumbersConfig;
 use App\Services\Connection\TikTok\TikTokConfig;
 use App\Services\Notification\NotificationConfig;
 use Illuminate\Database\Seeder;
@@ -27,6 +28,13 @@ class SettingSeeder extends Seeder
 
         if (Setting::get(ApiwayConfig::KEY_PARTNER_BASE_URL) === null) {
             Setting::set(ApiwayConfig::KEY_PARTNER_BASE_URL, ApiwayConfig::DEFAULT_PARTNER_BASE_URL);
+        }
+
+        // The numbers portal — a separate API Way account, seeded with its URL
+        // only. The login itself is typed in the Back Office; there has never
+        // been an env var to migrate from.
+        if (Setting::get(ApiwayNumbersConfig::KEY_BASE_URL) === null) {
+            Setting::set(ApiwayNumbersConfig::KEY_BASE_URL, ApiwayNumbersConfig::DEFAULT_BASE_URL);
         }
 
         // One-time migration of the legacy env token (if present and not yet set).
