@@ -35,11 +35,14 @@ receiving SMS and verification codes.
 **Integrations → API Way Numbers**
 
 1. **Portal base URL** — `https://portal.apiway.com.br/api` (seeded).
-2. **Account e-mail + password** of the reseller account. Stored encrypted in
-   `settings`; the portal only issues session tokens (`POST /login`), so a token
-   we cannot re-mint would stop sales the first time it is rotated.
-3. **Test connection** — logs in and reads the catalog. Shows the cost per
-   number, and the sale price and margin of every app.
+2. **API token** — generated in the API Way portal and pasted here. Stored
+   encrypted in `settings`, same as every other integration credential. The
+   portal also exposes `POST /login`, but we do not use it: storing an e-mail
+   and a password that open the whole account, to mint a token the portal hands
+   over with a copy button, buys nothing.
+3. **Test connection** — reads the catalog with that token. It is the cheapest
+   call that proves the token is accepted and sales are enabled, and it brings
+   back the cost per number plus the sale price and margin of every app.
 4. **Resale pricing** — default markup (%) plus an optional fixed price per app.
    A fixed price is a *price, not a floor*: below cost the margin shows red and
    nothing stops the sale.
@@ -111,8 +114,10 @@ event and shown as a toast with the code in it.
 ## Diagnosing
 
 ```bash
-# Is the credential working at all?
+# Is the token working at all?
 #   BO → Integrations → API Way Numbers → Test connection
+#   A 401 there means the stored token was refused — paste a fresh one from the
+#   API Way portal. There is no session to refresh and nothing to retry.
 
 # Codes not arriving:
 grep 'API Way SMS webhook rejected' storage/logs/laravel.log      # signature / no secret

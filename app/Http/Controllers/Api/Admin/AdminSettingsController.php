@@ -40,7 +40,7 @@ class AdminSettingsController extends Controller
         $notifPinglyKey = NotificationConfig::pinglyApiKey();
         $notifToken = NotificationConfig::wapiToken();
         $notifProxyToken = NotificationConfig::proxybrToken();
-        $numbersPassword = ApiwayNumbersConfig::password();
+        $numbersToken = ApiwayNumbersConfig::token();
         $numbersWebhookSecret = ApiwayNumbersConfig::webhookSecret();
 
         $apiway = [
@@ -56,13 +56,12 @@ class AdminSettingsController extends Controller
             'data' => [
                 'apiway' => $apiway,
                 // A different product on a different account: numbers are
-                // bought straight from API Way, not through ProxyBR, and the
-                // credential is a login rather than a token — see
-                // ApiwayNumbersConfig for why the password has to be stored.
+                // bought straight from API Way, not through ProxyBR, with a
+                // token generated in their portal.
                 'apiway_numbers' => [
                     'base_url' => ApiwayNumbersConfig::baseUrl(),
-                    'email' => ApiwayNumbersConfig::email(),
-                    'password_set' => ! empty($numbersPassword),
+                    'token_set' => ! empty($numbersToken),
+                    'token_preview' => $this->mask($numbersToken),
                     'webhook_url' => ApiwayNumbersConfig::webhookUrl(),
                     'webhook_secret_set' => ! empty($numbersWebhookSecret),
                     'webhook_secret_preview' => $this->mask($numbersWebhookSecret),
@@ -176,8 +175,7 @@ class AdminSettingsController extends Controller
 
             'apiway_numbers' => ['sometimes', 'array'],
             'apiway_numbers.base_url' => ['sometimes', 'url', 'max:255'],
-            'apiway_numbers.email' => ['nullable', 'email', 'max:255'],
-            'apiway_numbers.password' => ['nullable', 'string', 'max:255'],
+            'apiway_numbers.token' => ['nullable', 'string', 'max:512'],
             'apiway_numbers.markup_pct' => ['sometimes', 'numeric', 'min:0', 'max:1000'],
             'apiway_numbers.app_prices' => ['sometimes', 'array'],
             'apiway_numbers.app_prices.*' => ['nullable', 'integer', 'min:0', 'max:10000000'],
@@ -264,18 +262,10 @@ class AdminSettingsController extends Controller
                 Setting::set(ApiwayNumbersConfig::KEY_BASE_URL, rtrim($numbers['base_url'], '/'));
             }
 
-            // The e-mail is not a secret and is what the operator recognises the
-            // account by, so it is stored as sent — including cleared.
-            if (array_key_exists('email', $numbers)) {
-                Setting::set(ApiwayNumbersConfig::KEY_EMAIL, $numbers['email']);
-            }
-
             // Secret: only replaced when a new value is supplied, so saving the
-            // markup alone cannot wipe the password that sells numbers.
-            if (! empty($numbers['password'])) {
-                Setting::set(ApiwayNumbersConfig::KEY_PASSWORD, $numbers['password']);
-                // The cached session belongs to the old credential.
-                app(\App\Services\VirtualNumbers\ApiwayNumbersClient::class)->forgetToken();
+            // markup alone cannot wipe the token that sells numbers.
+            if (! empty($numbers['token'])) {
+                Setting::set(ApiwayNumbersConfig::KEY_TOKEN, $numbers['token']);
             }
 
             NumberPricing::store($numbers);

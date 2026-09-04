@@ -96,16 +96,17 @@ class AdminNumbersController extends Controller
     }
 
     /**
-     * Prove the stored credentials work, and show what the catalog costs.
+     * Prove the stored token works, and show what the catalog costs.
      *
-     * Deliberately does the login rather than reading a cached token: the
-     * question this button answers is "does the e-mail and password in this
-     * form still work", and a cached session would answer a different one.
+     * The catalog read *is* the test: it is the cheapest call that proves the
+     * token is accepted and sales are enabled, and it brings back the one thing
+     * the pricing editor beside it cannot work without — the cost per number.
+     * Always fetched fresh, because a cached answer would prove a token that
+     * worked five minutes ago.
      */
     public function test()
     {
         try {
-            $account = $this->client->login();
             $catalog = $this->numbers->catalog(fresh: true);
         } catch (ApiwayNumbersException $e) {
             return response()->json([
@@ -118,10 +119,6 @@ class AdminNumbersController extends Controller
 
         return response()->json([
             'data' => [
-                'account' => [
-                    'user' => $account['user']['email'] ?? null,
-                    'tenant' => $account['tenant']['name'] ?? null,
-                ],
                 'currency' => $catalog['currency'] ?? 'BRL',
                 'cost_cents' => $costCents,
                 'regions' => $catalog['regions'] ?? [],

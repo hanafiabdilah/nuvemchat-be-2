@@ -14,20 +14,18 @@ use App\Models\Setting;
  * of Pingly's own, and buys virtual phone numbers. Neither token works on the
  * other's endpoints.
  *
- * The credential is an e-mail and a password rather than a token because that
- * is the only thing the portal issues: `POST /login` returns a Sanctum token,
- * and a token we cannot re-mint is a platform that stops selling numbers the
- * first time somebody rotates it. The password is stored the same way every
- * other platform secret is — encrypted in `settings`, managed in the Back
- * Office, never in .env.
+ * The credential is a token the reseller generates in the API Way portal and
+ * pastes here — the same shape as every other integration on this platform. The
+ * portal also exposes `POST /login`, but storing an e-mail and a password to
+ * mint a token we can already be handed would mean holding a password that
+ * opens the whole account, to obtain something a copy button provides.
  */
 class ApiwayNumbersConfig
 {
     public const KEY_BASE_URL = 'apiway_numbers.base_url';
 
-    public const KEY_EMAIL = 'apiway_numbers.email';
-
-    public const KEY_PASSWORD = 'apiway_numbers.password';
+    /** API token generated in the API Way portal (Bearer). */
+    public const KEY_TOKEN = 'apiway_numbers.token';
 
     /**
      * HMAC secret returned by `PUT /numbers/webhook`. It is shown exactly once,
@@ -48,14 +46,9 @@ class ApiwayNumbersConfig
         return rtrim($url, '/');
     }
 
-    public static function email(): ?string
+    public static function token(): ?string
     {
-        return Setting::get(self::KEY_EMAIL);
-    }
-
-    public static function password(): ?string
-    {
-        return Setting::get(self::KEY_PASSWORD);
+        return Setting::get(self::KEY_TOKEN);
     }
 
     public static function webhookSecret(): ?string
@@ -71,6 +64,6 @@ class ApiwayNumbersConfig
     /** Whether the platform can sell numbers at all. */
     public static function isConfigured(): bool
     {
-        return ! empty(self::email()) && ! empty(self::password());
+        return ! empty(self::token());
     }
 }

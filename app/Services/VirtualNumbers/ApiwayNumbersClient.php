@@ -6,18 +6,17 @@ use App\Exceptions\ApiwayNumbersException;
 use Illuminate\Http\Client\ConnectionException as HttpConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
  * HTTP client for the API Way numbers portal (`/api/*` on portal.apiway.com.br).
  *
- * Session, not key: the portal authenticates with the reseller account's e-mail
- * and password and hands back a Sanctum token. The token is cached because
- * logging in before every call would put a second round trip in front of every
- * SMS poll; it is dropped and re-minted on the first 401, which is the only
- * signal the portal gives that it has expired or been revoked.
+ * Authenticated with a token generated in the portal and pasted into the Back
+ * Office — the same arrangement as every other integration here. A 401 is
+ * therefore a fact about the stored token, not a session that lapsed: there is
+ * nothing to refresh and nothing to retry, so it surfaces as "the account
+ * refused our token" and somebody pastes a new one.
  *
  * ⚠️ `POST /numbers` is never retried automatically. It takes no idempotency
  * key, so a retry after a timeout does not re-attempt the purchase — it buys a
@@ -26,73 +25,18 @@ use Illuminate\Support\Facades\Log;
  */
 class ApiwayNumbersClient
 {
-    private const TOKEN_CACHE_KEY = 'apiway-numbers:token';
-
-    /**
-     * Well short of anything the portal is likely to enforce. The cost of being
-     * wrong is one extra login, so this is tuned for "cheap to be wrong" rather
-     * than for the longest lifetime we can get away with.
-     */
-    private const TOKEN_TTL_SECONDS = 43200; // 12h
-
     public function isConfigured(): bool
     {
         return ApiwayNumbersConfig::isConfigured();
-    }
-
-    /**
-     * Log in and return the account context.
-     *
-     * Public because the Back Office "test connection" button needs to prove
-     * the stored credentials work, and a failure there has to name the reason:
-     * 401 is a wrong password, 403 is an account without portal access.
-     *
-     * @return array{token: string, user?: array, tenant?: array}
-     */
-    public function login(): array
-    {
-        $email = ApiwayNumbersConfig::email();
-        $password = ApiwayNumbersConfig::password();
-
-        if (empty($email) || empty($password)) {
-            throw new ApiwayNumbersException(
-                'As credenciais da API Way Números não estão configuradas.',
-                ApiwayNumbersException::UNCONFIGURED,
-                503,
-            );
-        }
-
-        $response = $this->baseRequest()->post($this->url('/login'), [
-            'email' => $email,
-            'password' => $password,
-        ]);
-
-        $json = $this->decode($response);
-        $token = (string) ($json['token'] ?? '');
-
-        if ($token === '') {
-            throw new ApiwayNumbersException(
-                'O login na API Way não devolveu um token.',
-                ApiwayNumbersException::UNAUTHENTICATED,
-                502,
-            );
-        }
-
-        Cache::put(self::TOKEN_CACHE_KEY, $token, self::TOKEN_TTL_SECONDS);
-
-        return $json;
-    }
-
-    /** Drop the cached session — used after a 401 and by a credential change. */
-    public function forgetToken(): void
-    {
-        Cache::forget(self::TOKEN_CACHE_KEY);
     }
 
     // --- Catalog & numbers -------------------------------------------------
 
     /**
      * Apps on offer, DDD → city map, and the monthly cost per number.
+     *
+     * Doubles as the Back Office's "test connection": it is the cheapest call
+     * that proves the token is accepted and that sales are enabled.
      *
      * @return array{apps: list<array{id: string, label: string}>, regions: array<string, string>, price_cents: int, currency: string}
      */
@@ -166,27 +110,18 @@ class ApiwayNumbersClient
 
     // --- Plumbing ----------------------------------------------------------
 
-    /**
-     * One authenticated call, with a single re-login on 401.
-     *
-     * The retry exists because the only way to discover a dead session is to
-     * use it: the portal issues no expiry we can read, so "log in again and try
-     * once more" is the whole session management this needs.
-     */
     protected function send(string $method, string $path, array $payload = [], int $timeout = 30, bool $retry = true): array
     {
-        $response = $this->dispatch($method, $path, $payload, $timeout, $this->token(), $retry);
+        $token = ApiwayNumbersConfig::token();
 
-        if ($response->status() === 401) {
-            $this->forgetToken();
-            $response = $this->dispatch($method, $path, $payload, $timeout, $this->token(), $retry);
+        if (empty($token)) {
+            throw new ApiwayNumbersException(
+                'O token da API Way Números não está configurado.',
+                ApiwayNumbersException::UNCONFIGURED,
+                503,
+            );
         }
 
-        return $this->decode($response);
-    }
-
-    protected function dispatch(string $method, string $path, array $payload, int $timeout, string $token, bool $retry): Response
-    {
         $request = $this->baseRequest($timeout)->withToken($token);
 
         if ($retry) {
@@ -196,7 +131,7 @@ class ApiwayNumbersClient
         }
 
         try {
-            return match ($method) {
+            $response = match ($method) {
                 'get' => $request->get($this->url($path), $payload),
                 'post' => $request->post($this->url($path), $payload),
                 'put' => $request->put($this->url($path), $payload),
@@ -211,17 +146,8 @@ class ApiwayNumbersClient
                 previous: $e,
             );
         }
-    }
 
-    protected function token(): string
-    {
-        $token = Cache::get(self::TOKEN_CACHE_KEY);
-
-        if (is_string($token) && $token !== '') {
-            return $token;
-        }
-
-        return (string) $this->login()['token'];
+        return $this->decode($response);
     }
 
     protected function baseRequest(int $timeout = 30): PendingRequest
@@ -258,7 +184,7 @@ class ApiwayNumbersClient
         $cap = isset($json['cap']) && is_array($json['cap']) ? $json['cap'] : null;
 
         [$code, $message] = match (true) {
-            $status === 401 => [ApiwayNumbersException::UNAUTHENTICATED, 'A conta API Way recusou as credenciais da plataforma.'],
+            $status === 401 => [ApiwayNumbersException::UNAUTHENTICATED, 'A conta API Way recusou o token da plataforma.'],
             $status === 403 => [ApiwayNumbersException::SALES_DISABLED, 'A venda de números está desativada na conta API Way.'],
             $status === 404 => [ApiwayNumbersException::NOT_FOUND, 'Número não encontrado na conta API Way.'],
             $status === 422 && $cap !== null => [ApiwayNumbersException::CAP_REACHED, 'Não há números disponíveis no momento. Tente novamente em instantes.'],

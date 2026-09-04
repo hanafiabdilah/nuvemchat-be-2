@@ -26,10 +26,8 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Http::preventStrayRequests();
-    Setting::set(ApiwayNumbersConfig::KEY_EMAIL, 'reseller@pingly.test');
-    Setting::set(ApiwayNumbersConfig::KEY_PASSWORD, 'secret');
+    Setting::set(ApiwayNumbersConfig::KEY_TOKEN, '12|portal-token');
     Setting::set(ApiwayNumbersConfig::KEY_WEBHOOK_SECRET, 'webhook-secret');
-    cache()->forget('apiway-numbers:token');
     cache()->forget('apiway-numbers:catalog');
 });
 
@@ -176,7 +174,6 @@ test('the same sms arriving twice, by either route, is stored once', function ()
 
     // And again through the poll, which returns the same message with no id.
     Http::fake([
-        'portal.apiway.com.br/api/login' => Http::response(['token' => '12|abcdef']),
         'portal.apiway.com.br/api/numbers/128/sms' => Http::response([
             ['from' => 'WhatsApp', 'message' => 'Seu codigo do WhatsApp: 123-456', 'code' => '123-456', 'received_at' => '2026-08-22T12:01:00Z'],
             ['from' => 'WhatsApp', 'message' => 'Seu codigo do WhatsApp: 654-321', 'code' => '654-321', 'received_at' => '2026-08-22T12:05:00Z'],
@@ -198,7 +195,6 @@ test('a failed poll still shows what has already arrived', function () {
     postSignedWebhook(smsPayload())->assertOk();
 
     Http::fake([
-        'portal.apiway.com.br/api/login' => Http::response(['token' => '12|abcdef']),
         'portal.apiway.com.br/api/numbers/128/sms' => Http::response(['message' => 'boom'], 502),
     ]);
 

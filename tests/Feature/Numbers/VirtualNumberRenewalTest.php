@@ -25,11 +25,9 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Http::preventStrayRequests();
-    Setting::set(ApiwayNumbersConfig::KEY_EMAIL, 'reseller@pingly.test');
-    Setting::set(ApiwayNumbersConfig::KEY_PASSWORD, 'secret');
+    Setting::set(ApiwayNumbersConfig::KEY_TOKEN, '12|portal-token');
     Setting::set(NumberPricing::KEY_MARKUP_PCT, '40');
     Setting::set(NumberPricing::KEY_APP_PRICES, json_encode([]));
-    cache()->forget('apiway-numbers:token');
     cache()->forget('apiway-numbers:catalog');
 });
 
@@ -65,10 +63,10 @@ function renewalNumber(Tenant $tenant, array $overrides = []): VirtualNumber
     ], $overrides));
 }
 
+/** The catalog, which the renewal re-prices from before charging. */
 function fakeRenewalPortal(array $overrides = []): void
 {
     Http::fake(array_merge([
-        'portal.apiway.com.br/api/login' => Http::response(['token' => '12|abcdef']),
         'portal.apiway.com.br/api/numbers/catalog' => Http::response([
             'apps' => [['id' => 'whatsapp', 'label' => 'WhatsApp']],
             'regions' => ['11' => 'Sao Paulo'],
@@ -179,7 +177,6 @@ test('sync adopts a number that exists upstream but whose purchase never confirm
     ]);
 
     Http::fake([
-        'portal.apiway.com.br/api/login' => Http::response(['token' => '12|abcdef']),
         'portal.apiway.com.br/api/numbers' => Http::response([[
             'id' => 512,
             'msisdn' => '5511777776666',
@@ -228,7 +225,6 @@ test('sync refunds a purchase that stalled with nothing to adopt', function () {
     );
 
     Http::fake([
-        'portal.apiway.com.br/api/login' => Http::response(['token' => '12|abcdef']),
         'portal.apiway.com.br/api/numbers' => Http::response([]),
     ]);
 
@@ -244,7 +240,6 @@ test('a number cancelled at API Way stops being live here', function () {
     $number = renewalNumber($tenant);
 
     Http::fake([
-        'portal.apiway.com.br/api/login' => Http::response(['token' => '12|abcdef']),
         'portal.apiway.com.br/api/numbers' => Http::response([]),
     ]);
 

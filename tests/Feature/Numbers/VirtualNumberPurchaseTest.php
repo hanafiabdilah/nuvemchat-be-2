@@ -23,11 +23,9 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Http::preventStrayRequests();
-    Setting::set(ApiwayNumbersConfig::KEY_EMAIL, 'reseller@pingly.test');
-    Setting::set(ApiwayNumbersConfig::KEY_PASSWORD, 'secret');
+    Setting::set(ApiwayNumbersConfig::KEY_TOKEN, '12|portal-token');
     Setting::set(NumberPricing::KEY_MARKUP_PCT, '40');
     Setting::set(NumberPricing::KEY_APP_PRICES, json_encode([]));
-    cache()->forget('apiway-numbers:token');
     cache()->forget('apiway-numbers:catalog');
 });
 
@@ -52,15 +50,10 @@ function numbersTenant(int $balanceCents = 0): Tenant
     return $tenant->fresh();
 }
 
-/** Login + catalog: the two calls every path makes before it can do anything. */
+/** The catalog, which every path reads before it can price anything. */
 function fakeNumbersPortal(array $overrides = []): void
 {
     Http::fake(array_merge([
-        'portal.apiway.com.br/api/login' => Http::response([
-            'token' => '12|abcdef',
-            'user' => ['id' => 42, 'email' => 'reseller@pingly.test'],
-            'tenant' => ['id' => 7, 'name' => 'Pingly'],
-        ]),
         'portal.apiway.com.br/api/numbers/catalog' => Http::response([
             'apps' => [
                 ['id' => 'whatsapp', 'label' => 'WhatsApp'],
@@ -257,4 +250,24 @@ test('an unknown app or DDD is refused against the catalog, not sent upstream', 
     expect(VirtualNumber::count())->toBe(0);
     Http::assertNotSent(fn ($request) => $request->method() === 'POST'
         && $request->url() === 'https://portal.apiway.com.br/api/numbers');
+});
+
+test('with no token stored, nothing is attempted at all', function () {
+    Setting::set(ApiwayNumbersConfig::KEY_TOKEN, null);
+    Http::fake();
+
+    $tenant = numbersTenant(10_000);
+    Sanctum::actingAs($tenant->user()->first());
+
+    // 503 rather than 502: the platform has not been set up, which is a
+    // different thing from API Way being down, and only one of the two is
+    // fixed by waiting.
+    $this->getJson('/api/numbers/catalog')
+        ->assertStatus(503)
+        ->assertJsonPath('code', 'unconfigured');
+
+    $this->postJson('/api/numbers', ['ddd' => '11', 'app' => 'whatsapp'])->assertStatus(503);
+
+    expect(VirtualNumber::count())->toBe(0);
+    Http::assertNothingSent();
 });
