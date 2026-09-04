@@ -365,6 +365,9 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::post('/connections/{id}/disconnect', [ConnectionController::class, 'disconnect'])->middleware('permission:connections.disconnect');
     Route::delete('/connections/{id}', [ConnectionController::class, 'destroy'])->middleware('permission:connections.delete');
     Route::put('/connections/{id}/automated-messages', [ConnectionController::class, 'updateAutomatedMessages'])->middleware('permission:connections.update-automated-messages');
+    // `connections.connect` rather than `.update`: this decides what happens the
+    // moment the phone pairs, which is the same act as connecting.
+    Route::put('/connections/{id}/history-import', [ConnectionController::class, 'updateHistoryImport'])->middleware('permission:connections.connect');
     Route::put('/connections/{id}/ai-suggest', [ConnectionController::class, 'updateAiSuggest'])->middleware(['feature:ai_agent_hub', 'permission:connections.update']);
 
     // "Respond with AI" — tenant-managed AI agents (openai/gemini/anthropic keys).

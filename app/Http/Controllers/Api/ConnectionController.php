@@ -819,6 +819,55 @@ class ConnectionController extends Controller
     }
 
     /**
+     * Opt in to importing the WhatsApp chat list when the instance pairs.
+     *
+     * The flag itself has always lived in `credentials` and been written as a
+     * side effect of `connect()`. That put the choice on the same screen as the
+     * QR code — and the provider only exposes the chat list *at pairing time*,
+     * so the moment the phone scanned, the checkbox stopped meaning anything
+     * while still looking exactly as clickable as before. This endpoint lets the
+     * wizard ask for it a step earlier, where the answer can still take effect.
+     *
+     * ⚠️ Deliberately refuses once an import has been queued or run. Storing a
+     * flag nothing will ever read is worse than saying no: the customer would
+     * come back tomorrow to a switch that is on and a history that never
+     * arrived, with nothing anywhere to explain the gap.
+     */
+    public function updateHistoryImport(int $id, Request $request)
+    {
+        $connection = $request->user()->tenant->connections()->findOrFail($id);
+
+        if ($connection->channel !== Channel::WhatsappApiway) {
+            return response()->json([
+                'message' => 'Chat history import is only available on WhatsApp API Way connections.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'import_history' => ['required', 'boolean'],
+        ]);
+
+        $credentials = $connection->credentials ?? [];
+        $state = $credentials['history_import']['status'] ?? null;
+
+        if (in_array($state, ['queued', 'running', 'done', 'unsupported'], true)) {
+            return response()->json([
+                'message' => 'This instance has already paired — the chat list is only available at pairing time.',
+            ], 422);
+        }
+
+        $credentials['import_history'] = (bool) $validated['import_history'];
+        $connection->update(['credentials' => $credentials]);
+
+        broadcast(new ConnectionUpdated($connection));
+
+        return response()->json([
+            'message' => 'Chat history import updated successfully',
+            'data' => $connection->toResource(ConnectionResource::class),
+        ], 200);
+    }
+
+    /**
      * Link/unlink a "Respond with AI" agent to this connection. A null
      * agent_id turns the feature off; the agents themselves are managed in
      * AiSuggestController.
