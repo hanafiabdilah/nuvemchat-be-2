@@ -32,20 +32,31 @@ receiving SMS and verification codes.
 
 ## Setup (once, in the Back Office)
 
-**Integrations → API Way Numbers**
+**Integrations → API Way**, which is split the way the credential is: the
+account on one sub-tab, what is sold with it on the other. Numbers are the first
+feature built on this account, not the only one it can hold.
 
-1. **Portal base URL** — `https://portal.apiway.com.br/api` (seeded).
+**→ General** (account-level, shared by every API Way feature)
+
+1. **Base URL** — `https://portal.apiway.com.br/api` (seeded).
 2. **API token** — generated in the API Way portal and pasted here. Stored
    encrypted in `settings`, same as every other integration credential. The
    portal also exposes `POST /login`, but we do not use it: storing an e-mail
    and a password that open the whole account, to mint a token the portal hands
    over with a copy button, buys nothing.
-3. **Test connection** — reads the catalog with that token. It is the cheapest
-   call that proves the token is accepted and sales are enabled, and it brings
-   back the cost per number plus the sale price and margin of every app.
+3. **Test connection** — reads the numbers catalog with that token. It is the
+   cheapest call that proves the token is accepted and sales are enabled, and it
+   brings back the cost per number that the pricing table needs.
+
+⚠️ Not the **Proxy BR** tab beside it. That token buys WhatsApp *instances*
+through ProxyBR's partner API; this one talks to API Way directly.
+
+**→ Numbers** (this feature)
+
 4. **Resale pricing** — default markup (%) plus an optional fixed price per app.
    A fixed price is a *price, not a floor*: below cost the margin shows red and
-   nothing stops the sale.
+   nothing stops the sale. The catalog is probed when the tab opens, so the cost
+   and margin columns are filled in without pressing anything.
 5. **Register webhook** — points API Way at `POST /webhook/apiway-numbers` and
    stores the signing secret. ⚠️ The raw secret is returned **only** by this
    call; the GET returns a preview forever after. Without a stored secret every
@@ -115,7 +126,7 @@ event and shown as a toast with the code in it.
 
 ```bash
 # Is the token working at all?
-#   BO → Integrations → API Way Numbers → Test connection
+#   BO → Integrations → API Way → General → Test connection
 #   A 401 there means the stored token was refused — paste a fresh one from the
 #   API Way portal. There is no session to refresh and nothing to retry.
 
