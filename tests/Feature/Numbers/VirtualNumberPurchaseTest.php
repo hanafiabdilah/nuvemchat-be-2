@@ -163,8 +163,75 @@ test('a full upstream account gives the money straight back', function () {
         ->and(app(\App\Services\Credits\CreditService::class)->balanceCents($tenant))->toBe(10_000);
 });
 
-test('a timeout leaves the purchase unconfirmed rather than refunding a number that may exist', function () {
-    fakeNumbersPortal([
+test('an upstream failure that bought nothing refunds on the spot', function () {
+    // A 5xx on create is ambiguous, so the account inventory is read before
+    // concluding anything. Nothing matching there means nothing was bought, and
+    // the customer should not be left paid-up while an hourly job catches up.
+    Http::fake([
+        'portal.apiway.com.br/api/numbers/catalog' => Http::response([
+            'apps' => [['id' => 'whatsapp', 'label' => 'WhatsApp']],
+            'regions' => ['11' => 'Sao Paulo'],
+            'price_cents' => 3290,
+            'currency' => 'BRL',
+        ]),
+        'portal.apiway.com.br/api/numbers' => Http::sequence()
+            ->push(['message' => 'Contratação indisponível.'], 502)
+            ->push([], 200),
+    ]);
+
+    $tenant = numbersTenant(10_000);
+    Sanctum::actingAs($tenant->user()->first());
+
+    $this->postJson('/api/numbers', ['ddd' => '11', 'app' => 'whatsapp'])
+        ->assertStatus(502)
+        ->assertJsonPath('code', 'purchase_reversed');
+
+    $row = VirtualNumber::first();
+    expect($row->status)->toBe(VirtualNumberStatus::Failed)
+        // The row explains itself without the logs, which production loses on
+        // every deploy — storage/logs lives inside the container.
+        ->and($row->meta['failure']['status'] ?? null)->toBe(502)
+        ->and(CreditTransaction::where('reference', "reversal:numbers:buy:{$row->id}")->exists())->toBeTrue()
+        ->and(app(\App\Services\Credits\CreditService::class)->balanceCents($tenant))->toBe(10_000);
+});
+
+test('an upstream failure that did buy a number hands it over instead of refunding', function () {
+    // The other half of the ambiguity: the number exists, the answer was lost.
+    // Refunding here would leave the platform paying for a number nobody owns.
+    Http::fake([
+        'portal.apiway.com.br/api/numbers/catalog' => Http::response([
+            'apps' => [['id' => 'whatsapp', 'label' => 'WhatsApp']],
+            'regions' => ['11' => 'Sao Paulo'],
+            'price_cents' => 3290,
+            'currency' => 'BRL',
+        ]),
+        'portal.apiway.com.br/api/numbers' => Http::sequence()
+            ->push(['message' => 'Gateway timeout'], 504)
+            ->push([fakeNumberCreated(['id' => 777, 'partner_customer_id' => null])], 200),
+    ]);
+
+    $tenant = numbersTenant(10_000);
+    Sanctum::actingAs($tenant->user()->first());
+
+    $this->postJson('/api/numbers', ['ddd' => '11', 'app' => 'whatsapp'])
+        ->assertCreated()
+        ->assertJsonPath('data.msisdn', '5511999998888');
+
+    $row = VirtualNumber::first();
+    expect($row->status)->toBe(VirtualNumberStatus::Active)
+        ->and($row->provider_number_id)->toBe(777)
+        ->and($row->meta['adopted_at'] ?? null)->not->toBeNull()
+        ->and(CreditTransaction::where('reference', "reversal:numbers:buy:{$row->id}")->exists())->toBeFalse();
+});
+
+test('when the inventory cannot be read either, the purchase waits instead of guessing', function () {
+    Http::fake([
+        'portal.apiway.com.br/api/numbers/catalog' => Http::response([
+            'apps' => [['id' => 'whatsapp', 'label' => 'WhatsApp']],
+            'regions' => ['11' => 'Sao Paulo'],
+            'price_cents' => 3290,
+            'currency' => 'BRL',
+        ]),
         'portal.apiway.com.br/api/numbers' => fn () => throw new \Illuminate\Http\Client\ConnectionException('timed out'),
     ]);
 
@@ -176,11 +243,10 @@ test('a timeout leaves the purchase unconfirmed rather than refunding a number t
     $row = VirtualNumber::first();
     expect($row->status)->toBe(VirtualNumberStatus::Pending)
         ->and($row->provider_number_id)->toBeNull()
-        ->and($row->meta['unconfirmed'] ?? null)->not->toBeNull();
-
-    // The money stays taken for now: numbers:sync decides between adopting a
-    // number that does exist and giving the charge back.
-    expect(CreditTransaction::where('reference', "reversal:numbers:buy:{$row->id}")->exists())->toBeFalse();
+        ->and($row->meta['unconfirmed'] ?? null)->not->toBeNull()
+        // Nothing is concluded, so nothing is refunded: numbers:sync will
+        // decide once the portal answers again.
+        ->and(CreditTransaction::where('reference', "reversal:numbers:buy:{$row->id}")->exists())->toBeFalse();
 });
 
 test('the tenant is never shown what the platform pays for the number', function () {
@@ -270,4 +336,78 @@ test('with no token stored, nothing is attempted at all', function () {
 
     expect(VirtualNumber::count())->toBe(0);
     Http::assertNothingSent();
+});
+
+test('cancelling a purchase that never produced a number returns the money', function () {
+    // The rule "cancelling refunds nothing" holds because the month is already
+    // paid to API Way. A row that never got a number owes them nothing — and
+    // left as an ordinary cancel it became terminal, so the hourly sync stopped
+    // looking and the charge was stranded. Two production purchases were lost
+    // this way before this test existed.
+    Http::fake([
+        'portal.apiway.com.br/api/numbers/catalog' => Http::response([
+            'apps' => [['id' => 'whatsapp', 'label' => 'WhatsApp']],
+            'regions' => ['11' => 'Sao Paulo'],
+            'price_cents' => 3290,
+            'currency' => 'BRL',
+        ]),
+        // Create fails ambiguously, and both inventory reads come back empty.
+        'portal.apiway.com.br/api/numbers' => Http::sequence()
+            ->push(['message' => 'Contratação indisponível.'], 502)
+            ->push([], 200)
+            ->push([], 200),
+    ]);
+
+    $tenant = numbersTenant(10_000);
+    Sanctum::actingAs($tenant->user()->first());
+    $this->postJson('/api/numbers', ['ddd' => '11', 'app' => 'whatsapp'])->assertStatus(502);
+
+    // Force the row back to the state this test is about: charged, pending, no
+    // provider id — which is what an unreadable inventory leaves behind.
+    $row = VirtualNumber::first();
+    $row->forceFill(['status' => VirtualNumberStatus::Pending])->save();
+    CreditTransaction::where('reference', "reversal:numbers:buy:{$row->id}")->delete();
+    app(\App\Services\Credits\CreditService::class)->adjust($tenant, -4606, 'undo test reversal');
+
+    $this->postJson("/api/numbers/{$row->id}/cancel")->assertOk();
+
+    expect($row->fresh()->status)->toBe(VirtualNumberStatus::Failed)
+        ->and(CreditTransaction::where('reference', "reversal:numbers:buy:{$row->id}")->exists())->toBeTrue()
+        ->and(app(\App\Services\Credits\CreditService::class)->balanceCents($tenant))->toBe(10_000);
+});
+
+test('cancelling an unconfirmed purchase that did produce a number cancels it upstream', function () {
+    Http::fake([
+        'portal.apiway.com.br/api/numbers/catalog' => Http::response([
+            'apps' => [['id' => 'whatsapp', 'label' => 'WhatsApp']],
+            'regions' => ['11' => 'Sao Paulo'],
+            'price_cents' => 3290,
+            'currency' => 'BRL',
+        ]),
+        'portal.apiway.com.br/api/numbers/321' => Http::response(['id' => 321, 'status' => 'canceled']),
+        'portal.apiway.com.br/api/numbers' => Http::sequence()
+            ->push(['message' => 'Gateway timeout'], 504)
+            // Unreadable at purchase time, readable now: the row was parked.
+            ->push(['message' => 'Gateway timeout'], 504)
+            ->push([fakeNumberCreated(['id' => 321, 'partner_customer_id' => null])], 200),
+    ]);
+
+    $tenant = numbersTenant(10_000);
+    Sanctum::actingAs($tenant->user()->first());
+    $this->postJson('/api/numbers', ['ddd' => '11', 'app' => 'whatsapp'])->assertStatus(502);
+
+    $row = VirtualNumber::first();
+    expect($row->status)->toBe(VirtualNumberStatus::Pending);
+
+    $this->postJson("/api/numbers/{$row->id}/cancel")
+        ->assertOk()
+        ->assertJsonPath('data.status', 'cancelled');
+
+    // Adopted, then cancelled for real — never refunded, because the month is
+    // now genuinely owed to API Way.
+    expect($row->fresh()->provider_number_id)->toBe(321)
+        ->and(CreditTransaction::where('reference', "reversal:numbers:buy:{$row->id}")->exists())->toBeFalse();
+
+    Http::assertSent(fn ($request) => $request->method() === 'DELETE'
+        && $request->url() === 'https://portal.apiway.com.br/api/numbers/321');
 });

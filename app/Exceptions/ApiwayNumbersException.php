@@ -35,6 +35,15 @@ class ApiwayNumbersException extends Exception
 
     public const UNAUTHENTICATED = 'unauthenticated';
 
+    /**
+     * The purchase failed and the charge has already been returned.
+     *
+     * Its own code because it is the one failure the customer needs told
+     * differently: they are looking at a balance that was debited a second ago,
+     * and "unavailable" alone leaves them to wonder where the money went.
+     */
+    public const PURCHASE_REVERSED = 'purchase_reversed';
+
     public const UNCONFIGURED = 'unconfigured';
 
     public const INVALID_REQUEST = 'invalid_request';

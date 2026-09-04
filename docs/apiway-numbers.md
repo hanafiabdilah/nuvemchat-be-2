@@ -85,8 +85,20 @@ gives it straight back:
 
 - upstream refusal (cap reached, sales disabled, bad request) → immediate
   reversal, row `failed`, `VirtualNumberRefunded` notification;
-- timeout / connection error → row stays `pending` with `meta.unconfirmed`, and
-  **no refund yet**: the number may exist. `numbers:sync` resolves it.
+- **5xx / timeout → the account inventory is read once, on the spot.** A number
+  matching the purchase means it was created and the answer was lost: it is
+  adopted and the purchase stands. Nothing matching means nothing was bought:
+  the charge is reversed immediately and the customer is told so
+  (`code: purchase_reversed`);
+- only when that inventory read *also* fails is there nothing to conclude — the
+  row stays `pending` with `meta.unconfirmed` (which records the HTTP status)
+  and `numbers:sync` resolves it within the hour.
+
+⚠️ **Cancelling a `pending` row refunds it.** "Cancelling refunds nothing" is
+true only because the month is already owed to API Way — a purchase that never
+produced a number owes them nothing. It also used to strand the money for good:
+`cancelled` is terminal, so `numbers:sync` stopped looking. Two production
+purchases were lost that way before `cancelUndelivered()` existed.
 
 ---
 
@@ -123,6 +135,12 @@ event and shown as a toast with the code in it.
 ---
 
 ## Diagnosing
+
+⚠️ **Production keeps no application log.** `storage/logs` lives inside the
+container (only `storage/app` is a volume), so a deploy takes the day's lines
+with it, and the fpm container's stdout carries access lines only. Until that is
+fixed, the durable record of a failed purchase is the row itself:
+`meta.unconfirmed` / `meta.failure` carry the upstream status and code.
 
 ```bash
 # Is the token working at all?

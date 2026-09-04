@@ -199,22 +199,28 @@ class VirtualNumberService
             $data = $this->client->createNumber($ddd, $app, $this->partnerCustomerId($tenant));
         } catch (ApiwayNumbersException $e) {
             if ($e->isRetriable()) {
-                // Ambiguous: the request may have reached API Way and bought a
-                // number we never heard about. Refunding now could pay back a
-                // number that exists and bills us monthly, so the row waits for
-                // numbers:sync, which can see the account's real inventory.
-                $this->parkUnconfirmed($row, $e);
+                // Ambiguous: a 5xx can mean the number was never created, or
+                // that it was and the answer was lost. Settling it needs the
+                // account's inventory, which is one cheap read away — so ask
+                // now rather than leaving the customer paid-up and empty-handed
+                // until the hourly sync gets to them.
+                if ($settled = $this->settleUnconfirmed($row, $e)) {
+                    throw $settled;
+                }
 
-                throw $e;
+                // The number did exist: the purchase stands, late but whole.
+                return $row->fresh();
             }
 
             $this->refundUndelivered($row, $e->getErrorCode(), $e->getMessage());
 
             throw $e;
         } catch (\Throwable $e) {
-            $this->parkUnconfirmed($row, $e);
+            if ($settled = $this->settleUnconfirmed($row, $e)) {
+                throw $settled;
+            }
 
-            throw $e;
+            return $row->fresh();
         }
 
         $this->applyRemote($row, $data);
@@ -231,21 +237,155 @@ class VirtualNumberService
      * it; `numbers:sync` either finds the number upstream and adopts it, or
      * gives the money back once the wait has gone on long enough.
      */
+    /**
+     * Write down what happened, before trying to resolve it.
+     *
+     * The status and the upstream code go on the row, not only into the log,
+     * because the log is the first thing to disappear: production keeps
+     * `storage/logs` inside the container, so a deploy takes the day's lines
+     * with it — and the two rows this was written for survived exactly that,
+     * leaving a row that could only say "unavailable". A charge with nothing
+     * delivered has to be able to explain itself from its own record.
+     */
     protected function parkUnconfirmed(VirtualNumber $row, \Throwable $e): void
     {
+        $upstream = $e instanceof ApiwayNumbersException ? $e : null;
+
         $meta = $row->meta ?? [];
-        $meta['unconfirmed'] = [
+        $meta['unconfirmed'] = array_filter([
             'message' => $e->getMessage(),
+            'code' => $upstream?->getErrorCode(),
+            'status' => $upstream?->getHttpStatus(),
             'at' => now()->toISOString(),
-        ];
+        ], fn ($value) => $value !== null);
 
         $row->update(['meta' => $meta]);
 
         Log::warning('Virtual number purchase left unconfirmed', [
             'virtual_number_id' => $row->id,
             'tenant_id' => $row->tenant_id,
+            'status' => $upstream?->getHttpStatus(),
+            'code' => $upstream?->getErrorCode(),
             'error' => $e->getMessage(),
         ]);
+    }
+
+    /**
+     * Decide, now, what an ambiguous purchase failure means.
+     *
+     * One read of the account inventory answers the only question that matters:
+     * did the number get created? If it did, the customer gets what they paid
+     * for immediately. If it did not, the money goes back immediately. Only when
+     * that read *also* fails is there genuinely nothing to conclude, and the row
+     * waits for `numbers:sync`.
+     *
+     * @return \Throwable|null what the caller should raise, or null when the
+     *                          number turned out to exist and the purchase
+     *                          stands. A returned exception is not always the
+     *                          one passed in: once the charge is back,
+     *                          "unavailable" and "unavailable, and your money is
+     *                          back" are different things to be told by a page
+     *                          showing a debited balance.
+     */
+    protected function settleUnconfirmed(VirtualNumber $row, \Throwable $e): ?\Throwable
+    {
+        $this->parkUnconfirmed($row, $e);
+
+        try {
+            $remote = $this->remoteNumbers();
+        } catch (\Throwable $probe) {
+            Log::warning('Could not check the API Way inventory after a failed purchase', [
+                'virtual_number_id' => $row->id,
+                'error' => $probe->getMessage(),
+            ]);
+
+            return $e;
+        }
+
+        $claimed = $this->claimedProviderIds();
+        $match = $this->matchRemoteFor($row, $remote, $claimed);
+
+        if ($match !== null) {
+            $this->adoptRemote($row, $match);
+
+            Log::info('A failed purchase turned out to exist upstream and was adopted', [
+                'virtual_number_id' => $row->id,
+                'provider_number_id' => $match['id'] ?? null,
+            ]);
+
+            // Nothing to raise: the customer has the number they paid for.
+            return null;
+        }
+
+        $upstream = $e instanceof ApiwayNumbersException ? $e : null;
+        $this->refundUndelivered($row, $upstream?->getErrorCode() ?? 'unconfirmed', $e->getMessage(), $upstream?->getHttpStatus());
+
+        return new ApiwayNumbersException(
+            'Não foi possível contratar o número agora. O valor foi devolvido ao seu saldo — tente novamente em alguns minutos.',
+            ApiwayNumbersException::PURCHASE_REVERSED,
+            $upstream?->getHttpStatus() ?? 502,
+        );
+    }
+
+    /** Every number on the account, keyed by provider id. */
+    protected function remoteNumbers(): \Illuminate\Support\Collection
+    {
+        return collect($this->client->numbers())
+            ->filter(fn ($item) => is_array($item) && isset($item['id']))
+            ->keyBy(fn ($item) => (int) $item['id']);
+    }
+
+    /**
+     * @return list<int>
+     */
+    protected function claimedProviderIds(): array
+    {
+        return VirtualNumber::query()
+            ->whereNotNull('provider_number_id')
+            ->pluck('provider_number_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    /**
+     * The upstream number that belongs to this unconfirmed purchase, if any.
+     *
+     * Matched on the partner reference (the only field tying a number back to
+     * the workspace that paid) plus app and DDD. A number already claimed by
+     * another row is never a candidate.
+     *
+     * @param  \Illuminate\Support\Collection<int, array>  $remote
+     * @param  list<int>  $claimed
+     */
+    protected function matchRemoteFor(VirtualNumber $row, \Illuminate\Support\Collection $remote, array $claimed): ?array
+    {
+        return $remote->first(function ($data, $id) use ($row, $claimed) {
+            if (in_array((int) $id, $claimed, true)) {
+                return false;
+            }
+
+            $reference = $data['partner_customer_id'] ?? null;
+
+            if ($reference !== null && $reference !== $this->partnerCustomerId($row->tenant)) {
+                return false;
+            }
+
+            return ($data['app'] ?? null) === $row->app && (string) ($data['ddd'] ?? '') === $row->ddd;
+        });
+    }
+
+    /** Hand an upstream number to the purchase that was waiting for it. */
+    protected function adoptRemote(VirtualNumber $row, array $data): void
+    {
+        $this->applyRemote($row, $data);
+        $row->forceFill(['purchased_at' => $row->purchased_at ?? now()])->save();
+
+        $meta = $row->meta ?? [];
+        unset($meta['unconfirmed']);
+        $meta['adopted_at'] = now()->toISOString();
+        $row->update(['meta' => $meta]);
+
+        broadcast(new VirtualNumberUpdated($row->fresh()));
     }
 
     /**
@@ -255,7 +395,7 @@ class VirtualNumberService
      * refund somebody has to make by hand — which is the entire reason charging
      * before provisioning is acceptable on this surface.
      */
-    public function refundUndelivered(VirtualNumber $row, ?string $code, ?string $reason): void
+    public function refundUndelivered(VirtualNumber $row, ?string $code, ?string $reason, ?int $status = null): void
     {
         $reversal = $this->credits->reverseByReference(
             $row->tenant,
@@ -265,8 +405,17 @@ class VirtualNumberService
         );
 
         $meta = $row->meta ?? [];
+        // Resolved, so the "waiting to find out" note goes — but its diagnosis
+        // moves across rather than being dropped. This row is the only account
+        // of a charge with nothing delivered once the day's logs are gone.
+        $status ??= $meta['unconfirmed']['status'] ?? null;
         unset($meta['unconfirmed']);
-        $meta['failure'] = ['code' => $code, 'message' => $reason, 'at' => now()->toISOString()];
+        $meta['failure'] = array_filter([
+            'code' => $code,
+            'message' => $reason,
+            'status' => $status,
+            'at' => now()->toISOString(),
+        ], fn ($value) => $value !== null);
 
         if ($reversal !== null) {
             $meta['refunded_to_balance_at'] = now()->toISOString();
@@ -279,6 +428,7 @@ class VirtualNumberService
             'virtual_number_id' => $row->id,
             'tenant_id' => $row->tenant_id,
             'code' => $code,
+            'status' => $status,
             'refunded_to_balance' => $reversal !== null,
         ]);
 
@@ -356,6 +506,17 @@ class VirtualNumberService
             return $row;
         }
 
+        // ⚠️ A purchase that never produced a number is not a cancellation, it
+        // is a refund. "The month is already paid upstream" is what makes
+        // cancelling non-refundable — and for a row with no provider id we owe
+        // API Way nothing, because nothing was ever created. Left as an
+        // ordinary cancel it also became unreachable: `cancelled` is terminal,
+        // so numbers:sync stops looking, and the charge is stranded for good.
+        // (Two production purchases were lost exactly this way.)
+        if ($row->provider_number_id === null) {
+            return $this->cancelUndelivered($row);
+        }
+
         if ($row->provider_number_id) {
             try {
                 $this->client->cancelNumber($row->provider_number_id);
@@ -382,6 +543,47 @@ class VirtualNumberService
         broadcast(new VirtualNumberUpdated($row));
 
         return $row;
+    }
+
+    /**
+     * Cancel a purchase that never confirmed.
+     *
+     * The inventory decides, exactly as it does after a failed create: if the
+     * number does exist, it is handed over first and then cancelled properly —
+     * refunding it would leave the platform paying for a number nobody owns.
+     * If it does not exist, the charge goes back.
+     *
+     * When the inventory cannot be read, nothing is concluded and the row stays
+     * `pending` for numbers:sync. Refusing the click is worse UX than a wrong
+     * refund only if you ignore that the wrong refund is unrecoverable.
+     */
+    protected function cancelUndelivered(VirtualNumber $row): VirtualNumber
+    {
+        try {
+            $match = $this->matchRemoteFor($row, $this->remoteNumbers(), $this->claimedProviderIds());
+        } catch (\Throwable $e) {
+            Log::warning('Could not check the API Way inventory while cancelling an unconfirmed purchase', [
+                'virtual_number_id' => $row->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw new ApiwayNumbersException(
+                'Não foi possível concluir agora. Este número ainda não foi confirmado pela API Way — deixe-o como está e a cobrança será resolvida automaticamente em até uma hora.',
+                ApiwayNumbersException::UPSTREAM_UNAVAILABLE,
+                502,
+            );
+        }
+
+        if ($match !== null) {
+            // It existed after all: take ownership, then cancel it for real.
+            $this->adoptRemote($row, $match);
+
+            return $this->cancel($row->fresh(), 'requested');
+        }
+
+        $this->refundUndelivered($row, 'cancelled_before_delivery', 'Cancelado antes de a API Way confirmar o número.');
+
+        return $row->fresh();
     }
 
     // --- Incoming SMS ------------------------------------------------------
@@ -506,9 +708,7 @@ class VirtualNumberService
      */
     public function syncStatuses(): array
     {
-        $remote = collect($this->client->numbers())
-            ->filter(fn ($item) => is_array($item) && isset($item['id']))
-            ->keyBy(fn ($item) => (int) $item['id']);
+        $remote = $this->remoteNumbers();
 
         $synced = 0;
         $cancelled = 0;
@@ -534,12 +734,7 @@ class VirtualNumberService
         $adoptedIds = $this->adoptUnclaimed($remote);
         $refunded = $this->refundStalledPurchases();
 
-        $claimed = VirtualNumber::query()
-            ->whereNotNull('provider_number_id')
-            ->pluck('provider_number_id')
-            ->map(fn ($id) => (int) $id);
-
-        $orphans = $remote->keys()->diff($claimed)->diff($adoptedIds);
+        $orphans = $remote->keys()->diff($this->claimedProviderIds())->diff($adoptedIds);
 
         if ($orphans->isNotEmpty()) {
             // Numbers API Way bills us for that no workspace owns. Never
@@ -582,52 +777,25 @@ class VirtualNumberService
         // Cast, because the strict in_array below is what stops an already-owned
         // number being adopted a second time — and a driver that hands back
         // "512" instead of 512 would defeat it silently.
-        $claimed = VirtualNumber::query()
-            ->whereNotNull('provider_number_id')
-            ->pluck('provider_number_id')
-            ->map(fn ($id) => (int) $id)
-            ->all();
-
-        $unclaimed = $remote->reject(fn ($ignored, $id) => in_array($id, $claimed, true));
+        $claimed = $this->claimedProviderIds();
         $adopted = [];
 
         foreach ($pending as $row) {
-            $match = $unclaimed->first(function ($data, $id) use ($row, $adopted) {
-                if (in_array($id, $adopted, true)) {
-                    return false;
-                }
-
-                // The partner reference names the workspace, which is the only
-                // field that ties an upstream number back to who paid for it.
-                $reference = $data['partner_customer_id'] ?? null;
-
-                if ($reference !== null && $reference !== $this->partnerCustomerId($row->tenant)) {
-                    return false;
-                }
-
-                return ($data['app'] ?? null) === $row->app && (string) ($data['ddd'] ?? '') === $row->ddd;
-            });
+            // Already-adopted ids join the claimed list as we go, so two pending
+            // rows for the same app and DDD cannot both take the same number.
+            $match = $this->matchRemoteFor($row, $remote, array_merge($claimed, $adopted));
 
             if ($match === null) {
                 continue;
             }
 
-            $this->applyRemote($row, $match);
-            $row->forceFill(['purchased_at' => $row->purchased_at ?? now()])->save();
-
-            $meta = $row->meta ?? [];
-            unset($meta['unconfirmed']);
-            $meta['adopted_at'] = now()->toISOString();
-            $row->update(['meta' => $meta]);
-
+            $this->adoptRemote($row, $match);
             $adopted[] = (int) $match['id'];
 
             Log::info('Adopted an API Way number into an unconfirmed purchase', [
                 'virtual_number_id' => $row->id,
                 'provider_number_id' => $match['id'],
             ]);
-
-            broadcast(new VirtualNumberUpdated($row->fresh()));
         }
 
         return $adopted;
