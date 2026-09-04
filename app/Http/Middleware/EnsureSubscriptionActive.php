@@ -20,8 +20,12 @@ class EnsureSubscriptionActive
      * for the same reason, plus one of its own: a rented number keeps costing
      * the platform money every month, so locking the customer out of the screen
      * that cancels it would be charging them for a page they cannot open.
+     * `gallery.` is exempt on that second ground alone: rented storage renews
+     * every month from the balance, so the screen that stops it has to stay
+     * reachable — and a suspended workspace that cannot see its own files
+     * cannot decide which ones to delete to get back under the limit.
      */
-    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'apiway.', 'numbers.'];
+    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'apiway.', 'numbers.', 'gallery.'];
 
     /**
      * Exact route URIs (relative) that remain accessible.

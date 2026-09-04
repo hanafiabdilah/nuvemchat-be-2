@@ -112,6 +112,13 @@ class RoleAndPermissionSeeder extends Seeder
             // balance and cancels a rental somebody may still be waiting on.
             'numbers.view',
             'numbers.manage',
+
+            // The media library. `view` is browsing it and picking a file to
+            // send — something every agent does all day; `manage` uploads,
+            // deletes (which breaks the messages already sent with the file)
+            // and rents storage against the prepaid balance.
+            'gallery.view',
+            'gallery.manage',
         ];
 
         foreach ($permissions as $permission) {

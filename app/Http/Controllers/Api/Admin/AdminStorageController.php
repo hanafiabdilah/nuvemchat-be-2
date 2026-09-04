@@ -3,10 +3,16 @@
 namespace App\Http\Controllers\Api\Admin;
 
 use App\Enums\Conversation\Type;
+use App\Enums\Gallery\StorageRentalStatus;
 use App\Enums\Message\AttachmentStatus;
 use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
+use App\Models\GalleryAsset;
+use App\Models\GalleryStorageRental;
 use App\Models\Message;
 use App\Models\Tenant;
+use App\Services\Gallery\GalleryPricing;
+use App\Services\Gallery\GalleryStorage;
 use App\Services\Media\MediaRetention;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -52,8 +58,134 @@ class AdminStorageController extends Controller
                 'by_tenant' => $tenantId ? [] : $this->byTenant($stored()),
                 'by_channel' => $this->byChannel($stored()),
                 'retention' => $this->retention($base()),
+                'gallery' => $this->gallery($tenantId),
             ],
         ]);
+    }
+
+    /**
+     * The other half of the disk bill, and the only half anyone is paying for.
+     *
+     * Message media above is a cost the platform absorbs and `media:purge`
+     * bounds. Gallery bytes are sold: a workspace keeps them for as long as it
+     * wants and pays per gigabyte-month past what its plan grants. Reported
+     * side by side because they share a disk, and an operator watching that
+     * disk fill up needs to know which half is growing — one of them can be
+     * priced, and the other can only be waited out.
+     *
+     * Sizes here are exact. Unlike `messages.attachment_size` there is no
+     * backfill to wait for: a gallery asset cannot be created without its size,
+     * because the size is what the quota check is made of.
+     */
+    private function gallery(?int $tenantId): array
+    {
+        $assets = GalleryAsset::query()
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId));
+
+        $totals = (clone $assets)
+            ->selectRaw('COUNT(*) as files, SUM(size_bytes) as bytes, COUNT(DISTINCT tenant_id) as tenants')
+            ->first();
+
+        $rentals = GalleryStorageRental::query()
+            ->where('status', StorageRentalStatus::Active->value)
+            ->where('gb', '>', 0)
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->selectRaw('COUNT(*) as rentals, SUM(gb) as gb, SUM(gb * price_per_gb_cents) as monthly_cents')
+            ->first();
+
+        return [
+            'files' => (int) ($totals->files ?? 0),
+            'bytes' => (int) ($totals->bytes ?? 0),
+            'tenants' => (int) ($totals->tenants ?? 0),
+            'rented_gb' => (int) ($rentals->gb ?? 0),
+            'rentals' => (int) ($rentals->rentals ?? 0),
+            // What the rented space bills every month at the price each row was
+            // last charged at — not at today's list price, which is what the
+            // platform *would* charge and not what it *is* charging.
+            'monthly_revenue_cents' => (int) ($rentals->monthly_cents ?? 0),
+            'pricing' => GalleryPricing::settings(),
+            'by_tenant' => $tenantId ? [] : $this->galleryByTenant(),
+        ];
+    }
+
+    /** The workspaces holding the most library bytes, with what they pay for it. */
+    private function galleryByTenant(): array
+    {
+        $rows = GalleryAsset::query()
+            ->selectRaw('tenant_id, COUNT(*) as files, SUM(size_bytes) as bytes')
+            ->groupBy('tenant_id')
+            ->orderByDesc('bytes')
+            ->limit(self::TOP_N)
+            ->get();
+
+        $tenants = Tenant::with('user:id,name,email')
+            ->whereIn('id', $rows->pluck('tenant_id'))
+            ->get()
+            ->keyBy('id');
+
+        $rentals = GalleryStorageRental::whereIn('tenant_id', $rows->pluck('tenant_id'))
+            ->get()
+            ->keyBy('tenant_id');
+
+        $storage = app(GalleryStorage::class);
+
+        return $rows->map(function ($r) use ($tenants, $rentals, $storage) {
+            $tenant = $tenants[$r->tenant_id] ?? null;
+            $rental = $rentals[$r->tenant_id] ?? null;
+
+            return [
+                'tenant_id' => (int) $r->tenant_id,
+                'name' => $tenant?->user?->name ?? "Tenant #{$r->tenant_id}",
+                'email' => $tenant?->user?->email,
+                'files' => (int) $r->files,
+                'bytes' => (int) $r->bytes,
+                // Both halves of the allowance, so a row over its limit can be
+                // told apart from one that simply bought a lot of space.
+                'plan_gb' => $tenant ? $storage->planGb($tenant) : 0,
+                'rented_gb' => $rental?->status === StorageRentalStatus::Active ? (int) $rental->gb : 0,
+                'monthly_cents' => $rental?->status === StorageRentalStatus::Active ? $rental->monthlyCents() : 0,
+            ];
+        })->values()->all();
+    }
+
+    /**
+     * Set what a rented gigabyte-month costs, and the bounds on how many can be
+     * rented from the dashboard.
+     *
+     * Lives next to the storage figures rather than with the other commercial
+     * settings because the price of a gigabyte is only meaningful beside the
+     * count of gigabytes — and because that is the screen an operator is on
+     * when the number stops looking right.
+     */
+    public function updatePricing(Request $request)
+    {
+        $validated = $request->validate([
+            'price_per_gb_cents' => ['required', 'integer', 'min:1', 'max:1000000'],
+            'min_rent_gb' => ['required', 'integer', 'min:1', 'max:10000'],
+            'max_rent_gb' => ['required', 'integer', 'min:1', 'max:100000'],
+        ]);
+
+        if ($validated['max_rent_gb'] < $validated['min_rent_gb']) {
+            return response()->json([
+                'message' => 'The maximum must not be below the minimum.',
+                'errors' => ['max_rent_gb' => ['The maximum must not be below the minimum.']],
+            ], 422);
+        }
+
+        GalleryPricing::store($validated);
+
+        AuditLog::record(
+            'gallery.pricing.update',
+            sprintf(
+                'Gallery storage priced at %d cents/GB (rentable %d–%d GB)',
+                $validated['price_per_gb_cents'],
+                $validated['min_rent_gb'],
+                $validated['max_rent_gb'],
+            ),
+            $validated,
+        );
+
+        return response()->json(['data' => GalleryPricing::settings()]);
     }
 
     private function totals($query): array

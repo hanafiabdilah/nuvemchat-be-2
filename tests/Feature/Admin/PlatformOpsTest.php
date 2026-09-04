@@ -213,6 +213,66 @@ test('the storage page reports how much of the total it could actually measure',
     expect($res->json('data.by_tenant.0.tenant_id'))->toBe($tenant->id);
 });
 
+test('the storage page reports the half of the disk that is sold', function () {
+    // Gallery bytes share a disk with message media and are read for the
+    // opposite reason: one is a cost to be bounded, the other is revenue.
+    $tenant = opsTenant();
+
+    \App\Models\GalleryStorageRental::create([
+        'tenant_id' => $tenant->id,
+        'gb' => 10,
+        'price_per_gb_cents' => 200,
+        'status' => 'active',
+        'started_at' => now(),
+        'renews_at' => now()->addMonth(),
+    ]);
+
+    \App\Models\GalleryAsset::create([
+        'tenant_id' => $tenant->id,
+        'uuid' => (string) \Illuminate\Support\Str::uuid(),
+        'public_filename' => 'catalogo.pdf',
+        'name' => 'Catálogo',
+        'path' => "gallery/{$tenant->id}/x.pdf",
+        'mime_type' => 'application/pdf',
+        'type' => 'document',
+        'size_bytes' => 4096,
+        'checksum' => hash('sha256', 'x'),
+    ]);
+
+    $res = $this->actingAs(opsAdmin(['bo.storage.view']), 'sanctum')
+        ->getJson('/api/admin/storage')
+        ->assertOk();
+
+    expect($res->json('data.gallery.files'))->toBe(1)
+        ->and($res->json('data.gallery.bytes'))->toBe(4096)
+        ->and($res->json('data.gallery.rented_gb'))->toBe(10)
+        // At the price the rental was last charged at, not today's list price:
+        // one is what the platform is billing, the other what it would bill.
+        ->and($res->json('data.gallery.monthly_revenue_cents'))->toBe(2000)
+        ->and($res->json('data.gallery.by_tenant.0.tenant_id'))->toBe($tenant->id);
+});
+
+test('changing the gallery price takes the settings permission, not the reporting one', function () {
+    $this->actingAs(opsAdmin(['bo.storage.view']), 'sanctum')
+        ->putJson('/api/admin/storage/gallery-pricing', [
+            'price_per_gb_cents' => 300,
+            'min_rent_gb' => 1,
+            'max_rent_gb' => 500,
+        ])
+        ->assertForbidden();
+
+    $this->actingAs(opsAdmin(['bo.settings.manage']), 'sanctum')
+        ->putJson('/api/admin/storage/gallery-pricing', [
+            'price_per_gb_cents' => 300,
+            'min_rent_gb' => 1,
+            'max_rent_gb' => 500,
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.price_per_gb_cents', 300);
+
+    expect(\App\Services\Gallery\GalleryPricing::pricePerGbCents())->toBe(300);
+});
+
 test('purged media stops counting against the customer', function () {
     Storage::fake('local');
     $conversation = opsConversation(opsTenant());

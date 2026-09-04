@@ -150,6 +150,17 @@ Schedule::command('numbers:sync')
     ->hourlyAt(35)
     ->onFailure(fn () => logger()->error('Virtual number sync failed'));
 
+// --- Gallery storage -----------------------------------------------------
+
+// Charge the coming month of every rented gigabyte of library space, and end
+// the rentals nobody can pay for. Gentler than the two passes above by design:
+// the deadline takes the allowance away and never a file, so the worst outcome
+// is a library that stops accepting uploads until somebody tops up.
+Schedule::command('gallery:renew --days-before=3')
+    ->dailyAt('08:50')
+    ->timezone('America/Sao_Paulo')
+    ->onFailure(fn () => logger()->error('Gallery storage renewal pass failed'));
+
 // --- Broadcasts ----------------------------------------------------------
 
 // Start campaigns whose scheduled time has come, and revive any whose pump job

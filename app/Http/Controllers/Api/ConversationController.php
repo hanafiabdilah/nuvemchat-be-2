@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status;
+use App\Enums\Gallery\AssetType;
 use App\Enums\Message\SenderType;
 use App\Events\AgentTyping;
 use App\Events\ConversationTakenOver;
@@ -25,6 +26,7 @@ use App\Observers\ConversationObserver;
 use App\Services\AutomatedMessageService;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Conversation\SystemMessage;
+use App\Services\Gallery\GalleryMediaResolver;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
 use Carbon\Carbon;
@@ -742,10 +744,19 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        // A file picked from the library arrives as an id, not a URL: the
+        // ownership check and the URL signing both belong on this side. See
+        // GalleryMediaResolver.
+        $data = app(GalleryMediaResolver::class)->apply(
+            $request->all(),
+            $request->user()->tenant,
+            AssetType::Image,
+        );
+
         $messageService = new MessageService;
 
         try {
-            $message = $messageService->sendImage($conversation, $request->all());
+            $message = $messageService->sendImage($conversation, $data);
 
             $message?->update(['sent_by_user_id' => Auth::id()]);
 
@@ -780,10 +791,19 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        // A file picked from the library arrives as an id, not a URL: the
+        // ownership check and the URL signing both belong on this side. See
+        // GalleryMediaResolver.
+        $data = app(GalleryMediaResolver::class)->apply(
+            $request->all(),
+            $request->user()->tenant,
+            AssetType::Audio,
+        );
+
         $messageService = new MessageService;
 
         try {
-            $message = $messageService->sendAudio($conversation, $request->all());
+            $message = $messageService->sendAudio($conversation, $data);
 
             $message?->update(['sent_by_user_id' => Auth::id()]);
 
@@ -818,10 +838,19 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        // A file picked from the library arrives as an id, not a URL: the
+        // ownership check and the URL signing both belong on this side. See
+        // GalleryMediaResolver.
+        $data = app(GalleryMediaResolver::class)->apply(
+            $request->all(),
+            $request->user()->tenant,
+            AssetType::Video,
+        );
+
         $messageService = new MessageService;
 
         try {
-            $message = $messageService->sendVideo($conversation, $request->all());
+            $message = $messageService->sendVideo($conversation, $data);
 
             $message?->update(['sent_by_user_id' => Auth::id()]);
 
@@ -856,10 +885,19 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        // A file picked from the library arrives as an id, not a URL: the
+        // ownership check and the URL signing both belong on this side. See
+        // GalleryMediaResolver.
+        $data = app(GalleryMediaResolver::class)->apply(
+            $request->all(),
+            $request->user()->tenant,
+            AssetType::Document,
+        );
+
         $messageService = new MessageService;
 
         try {
-            $message = $messageService->sendDocument($conversation, $request->all());
+            $message = $messageService->sendDocument($conversation, $data);
 
             $message?->update(['sent_by_user_id' => Auth::id()]);
 

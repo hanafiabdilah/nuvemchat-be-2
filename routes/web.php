@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ConnectionController;
+use App\Http\Controllers\GalleryFileController;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -40,6 +41,24 @@ Route::post('/oauth/facebook/data-deletion', [ConnectionController::class, 'face
     ->name('oauth.facebook.data-deletion');
 Route::get('/oauth/facebook/deletion-status', [ConnectionController::class, 'facebookDeletionStatus'])
     ->name('oauth.facebook.deletion-status');
+
+/**
+ * A tenant's gallery file, to whoever holds the signed link.
+ *
+ * Public on purpose: the readers that matter are Meta, Telegram and Discord
+ * fetching the bytes to deliver them, and none of them carries a session. The
+ * signature is the credential — the same arrangement message media runs on.
+ *
+ * The trailing `{filename}` is part of the signature and looks redundant, but
+ * it is the whole reason the URL works as media: OutboundMedia reads the
+ * extension off the last path segment to decide the MIME type, and WhatsApp
+ * shows that segment as the document's name. `.*` on it so a dotted filename
+ * survives — Laravel's default parameter pattern stops at one.
+ */
+Route::get('/gallery/{uuid}/{filename}', [GalleryFileController::class, 'show'])
+    ->where('filename', '.*')
+    ->middleware('signed')
+    ->name('gallery.file');
 
 require __DIR__.'/settings.php';
 require __DIR__.'/webhook.php';

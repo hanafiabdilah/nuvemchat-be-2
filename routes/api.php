@@ -20,6 +20,8 @@ use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
 use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
 use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
 use App\Http\Controllers\Api\Numbers\VirtualNumberController;
+use App\Http\Controllers\Api\Gallery\GalleryAssetController;
+use App\Http\Controllers\Api\Gallery\GalleryStorageController;
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
@@ -168,6 +170,29 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/', [VirtualNumberController::class, 'store'])->middleware('permission:numbers.manage')->name('store');
         Route::get('/{id}', [VirtualNumberController::class, 'show'])->middleware('permission:numbers.view')->name('show');
         Route::post('/{id}/cancel', [VirtualNumberController::class, 'cancel'])->middleware('permission:numbers.manage')->name('cancel');
+    });
+
+    // The workspace's media library. No plan feature gates it — the storage is
+    // sold to anyone with the permission and the balance, and gating the page
+    // that sells it on a capability only buyers have is the mistake the API Way
+    // pages had to be walked back from. The exemption from subscription.active
+    // is in EnsureSubscriptionActive, for the reason given there.
+    Route::prefix('gallery')->name('gallery.')->group(function () {
+        // Space, price and balance. Declared before `{id}` — and `{id}` pinned
+        // to digits — because otherwise `PUT /gallery/storage` matches the
+        // rename route with an id of "storage" and 404s on a lookup nobody can
+        // explain. Readable with `gallery.view`: the meter is part of the
+        // library, and an agent who cannot see why an upload was refused will
+        // report it as a bug.
+        Route::get('/storage', [GalleryStorageController::class, 'show'])->middleware('permission:gallery.view')->name('storage');
+        Route::post('/storage/quote', [GalleryStorageController::class, 'quote'])->middleware('permission:gallery.view')->name('storage-quote');
+        Route::put('/storage', [GalleryStorageController::class, 'update'])->middleware('permission:gallery.manage')->name('storage-update');
+        Route::delete('/storage', [GalleryStorageController::class, 'destroy'])->middleware('permission:gallery.manage')->name('storage-cancel');
+
+        Route::get('/', [GalleryAssetController::class, 'index'])->middleware('permission:gallery.view')->name('index');
+        Route::post('/', [GalleryAssetController::class, 'store'])->middleware('permission:gallery.manage')->name('store');
+        Route::put('/{id}', [GalleryAssetController::class, 'update'])->whereNumber('id')->middleware('permission:gallery.manage')->name('update');
+        Route::delete('/{id}', [GalleryAssetController::class, 'destroy'])->whereNumber('id')->middleware('permission:gallery.manage')->name('destroy');
     });
 
     Route::middleware('feature:' . Feature::Chat->value)->group(function () {
@@ -700,9 +725,15 @@ Route::prefix('admin')->group(function () {
         Route::get('/health', [AdminHealthController::class, 'index'])
             ->middleware('permission:bo.health.view');
 
-        // Disk per customer + whether retention is keeping up.
+        // Disk per customer + whether retention is keeping up, plus the half of
+        // the disk that is sold rather than absorbed (the media galleries).
         Route::get('/storage', [AdminStorageController::class, 'index'])
             ->middleware('permission:bo.storage.view');
+        // Changing what a gigabyte sells for is a commercial decision, not a
+        // reporting one — so it takes the settings permission, not the one that
+        // opens the page.
+        Route::put('/storage/gallery-pricing', [AdminStorageController::class, 'updatePricing'])
+            ->middleware('permission:bo.settings.manage');
 
         // Volume and backlog per customer. Deliberately not a message reader —
         // impersonation is the audited path for actually looking at a thread.

@@ -18,6 +18,18 @@ enum Quota: string
     case IncludedInstances = 'included_instances';
     case IncludedTrainedAgents = 'included_trained_agents';
 
+    /**
+     * Gallery storage the plan includes, in whole gigabytes.
+     *
+     * ⚠️ Like `included_trained_agents` and unlike everything above it, an
+     * absent value means ZERO, not unlimited. Stored bytes are the one cost
+     * that only ever rises and never stops being paid, so reading silence as
+     * "unlimited" would hand every plan that predates this feature an open
+     * tab on the platform's disk. A plan that has not said how much storage
+     * it includes has not included any — and the tenant can still rent.
+     */
+    case GalleryStorageGb = 'gallery_storage_gb';
+
     /** @return list<string> */
     public static function values(): array
     {
@@ -32,6 +44,7 @@ enum Quota: string
             self::MaxAiRuns => 'AI runs / month',
             self::IncludedInstances => 'Included API Way instances',
             self::IncludedTrainedAgents => 'Included trained agents',
+            self::GalleryStorageGb => 'Gallery storage (GB)',
         };
     }
 
@@ -43,6 +56,7 @@ enum Quota: string
             self::MaxAiRuns => 'AI Hub runs per billing month. Resets with the subscription period.',
             self::IncludedInstances => 'API Way instances provisioned free with the plan.',
             self::IncludedTrainedAgents => 'Pre-trained catalog agents the plan may hire at no extra cost.',
+            self::GalleryStorageGb => 'Media library space included with the plan. Absent or 0 means none — the tenant can still rent space per GB.',
         };
     }
 
@@ -55,6 +69,7 @@ enum Quota: string
             self::MaxAiRuns => 'On each AI agent run; over the limit, the flow hands off instead.',
             self::IncludedInstances => 'On provisioning; extra instances are billed per unit.',
             self::IncludedTrainedAgents => 'On hiring from the catalog; past the limit the agent is a one-off purchase.',
+            self::GalleryStorageGb => 'On uploading to the gallery. Over the limit the library goes read-only — nothing is ever deleted.',
         };
     }
 }

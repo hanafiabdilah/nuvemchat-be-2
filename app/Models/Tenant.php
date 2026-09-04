@@ -100,6 +100,17 @@ class Tenant extends Model
         return $this->hasMany(VirtualNumber::class);
     }
 
+    public function galleryAssets()
+    {
+        return $this->hasMany(GalleryAsset::class);
+    }
+
+    /** The extra gallery storage this workspace rents, if any. */
+    public function galleryStorageRental()
+    {
+        return $this->hasOne(GalleryStorageRental::class);
+    }
+
     public function users()
     {
         return $this->hasMany(User::class);

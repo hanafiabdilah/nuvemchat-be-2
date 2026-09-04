@@ -60,6 +60,20 @@ enum NotificationType: string
     /** A number was charged for and never delivered; the money is already back. */
     case VirtualNumberRefunded = 'virtual_number_refunded';
 
+    /**
+     * Rented gallery storage renews soon and the balance will not cover it.
+     *
+     * Repeated daily inside the window, like its two counterparts above, and
+     * for the same reason: the only remedy is a person noticing. What follows
+     * it is milder than a cancelled number — no file is ever deleted — so the
+     * message says exactly that, rather than borrowing an urgency it does not
+     * have and teaching people to discount the ones that do.
+     */
+    case GalleryStorageRenewalNoCredit = 'gallery_storage_renewal_no_credit';
+
+    /** Rented gallery storage ended for want of balance. Files are untouched. */
+    case GalleryStorageCancelledNoCredit = 'gallery_storage_cancelled_no_credit';
+
     /** Human-readable label for the Back Office configuration UI. */
     public function label(): string
     {
@@ -82,6 +96,8 @@ enum NotificationType: string
             self::VirtualNumberRenewalNoCredit => 'Virtual number renewal blocked by balance',
             self::VirtualNumberCancelledNoCredit => 'Virtual number cancelled (no balance)',
             self::VirtualNumberRefunded => 'Virtual number not delivered (credit returned)',
+            self::GalleryStorageRenewalNoCredit => 'Gallery storage renewal blocked by balance',
+            self::GalleryStorageCancelledNoCredit => 'Gallery storage ended (no balance)',
         };
     }
 
@@ -110,6 +126,8 @@ enum NotificationType: string
             self::VirtualNumberRenewalNoCredit => "Olá {{name}}, seu número {{msisdn}} renova em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento: sem saldo o número é cancelado e não pode ser recuperado.",
             self::VirtualNumberCancelledNoCredit => "Olá {{name}}, seu número {{msisdn}} foi cancelado porque não havia saldo para a renovação. Contrate um novo número pelo painel quando quiser.",
             self::VirtualNumberRefunded => "Olá {{name}}, não conseguimos ativar o número virtual e devolvemos {{amount}} ao seu saldo. Você pode tentar novamente pelo painel.",
+            self::GalleryStorageRenewalNoCredit => "Olá {{name}}, seu armazenamento extra da galeria ({{gb}} GB) renova em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento. Seus arquivos não serão apagados, mas novos envios para a galeria ficam bloqueados enquanto o espaço estiver acima do limite.",
+            self::GalleryStorageCancelledNoCredit => "Olá {{name}}, seu armazenamento extra da galeria ({{gb}} GB) foi encerrado por falta de saldo. Nenhum arquivo foi apagado — eles continuam disponíveis para envio. Para voltar a subir arquivos novos, recarregue e contrate o espaço novamente.",
         };
     }
 
@@ -140,6 +158,8 @@ enum NotificationType: string
             self::VirtualNumberRenewalNoCredit => ['name', 'msisdn', 'due_date', 'amount'],
             self::VirtualNumberCancelledNoCredit => ['name', 'msisdn'],
             self::VirtualNumberRefunded => ['name', 'amount'],
+            self::GalleryStorageRenewalNoCredit => ['name', 'gb', 'due_date', 'amount'],
+            self::GalleryStorageCancelledNoCredit => ['name', 'gb'],
         };
     }
 
