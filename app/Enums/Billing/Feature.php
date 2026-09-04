@@ -53,7 +53,7 @@ enum Feature: string
     {
         return match ($this) {
             self::Chat => 'The omnichannel inbox itself.',
-            self::WhatsappApi => 'Buying and running API Way instances. Implied by owning live instances.',
+            self::WhatsappApi => 'Marks an API Way workspace. Granted automatically by owning instances — it does NOT gate buying them, which is open to every tenant.',
             self::Crm => 'Lead board, pipelines and stages.',
             self::Flow => 'The visual automation builder.',
             self::AiAgentHub => 'AI agents, handoff and reply suggestions.',

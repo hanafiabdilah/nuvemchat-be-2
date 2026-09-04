@@ -30,6 +30,8 @@ use App\Enums\Notification\NotificationType;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
+use Laravel\Sanctum\Sanctum;
+use Spatie\Permission\Models\Permission;
 
 uses(RefreshDatabase::class);
 
@@ -108,6 +110,32 @@ test('a tenant with no plan but a live instance gets implicit whatsapp_api acces
         ->and($gate->feature($tenant, 'whatsapp_api'))->toBeTrue()
         ->and($gate->feature($tenant, 'chat'))->toBeFalse()
         ->and($gate->quota($tenant, 'max_connections'))->toBe(1);
+});
+
+test('a plan without whatsapp_api can still create an API Way connection', function () {
+    // The feature is granted BY owning an instance, so gating the channel on it
+    // shut the door from the inside: a chat-only workspace could never reach the
+    // flow that sells them one. Buying is open to every tenant; what stays
+    // gated is linking, which can only point at an instance they own.
+    $tenant = lifecycleTenant();
+    lifecyclePlanSubscription($tenant, SubscriptionStatus::Active, ['chat' => true]);
+
+    $user = $tenant->user()->first();
+    $user->forceFill(['whatsapp_verified_at' => now()])->save();
+    Permission::findOrCreate('connections.create', 'web');
+    $user->givePermissionTo('connections.create');
+
+    Sanctum::actingAs($user);
+
+    expect(app(SubscriptionGate::class)->feature($tenant, 'whatsapp_api'))->toBeFalse();
+
+    test()->postJson('/api/connections', [
+        'channel' => Channel::WhatsappApiway->value,
+        'name' => 'API Way',
+    ])->assertCreated();
+
+    expect(Connection::where('tenant_id', $tenant->id)->where('channel', Channel::WhatsappApiway->value)->exists())
+        ->toBeTrue();
 });
 
 test('a tenant with neither plan nor instances stays locked out', function () {

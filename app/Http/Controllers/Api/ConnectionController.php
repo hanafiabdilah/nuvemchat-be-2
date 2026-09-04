@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Enums\Billing\Feature;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Connection\SyncStatus;
@@ -233,18 +232,13 @@ class ConnectionController extends Controller
         $tenant = $request->user()->tenant;
         $gate = app(SubscriptionGate::class);
 
-        // API Way connections are backed by purchased instances — the real
-        // gate is owning an available instance at connect time. The feature
-        // flag also turns on implicitly for tenants with live instances.
-        if ($validated['channel'] === Channel::WhatsappApiway->value
-            && ! $gate->feature($tenant, Feature::WhatsappApi->value)) {
-            return response()->json([
-                'message' => 'This feature (whatsapp_api) is not included in your current plan.',
-                'code' => 'feature_not_in_plan',
-                'feature' => Feature::WhatsappApi->value,
-            ], 403);
-        }
-
+        // ⚠️ API Way channels are deliberately NOT gated on the `whatsapp_api`
+        // plan feature. An instance is bought, not granted: the feature turns
+        // on BY owning one, so refusing the channel to a plan that lacks it
+        // refused the customer at the only door that leads to buying it. The
+        // real gate is further along and unchanged — linking is scoped to
+        // instances this tenant actually owns, so a connection made without one
+        // simply has nothing to attach to.
         if (! $gate->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
             return response()->json([
                 'message' => 'You have reached the maximum number of connections for your plan.',
