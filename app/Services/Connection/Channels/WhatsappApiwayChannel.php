@@ -37,6 +37,10 @@ class WhatsappApiwayChannel implements ChannelInterface
         if (! isset($connection->credentials['instance_id'], $connection->credentials['token'])) {
             $this->linkInstance($connection, $data);
         } else {
+            // Already linked: connect only refreshes status/QR. Pointing this
+            // connection at a *different* instance is switchInstance() — a
+            // separate, confirmed action, never a side effect of pressing the
+            // button that reloads a QR code.
             $this->checkInstanceStatus($connection);
         }
 
@@ -61,6 +65,100 @@ class WhatsappApiwayChannel implements ChannelInterface
         }
 
         $this->retrieveQrCode($connection);
+    }
+
+    /**
+     * Point this connection at a different purchased instance.
+     *
+     * Two situations, one operation: the instance behind a connection was
+     * cancelled or expired and the tenant bought a replacement, or they simply
+     * want this inbox served by another number. Everything that makes the
+     * connection what it is — its conversations, flow, agents, automated
+     * messages, tags — belongs to the Connection row and stays put; only the
+     * WhatsApp session underneath changes.
+     *
+     * The instance being left behind is logged out of WhatsApp first. It goes
+     * back to the pool, and a pooled instance still holding somebody's session
+     * is a number that keeps receiving messages nobody reads. That call is
+     * best-effort: an instance whose subscription was revoked no longer
+     * answers its own token, and that is the most common reason for asking for
+     * a swap in the first place — it must not block one.
+     */
+    public function switchInstance(Connection $connection, int $apiwayInstanceId): void
+    {
+        $current = (int) ($connection->credentials['apiway_instance_id'] ?? 0);
+
+        if ($current === $apiwayInstanceId) {
+            throw new AppConnectionException('Esta conexão já usa essa instância.', 422);
+        }
+
+        $this->logoutInstance($connection);
+
+        // linkInstance() releases whatever this connection was holding — it has
+        // to, because apiway_instances.connection_id is unique.
+        $this->linkInstance($connection, ['apiway_instance_id' => $apiwayInstanceId]);
+        $this->registerWebhook($connection);
+        $this->retrieveQrCode($connection);
+    }
+
+    /**
+     * Cut a connection loose from an instance that stopped existing — the
+     * subscription behind it was cancelled or ran out.
+     *
+     * The credentials are moved aside rather than left in place or silently
+     * blanked. Left in place, the connect screen keeps offering a QR code that
+     * can never pair and the channel keeps a token that opens nothing. Blanked,
+     * an inbox stops working with no record of why. What stays behind says
+     * "this had an instance, here is which one and what happened to it", which
+     * is also what the wizard needs to explain itself and offer a replacement.
+     */
+    public static function releaseCredentials(Connection $connection, string $reason): void
+    {
+        $credentials = $connection->credentials ?? [];
+
+        if (! isset($credentials['instance_id']) && ! isset($credentials['apiway_instance_id'])) {
+            return;
+        }
+
+        $connection->update([
+            'credentials' => [
+                ...array_intersect_key($credentials, array_flip(['is_managed', 'import_history'])),
+                'released_instance' => [
+                    'instance_id' => $credentials['instance_id'] ?? null,
+                    'apiway_instance_id' => $credentials['apiway_instance_id'] ?? null,
+                    // The number is kept for recognition only ("this was the
+                    // line for +55…"), never for sending: nothing here is
+                    // paired any more.
+                    'phone_number' => $credentials['phone_number'] ?? null,
+                    'reason' => $reason,
+                    'released_at' => now()->toIso8601String(),
+                ],
+            ],
+        ]);
+    }
+
+    /**
+     * Log the currently linked instance out of WhatsApp. Never throws: every
+     * caller is already committed to letting this instance go.
+     */
+    private function logoutInstance(Connection $connection): void
+    {
+        if (! isset($connection->credentials['token'], $connection->credentials['instance_id'])) {
+            return;
+        }
+
+        try {
+            Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->connectTimeout(15)
+                ->timeout(20)
+                ->get($this->base() . '/v1/instance/disconnect?instanceId=' . $connection->credentials['instance_id']);
+        } catch (\Throwable $th) {
+            Log::warning('API Way logout failed, continuing anyway', [
+                'connection' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -105,12 +203,29 @@ class WhatsappApiwayChannel implements ChannelInterface
             );
         }
 
-        DB::transaction(function () use ($connection, $instance, $token) {
+        // The import opt-in is a preference about this connection, not about
+        // whichever instance happens to serve it, so it survives a swap.
+        // Everything else in the old credentials belongs to the instance being
+        // left behind (its token, its QR, its paired number, the record of an
+        // import that already ran) and must not outlive it.
+        $keep = array_intersect_key($connection->credentials ?? [], array_flip(['import_history']));
+
+        DB::transaction(function () use ($connection, $instance, $token, $keep) {
+            // apiway_instances.connection_id is unique, so claiming an instance
+            // for this connection means letting go of whatever it held before.
+            // Released by connection_id rather than by the stored credential: a
+            // revoked subscription has already nulled it, and a stale credential
+            // pointing at somebody else's row must never unlink theirs.
+            ApiwayInstance::where('connection_id', $connection->id)
+                ->whereKeyNot($instance->id)
+                ->update(['connection_id' => null]);
+
             $instance->update(['connection_id' => $connection->id]);
 
             $connection->update([
                 'status' => Status::Pending,
                 'credentials' => [
+                    ...$keep,
                     'instance_id' => $instance->provider_instance_id,
                     'token' => $token,
                     'is_managed' => true,
@@ -163,18 +278,24 @@ class WhatsappApiwayChannel implements ChannelInterface
 
     private function retrieveQrCode(Connection $connection): void
     {
+        // `throw: false` is load-bearing. retry() throws a RequestException of
+        // its own once the attempts run out, which sails straight past the
+        // failure branch below — the only place that logs the core's answer and
+        // turns it into a message a human can act on. The controller has no
+        // catch for that class either, so the whole thing used to surface as a
+        // bare 500 "Failed to run connection" with nothing in the log.
         $qr = Http::withHeaders([
             'Authorization' => 'Bearer ' . $connection->credentials['token'],
         ])->connectTimeout(15)
             ->timeout(30)
-            ->retry(3, 800)
+            ->retry(3, 800, throw: false)
             ->get($this->base() . '/v1/instance/qr-code?instanceId=' . $connection->credentials['instance_id']);
 
         $qrJson = $qr->json();
 
         if ($qr->failed()) {
             Log::error('WhatsApp API Way QR request failed', ['connection' => $connection->id, 'response' => $qrJson, 'status' => $qr->status()]);
-            throw new AppConnectionException($qrJson['message'] ?? 'Failed to retrieve QR code from API Way', $qr->status() ?: 500);
+            throw new AppConnectionException($this->qrFailureMessage($qrJson), $qr->status() ?: 500);
         }
 
         // API Way wraps instance responses as { success, data: { qrcode: <data URI> } }.
@@ -186,13 +307,40 @@ class WhatsappApiwayChannel implements ChannelInterface
         ]);
     }
 
+    /**
+     * Turn the core's refusal into something the person staring at the empty
+     * QR box can act on.
+     *
+     * `node_error / "not connected"` is the one that matters: the session has
+     * no node behind it, which in practice means the instance is no longer
+     * provisioned at ProxyBR — a QR will never appear no matter how many times
+     * the button is pressed. Saying "not connected" to a business owner sends
+     * them to check their phone and their wifi, which is the one place the
+     * problem is not. Anything unrecognised keeps the provider's own wording:
+     * a technical string beats a confident guess about a failure we have not
+     * seen before.
+     */
+    private function qrFailureMessage(mixed $body): string
+    {
+        $error = is_array($body) ? ($body['error'] ?? null) : null;
+        $message = is_array($body) ? ($body['message'] ?? null) : null;
+
+        if ($error === 'node_error' || $message === 'not connected') {
+            return 'A instância não está ativa no provedor, então nenhum QR Code pode ser gerado. '
+                . 'Verifique a assinatura desta instância ou troque a conexão para outra instância.';
+        }
+
+        return $message ?: 'Não foi possível obter o QR Code da API Way.';
+    }
+
     private function checkInstanceStatus(Connection $connection): Connection
     {
+        // See retrieveQrCode(): retry() throwing would skip the branch below.
         $status = Http::withHeaders([
             'Authorization' => 'Bearer ' . $connection->credentials['token'],
         ])->connectTimeout(15)
             ->timeout(30)
-            ->retry(3, 800)
+            ->retry(3, 800, throw: false)
             ->get($this->base() . '/v1/instance/status-instance?instanceId=' . $connection->credentials['instance_id']);
 
         $statusJson = $status->json();
@@ -255,15 +403,7 @@ class WhatsappApiwayChannel implements ChannelInterface
 
     public function disconnect(Connection $connection): void
     {
-        try {
-            Http::withHeaders([
-                'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->connectTimeout(15)
-                ->timeout(20)
-                ->get($this->base() . '/v1/instance/disconnect?instanceId=' . $connection->credentials['instance_id']);
-        } catch (\Throwable $th) {
-            Log::warning('Error disconnecting API Way, marking inactive anyway', ['connection' => $connection->id, 'error' => $th->getMessage()]);
-        }
+        $this->logoutInstance($connection);
 
         $connection->update([
             'status' => Status::Inactive,

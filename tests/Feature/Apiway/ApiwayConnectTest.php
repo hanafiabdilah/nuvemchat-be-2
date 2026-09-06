@@ -18,6 +18,7 @@ use App\Services\Connection\Proxy\ApiwayConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
+use Tests\Support\ApiwayFixtures;
 
 uses(RefreshDatabase::class);
 
@@ -27,72 +28,12 @@ beforeEach(function () {
     Setting::set(ApiwayConfig::KEY_PARTNER_TOKEN, 'partner-token');
 });
 
-function connectTenant(): Tenant
-{
-    $user = User::factory()->create(['email' => 'cx-' . uniqid() . '@example.test']);
-    $tenant = Tenant::create(['user_id' => $user->id]);
-    $user->forceFill(['tenant_id' => $tenant->id])->save();
-
-    return $tenant->fresh();
-}
-
-function ownedInstance(Tenant $tenant, array $attributes = []): ApiwayInstance
-{
-    $row = ApiwaySubscription::create([
-        'tenant_id' => $tenant->id,
-        'external_ref' => 'pingly-apw-' . uniqid(),
-        'provider_subscription_id' => random_int(1000, 999999),
-        'source' => ApiwaySubscriptionSource::Unit,
-        'cycle' => 'mensal',
-        'quantity' => 1,
-        'location_code' => 'br',
-        'status' => ApiwaySubscriptionStatus::Active,
-        'expires_at' => now()->addDays(30),
-    ]);
-
-    return ApiwayInstance::create(array_merge([
-        'tenant_id' => $tenant->id,
-        'apiway_subscription_id' => $row->id,
-        'provider_instance_id' => 'uuid-' . uniqid(),
-        'name' => 'Instancia',
-        'status' => 'aguardando_qr',
-    ], $attributes));
-}
-
-function apiwayConnection(Tenant $tenant): Connection
-{
-    return Connection::create([
-        'tenant_id' => $tenant->id,
-        'channel' => Channel::WhatsappApiway,
-        'name' => 'API ' . uniqid(),
-        'status' => ConnectionStatus::Inactive,
-    ]);
-}
-
-function fakeLinkSurface(string $instanceUuid): void
-{
-    Http::fake([
-        "portal.proxybr.com.br/api/partner/v1/apiway/instances/{$instanceUuid}/token" => Http::response([
-            'data' => ['token' => 'instance-token-1', 'masked' => 'inst***1'],
-        ]),
-        // Webhooks register straight on the core (per-event endpoints), not
-        // through the partner console.
-        'whats-api.ipbr.pro/v1/instance/update-webhook-*' => Http::response(['success' => true]),
-        'whats-api.ipbr.pro/v1/instance/qr-code*' => Http::response([
-            'success' => true, 'data' => ['qrcode' => 'data:image/png;base64,QR'],
-        ]),
-        'whats-api.ipbr.pro/v1/instance/status-instance*' => Http::response([
-            'success' => true, 'data' => ['connected' => false, 'loggedIn' => false],
-        ]),
-    ]);
-}
-
 test('connect links an owned instance: partner token fetched, webhook registered, QR retrieved', function () {
-    $tenant = connectTenant();
-    $instance = ownedInstance($tenant);
-    $connection = apiwayConnection($tenant);
+    $tenant = ApiwayFixtures::tenant();
+    $instance = ApiwayFixtures::ownedInstance($tenant);
+    $connection = ApiwayFixtures::connection($tenant);
 
-    fakeLinkSurface($instance->provider_instance_id);
+    ApiwayFixtures::fakeLinkSurface($instance->provider_instance_id);
 
     (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $instance->id, 'import_history' => true]);
 
@@ -124,9 +65,9 @@ test('connect links an owned instance: partner token fetched, webhook registered
 });
 
 test('a logged-in status persists the paired WhatsApp number from the session jid', function () {
-    $tenant = connectTenant();
-    $connection = apiwayConnection($tenant);
-    $instance = ownedInstance($tenant, ['connection_id' => $connection->id]);
+    $tenant = ApiwayFixtures::tenant();
+    $connection = ApiwayFixtures::connection($tenant);
+    $instance = ApiwayFixtures::ownedInstance($tenant, ['connection_id' => $connection->id]);
     $connection->update(['credentials' => [
         'instance_id' => $instance->provider_instance_id,
         'token' => 'instance-token-1',
@@ -154,10 +95,10 @@ test('a logged-in status persists the paired WhatsApp number from the session ji
 });
 
 test('an instance owned by another connection cannot be linked', function () {
-    $tenant = connectTenant();
-    $other = apiwayConnection($tenant);
-    $instance = ownedInstance($tenant, ['connection_id' => $other->id]);
-    $connection = apiwayConnection($tenant);
+    $tenant = ApiwayFixtures::tenant();
+    $other = ApiwayFixtures::connection($tenant);
+    $instance = ApiwayFixtures::ownedInstance($tenant, ['connection_id' => $other->id]);
+    $connection = ApiwayFixtures::connection($tenant);
 
     try {
         (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $instance->id]);
@@ -168,10 +109,10 @@ test('an instance owned by another connection cannot be linked', function () {
 });
 
 test('an instance from an expired subscription cannot be linked', function () {
-    $tenant = connectTenant();
-    $instance = ownedInstance($tenant);
+    $tenant = ApiwayFixtures::tenant();
+    $instance = ApiwayFixtures::ownedInstance($tenant);
     $instance->subscription->update(['status' => ApiwaySubscriptionStatus::Expired]);
-    $connection = apiwayConnection($tenant);
+    $connection = ApiwayFixtures::connection($tenant);
 
     try {
         (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $instance->id]);
@@ -182,10 +123,10 @@ test('an instance from an expired subscription cannot be linked', function () {
 });
 
 test('another tenant\'s instance is invisible', function () {
-    $tenant = connectTenant();
-    $stranger = connectTenant();
-    $instance = ownedInstance($stranger);
-    $connection = apiwayConnection($tenant);
+    $tenant = ApiwayFixtures::tenant();
+    $stranger = ApiwayFixtures::tenant();
+    $instance = ApiwayFixtures::ownedInstance($stranger);
+    $connection = ApiwayFixtures::connection($tenant);
 
     try {
         (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $instance->id]);
@@ -196,9 +137,9 @@ test('another tenant\'s instance is invisible', function () {
 });
 
 test('deleting the connection releases the instance back to the pool without touching the provider', function () {
-    $tenant = connectTenant();
-    $connection = apiwayConnection($tenant);
-    $instance = ownedInstance($tenant, ['connection_id' => $connection->id]);
+    $tenant = ApiwayFixtures::tenant();
+    $connection = ApiwayFixtures::connection($tenant);
+    $instance = ApiwayFixtures::ownedInstance($tenant, ['connection_id' => $connection->id]);
     $connection->update(['credentials' => [
         'instance_id' => $instance->provider_instance_id,
         'token' => 'instance-token-1',
@@ -218,8 +159,8 @@ test('deleting the connection releases the instance back to the pool without tou
 });
 
 test('the connection resource never ships the instance API token to the SPA', function () {
-    $tenant = connectTenant();
-    $connection = apiwayConnection($tenant);
+    $tenant = ApiwayFixtures::tenant();
+    $connection = ApiwayFixtures::connection($tenant);
     $connection->update(['credentials' => [
         'instance_id' => 'uuid-abc',
         'token' => 'super-secret',

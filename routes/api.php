@@ -398,6 +398,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::put('/connections/{id}/credentials', [ConnectionController::class, 'updateCredentials'])->middleware('permission:connections.connect');
     Route::put('/connections/{id}', [ConnectionController::class, 'update'])->middleware('permission:connections.update');
     Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus'])->middleware('permission:connections.check-status');
+    // Move a connection onto a different purchased API Way instance. Gated on
+    // connections.connect — it is the same act as linking one in the first
+    // place, only against a connection that already has one.
+    Route::post('/connections/{id}/apiway/instance', [ConnectionController::class, 'switchApiwayInstance'])->middleware('permission:connections.connect');
     // Reuses the check-status permission on purpose: both are "poke this
     // connection", and a new permission would not be granted to existing roles.
     Route::post('/connections/{id}/sync', [ConnectionController::class, 'syncInbox'])->middleware('permission:connections.check-status');

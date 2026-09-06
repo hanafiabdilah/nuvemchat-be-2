@@ -24,6 +24,7 @@ use App\Models\Tenant;
 use App\Services\Billing\BillingNotifier;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Connection\Channels\WhatsappApiwayChannel;
 use App\Services\Credits\CreditService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -1062,13 +1063,28 @@ class ApiwayService
         return 'tenant-'.$tenant->id;
     }
 
-    /** Release every linked connection (asset unlinked, channel deactivated). */
+    /**
+     * Detach every connection this subscription was serving.
+     *
+     * Marking the connection inactive is not enough: it keeps the instance id,
+     * the API token and the last QR code, so the connect screen goes on
+     * offering a code that can never pair and every retry dies inside the core
+     * with "not connected". WhatsappApiwayChannel::releaseCredentials() moves
+     * that aside and leaves a record of which instance went away and why —
+     * which is what lets the wizard say so and offer a replacement instead of
+     * looking broken.
+     */
     protected function releaseInstances(ApiwaySubscription $row): void
     {
+        $reason = $row->status === ApiwaySubscriptionStatus::Cancelled
+            ? 'subscription_cancelled'
+            : 'subscription_expired';
+
         foreach ($row->instances()->whereNotNull('connection_id')->with('connection')->get() as $instance) {
             if ($connection = $instance->connection) {
+                WhatsappApiwayChannel::releaseCredentials($connection, $reason);
                 $connection->update(['status' => ConnectionStatus::Inactive]);
-                broadcast(new ConnectionUpdated($connection));
+                broadcast(new ConnectionUpdated($connection->fresh()));
             }
 
             $instance->update(['connection_id' => null]);
