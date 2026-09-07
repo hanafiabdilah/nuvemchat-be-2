@@ -202,6 +202,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
 
     Route::middleware('feature:' . Feature::Chat->value)->group(function () {
         Route::get('/messages', [MessageController::class, 'index']);
+        // Message search runs here rather than over the client's own cache —
+        // see MessageController::search(). Throttled because it is wired to a
+        // text box: a debounce keeps the normal case to a few calls per phrase,
+        // and this bounds the abnormal one.
+        Route::get('/messages/search', [MessageController::class, 'search'])->middleware('throttle:90,1');
 
         Route::get('/conversations', [ConversationController::class, 'index']);
         Route::post('/conversations', [ConversationController::class, 'store']);
@@ -209,7 +214,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/conversations/{id}', [ConversationController::class, 'show']);
         Route::get('/conversations/{id}/variables', [ConversationController::class, 'variables']);
         Route::get('/conversations/{id}/participants', [ConversationController::class, 'participants']);
-        // Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages']);
+        // The thread's own history, paged. Commented out for as long as the
+        // client mirrored every message it could reach into IndexedDB; that is
+        // the read path being retired, and this is what replaces it.
+        Route::get('/conversations/{id}/messages', [ConversationController::class, 'messages'])->whereNumber('id');
         // Every outbound path is gated on the channel's session window: on
         // WhatsApp Official / TikTok a late message is refused here instead of
         // being stored and silently dropped by the platform.

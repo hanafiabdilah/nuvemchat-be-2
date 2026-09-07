@@ -87,15 +87,7 @@ class ConversationController extends Controller
         // the preview skips system notes, and `lastInfoMessage` draws the row
         // for a thread that has nothing but notes (a missed call opens one).
         // Left out, exactly those rows would lazy-load one at a time.
-        $messageRelations = [
-            'repliedMessage',
-            'reactions.contact',
-            'contact',
-            'sentByUser',
-            'sentByFlow',
-            'sentByAiHubAgent',
-            'conversation.connection',
-        ];
+        $messageRelations = MessageController::RELATIONS;
 
         // `contact.tags` alongside `tags`: two different sets on the same row.
         // The conversation's own tags describe this thread, the contact's
@@ -514,15 +506,56 @@ class ConversationController extends Controller
         return response()->json(['data' => $variables]);
     }
 
-    public function messages(int $id)
+    /**
+     * One thread's history, newest first, one page at a time.
+     *
+     * Until this was routed, the chat panel read threads out of IndexedDB and
+     * nothing else — filled by a background pass that walked the *entire*
+     * accessible message history into every agent's browser. That had two
+     * costs that were not worth what they bought: it is the reason a first
+     * login hammers this API for thousands of pages, and a thread the walk had
+     * not reached yet simply opened half-empty, with nothing on screen saying
+     * so.
+     *
+     * Cursor, not offset: the client walks backwards with `before` = the
+     * smallest id it holds, exactly like the two sync endpoints. The previous
+     * version of this method returned the whole thread in one response, which
+     * only moved the explosion — a group with 200k messages is one request
+     * either way.
+     *
+     * `visibleTo` and not `isAccessibleBy`: reading a thread is gated on
+     * connection access alone. isAccessibleBy governs acting *in* one, and the
+     * threads worth reading are often the unassigned ones sitting in a queue.
+     */
+    public function messages(Request $request, int $id)
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        $messages = $conversation->messages()
-            ->with(['contact', 'sentByUser', 'sentByFlow', 'sentByAiHubAgent'])
-            ->orderBy('created_at', 'DESC')->orderBy('id', 'DESC')->get();
+        $limit = (int) $request->input('limit', 50);
+        $limit = max(1, min($limit, 200));
+        $before = $request->input('before');
 
-        return MessageResource::collection($messages)->response();
+        $query = $conversation->messages()
+            ->with(MessageController::RELATIONS)
+            ->orderBy('id', 'DESC');
+
+        if ($before !== null && $before !== '') {
+            $query->where('id', '<', $before);
+        }
+
+        // One extra row to tell "that is the whole thread" from "there is more
+        // above" — without it the panel cannot know whether to keep offering
+        // to scroll further back.
+        $messages = $query->limit($limit + 1)->get();
+        $hasMore = $messages->count() > $limit;
+        $messages = $messages->take($limit);
+
+        return response()->json([
+            'data' => MessageResource::collection($messages),
+            'has_more' => $hasMore,
+            'next_before' => $hasMore ? $messages->last()?->id : null,
+            'server_time' => now()->toIso8601String(),
+        ]);
     }
 
     /**
