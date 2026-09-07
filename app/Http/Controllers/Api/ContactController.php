@@ -8,6 +8,7 @@ use App\Http\Resources\ContactResource;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Services\Contact\ContactService;
+use App\Services\Contact\ContactTags;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -23,11 +24,15 @@ class ContactController extends Controller
         $channels = array_filter((array) $request->query('channel', []));
         $addressType = $request->query('address_type');
         $optedOut = $request->query('opted_out');
+        $tags = array_filter((array) $request->query('tags', []));
 
         // Group contacts represent group chats, not people — keep them out of
         // the contact book (and out of the new-conversation picker).
         $contacts = Contact::where('tenant_id', $request->user()->tenant_id)
             ->where('is_group', false)
+            // Eager-loaded because ContactResource serializes tags on every
+            // row: without it a 50-contact page is 50 extra queries.
+            ->with('tags')
             ->when($search, function ($query, $search) {
                 // Grouped: without the closure the OR branches escape the
                 // tenant and is_group conditions and the search returns every
@@ -44,6 +49,12 @@ class ContactController extends Controller
             // Who has asked to be left out of campaigns. Nothing in the product
             // could list them before: the flag was writable in the edit form and
             // readable nowhere, so "who did we exclude" had no answer.
+            // Any of the selected tags, not all of them: the filter bar's other
+            // multi-selects widen a search, and a set of tags that narrows to
+            // nothing the moment you pick a second one reads like it is broken.
+            ->when($tags, function ($query, $tags) {
+                $query->whereHas('tags', fn ($q) => $q->whereIn('tags.id', $tags));
+            })
             ->when($optedOut !== null && $optedOut !== '', function ($query) use ($optedOut) {
                 filter_var($optedOut, FILTER_VALIDATE_BOOLEAN)
                     ? $query->whereNotNull('broadcast_opted_out_at')
@@ -131,6 +142,42 @@ class ContactController extends Controller
 
         return response()->json([
             'message' => 'Contact updated successfully',
+            'contact' => new ContactResource($contact),
+        ]);
+    }
+
+    /**
+     * Replace the tags carried by the person themselves.
+     *
+     * A sync, like the conversation endpoint it mirrors: whatever is sent
+     * becomes the set. Two differences from that one, both on purpose.
+     *
+     * There is no status gate. A conversation's tags may only be changed while
+     * it is Active, which is right for something that describes that thread —
+     * but these outlive every thread, and the moment somebody most wants to
+     * mark a customer "VIP" is often while reading a conversation that is
+     * already resolved.
+     *
+     * There is no assignee gate either. Conversation tags are gated on being
+     * the agent handling it; a contact belongs to the workspace, not to
+     * whoever happens to be answering them today, and the contact book already
+     * lets anyone with `contacts.update` rename them.
+     */
+    public function syncTags(Request $request, $id, ContactTags $contactTags)
+    {
+        $validated = $request->validate([
+            'tags' => ['present', 'array'],
+            'tags.*' => ['integer'],
+        ]);
+
+        $contact = Contact::where('id', $id)
+            ->where('tenant_id', $request->user()->tenant_id)
+            ->firstOrFail();
+
+        $contactTags->sync($contact, $validated['tags']);
+
+        return response()->json([
+            'message' => 'Contact tags updated',
             'contact' => new ContactResource($contact),
         ]);
     }

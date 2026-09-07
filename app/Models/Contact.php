@@ -84,6 +84,20 @@ class Contact extends Model
     }
 
     /**
+     * Tags that belong to the person, not to a thread.
+     *
+     * Drawn from the same `tags` table the conversation tags use, so a
+     * workspace has one vocabulary rather than two lists it has to choose
+     * between before it can choose a word. What differs is the lifetime: a
+     * conversation tag ends when the conversation is resolved, and this one
+     * follows the customer into every thread they ever open.
+     */
+    public function tags()
+    {
+        return $this->belongsToMany(Tag::class, 'contact_tags');
+    }
+
+    /**
      * A group whose inbound messages are dropped at ingest. The contact itself
      * keeps being maintained — name and photo still follow the channel — so
      * restoring it later brings back a group that is still correctly labelled.

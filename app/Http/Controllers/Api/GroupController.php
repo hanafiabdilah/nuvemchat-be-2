@@ -23,6 +23,7 @@ class GroupController extends Controller
     public function removed(): JsonResponse
     {
         $groups = Contact::where('tenant_id', Auth::user()->tenant_id)
+            ->with('tags')
             ->where('is_group', true)
             ->whereNotNull('group_removed_at')
             ->orderByDesc('group_removed_at')

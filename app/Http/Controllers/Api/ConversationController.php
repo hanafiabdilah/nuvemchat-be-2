@@ -97,7 +97,16 @@ class ConversationController extends Controller
             'conversation.connection',
         ];
 
-        $with = ['contact', 'tags', 'agent', 'flowState.currentNode'];
+        // `contact.tags` alongside `tags`: two different sets on the same row.
+        // The conversation's own tags describe this thread, the contact's
+        // describe the person and ride along on every thread they open — and
+        // ContactResource emits them either way, so leaving the load out here
+        // would turn one query into one per row.
+        //
+        // Not added to $messageRelations above, deliberately: MessageResource
+        // builds its sender and reaction payloads by hand rather than through
+        // ContactResource, so nothing there would ever read them.
+        $with = ['contact.tags', 'tags', 'agent', 'flowState.currentNode'];
 
         foreach (['lastMessage', 'lastInfoMessage'] as $message) {
             foreach ($messageRelations as $nested) {
@@ -462,6 +471,9 @@ class ConversationController extends Controller
         }
 
         $participants = $conversation->participants()
+            // ContactResource always serializes tags; without the load this is
+            // one query per member.
+            ->with('tags')
             ->orderBy('name')
             ->get();
 

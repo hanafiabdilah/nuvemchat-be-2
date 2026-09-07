@@ -33,6 +33,7 @@ use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\BusinessHours;
+use App\Services\Contact\ContactTags;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Live\LiveActivity;
 use App\Services\Message\MessageService;
@@ -784,7 +785,13 @@ class FlowExecutor
     }
 
     /**
-     * Execute a tagging node - add or remove tags from conversation
+     * Execute a tagging node — add or remove tags, on the conversation or on
+     * the person.
+     *
+     * `target` decides which, and its default is `conversation`: every node
+     * written before contact tags existed has no such key, and a flow that
+     * quietly started writing permanent labels on customers because the engine
+     * was upgraded would be a change nobody asked for.
      */
     protected function executeTaggingNode(FlowState $flowState, FlowNode $node): void
     {
@@ -794,6 +801,7 @@ class FlowExecutor
 
             $action = $data['action'] ?? 'add';
             $tagIds = $data['tags'] ?? [];
+            $target = ($data['target'] ?? 'conversation') === 'contact' ? 'contact' : 'conversation';
 
             if (empty($tagIds)) {
                 Log::warning('FlowExecutor: No tags provided for tagging node', [
@@ -806,11 +814,14 @@ class FlowExecutor
             Log::info('FlowExecutor: Executing tagging node', [
                 'node_id' => $node->id,
                 'action' => $action,
+                'target' => $target,
                 'tag_ids' => $tagIds,
                 'conversation_id' => $conversation->id,
             ]);
 
-            if ($action === 'add') {
+            if ($target === 'contact') {
+                $this->applyContactTags($conversation, $action, $tagIds);
+            } elseif ($action === 'add') {
                 // Add tags to conversation (sync will only add tags that don't exist)
                 $conversation->tags()->syncWithoutDetaching($tagIds);
 
@@ -840,6 +851,47 @@ class FlowExecutor
             // Continue flow even on error
             $this->moveToNextNode($flowState, $node);
         }
+    }
+
+    /**
+     * The `target: contact` half of the tagging node.
+     *
+     * Routed through ContactTags rather than `$contact->tags()` directly for
+     * the propagation: a tag written here has to reach the inbox rows of every
+     * agent watching, and every thread this person already has, which is a
+     * broadcast and a timestamp bump — neither of which a pivot write does.
+     *
+     * A conversation with no contact is not an error worth stopping a flow
+     * over. It happens (a thread whose contact row was merged away), and the
+     * honest response is to skip the node, not to strand the customer.
+     *
+     * @param  array<int, mixed>  $tagIds
+     */
+    private function applyContactTags(Conversation $conversation, string $action, array $tagIds): void
+    {
+        $contact = $conversation->contact;
+
+        if ($contact === null) {
+            Log::warning('FlowExecutor: Tagging node targets the contact, but the conversation has none', [
+                'conversation_id' => $conversation->id,
+            ]);
+
+            return;
+        }
+
+        $contactTags = new ContactTags;
+
+        if ($action === 'remove') {
+            $contactTags->remove($contact, $tagIds);
+        } else {
+            $contactTags->add($contact, $tagIds);
+        }
+
+        Log::info('FlowExecutor: Contact tags updated', [
+            'contact_id' => $contact->id,
+            'action' => $action,
+            'tag_ids' => $tagIds,
+        ]);
     }
 
     /**

@@ -280,6 +280,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/contacts', [ContactController::class, 'index']);
         Route::post('/contacts', [ContactController::class, 'store']);
         Route::put('/contacts/{id}', [ContactController::class, 'update'])->middleware('permission:contacts.update');
+        // Tags that stay with the person. Same tag vocabulary as
+        // /conversations/{id}/tags, different lifetime — see
+        // ContactController@syncTags.
+        Route::post('/contacts/{id}/tags', [ContactController::class, 'syncTags'])->middleware('permission:contacts.update');
 
         // Tag routes - protected by permissions
         Route::post('/tags', [TagController::class, 'store'])->middleware('permission:tags.create');
