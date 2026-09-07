@@ -7,6 +7,8 @@ use App\Enums\Broadcast\RecipientStatus;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
+use App\Exceptions\ChannelCapabilityException;
+use App\Exceptions\UpstreamServiceException;
 use App\Models\Broadcast;
 use App\Models\BroadcastRecipient;
 use App\Models\Contact;
@@ -17,6 +19,7 @@ use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Delivers a campaign to exactly one recipient, and opens the conversation it
@@ -51,10 +54,11 @@ class BroadcastSender
             Log::error('BroadcastSender: send failed', [
                 'broadcast_id' => $broadcast->id,
                 'recipient_id' => $recipient->id,
+                'exception' => $th::class,
                 'error' => $th->getMessage(),
             ]);
 
-            return $this->finish($recipient, RecipientStatus::Failed, $th->getMessage());
+            return $this->finish($recipient, RecipientStatus::Failed, $this->failureReason($th));
         }
     }
 
@@ -247,6 +251,29 @@ class BroadcastSender
         }
 
         broadcast(new ConversationUpdated($conversation->load('contact')));
+    }
+
+    /**
+     * What goes in the recipient row's `error` column — which is a screen, not
+     * a log: the campaign detail page prints it next to the person's number.
+     *
+     * MessageService has already turned a channel refusal into our own words,
+     * so those pass through with the specificity that makes the row useful
+     * ("a janela de 24 horas fechou" tells the operator to switch to a
+     * template). Anything else reaching here is unclassified, and a Guzzle
+     * string in a list of 400 recipients is noise nobody can act on.
+     */
+    private function failureReason(\Throwable $th): string
+    {
+        if ($th instanceof UpstreamServiceException || $th instanceof ChannelCapabilityException) {
+            return $th->getMessage();
+        }
+
+        if ($th instanceof ValidationException) {
+            return (string) ($th->validator->errors()->first() ?: 'Dados inválidos para este destinatário.');
+        }
+
+        return 'Não foi possível enviar para este destinatário.';
     }
 
     private function finish(BroadcastRecipient $recipient, RecipientStatus $status, ?string $error): RecipientStatus

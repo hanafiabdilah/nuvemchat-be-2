@@ -41,11 +41,19 @@ class ApiwayPartnerException extends Exception
         'confirmation_required',
     ];
 
+    /**
+     * @param  string  $message  Ours, safe to show a tenant — see
+     *         ApiwayPartnerClient::decode(), which translates before throwing.
+     * @param  string|null  $rawMessage  ProxyBR's own sentence. For logs and
+     *         for the Back Office, which is where an operator diagnoses this;
+     *         never for a tenant.
+     */
     public function __construct(
         string $message,
         protected readonly ?string $errorCode = null,
         protected readonly int $httpStatus = 500,
         ?\Throwable $previous = null,
+        protected readonly ?string $rawMessage = null,
     ) {
         parent::__construct($message, 0, $previous);
     }
@@ -53,6 +61,15 @@ class ApiwayPartnerException extends Exception
     public function getErrorCode(): ?string
     {
         return $this->errorCode;
+    }
+
+    /**
+     * What ProxyBR actually said, falling back to our copy when the partner
+     * sent nothing quotable.
+     */
+    public function getRawMessage(): string
+    {
+        return $this->rawMessage ?: $this->getMessage();
     }
 
     public function getHttpStatus(): int

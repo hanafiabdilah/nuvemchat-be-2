@@ -14,7 +14,10 @@ use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\TikTok\TikTokAuthClient;
+use App\Exceptions\UserFacingException;
 use App\Services\Connection\WhatsAppTokenValidator;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -164,7 +167,11 @@ class ConnectionController extends Controller
                 'trace' => $th->getTraceAsString(),
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Failed to connect Instagram account: ' . $th->getMessage()));
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode(UpstreamError::messageFrom(
+                UpstreamProvider::Meta,
+                $th,
+                ['operation' => 'instagram.oauth_callback'],
+            )));
         }
     }
 
@@ -237,7 +244,11 @@ class ConnectionController extends Controller
                 'trace' => $th->getTraceAsString(),
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Failed to connect TikTok account: ' . $th->getMessage()));
+            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode(UpstreamError::messageFrom(
+                UpstreamProvider::TikTok,
+                $th,
+                ['operation' => 'tiktok.oauth_callback'],
+            )));
         }
     }
 
@@ -614,9 +625,17 @@ class ConnectionController extends Controller
                 'error' => $th->getMessage(),
             ]);
 
+            // Whatever Graph said is in the log above. The popup that reaches
+            // this point shows the message to a business owner mid-onboarding,
+            // where an OAuth code reads as "something is broken with my
+            // account" rather than "try again".
             return response()->json([
                 'status' => 'error',
-                'message' => 'Failed to connect account: ' . $th->getMessage(),
+                'message' => UpstreamError::messageFrom(
+                    UpstreamProvider::Meta,
+                    $th,
+                    ['operation' => 'whatsapp.oauth_callback'],
+                ),
             ], 500);
         }
     }
@@ -746,7 +765,10 @@ class ConnectionController extends Controller
             // which reads like our bug; named here, it is a two-minute fix in
             // the other provider's WhatsApp Manager.
             if ($isMigration && $isPinEnabled && !$pin) {
-                throw new \Exception(
+                // UserFacingException: this sentence is the entire value of the
+                // pre-check, and the callback's catch-all replaces anything it
+                // cannot recognise as ours.
+                throw new UserFacingException(
                     'Two-step verification is still enabled on this number. '
                     . 'Disable it in your current provider\'s WhatsApp Manager (Settings → Two-step verification), '
                     . 'then run the migration again.'
@@ -900,7 +922,11 @@ class ConnectionController extends Controller
                 'trace' => $th->getTraceAsString(),
             ]);
 
-            return redirect($resultUrl . '?status=error&message=' . urlencode('Failed to connect Facebook Page: ' . $th->getMessage()));
+            return redirect($resultUrl . '?status=error&message=' . urlencode(UpstreamError::messageFrom(
+                UpstreamProvider::Meta,
+                $th,
+                ['operation' => 'messenger.oauth_callback'],
+            )));
         }
     }
 
@@ -1233,7 +1259,10 @@ class ConnectionController extends Controller
         ]);
 
         if ($isMigration && $hint = self::migrationRegisterHint($code)) {
-            throw new \Exception($hint);
+            // UserFacingException, not a bare one: these hints are the whole
+            // point of the branch, and the callback's catch-all translates
+            // anything it cannot recognise as ours.
+            throw new UserFacingException($hint);
         }
 
         throw new \Exception('Failed to register phone number: ' . ($message ?: 'Unknown error') . " (code {$code}, subcode {$subcode})");

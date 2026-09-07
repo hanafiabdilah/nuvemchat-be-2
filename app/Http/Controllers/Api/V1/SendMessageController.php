@@ -2,12 +2,14 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Exceptions\ChannelCapabilityException;
+use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Models\Connection;
 use App\Services\V1\SendMessage\SendMessageService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
-use Telegram\Bot\Exceptions\TelegramSDKException;
 
 class SendMessageController extends Controller
 {
@@ -27,13 +29,23 @@ class SendMessageController extends Controller
             ], 201);
         } catch(ValidationException $th){
             throw $th;
-        } catch(TelegramSDKException $th){
-            return response()->json([
-                'message' => 'Failed to send Telegram message: ' . $th->getMessage(),
-            ], 500);
+        } catch (UpstreamServiceException $th) {
+            // SendMessageService already translated whatever the channel said —
+            // a Telegram SDK exception ("bot was blocked by the user"), Meta's
+            // OAuth codes, a Discord refusal — and logged the original with a
+            // reference.
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (\Throwable $th) {
+            Log::error('V1 send message failed', [
+                'connection_id' => $connection->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => 'Failed to send message',
+                'message' => 'Não foi possível enviar a mensagem. Tente novamente em instantes.',
             ], 500);
         }
     }

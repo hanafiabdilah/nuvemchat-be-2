@@ -12,7 +12,9 @@ use App\Events\ConversationTakenOver;
 use App\Events\ConversationTransferred;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
+use App\Exceptions\ChannelCapabilityException;
 use App\Exceptions\ConnectionException;
+use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ContactResource;
 use App\Http\Resources\ConversationResource;
@@ -562,9 +564,19 @@ class ConversationController extends Controller
             ]);
         } catch (ValidationException $th) {
             throw $th;
+        } catch (UpstreamServiceException $th) {
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (\Throwable $th) {
+            Log::error('ConversationController: failed to send interactive message', [
+                'conversation_id' => $conversation->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => 'Failed to send interactive message: '.$th->getMessage(),
+                'message' => 'Não foi possível enviar a mensagem com botões. Tente novamente em instantes.',
             ], 500);
         }
     }
@@ -711,6 +723,11 @@ class ConversationController extends Controller
             ]);
         } catch (ValidationException $th) {
             throw $th;
+        } catch (UpstreamServiceException $th) {
+            // MessageService translated it; this only picks the status it chose.
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (ConnectionException $th) {
             $status = $th->getHttpStatusCode();
 
@@ -722,8 +739,14 @@ class ConversationController extends Controller
                 'message' => $th->getMessage(),
             ], $status);
         } catch (\Throwable $th) {
+            Log::error('ConversationController: failed to send message', [
+                'conversation_id' => $conversation->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => 'Failed to send message',
+                'message' => 'Não foi possível enviar a mensagem. Tente novamente em instantes.',
             ], 500);
         }
     }
@@ -768,9 +791,20 @@ class ConversationController extends Controller
             ]);
         } catch (ValidationException $th) {
             throw $th;
+        } catch (UpstreamServiceException $th) {
+            // Already our own words, already logged with a reference.
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (\Throwable $th) {
+            Log::error('ConversationController: failed to send image', [
+                'conversation_id' => $conversation->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => 'Failed to send image',
+                'message' => 'Não foi possível enviar a imagem. Tente novamente em instantes.',
             ], 500);
         }
     }
@@ -815,9 +849,20 @@ class ConversationController extends Controller
             ]);
         } catch (ValidationException $th) {
             throw $th;
+        } catch (UpstreamServiceException $th) {
+            // Already our own words, already logged with a reference.
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (\Throwable $th) {
+            Log::error('ConversationController: failed to send audio', [
+                'conversation_id' => $conversation->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => 'Failed to send audio',
+                'message' => 'Não foi possível enviar o áudio. Tente novamente em instantes.',
             ], 500);
         }
     }
@@ -862,9 +907,20 @@ class ConversationController extends Controller
             ]);
         } catch (ValidationException $th) {
             throw $th;
+        } catch (UpstreamServiceException $th) {
+            // Already our own words, already logged with a reference.
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (\Throwable $th) {
+            Log::error('ConversationController: failed to send video', [
+                'conversation_id' => $conversation->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => 'Failed to send video',
+                'message' => 'Não foi possível enviar o vídeo. Tente novamente em instantes.',
             ], 500);
         }
     }
@@ -909,9 +965,20 @@ class ConversationController extends Controller
             ]);
         } catch (ValidationException $th) {
             throw $th;
+        } catch (UpstreamServiceException $th) {
+            // Already our own words, already logged with a reference.
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (\Throwable $th) {
+            Log::error('ConversationController: failed to send document', [
+                'conversation_id' => $conversation->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => 'Failed to send document',
+                'message' => 'Não foi possível enviar o documento. Tente novamente em instantes.',
             ], 500);
         }
     }
@@ -1455,9 +1522,22 @@ class ConversationController extends Controller
             ]);
         } catch (ValidationException $th) {
             throw $th;
+        } catch (UpstreamServiceException $th) {
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            // "O Instagram não permite editar mensagens já enviadas." — final,
+            // so the composer should stop offering the button, not retry.
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (\Throwable $th) {
+            Log::error('ConversationController: failed to edit message', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => 'Failed to edit message',
+                'message' => 'Não foi possível editar a mensagem. Tente novamente em instantes.',
             ], 500);
         }
     }
@@ -1495,9 +1575,20 @@ class ConversationController extends Controller
             return response()->json([
                 'data' => new MessageResource($message),
             ]);
+        } catch (UpstreamServiceException $th) {
+            return $th->toResponse();
+        } catch (ChannelCapabilityException $th) {
+            return response()->json(['message' => $th->getMessage()], 422);
         } catch (\Throwable $th) {
+            Log::error('ConversationController: failed to delete message', [
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
             return response()->json([
-                'message' => $th->getMessage(),
+                'message' => 'Não foi possível apagar a mensagem. Tente novamente em instantes.',
             ], 500);
         }
     }

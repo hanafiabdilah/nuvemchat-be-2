@@ -22,8 +22,10 @@ return Application::configure(basePath: dirname(__DIR__))
             // Widget routes are called cross-origin from third-party sites.
             // No sessions, no cookies, no CSRF — just thin HTTP + CORS (handled
             // globally via config/cors.php).
-            \Illuminate\Support\Facades\Route::middleware(\Illuminate\Routing\Middleware\SubstituteBindings::class)
-                ->group(__DIR__.'/../routes/widget.php');
+            \Illuminate\Support\Facades\Route::middleware([
+                \Illuminate\Routing\Middleware\SubstituteBindings::class,
+                \App\Http\Middleware\SanitizeUpstreamErrors::class,
+            ])->group(__DIR__.'/../routes/widget.php');
         },
     )
     // Channel authorization runs on the API stack with the Sanctum guard, so
@@ -40,6 +42,14 @@ return Application::configure(basePath: dirname(__DIR__))
             HandleAppearance::class,
             HandleInertiaRequests::class,
             AddLinkHeadersForPreloadedAssets::class,
+        ]);
+
+        // Safety net for upstream wording that escapes an un-translated catch
+        // block. The call sites do the real work (App\Support\Errors\
+        // UpstreamError); this is what keeps the guarantee true after the next
+        // integration is added. Exempts api/admin/* — see the middleware.
+        $middleware->api(append: [
+            \App\Http\Middleware\SanitizeUpstreamErrors::class,
         ]);
 
         $middleware->validateCsrfTokens([
@@ -63,20 +73,35 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        // Meta's refusals are worth passing through verbatim — "The submitted
-        // image is not a valid JPEG" tells the user exactly what to fix, and
-        // nothing we could write in its place would be as useful. The `code`
-        // separates the one failure the UI can offer a remedy for (the account
-        // was connected before publishing existed and needs re-authorizing)
-        // from the ones it can only report.
+        // Meta's refusals used to be passed through verbatim, on the grounds
+        // that "The submitted image is not a valid JPEG" says exactly what to
+        // fix. Most of them do not: the same field also carries OAuth codes,
+        // fbtrace ids and internal object names, all of it written for whoever
+        // integrates with Graph rather than for the person who just picked a
+        // photo. So it is translated like every other upstream — the log line
+        // and the `ref` keep the original.
+        //
+        // The permission case keeps its own code: it is the one failure the UI
+        // can offer a remedy for (re-authorize the account).
         $exceptions->render(function (\App\Exceptions\InstagramApiException $e, \Illuminate\Http\Request $request) {
             if (! $request->expectsJson()) {
                 return null;
             }
 
-            return response()->json([
-                'message' => $e->getMessage(),
-                'code' => $e->isPermissionError() ? 'instagram_permission_required' : 'instagram_error',
-            ], $e->httpStatus());
+            if ($e->isPermissionError()) {
+                return response()->json([
+                    'message' => 'A conta do Instagram conectada não tem as permissões necessárias para esta ação. '
+                        . 'Reconecte a conta concedendo todas as permissões pedidas.',
+                    'code' => 'instagram_permission_required',
+                ], $e->httpStatus());
+            }
+
+            return \App\Support\Errors\UpstreamError::response(
+                \App\Support\Errors\UpstreamProvider::Meta,
+                $e->getMessage(),
+                upstreamCode: $e->metaCode(),
+                status: $e->httpStatus(),
+                context: ['meta_subcode' => $e->metaSubcode(), 'route' => $request->path()],
+            );
         });
     })->create();

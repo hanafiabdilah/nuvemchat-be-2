@@ -2,20 +2,29 @@
 
 namespace App\Services\Message;
 
+use App\Exceptions\ChannelCapabilityException;
+use App\Exceptions\ConnectionException;
+use App\Exceptions\UpstreamServiceException;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class MessageService
 {
     public function sendMessage(Conversation $conversation, array $data): ?Message
     {
-        $handler = MessageFactory::make($conversation->connection->channel, $data);
-        return $handler->handleSendMessage($conversation, $data);
+        return $this->guard($conversation, 'send a message', function () use ($conversation, $data) {
+            $handler = MessageFactory::make($conversation->connection->channel, $data);
+
+            return $handler->handleSendMessage($conversation, $data);
+        });
     }
 
     /**
@@ -25,24 +34,28 @@ class MessageService
      */
     public function sendTemplate(Conversation $conversation, array $data): ?Message
     {
-        $handler = MessageFactory::make($conversation->connection->channel, $data);
+        return $this->guard($conversation, 'send a template', function () use ($conversation, $data) {
+            $handler = MessageFactory::make($conversation->connection->channel, $data);
 
-        if (!$handler instanceof WhatsappOfficialHandler) {
-            throw new \RuntimeException('Message templates are only supported on WhatsApp Official connections');
-        }
+            if (!$handler instanceof WhatsappOfficialHandler) {
+                throw new ChannelCapabilityException('Templates só podem ser enviados em conexões WhatsApp Oficial.');
+            }
 
-        return $handler->handleSendTemplate($conversation, $data);
+            return $handler->handleSendTemplate($conversation, $data);
+        });
     }
 
     public function sendInteractive(Conversation $conversation, array $data): ?Message
     {
-        $handler = MessageFactory::make($conversation->connection->channel, $data);
+        return $this->guard($conversation, 'send an interactive message', function () use ($conversation, $data) {
+            $handler = MessageFactory::make($conversation->connection->channel, $data);
 
-        if (!$handler instanceof WhatsappOfficialHandler) {
-            throw new \RuntimeException('Interactive messages are only supported on WhatsApp Official connections');
-        }
+            if (!$handler instanceof WhatsappOfficialHandler) {
+                throw new ChannelCapabilityException('Mensagens com botões só podem ser enviadas em conexões WhatsApp Oficial.');
+            }
 
-        return $handler->handleSendInteractive($conversation, $data);
+            return $handler->handleSendInteractive($conversation, $data);
+        });
     }
 
     /**
@@ -110,37 +123,103 @@ class MessageService
 
     public function sendImage(Conversation $conversation, array $data): ?Message
     {
-        $handler = MessageFactory::make($conversation->connection->channel, $data);
-        return $handler->handleSendImage($conversation, $data);
+        return $this->guard($conversation, 'send an image', function () use ($conversation, $data) {
+            $handler = MessageFactory::make($conversation->connection->channel, $data);
+
+            return $handler->handleSendImage($conversation, $data);
+        });
     }
 
     public function sendAudio(Conversation $conversation, array $data): ?Message
     {
-        $handler = MessageFactory::make($conversation->connection->channel, $data);
-        return $handler->handleSendAudio($conversation, $data);
+        return $this->guard($conversation, 'send audio', function () use ($conversation, $data) {
+            $handler = MessageFactory::make($conversation->connection->channel, $data);
+
+            return $handler->handleSendAudio($conversation, $data);
+        });
     }
 
     public function sendVideo(Conversation $conversation, array $data): ?Message
     {
-        $handler = MessageFactory::make($conversation->connection->channel, $data);
-        return $handler->handleSendVideo($conversation, $data);
+        return $this->guard($conversation, 'send a video', function () use ($conversation, $data) {
+            $handler = MessageFactory::make($conversation->connection->channel, $data);
+
+            return $handler->handleSendVideo($conversation, $data);
+        });
     }
 
     public function sendDocument(Conversation $conversation, array $data): ?Message
     {
-        $handler = MessageFactory::make($conversation->connection->channel, $data);
-        return $handler->handleSendDocument($conversation, $data);
+        return $this->guard($conversation, 'send a document', function () use ($conversation, $data) {
+            $handler = MessageFactory::make($conversation->connection->channel, $data);
+
+            return $handler->handleSendDocument($conversation, $data);
+        });
     }
 
     public function editMessage(Message $message, array $data): ?Message
     {
-        $handler = MessageFactory::make($message->conversation->connection->channel, $data);
-        return $handler->handleEditMessage($message, $data);
+        return $this->guard($message->conversation, 'edit a message', function () use ($message, $data) {
+            $handler = MessageFactory::make($message->conversation->connection->channel, $data);
+
+            return $handler->handleEditMessage($message, $data);
+        });
     }
 
     public function deleteMessage(Message $message): bool
     {
-        $handler = MessageFactory::make($message->conversation->connection->channel, []);
-        return $handler->handleDeleteMessage($message);
+        return (bool) $this->guard($message->conversation, 'delete a message', function () use ($message) {
+            $handler = MessageFactory::make($message->conversation->connection->channel, []);
+
+            return $handler->handleDeleteMessage($message);
+        });
+    }
+
+    /**
+     * The single door every outbound send goes through — and therefore the
+     * single place a channel's own words are turned into ours.
+     *
+     * The handlers below build their exception messages out of whatever the
+     * channel answered: `$responseArray['error']['message']`, a Guzzle string,
+     * a Go error from the API Way core. Those used to travel unchanged into the
+     * agent's toast and into the `error` column of a failed campaign row, where
+     * "(#131047) Re-engagement message outside the allowed window" is read by
+     * someone who has never heard of a re-engagement message.
+     *
+     * Three kinds of failure leave here unchanged, because each is already ours
+     * and each says more than a translation could:
+     *
+     *  - ValidationException — we rejected the request before anyone was called.
+     *  - ChannelCapabilityException — a rule of the platform ("Instagram não
+     *    permite editar"), specific and final; retrying is pointless and the
+     *    agent should be told so.
+     *  - ConnectionException — raised by the channel classes, which already
+     *    phrase for the person who has to act (mailbox credentials, an instance
+     *    that is not paired).
+     *
+     * @template T
+     * @param  callable(): T  $send
+     * @return T
+     */
+    private function guard(Conversation $conversation, string $action, callable $send)
+    {
+        try {
+            return $send();
+        } catch (ValidationException|ChannelCapabilityException|ConnectionException|UpstreamServiceException $th) {
+            throw $th;
+        } catch (\Throwable $th) {
+            throw UpstreamError::exception(
+                UpstreamProvider::forChannel($conversation->connection->channel),
+                $th->getMessage(),
+                context: [
+                    'conversation_id' => $conversation->id,
+                    'connection_id' => $conversation->connection_id,
+                    'channel' => $conversation->connection->channel->value,
+                    'action' => $action,
+                    'exception' => $th::class,
+                ],
+                previous: $th,
+            );
+        }
     }
 }

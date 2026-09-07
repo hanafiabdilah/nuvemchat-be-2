@@ -39,10 +39,15 @@ class AdminApiwayController extends Controller
             // that the token is wrong, and its bare "Unauthenticated." read
             // like the session had expired. Anything upstream refuses is a
             // 502 here: nothing the caller did caused it.
+            // ⚠️ getRawMessage(), not getMessage(): everywhere else the
+            // partner's own words are replaced with copy a tenant can act on,
+            // but this button exists so a platform operator can see exactly
+            // what ProxyBR said. Translating here would leave the one person
+            // who can fix the token with nothing to go on.
             return response()->json([
                 'message' => $rejectedUs
-                    ? "ProxyBR rejected our partner token: {$e->getMessage()}"
-                    : $e->getMessage(),
+                    ? "ProxyBR rejected our partner token: {$e->getRawMessage()}"
+                    : $e->getRawMessage(),
                 'code' => $e->getErrorCode()
                     ?? ($rejectedUs ? 'apiway_unauthorized' : 'apiway_unavailable'),
                 'upstream_status' => $upstream,

@@ -2,6 +2,7 @@
 
 namespace App\Services\Message\Handlers;
 
+use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Conversation\Type as ConversationType;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
@@ -731,7 +732,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
     {
         // WhatsApp hanya support edit text message
         if ($message->message_type !== MessageType::Text) {
-            throw new Exception('Only text messages can be edited on WhatsApp');
+            throw new ChannelCapabilityException('No WhatsApp, apenas mensagens de texto podem ser editadas.');
         }
 
         validator($data, [

@@ -4,6 +4,8 @@ namespace App\Services\Connection\WhatsApp;
 
 use App\Models\Connection;
 use App\Services\Connection\Meta\GraphApi;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -293,13 +295,34 @@ class WhatsappNumberMigrationService
         return $this->wabaCredentials($connection)[1];
     }
 
-    /** Prefer our own wording; fall back to Meta's rather than inventing one. */
+    /**
+     * Our own wording when we have a hint for this code; otherwise a
+     * translation of Meta's, never Meta's itself.
+     *
+     * The fallback used to be `error.message` verbatim, on the grounds that a
+     * technical string beats a wrong guess. It does — but only for the reader
+     * it was written for. A business owner part-way through moving their number
+     * off another provider is not that reader, and "(#133005) Two-step
+     * verification PIN mismatch" reads as our bug at the exact moment they are
+     * deciding whether to trust us with a live number. The verbatim text is in
+     * the log line UpstreamError writes, under the `ref` returned with the
+     * error.
+     */
     private function fail(Response $response, ?string $hint): never
     {
-        $message = $hint
-            ?? $response->json('error.message')
-            ?? 'WhatsApp rejected the request.';
+        if ($hint !== null) {
+            throw new RuntimeException($hint, $response->status() ?: 400);
+        }
 
-        throw new RuntimeException($message, $response->status() ?: 400);
+        throw new RuntimeException(
+            UpstreamError::message(
+                UpstreamProvider::Meta,
+                $response->json('error.message'),
+                upstreamCode: (string) ($response->json('error.code') ?? ''),
+                status: $response->status() ?: 400,
+                context: ['operation' => 'number_migration'],
+            ),
+            $response->status() ?: 400,
+        );
     }
 }

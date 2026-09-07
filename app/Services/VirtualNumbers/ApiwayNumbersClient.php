@@ -3,6 +3,8 @@
 namespace App\Services\VirtualNumbers;
 
 use App\Exceptions\ApiwayNumbersException;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Client\ConnectionException as HttpConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
@@ -188,7 +190,18 @@ class ApiwayNumbersClient
             $status === 403 => [ApiwayNumbersException::SALES_DISABLED, 'A venda de números está desativada na conta API Way.'],
             $status === 404 => [ApiwayNumbersException::NOT_FOUND, 'Número não encontrado na conta API Way.'],
             $status === 422 && $cap !== null => [ApiwayNumbersException::CAP_REACHED, 'Não há números disponíveis no momento. Tente novamente em instantes.'],
-            $status === 422 => [ApiwayNumbersException::INVALID_REQUEST, $json['message'] ?? 'Dados inválidos para contratar o número.'],
+            // The portal's 422 text is written for whoever integrates with it
+            // ("app_id inválido", "ddd não habilitado"), and the tenant picked
+            // from a dropdown we built — so a field-level sentence of ours is
+            // both truer and more useful than theirs.
+            $status === 422 => [
+                ApiwayNumbersException::INVALID_REQUEST,
+                UpstreamError::message(
+                    UpstreamProvider::ApiwayNumbers,
+                    $json['message'] ?? null,
+                    status: 422,
+                ),
+            ],
             default => [ApiwayNumbersException::UPSTREAM_UNAVAILABLE, 'A API Way está indisponível no momento.'],
         };
 

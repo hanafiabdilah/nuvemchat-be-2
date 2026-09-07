@@ -101,7 +101,9 @@ test('one account failing still creates the template on the others', function ()
     $results = collect($response->json('data'));
     expect($results->firstWhere('connection_name', 'Sales')['status'])->toBe('created')
         ->and($results->firstWhere('connection_name', 'Billing')['status'])->toBe('failed')
-        ->and($results->firstWhere('connection_name', 'Billing')['message'])->toBe('Template name already exists');
+        // Meta's own sentence stays in the log; the row says what to do about it.
+        ->and($results->firstWhere('connection_name', 'Billing')['message'])
+            ->toBe('Já existe um template com esse nome nesta conta do WhatsApp. Escolha outro nome.');
 });
 
 test('every account failing is reported as a failure, not a success', function () {

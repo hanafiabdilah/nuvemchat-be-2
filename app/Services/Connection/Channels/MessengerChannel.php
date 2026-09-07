@@ -7,6 +7,8 @@ use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -233,7 +235,16 @@ class MessengerChannel implements ChannelInterface
                 'page_id' => $pageId,
                 'response' => $response->json(),
             ]);
-            throw new Exception('Failed to obtain the Page access token: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+            throw new ConnectionException(
+                UpstreamError::message(
+                    UpstreamProvider::Meta,
+                    $response->json('error.message'),
+                    upstreamCode: (string) ($response->json('error.code') ?? ''),
+                    status: $response->status(),
+                    context: ['operation' => 'messenger.page_token'],
+                ),
+                502,
+            );
         }
 
         return $response->json()['access_token'];
@@ -266,7 +277,16 @@ class MessengerChannel implements ChannelInterface
                 'response' => $response->json(),
             ]);
 
-            throw new Exception('Failed to subscribe to Messenger webhooks: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+            throw new ConnectionException(
+                UpstreamError::message(
+                    UpstreamProvider::Meta,
+                    $response->json('error.message'),
+                    upstreamCode: (string) ($response->json('error.code') ?? ''),
+                    status: $response->status(),
+                    context: ['operation' => 'messenger.subscribe'],
+                ),
+                502,
+            );
         }
     }
 }

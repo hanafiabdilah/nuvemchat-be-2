@@ -140,9 +140,9 @@ test('audio, video, document, edit and delete are rejected as unsupported', func
     $conversation = tiktokConversationWithInbound(tiktokSendConnection(), 1);
     $handler = new TikTokMessageHandler;
 
-    expect(fn () => $handler->handleSendAudio($conversation, []))->toThrow(Exception::class, 'only supports text and image')
-        ->and(fn () => $handler->handleSendVideo($conversation, []))->toThrow(Exception::class, 'only supports text and image')
-        ->and(fn () => $handler->handleSendDocument($conversation, []))->toThrow(Exception::class, 'only supports text and image');
+    expect(fn () => $handler->handleSendAudio($conversation, []))->toThrow(Exception::class, 'aceita apenas mensagens de texto e imagem')
+        ->and(fn () => $handler->handleSendVideo($conversation, []))->toThrow(Exception::class, 'aceita apenas mensagens de texto e imagem')
+        ->and(fn () => $handler->handleSendDocument($conversation, []))->toThrow(Exception::class, 'aceita apenas mensagens de texto e imagem');
 });
 
 test('the V1 API replies into an existing conversation and stores the message', function () {

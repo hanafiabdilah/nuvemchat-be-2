@@ -15,4 +15,20 @@ use Exception;
  */
 class AiHubObjectMissingException extends Exception
 {
+    /**
+     * If it reaches a request unrepaired, answer in words about the thing the
+     * customer was editing — never "the hub no longer has the object needed to
+     * update the agent", which is a sentence about our mirror and their id.
+     */
+    public function render(\Illuminate\Http\Request $request): ?\Illuminate\Http\JsonResponse
+    {
+        if (! $request->expectsJson()) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'Este item de IA não está mais disponível no serviço. Recarregue a página e tente novamente.',
+            'code' => 'ai_object_missing',
+        ], 422);
+    }
 }

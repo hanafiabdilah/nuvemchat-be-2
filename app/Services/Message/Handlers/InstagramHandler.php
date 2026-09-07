@@ -2,6 +2,7 @@
 
 namespace App\Services\Message\Handlers;
 
+use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
@@ -709,12 +710,12 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
 
     public function handleEditMessage(Message $message, array $data): ?Message
     {
-        throw new Exception('Message editing not implemented for Instagram API');
+        throw new ChannelCapabilityException('O Instagram não permite editar mensagens já enviadas.');
     }
 
     public function handleDeleteMessage(Message $message): bool
     {
-        throw new Exception('Message deletion not supported for Instagram API');
+        throw new ChannelCapabilityException('O Instagram não permite apagar mensagens já enviadas.');
     }
 
     /**

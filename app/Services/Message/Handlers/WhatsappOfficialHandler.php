@@ -2,6 +2,7 @@
 
 namespace App\Services\Message\Handlers;
 
+use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Connection;
@@ -555,12 +556,12 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
 
     public function handleEditMessage(Message $message, array $data): ?Message
     {
-        throw new Exception('Message editing not supported for WhatsApp Official API');
+        throw new ChannelCapabilityException('O WhatsApp Oficial não permite editar mensagens já enviadas.');
     }
 
     public function handleDeleteMessage(Message $message): bool
     {
-        throw new Exception('Message deletion not supported for WhatsApp Official API');
+        throw new ChannelCapabilityException('O WhatsApp Oficial não permite apagar mensagens já enviadas.');
     }
 
     /**

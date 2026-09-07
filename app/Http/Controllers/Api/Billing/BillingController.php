@@ -12,6 +12,8 @@ use App\Http\Resources\Billing\SubscriptionResource;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Services\Billing\BillingService;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -95,11 +97,18 @@ class BillingController extends Controller
                 'plan_id' => $plan->id,
             ]);
 
-            return response()->json([
-                'message' => 'Não foi possível processar o pagamento no provedor: '
-                    . ($body['message'] ?? $body['error'] ?? 'erro desconhecido'),
-                'provider_error' => $body,
-            ], 422);
+            // ⚠️ Neither the provider's sentence nor its body leaves here.
+            // MercadoPago answers in the vocabulary of an integrator
+            // ("collector_id", "invalid card_token_id"), and `provider_error`
+            // shipped the whole envelope — ids of ours included — to the
+            // browser. What the customer can act on is the category, which the
+            // dictionary derives from the same text.
+            return UpstreamError::response(
+                UpstreamProvider::MercadoPago,
+                is_array($body) ? ($body['message'] ?? $body['error'] ?? null) : null,
+                status: $e->response?->status() ?? 422,
+                context: ['plan_id' => $plan->id, 'operation' => 'subscribe'],
+            );
         } catch (\Throwable $e) {
             Log::error('Billing subscribe failed', ['error' => $e->getMessage(), 'plan_id' => $plan->id]);
 

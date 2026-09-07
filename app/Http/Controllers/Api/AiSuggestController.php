@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Enums\Conversation\Status;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
+use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
 use App\Services\AiSuggest\AiSuggestService;
@@ -71,14 +72,22 @@ class AiSuggestController extends Controller
                 'code' => 'credit_exhausted',
                 'balance_cents' => $th->balanceCents,
             ], 402);
+        } catch (UpstreamServiceException $th) {
+            // Already translated and logged with a reference by UpstreamError.
+            return $th->toResponse();
         } catch (\Throwable $th) {
+            // Whatever this is — a hub refusal, a broken credential, a timeout —
+            // the agent asked for a draft and did not get one. That is the whole
+            // of what they can act on; the rest belongs in the log.
             Log::warning('AiSuggest: failed to generate suggestion', [
                 'conversation_id' => $conversation->id,
+                'exception' => $th::class,
                 'error' => $th->getMessage(),
             ]);
 
             return response()->json([
-                'message' => $th->getMessage(),
+                'message' => 'Não foi possível gerar a sugestão agora. Escreva a resposta ou tente novamente em instantes.',
+                'code' => 'ai_suggest_failed',
             ], 502);
         } finally {
             // Every exit clears it, including the two failures: an indicator

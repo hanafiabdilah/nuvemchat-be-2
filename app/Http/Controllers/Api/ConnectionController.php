@@ -510,12 +510,27 @@ class ConnectionController extends Controller
     }
 
     /**
-     * The service already phrases these for the person who has to act, so the
-     * message is passed through as-is. 422 rather than 500: every one of them
-     * is something the business fixes and retries, not an outage.
+     * WhatsappNumberMigrationService phrases its RuntimeExceptions for the
+     * person who has to act — its own hints first, a translation of Meta's
+     * refusal otherwise — so those pass through. 422 rather than 500: every one
+     * of them is something the business fixes and retries, not an outage.
+     *
+     * Anything else landing here is unclassified (a transport failure, a bug),
+     * and its text was written for a stack trace.
      */
     private function migrationError(\Throwable $th)
     {
+        if (! $th instanceof \RuntimeException) {
+            Log::error('Number migration failed', [
+                'exception' => $th::class,
+                'error' => $th->getMessage(),
+            ]);
+
+            return response()->json([
+                'message' => 'Não foi possível concluir esta etapa da migração agora. Tente novamente em instantes.',
+            ], 502);
+        }
+
         return response()->json(['message' => $th->getMessage()], 422);
     }
 

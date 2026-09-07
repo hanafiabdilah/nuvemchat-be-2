@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\AiHub;
 
+use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\AiHubProviderCredentialResource;
 use App\Models\AiHubProviderCredential;
@@ -11,6 +12,7 @@ use App\Services\AiTokens\AiTokenPool;
 use App\Services\AiTokens\AiTokenRentalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -84,10 +86,23 @@ class TokenRentalController extends Controller
 
         try {
             $credential = $this->rentals->rent($tenant, $validated['provider']);
+        } catch (UpstreamServiceException $e) {
+            // Already translated and logged with a reference; re-wrapping it as
+            // a field error would drop both.
+            throw $e;
         } catch (\RuntimeException $e) {
             // The pool being empty is a stock problem, not a bug: a 422 the
-            // screen can print beats a 500 nobody can act on.
-            throw ValidationException::withMessages(['provider' => $e->getMessage()]);
+            // screen can print beats a 500 nobody can act on. Its wording is
+            // ours (AiTokenRentalService), never the hub's.
+            Log::warning('Token rental refused', [
+                'tenant_id' => $tenant->id,
+                'provider' => $validated['provider'],
+                'error' => $e->getMessage(),
+            ]);
+
+            throw ValidationException::withMessages([
+                'provider' => 'Não há tokens desta plataforma disponíveis para aluguel no momento. Tente novamente mais tarde.',
+            ]);
         }
 
         return response()->json([

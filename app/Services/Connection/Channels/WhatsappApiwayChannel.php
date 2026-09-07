@@ -10,6 +10,8 @@ use App\Models\Connection;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\ChannelInterface;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -316,9 +318,14 @@ class WhatsappApiwayChannel implements ChannelInterface
      * provisioned at ProxyBR — a QR will never appear no matter how many times
      * the button is pressed. Saying "not connected" to a business owner sends
      * them to check their phone and their wifi, which is the one place the
-     * problem is not. Anything unrecognised keeps the provider's own wording:
-     * a technical string beats a confident guess about a failure we have not
-     * seen before.
+     * problem is not.
+     *
+     * Anything unrecognised gets our vaguest honest sentence rather than the
+     * core's own wording. The core answers in the vocabulary of whoever runs
+     * it — a business owner staring at an empty QR box cannot act on
+     * "node_error" or on a Go error string, and printing one turns a five-word
+     * failure into a support ticket. The raw text is in the log line above and
+     * in the reference UpstreamError mints.
      */
     private function qrFailureMessage(mixed $body): string
     {
@@ -330,7 +337,12 @@ class WhatsappApiwayChannel implements ChannelInterface
                 . 'Verifique a assinatura desta instância ou troque a conexão para outra instância.';
         }
 
-        return $message ?: 'Não foi possível obter o QR Code da API Way.';
+        return UpstreamError::message(
+            UpstreamProvider::ApiwayCore,
+            $message,
+            upstreamCode: is_string($error) ? $error : null,
+            context: ['operation' => 'qr-code'],
+        );
     }
 
     private function checkInstanceStatus(Connection $connection): Connection
@@ -347,7 +359,16 @@ class WhatsappApiwayChannel implements ChannelInterface
 
         if ($status->failed()) {
             Log::error('WhatsApp API Way status request failed', ['connection' => $connection->id, 'response' => $statusJson, 'status' => $status->status()]);
-            throw new AppConnectionException($statusJson['message'] ?? 'Failed to connect to API Way', $status->status() ?: 500);
+            throw new AppConnectionException(
+                UpstreamError::message(
+                    UpstreamProvider::ApiwayCore,
+                    is_array($statusJson) ? ($statusJson['message'] ?? null) : null,
+                    upstreamCode: is_array($statusJson) && is_string($statusJson['error'] ?? null) ? $statusJson['error'] : null,
+                    status: $status->status(),
+                    context: ['connection_id' => $connection->id, 'operation' => 'status-instance'],
+                ),
+                $status->status() ?: 500,
+            );
         }
 
         // API Way wraps instance responses as

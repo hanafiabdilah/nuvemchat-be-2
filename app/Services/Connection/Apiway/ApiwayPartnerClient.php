@@ -4,6 +4,8 @@ namespace App\Services\Connection\Apiway;
 
 use App\Exceptions\ApiwayPartnerException;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Client\ConnectionException as HttpConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
@@ -105,8 +107,16 @@ class ApiwayPartnerClient
         $token = ApiwayConfig::partnerToken();
 
         if ($token === null) {
+            // Ours to fix, and named as such: a tenant told "ProxyBR partner
+            // token is not configured" learns the name of a vendor they cannot
+            // reach and a setting they cannot see.
             throw new ApiwayPartnerException(
-                'ProxyBR partner token is not configured.',
+                UpstreamError::message(
+                    UpstreamProvider::ApiwayPartner,
+                    'ProxyBR partner token is not configured.',
+                    upstreamCode: 'apiway_unconfigured',
+                    status: 503,
+                ),
                 errorCode: 'apiway_unconfigured',
                 httpStatus: 503,
             );
@@ -124,16 +134,36 @@ class ApiwayPartnerClient
         return ApiwayConfig::partnerBaseUrl().'/api/partner/v1/apiway'.$path;
     }
 
-    /** Decode + raise ApiwayPartnerException on the normalized {error, message} envelope. */
+    /**
+     * Decode + raise ApiwayPartnerException on the normalized {error, message}
+     * envelope.
+     *
+     * The partner's own sentence goes to the log and stays there: it is written
+     * for whoever operates ProxyBR ("platform_capacity_reached", "no enabled
+     * subnet capacity"), and the tenant reading it has neither the vocabulary
+     * nor the admin panel it refers to. What travels on the exception is our
+     * copy, keyed off the partner's error code — which is the reliable part of
+     * the envelope anyway.
+     */
     protected function decode(Response $response): array
     {
         $json = $response->json();
 
         if ($response->failed() || ! is_array($json)) {
+            $body = is_array($json) ? $json : [];
+            $code = $body['error'] ?? null;
+            $raw = $body['message'] ?? $response->body();
+
             throw new ApiwayPartnerException(
-                $json['message'] ?? 'ProxyBR partner API request failed.',
-                errorCode: $json['error'] ?? null,
+                UpstreamError::message(
+                    UpstreamProvider::ApiwayPartner,
+                    $raw,
+                    upstreamCode: $code,
+                    status: $response->status(),
+                ),
+                errorCode: $code,
                 httpStatus: $response->status(),
+                rawMessage: is_string($raw) ? $raw : null,
             );
         }
 

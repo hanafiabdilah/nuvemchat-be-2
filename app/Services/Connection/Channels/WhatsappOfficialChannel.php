@@ -7,6 +7,8 @@ use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -220,7 +222,16 @@ class WhatsappOfficialChannel implements ChannelInterface
                     'response' => $response->json(),
                 ]);
 
-                throw new Exception('Failed to subscribe to WhatsApp webhooks: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+                throw new ConnectionException(
+                    UpstreamError::message(
+                        UpstreamProvider::Meta,
+                        $response->json('error.message'),
+                        upstreamCode: (string) ($response->json('error.code') ?? ''),
+                        status: $response->status(),
+                        context: ['operation' => 'whatsapp.subscribe'],
+                    ),
+                    502,
+                );
             }
         } catch (\Throwable $th) {
             Log::error('Error in webhook subscription process', [

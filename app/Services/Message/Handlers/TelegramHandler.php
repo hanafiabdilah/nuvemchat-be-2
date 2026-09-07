@@ -2,6 +2,7 @@
 
 namespace App\Services\Message\Handlers;
 
+use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
@@ -467,7 +468,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
     {
         // Telegram hanya support edit text message
         if ($message->message_type !== MessageType::Text) {
-            throw new Exception('Only text messages can be edited on Telegram');
+            throw new ChannelCapabilityException('No Telegram, apenas mensagens de texto podem ser editadas.');
         }
 
         validator($data, [

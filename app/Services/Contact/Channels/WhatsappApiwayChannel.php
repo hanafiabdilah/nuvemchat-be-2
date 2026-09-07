@@ -6,6 +6,8 @@ use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Services\Contact\ContactChannelInterface;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
@@ -97,7 +99,13 @@ class WhatsappApiwayChannel implements ContactChannelInterface
                 ]);
 
                 throw new ConnectionException(
-                    $response->json('message') ?? 'Failed to verify phone number',
+                    UpstreamError::message(
+                        UpstreamProvider::ApiwayCore,
+                        $response->json('message'),
+                        upstreamCode: is_string($response->json('error')) ? $response->json('error') : null,
+                        status: $response->status(),
+                        context: ['connection_id' => $connection->id, 'operation' => 'phone-exists'],
+                    ),
                     $response->status()
                 );
             }
@@ -133,7 +141,9 @@ class WhatsappApiwayChannel implements ContactChannelInterface
                 'error' => $e->getMessage(),
             ]);
 
-            throw new ConnectionException('Failed to verify phone number: ' . $e->getMessage(), 500);
+            // The exception text here is transport noise (cURL, TLS, a Guzzle
+            // wrapper) — nothing a person adding a contact can act on.
+            throw new ConnectionException('Não foi possível verificar este número no WhatsApp agora. Tente novamente em instantes.', 500);
         }
     }
 }

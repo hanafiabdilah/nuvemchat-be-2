@@ -165,10 +165,15 @@ test('one refused recipient is recorded and the rest still go out', function () 
         ->where('status', RecipientStatus::Failed)
         ->first();
 
-    // Meta's own words, not a paraphrase — an operator has to be able to look
-    // the message up.
-    expect($failed->error)->toContain('not in allowed list')
-        ->and($failed->conversation_id)->toBeNull();
+    // Not Meta's words: this column is printed on the campaign page next to the
+    // recipient's number, and "Recipient phone number not in allowed list"
+    // reads as a fault of that number rather than of an account still in test
+    // mode. The verbatim text is in the log, under the reference UpstreamError
+    // minted for it.
+    expect($failed->error)
+        ->toContain('lista de destinatários permitidos')
+        ->not->toContain('allowed list');
+    expect($failed->conversation_id)->toBeNull();
 
     // And no empty thread left behind for the send that never landed.
     expect(Conversation::where('external_id', $failed->address)->count())->toBe(0);

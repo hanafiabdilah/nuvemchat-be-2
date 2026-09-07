@@ -2,6 +2,7 @@
 
 namespace App\Services\Message\Handlers;
 
+use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Exceptions\ConnectionException;
@@ -134,27 +135,27 @@ class TikTokHandler implements MessageHandlerInterface
 
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
-        throw new Exception('TikTok Business Messaging only supports text and image messages');
+        throw new ChannelCapabilityException('O TikTok aceita apenas mensagens de texto e imagem.');
     }
 
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
-        throw new Exception('TikTok Business Messaging only supports text and image messages');
+        throw new ChannelCapabilityException('O TikTok aceita apenas mensagens de texto e imagem.');
     }
 
     public function handleSendDocument(Conversation $conversation, array $data): ?Message
     {
-        throw new Exception('TikTok Business Messaging only supports text and image messages');
+        throw new ChannelCapabilityException('O TikTok aceita apenas mensagens de texto e imagem.');
     }
 
     public function handleEditMessage(Message $message, array $data): ?Message
     {
-        throw new Exception('Message editing not supported by TikTok Business Messaging');
+        throw new ChannelCapabilityException('O TikTok não permite editar mensagens já enviadas.');
     }
 
     public function handleDeleteMessage(Message $message): bool
     {
-        throw new Exception('Message deletion not supported by TikTok Business Messaging');
+        throw new ChannelCapabilityException('O TikTok não permite apagar mensagens já enviadas.');
     }
 
     /**

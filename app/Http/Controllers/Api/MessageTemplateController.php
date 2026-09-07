@@ -15,6 +15,8 @@ use App\Events\MessageReceived;
 use App\Services\Connection\WhatsApp\WhatsappTemplateService;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Message\MessageService;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -76,11 +78,23 @@ class MessageTemplateController extends Controller
                 ];
                 $created++;
             } catch (\Throwable $e) {
+                // One row per WABA, and this string is printed next to the
+                // number it belongs to. Meta's own text ("(#132000) Number of
+                // parameters does not match") names a shape the person never
+                // saw — the builder above is what they filled in.
                 $results[] = [
                     'connection_id' => $connection->id,
                     'connection_name' => $connection->name,
                     'status' => 'failed',
-                    'message' => $e->getMessage(),
+                    'message' => UpstreamError::message(
+                        UpstreamProvider::Meta,
+                        $e->getMessage(),
+                        context: [
+                            'connection_id' => $connection->id,
+                            'operation' => 'template.create',
+                            'exception' => $e::class,
+                        ],
+                    ),
                 ];
             }
         }

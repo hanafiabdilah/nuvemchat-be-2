@@ -18,13 +18,13 @@ use App\Models\AiHubTrainingExample;
 use App\Models\Conversation;
 use App\Services\Credits\CreditService;
 use App\Services\Billing\SubscriptionGate;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Carbon\Carbon;
-use Exception;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use Illuminate\Validation\ValidationException;
 
 /**
  * Workspace-scoped operations against the AI Agent Hub.
@@ -936,7 +936,15 @@ class AiAgentHubTenantService
             $error = self::runError($data);
 
             if (! $carriesExtras) {
-                throw new \RuntimeException("AI hub run failed: {$error}");
+                // `$error` is whichever stage threw inside the hub — an
+                // ElevenLabs permission string, a missing voice id. Useful in
+                // the log, meaningless to whoever is waiting for a reply.
+                throw UpstreamError::exception(
+                    UpstreamProvider::AiHub,
+                    $error,
+                    upstreamCode: 'run_failed',
+                    context: $context,
+                );
             }
 
             Log::warning('AiAgentHubTenantService: the hub failed the run, retrying without audio', array_merge($context, [
@@ -953,7 +961,12 @@ class AiAgentHubTenantService
             if (self::runFailed($data)) {
                 // Twice, and the second time with nothing optional left to
                 // blame: the caller hands the conversation to a human.
-                throw new \RuntimeException('AI hub run failed: ' . self::runError($data));
+                throw UpstreamError::exception(
+                    UpstreamProvider::AiHub,
+                    self::runError($data),
+                    upstreamCode: 'run_failed',
+                    context: $context,
+                );
             }
         }
 
@@ -1547,8 +1560,15 @@ class AiAgentHubTenantService
         $token = AiAgentHubConfig::tenantToken();
 
         if (!$token) {
-            throw new Exception(
-                'No AI Agent Hub tenant token configured. Set it in Back Office → Integrations → AI Hub.'
+            // Ours to fix, and the tenant cannot open the screen this used to
+            // name — so it reads as an outage on our side, which it is. The
+            // instruction stays where whoever can act on it will see it.
+            Log::error('No AI Agent Hub tenant token configured. Set it in Back Office → Integrations → AI Hub.');
+
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                'AI hub tenant token is not configured.',
+                status: 503,
             );
         }
 
@@ -1638,7 +1658,16 @@ class AiAgentHubTenantService
                 'body' => $response->body(),
             ]));
 
-            throw ValidationException::withMessages(['message' => self::hubMessage($response, 'Bad Request')]);
+            // The hub's own sentence stays in the log line above. What the
+            // customer used to get — "provider must be one of the following
+            // values: OPENAI, ANTHROPIC" — names a field they never filled in,
+            // in a service they do not know they are using.
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                self::hubMessage($response, 'Bad Request'),
+                status: 400,
+                context: array_merge($context, ['action' => $action]),
+            );
         }elseif($response->status() === 404){
             // Not an error we report — one we repair. See
             // AiHubObjectMissingException and the `repush*` methods.
@@ -1654,7 +1683,12 @@ class AiAgentHubTenantService
                 'body' => $response->body(),
             ]));
 
-            throw new Exception(self::hubMessage($response, 'Conflict'), 409);
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                self::hubMessage($response, 'Conflict'),
+                status: 409,
+                context: array_merge($context, ['action' => $action]),
+            );
         }
 
         Log::error("AiAgentHubTenantService: Failed to {$action}", array_merge($context, [
@@ -1662,6 +1696,11 @@ class AiAgentHubTenantService
             'body' => $response->body(),
         ]));
 
-        throw new Exception("Failed to {$action}");
+        throw UpstreamError::exception(
+            UpstreamProvider::AiHub,
+            self::hubMessage($response, "Failed to {$action}"),
+            status: $response->status(),
+            context: array_merge($context, ['action' => $action]),
+        );
     }
 }

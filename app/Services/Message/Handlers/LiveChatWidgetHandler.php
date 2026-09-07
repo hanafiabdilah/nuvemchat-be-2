@@ -2,6 +2,7 @@
 
 namespace App\Services\Message\Handlers;
 
+use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\Widget\WidgetMessageReceived;
@@ -179,7 +180,7 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
     public function handleEditMessage(Message $message, array $data): ?Message
     {
         if ($message->message_type !== MessageType::Text) {
-            throw new Exception('Only text messages can be edited on Live Chat Widget');
+            throw new ChannelCapabilityException('No chat do site, apenas mensagens de texto podem ser editadas.');
         }
 
         validator($data, [
