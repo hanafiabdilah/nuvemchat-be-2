@@ -18,6 +18,10 @@ class UserResource extends JsonResource
             'id' => $this->id,
             'name' => $this->name,
             'email' => $this->email,
+            // A signed link to the stored photo, or null — never the path. The
+            // dashboard draws initials when this is absent, so "no photo" and
+            // "photo we cannot serve" deliberately look the same from here.
+            'avatar' => $this->avatar_url,
             'tenant_id' => $this->tenant_id,
             'whatsapp_number' => $this->whatsapp_number,
             'whatsapp_verified' => $this->whatsapp_verified_at !== null,

@@ -6,6 +6,9 @@ use App\Events\ConnectionAccessUpdated;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Http\Resources\UserResource;
+use App\Models\User;
+use App\Services\User\AvatarStorage;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class AgentController extends Controller
@@ -88,7 +91,77 @@ class AgentController extends Controller
         ], 200);
     }
 
-    public function destroy(int $id)
+    /**
+     * Set an agent's photo, on behalf of whoever manages the roster.
+     *
+     * Separate from update() rather than another field on it: this is a
+     * multipart upload, and it is reachable with `agents.update-avatar` alone —
+     * putting a face on a colleague's row should not require the permission
+     * that changes the e-mail and password they sign in with.
+     */
+    public function updateAvatar(Request $request, int $id, AvatarStorage $avatars)
+    {
+        $user = $this->manageableAgent($id);
+
+        if ($user instanceof JsonResponse) {
+            return $user;
+        }
+
+        $request->validate(['avatar' => AvatarStorage::rules()]);
+
+        $avatars->store($user, $request->file('avatar'));
+
+        return response()->json([
+            'message' => 'Agent photo updated successfully',
+            'data' => $this->agentPayload($user),
+        ]);
+    }
+
+    public function destroyAvatar(int $id, AvatarStorage $avatars)
+    {
+        $user = $this->manageableAgent($id);
+
+        if ($user instanceof JsonResponse) {
+            return $user;
+        }
+
+        $avatars->clear($user);
+
+        return response()->json([
+            'message' => 'Agent photo removed successfully',
+            'data' => $this->agentPayload($user),
+        ]);
+    }
+
+    /**
+     * The agent this request may act on, or the refusal to send back instead.
+     *
+     * Owners are off-limits here for the same reason they are in update(),
+     * destroy() and the two assign* methods: an owner's account is edited by
+     * the owner, on their own profile page.
+     */
+    private function manageableAgent(int $id): User|JsonResponse
+    {
+        $user = request()->user()->tenant->users()->findOrFail($id);
+
+        if ($user->hasRole('owner')) {
+            return response()->json([
+                'message' => 'Owner cannot be updated',
+            ], 403);
+        }
+
+        return $user;
+    }
+
+    /** The same shape index() returns, so a row can be replaced wholesale. */
+    private function agentPayload(User $user): UserResource
+    {
+        return $user->fresh()
+            ->load(['connections', 'roles', 'permissions'])
+            ->toResource(UserResource::class);
+    }
+
+    public function destroy(int $id, AvatarStorage $avatars)
     {
         $user = request()->user()->tenant->users()->findOrFail($id);
 
@@ -97,6 +170,11 @@ class AgentController extends Controller
                 'message' => 'Owner cannot be deleted',
             ], 403);
         }
+
+        // Nothing else ever revisits this file — there is no sweep over the
+        // avatar directory — so the row going away is the only moment its photo
+        // can be collected.
+        $avatars->forget($user);
 
         $user->delete();
 

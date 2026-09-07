@@ -6,6 +6,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 use Laravel\Sanctum\HasApiTokens;
 use Spatie\Permission\Traits\HasRoles;
@@ -58,6 +59,33 @@ class User extends Authenticatable
             'notification_preferences' => 'array',
             'last_seen_at' => 'datetime',
         ];
+    }
+
+    /**
+     * A link that actually fetches this user's photo, or null when they have
+     * none and the dashboard should fall back to their initials.
+     *
+     * `avatar_path` is deliberately outside $fillable: it is written by
+     * AvatarStorage, which also deletes the file it replaces, and a path that
+     * could arrive in an update payload would let a caller point a user at any
+     * file on the disk.
+     *
+     * The expiry is rounded down to the start of the month on purpose. Minting
+     * `now()->addMonths(6)` per serialization — what contact photos do — hands
+     * the browser a different URL every time the agents page loads, so the same
+     * unchanged face is downloaded again on each visit. Rounded, the string is
+     * stable for a month and still no less than six months from lapsing.
+     */
+    public function getAvatarUrlAttribute(): ?string
+    {
+        if (! $this->avatar_path) {
+            return null;
+        }
+
+        return Storage::disk('local')->temporaryUrl(
+            $this->avatar_path,
+            now()->startOfMonth()->addMonths(7),
+        );
     }
 
     /**

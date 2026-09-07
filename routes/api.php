@@ -123,6 +123,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // on the account so the choice follows them to another browser; applied by
     // the dashboard, which is the only place that knows who is looking at what.
     Route::put('/user/notification-preferences', [UserController::class, 'updateNotificationPreferences']);
+    // Your own photo. No permission gate: changing your own picture is not an
+    // act on somebody else's account, and an agent whose role happened to omit
+    // the grant could otherwise never replace a photo taken of them.
+    Route::post('/user/avatar', [UserController::class, 'updateAvatar']);
+    Route::delete('/user/avatar', [UserController::class, 'destroyAvatar']);
     // Presence ping from the open dashboard: once a minute, per tab. The limit
     // is well above that because agents keep several tabs open and the throttle
     // counts per user — it is here to bound abuse, not to pace the SPA.
@@ -426,6 +431,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::post('/agents', [AgentController::class, 'store'])->middleware('permission:agents.create');
     Route::put('/agents/{id}', [AgentController::class, 'update'])->middleware('permission:agents.update');
     Route::delete('/agents/{id}', [AgentController::class, 'destroy'])->middleware('permission:agents.delete');
+    // A photo, on its own permission. `agents.update` carries the e-mail and the
+    // password an agent signs in with; putting a face on a roster should not
+    // have to come with that.
+    Route::post('/agents/{id}/avatar', [AgentController::class, 'updateAvatar'])->middleware('permission:agents.update-avatar');
+    Route::delete('/agents/{id}/avatar', [AgentController::class, 'destroyAvatar'])->middleware('permission:agents.update-avatar');
     Route::post('/agents/{id}/connections', [AgentController::class, 'syncConnections'])->middleware('permission:agents.sync-connections');
     Route::post('/agents/{id}/assign-roles', [AgentController::class, 'assignRoles'])->middleware('permission:agents.assign-roles');
     Route::post('/agents/{id}/assign-permissions', [AgentController::class, 'assignPermissions'])->middleware('permission:agents.assign-permissions');

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
 use App\Models\Connection;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\User\AvatarStorage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
@@ -79,6 +80,40 @@ class UserController extends Controller
         return response()->json([
             'message' => 'Profile updated successfully',
             'user' => $user->toResource(UserResource::class),
+        ]);
+    }
+
+    /**
+     * Your own photo.
+     *
+     * Ungated on purpose — no permission, no owner check. Every other write to
+     * an account is somebody acting on somebody else and needs a rule for it;
+     * this one is a person changing their own picture, and requiring a grant
+     * for that would mean an agent whose role omitted it could never fix a
+     * photo their manager uploaded of them.
+     *
+     * Returns just the link rather than the whole profile: the caller has the
+     * rest of it already, and this is the only field that moved.
+     */
+    public function updateAvatar(Request $request, AvatarStorage $avatars)
+    {
+        $request->validate(['avatar' => AvatarStorage::rules()]);
+
+        $user = $avatars->store($request->user(), $request->file('avatar'));
+
+        return response()->json([
+            'message' => 'Photo updated successfully',
+            'avatar' => $user->avatar_url,
+        ]);
+    }
+
+    public function destroyAvatar(Request $request, AvatarStorage $avatars)
+    {
+        $avatars->clear($request->user());
+
+        return response()->json([
+            'message' => 'Photo removed successfully',
+            'avatar' => null,
         ]);
     }
 

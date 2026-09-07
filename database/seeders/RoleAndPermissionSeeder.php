@@ -41,6 +41,9 @@ class RoleAndPermissionSeeder extends Seeder
             'agents.view',
             'agents.create',
             'agents.update',
+            // Held apart from agents.update, which also carries the e-mail and
+            // the password: a photo is not a credential.
+            'agents.update-avatar',
             'agents.delete',
             'agents.sync-connections',
             'agents.assign-roles',
