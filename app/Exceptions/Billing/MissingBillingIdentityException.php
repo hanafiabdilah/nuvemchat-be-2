@@ -19,12 +19,21 @@ use App\Exceptions\UserFacingException;
  */
 class MissingBillingIdentityException extends UserFacingException
 {
+    /**
+     * The code matters more than the sentence here: the remedy is a form, and
+     * every screen that can take a payment already knows how to open it. A
+     * toast telling somebody to go and find a page is the worst version of
+     * this — it is the one thing we can fix for them in place.
+     */
+    public const CODE = 'billing_identity_required';
+
     public function __construct()
     {
         parent::__construct(
-            'Informe o CPF ou CNPJ do responsável pela cobrança antes de continuar. '
-            .'Você pode preenchê-lo em Cobrança → Dados de faturamento.',
+            'Informe o CPF ou CNPJ da empresa antes de continuar. '
+            .'Você pode preenchê-lo em Configurações → Empresa.',
             422,
+            self::CODE,
         );
     }
 }
