@@ -590,72 +590,6 @@ class ApiwayService
         ApiwaySubscriptionUpdated::dispatch($row->fresh());
     }
 
-    /** Preapproval status change for an apiway unit purchase (webhook fallback). */
-    public function handlePreapprovalStatus(ApiwaySubscription $row, ?string $status): void
-    {
-        if ($status === 'authorized' && $row->status === ApiwaySubscriptionStatus::PendingPayment) {
-            $row->update(['status' => ApiwaySubscriptionStatus::Provisioning]);
-            $this->recordPaidCardInvoice($row, InvoicePurpose::ApiwayPurchase);
-            ProvisionApiwaySubscription::dispatch($row->id);
-            ApiwaySubscriptionUpdated::dispatch($row->fresh());
-
-            return;
-        }
-
-        if (in_array($status, ['cancelled', 'paused'], true)) {
-            // Auto-debit is off; apiway:renew falls back to Pix invoices.
-            $meta = $row->meta ?? [];
-            $meta['autopay_off'] = true;
-            $row->update(['meta' => $meta]);
-        }
-    }
-
-    /**
-     * A recurring auto-debit charge arrived for a unit purchase. The first
-     * charge is the purchase itself (backfilled onto the unlinked invoice);
-     * later ones are renewals → paid invoice + partner renew job.
-     */
-    public function recordUnitCardRenewal(ApiwaySubscription $row, ?string $paymentId, ?string $status): void
-    {
-        if (! in_array($status, ['approved', 'processed'], true)) {
-            return;
-        }
-
-        if ($paymentId && Invoice::where('mp_payment_id', $paymentId)->exists()) {
-            return;
-        }
-
-        // Backfill the initial authorization charge onto the purchase invoice
-        // recorded without a payment id — that one must not extend the expiry.
-        $unlinked = $row->invoices()
-            ->where('status', InvoiceStatus::Paid->value)
-            ->whereNull('mp_payment_id')
-            ->orderBy('id')
-            ->first();
-
-        if ($unlinked) {
-            $unlinked->update(['mp_payment_id' => $paymentId]);
-
-            return;
-        }
-
-        $invoice = Invoice::create([
-            'tenant_id' => $row->tenant_id,
-            'apiway_subscription_id' => $row->id,
-            'purpose' => InvoicePurpose::ApiwayRenewal,
-            'status' => InvoiceStatus::Paid,
-            'payment_method' => PaymentMethod::Card,
-            'amount_cents' => $row->total_price_cents,
-            'currency' => 'BRL',
-            'period_start' => $row->expires_at,
-            'paid_at' => now(),
-            'mp_payment_id' => $paymentId,
-            'mp_preapproval_id' => $row->mp_preapproval_id,
-        ]);
-
-        RenewApiwaySubscription::dispatch($row->id, 'pingly-renew-inv-'.$invoice->id);
-    }
-
     // --- Renewal / cancel / sync ------------------------------------------
 
     /**
@@ -706,10 +640,6 @@ class ApiwayService
                 // Free while the plan lives, so money is not the risk — the plan
                 // lapsing is.
                 return ! $row->tenant?->currentSubscription?->isUsable();
-            }
-
-            if ($row->mp_preapproval_id && ! ($row->meta['autopay_off'] ?? false)) {
-                return false;
             }
 
             if (in_array($row->id, $withOpenInvoice, true)) {
@@ -816,7 +746,7 @@ class ApiwayService
 
     /**
      * Drop an unpaid purchase entirely: void its open charges (killing the Pix
-     * QR at MercadoPago), cancel the preapproval and DELETE the local row —
+     * QR locally) and DELETE the local row —
      * abandoned checkouts must never linger in the instance list.
      *
      * @return bool False when the purchase settled meanwhile (caller → 409):
@@ -826,17 +756,6 @@ class ApiwayService
     {
         if ($row->status !== ApiwaySubscriptionStatus::PendingPayment) {
             return false;
-        }
-
-        if ($row->mp_preapproval_id) {
-            try {
-                $this->billing->mercadoPago()->cancelPreapproval($row->mp_preapproval_id);
-            } catch (\Throwable $e) {
-                Log::warning('Failed to cancel preapproval while abandoning apiway purchase', [
-                    'apiway_subscription_id' => $row->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
         }
 
         // cancelInvoice() re-reads settled charges — a Pix paid seconds ago is
@@ -862,17 +781,6 @@ class ApiwayService
     {
         if ($row->status->isTerminal()) {
             return $row;
-        }
-
-        if ($row->mp_preapproval_id) {
-            try {
-                $this->billing->mercadoPago()->cancelPreapproval($row->mp_preapproval_id);
-            } catch (\Throwable $e) {
-                Log::error('Failed to cancel apiway preapproval', [
-                    'apiway_subscription_id' => $row->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
         }
 
         if ($row->provider_subscription_id) {
@@ -1100,22 +1008,6 @@ class ApiwayService
                 Log::warning('Failed to void apiway invoice', ['invoice_id' => $invoice->id, 'error' => $e->getMessage()]);
             }
         }
-    }
-
-    protected function recordPaidCardInvoice(ApiwaySubscription $row, InvoicePurpose $purpose): Invoice
-    {
-        return Invoice::create([
-            'tenant_id' => $row->tenant_id,
-            'apiway_subscription_id' => $row->id,
-            'purpose' => $purpose,
-            'status' => InvoiceStatus::Paid,
-            'payment_method' => PaymentMethod::Card,
-            'amount_cents' => $row->total_price_cents,
-            'currency' => 'BRL',
-            'period_start' => now(),
-            'paid_at' => now(),
-            'mp_preapproval_id' => $row->mp_preapproval_id,
-        ]);
     }
 
     protected function createLocalSubscription(Tenant $tenant, array $attributes): ApiwaySubscription

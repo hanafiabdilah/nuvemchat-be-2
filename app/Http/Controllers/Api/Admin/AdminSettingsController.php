@@ -7,7 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\Setting;
 use App\Services\AiAgentHub\AiAgentHubConfig;
-use App\Services\Billing\MercadoPago\MercadoPagoConfig;
+use App\Services\Billing\PaymentService\PaymentServiceConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ApiwayConfig;
@@ -17,6 +17,7 @@ use App\Services\Connection\TikTok\TikTokConfig;
 use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationProviderFactory;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class AdminSettingsController extends Controller
 {
@@ -28,8 +29,8 @@ class AdminSettingsController extends Controller
     {
         $token = ApiwayConfig::integratorToken();
         $partnerToken = ApiwayConfig::partnerToken();
-        $mpAccess = MercadoPagoConfig::accessToken();
-        $mpSecret = MercadoPagoConfig::webhookSecret();
+        $paymentsKey = PaymentServiceConfig::apiKey();
+        $paymentsSecret = PaymentServiceConfig::webhookSecret();
 
         $igSecret = InstagramConfig::clientSecret();
         $igVerify = InstagramConfig::webhookVerifyToken();
@@ -74,14 +75,23 @@ class AdminSettingsController extends Controller
                 // Legacy alias kept so a Back Office build from before the API Way
                 // rebrand keeps rendering this section. Drop once all clients update.
                 'proxyhub' => $apiway,
-                'mercadopago' => [
-                    // Public key is meant to be exposed (frontend Bricks).
-                    'public_key' => MercadoPagoConfig::publicKey(),
-                    'back_url' => MercadoPagoConfig::backUrl(),
-                    'access_token_set' => ! empty($mpAccess),
-                    'access_token_preview' => $this->mask($mpAccess),
-                    'webhook_secret_set' => ! empty($mpSecret),
-                    'webhook_secret_preview' => $this->mask($mpSecret),
+                // The group's payment service. No gateway credentials live
+                // here any more: which of dLocal, MercadoPago or OpenPIX takes
+                // a charge is configured over there, and `provider` below only
+                // asks for one.
+                'payment_service' => [
+                    'base_url' => PaymentServiceConfig::baseUrl(),
+                    'api_key_set' => ! empty($paymentsKey),
+                    'api_key_preview' => $this->mask($paymentsKey),
+                    'webhook_secret_set' => ! empty($paymentsSecret),
+                    'webhook_secret_preview' => $this->mask($paymentsSecret),
+                    // Read-only, and the reason it is here: this is the URL an
+                    // operator has to paste into the payment service's own
+                    // product record. A value retyped from memory is a value
+                    // typed wrong.
+                    'webhook_url' => PaymentServiceConfig::webhookUrl(),
+                    'provider' => PaymentServiceConfig::provider(),
+                    'providers' => PaymentServiceConfig::PROVIDERS,
                 ],
                 'instagram' => [
                     'client_id' => InstagramConfig::clientId(),
@@ -180,11 +190,13 @@ class AdminSettingsController extends Controller
             'apiway_numbers.app_prices' => ['sometimes', 'array'],
             'apiway_numbers.app_prices.*' => ['nullable', 'integer', 'min:0', 'max:10000000'],
 
-            'mercadopago' => ['sometimes', 'array'],
-            'mercadopago.public_key' => ['nullable', 'string', 'max:255'],
-            'mercadopago.back_url' => ['nullable', 'url', 'max:255'],
-            'mercadopago.access_token' => ['nullable', 'string', 'max:512'],
-            'mercadopago.webhook_secret' => ['nullable', 'string', 'max:255'],
+            'payment_service' => ['sometimes', 'array'],
+            'payment_service.base_url' => ['nullable', 'url', 'max:255'],
+            'payment_service.api_key' => ['nullable', 'string', 'max:512'],
+            'payment_service.webhook_secret' => ['nullable', 'string', 'max:255'],
+            // Empty means "let the service route", which is the default and
+            // the recommendation — naming one only matters when it matters.
+            'payment_service.provider' => ['nullable', 'string', Rule::in(PaymentServiceConfig::PROVIDERS)],
 
             'instagram' => ['sometimes', 'array'],
             'instagram.client_id' => ['nullable', 'string', 'max:255'],
@@ -271,19 +283,26 @@ class AdminSettingsController extends Controller
             NumberPricing::store($numbers);
         }
 
-        if ($request->has('mercadopago')) {
-            $mp = $validated['mercadopago'];
+        if ($request->has('payment_service')) {
+            $payments = $validated['payment_service'];
 
-            // Public values: stored as-is (not secret).
-            Setting::set(MercadoPagoConfig::KEY_PUBLIC_KEY, $mp['public_key'] ?? null);
-            Setting::set(MercadoPagoConfig::KEY_BACK_URL, $mp['back_url'] ?? null);
-
-            // Secrets: only replaced when a new value is supplied.
-            if (! empty($mp['access_token'])) {
-                Setting::set(MercadoPagoConfig::KEY_ACCESS_TOKEN, $mp['access_token']);
+            if (array_key_exists('base_url', $payments)) {
+                Setting::set(PaymentServiceConfig::KEY_BASE_URL, rtrim((string) $payments['base_url'], '/') ?: null);
             }
-            if (! empty($mp['webhook_secret'])) {
-                Setting::set(MercadoPagoConfig::KEY_WEBHOOK_SECRET, $mp['webhook_secret']);
+
+            // Sent explicitly, including as null: clearing it is how an
+            // operator goes back to letting the service route.
+            if (array_key_exists('provider', $payments)) {
+                Setting::set(PaymentServiceConfig::KEY_PROVIDER, $payments['provider'] ?: null);
+            }
+
+            // Secrets: only replaced when a new value is supplied, so saving
+            // the provider choice alone cannot wipe the key that takes money.
+            if (! empty($payments['api_key'])) {
+                Setting::set(PaymentServiceConfig::KEY_API_KEY, $payments['api_key']);
+            }
+            if (! empty($payments['webhook_secret'])) {
+                Setting::set(PaymentServiceConfig::KEY_WEBHOOK_SECRET, $payments['webhook_secret']);
             }
         }
 

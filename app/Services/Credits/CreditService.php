@@ -27,7 +27,7 @@ use Illuminate\Support\Facades\Log;
  *
  * Double-charging is prevented by the database, not by a check: the ledger's
  * `ai_hub_run_id` and `invoice_id` are unique, so a retried job or a repeated
- * MercadoPago webhook loses the race instead of writing a second row. The
+ * payment webhook loses the race instead of writing a second row. The
  * duplicate is swallowed on purpose — it means the movement already happened,
  * which is the outcome the caller wanted.
  */
@@ -247,7 +247,7 @@ class CreditService
     /**
      * Credit a paid top-up invoice.
      *
-     * Idempotent through the ledger's unique `invoice_id`: MercadoPago delivers
+     * Idempotent through the ledger's unique `invoice_id`: the payment service delivers
      * the same notification more than once, and a credit applied twice is money
      * given away.
      */
@@ -279,7 +279,7 @@ class CreditService
     }
 
     /**
-     * Reverse a top-up MercadoPago later refunded or charged back.
+     * Reverse a top-up the bank later refunded or charged back.
      *
      * Written as its own negative row rather than by deleting the credit: the
      * money did arrive and then leave, and a ledger that pretends it never

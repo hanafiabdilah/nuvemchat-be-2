@@ -439,7 +439,7 @@ test('abandoning a legacy unpaid hire voids its charge and removes the row', fun
     [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 0);
     $blueprint = trainedAgentBlueprint();
 
-    Http::fake(['*/v1/payments/*' => Http::response(['id' => 222, 'status' => 'cancelled'], 200)]);
+    Http::fake(['gateway.proxybr.com.br/*' => Http::response(['data' => ['id' => '222', 'status' => 'expired']], 200)]);
 
     // Built by hand: nothing creates pending_payment hires any more. These exist
     // in production from before the balance, and abandonPending() is kept alive
@@ -466,7 +466,7 @@ test('abandoning a legacy unpaid hire voids its charge and removes the row', fun
         'amount_cents' => 14900,
         'currency' => 'BRL',
         'due_date' => now()->addDay()->toDateString(),
-        'mp_payment_id' => '222',
+        'payment_id' => '222',
         'idempotency_key' => (string) \Illuminate\Support\Str::uuid(),
     ]);
 

@@ -19,8 +19,11 @@ class ApiwaySubscriptionResource extends JsonResource
             'total_price_cents' => $this->total_price_cents,
             'location_code' => $this->location_code,
             'expires_at' => $this->expires_at,
-            'autopay' => $this->mp_preapproval_id !== null && ! ($this->meta['autopay_off'] ?? false),
-            'payment_method' => $this->mp_preapproval_id ? 'card' : 'pix',
+            // API Way instances are paid from the prepaid balance and renewed
+            // by apiway:renew, so there is no standing card authorisation left
+            // to describe — the two fields below used to report one.
+            'autopay' => false,
+            'payment_method' => 'balance',
             'created_at' => $this->created_at,
             'instances' => ApiwayInstanceResource::collection($this->whenLoaded('instances')),
         ];

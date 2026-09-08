@@ -7,7 +7,7 @@ namespace App\Enums\TrainedAgent;
  *
  * `provisioning` exists because forking a blueprint is a dozen HTTP calls to
  * the AI Hub (agent, profile, and every knowledge / skill / example row), which
- * is far too much to hold a checkout request — or a MercadoPago webhook — open
+ * is far too much to hold a checkout request — or a payment webhook — open
  * for. The hire row is created first and the copy happens in a queued job.
  */
 enum HireStatus: string

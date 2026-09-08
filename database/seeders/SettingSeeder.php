@@ -4,7 +4,7 @@ namespace Database\Seeders;
 
 use App\Models\Setting;
 use App\Services\AiAgentHub\AiAgentHubConfig;
-use App\Services\Billing\MercadoPago\MercadoPagoConfig;
+use App\Services\Billing\PaymentService\PaymentServiceConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ApiwayConfig;
@@ -43,17 +43,13 @@ class SettingSeeder extends Seeder
             Setting::set(ApiwayConfig::KEY_INTEGRATOR_TOKEN, $envToken);
         }
 
-        // One-time migration of MercadoPago credentials from .env into the DB.
-        $mpEnv = [
-            MercadoPagoConfig::KEY_ACCESS_TOKEN => env('MERCADOPAGO_ACCESS_TOKEN'),
-            MercadoPagoConfig::KEY_PUBLIC_KEY => env('MERCADOPAGO_PUBLIC_KEY'),
-            MercadoPagoConfig::KEY_WEBHOOK_SECRET => env('MERCADOPAGO_WEBHOOK_SECRET'),
-            MercadoPagoConfig::KEY_BACK_URL => env('MERCADOPAGO_BACK_URL'),
-        ];
-        foreach ($mpEnv as $key => $value) {
-            if (! empty($value) && Setting::get($key) === null) {
-                Setting::set($key, $value);
-            }
+        // The group's payment service. Only the URL is seeded: the API key and
+        // the webhook secret are minted once by the payment service admin and
+        // pasted in — there has never been an env var to migrate from, and the
+        // MercadoPago credentials this replaces are deliberately not carried
+        // over. Nothing in this codebase can use them any more.
+        if (Setting::get(PaymentServiceConfig::KEY_BASE_URL) === null) {
+            Setting::set(PaymentServiceConfig::KEY_BASE_URL, PaymentServiceConfig::DEFAULT_BASE_URL);
         }
 
         // One-time migration of channel/integration credentials from .env into

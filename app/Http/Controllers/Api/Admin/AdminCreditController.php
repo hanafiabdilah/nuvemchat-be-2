@@ -81,7 +81,7 @@ class AdminCreditController extends Controller
      *
      * These are prices, and prices are set by whoever runs the business — a
      * markup that needs a deploy is a markup nobody adjusts. Stored in the
-     * `settings` table, the same DB-only pattern as the MercadoPago and ProxyBR
+     * `settings` table, the same DB-only pattern as the payment service and ProxyBR
      * credentials.
      *
      * ⚠️ Changing them is not retroactive, and that is the point: every debit

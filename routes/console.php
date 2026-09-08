@@ -90,12 +90,15 @@ Schedule::command('billing:pix-generate --days-before=3')
     ->timezone('America/Sao_Paulo')
     ->onFailure(fn () => logger()->error('Pix renewal charge generation failed'));
 
-// Card auto-renewal via pull (no webhook needed): poll MercadoPago for renewal charges
-// on subscriptions near/at their boundary and advance the paid period. Runs every 15 min
-// so a renewal is picked up quickly — and before process-overdue could suspend a payer.
-Schedule::command('billing:pull-cards')
-    ->everyFifteenMinutes()
-    ->onFailure(fn () => logger()->error('Card renewal pull failed'));
+// ⚠️ Card renewal. This is the whole clock: the payment service holds a stored
+// card and charges it when asked, and nothing else asks. If this stops running,
+// no card subscription renews and every one of them lapses quietly. Hourly
+// rather than daily so a temporary decline (no funds this morning) has several
+// attempts inside the days-before window — the order reference carries the
+// period, so repeating cannot double-charge.
+Schedule::command('billing:charge-renewals --days-before=3')
+    ->hourly()
+    ->onFailure(fn () => logger()->error('Card renewal charge run failed'));
 
 // Remind owners the day before their subscription falls due. Runs after pix-generate
 // so a fresh pix charge already exists when the reminder goes out.
@@ -105,12 +108,15 @@ Schedule::command('billing:send-due-reminders --days-before=1')
     ->onFailure(fn () => logger()->error('Due reminder dispatch failed'));
 
 // Advance overdue subscriptions: past_due → grace → suspended; expire stale pix.
-// Runs at :05 so the card pull above (:00/:15/:30/:45) has already extended payers.
+// Runs at :20 so the renewal charge above (on the hour) has already extended
+// anyone who paid — suspending a payer because we checked first is the one
+// ordering mistake here that reaches a customer.
 Schedule::command('billing:process-overdue')
-    ->hourlyAt(5)
+    ->hourlyAt(20)
     ->onFailure(fn () => logger()->error('Overdue subscription processing failed'));
 
-// Broad safety net: reconcile in-flight pix + all card subscriptions once a day.
+// Broad safety net: reconcile in-flight pix charges once a day, for the webhook
+// deliveries that were abandoned after the retry ladder gave up.
 Schedule::command('billing:reconcile')
     ->dailyAt('03:00')
     ->timezone('America/Sao_Paulo')

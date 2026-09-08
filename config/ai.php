@@ -269,7 +269,7 @@ return [
         'fallback_run_cents' => (int) env('AI_CREDITS_FALLBACK_RUN_CENTS', 5),
 
         /*
-        | Smallest top-up we will issue a Pix for. Below this the MercadoPago
+        | Smallest top-up we will issue a Pix for. Below this the gateway
         | fee eats the transaction.
         */
 

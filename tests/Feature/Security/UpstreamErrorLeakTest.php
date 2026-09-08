@@ -210,3 +210,73 @@ test('the fingerprint check finds upstream text but leaves our copy alone', func
         ->and(UpstreamError::looksExternal('Esta conexão já usa essa instância.'))->toBeFalse()
         ->and(UpstreamError::looksExternal('Conversation is not active'))->toBeFalse();
 });
+
+// --- Payment service -------------------------------------------------------
+
+test('a gateway refusal never names the gateway that refused it', function () {
+    // The service's own message quotes the provider account and its reason —
+    // written for whoever operates the payment service, and exactly what must
+    // not reach the person who pressed Pay.
+    $exception = UpstreamError::exception(
+        UpstreamProvider::PaymentService,
+        'Provider account "mp-main" is winding down and does not accept new transactions.',
+        upstreamCode: 'provider_not_active',
+        status: 422,
+    );
+
+    expect($exception->getMessage())->not->toContain('mp-main')
+        ->and($exception->getMessage())->not->toContain('Provider account')
+        ->and($exception->getErrorCode())->toBe('payment_unavailable')
+        // Ours to fix, so it must not read as "check your details".
+        ->and($exception->getMessage())->toContain('indisponíveis');
+});
+
+test('a declined card is named as a decline, with a next step', function () {
+    $exception = UpstreamError::exception(
+        UpstreamProvider::PaymentService,
+        'issuer declined: 51 insufficient funds',
+        upstreamCode: 'payment_declined',
+        status: 422,
+    );
+
+    expect($exception->getMessage())->not->toContain('51')
+        ->and($exception->getErrorCode())->toBe('payment_declined')
+        ->and($exception->getMessage())->toContain('cartão');
+});
+
+test('a gateway that cannot auto-renew is a problem of ours, not of the card', function () {
+    // The one refusal worth naming separately: this provider keeps cards only
+    // as a checkout convenience and asks for the security code every time, so
+    // no retry and no other card will make it work.
+    $exception = UpstreamError::exception(
+        UpstreamProvider::PaymentService,
+        'This provider does not support merchant-initiated card payments.',
+        upstreamCode: 'payment_refused',
+        status: 422,
+    );
+
+    expect($exception->getErrorCode())->toBe('card_autorenew_unsupported')
+        ->and($exception->getMessage())->not->toContain('merchant-initiated')
+        ->and($exception->getMessage())->toContain('Pix');
+});
+
+test('a payment failure we have never seen still leaves nothing quotable', function () {
+    // The half that makes this a guarantee rather than a list.
+    $exception = UpstreamError::exception(
+        UpstreamProvider::PaymentService,
+        'gateway.proxybr.com.br returned SQLSTATE[08006] from acquirer node 7',
+        upstreamCode: 'something_new',
+        status: 500,
+    );
+
+    expect($exception->getMessage())->not->toContain('gateway.proxybr.com.br')
+        ->and($exception->getMessage())->not->toContain('SQLSTATE')
+        ->and($exception->reference)->not->toBeEmpty(); // quotable back to support
+});
+
+test('the fingerprint check catches the payment service host and its vocabulary', function () {
+    expect(UpstreamError::looksExternal('gateway.proxybr.com.br refused the request'))->toBeTrue()
+        ->and(UpstreamError::looksExternal('Provider account "mp-main" is winding down.'))->toBeTrue();
+
+    expect(UpstreamError::looksExternal('Os pagamentos estão indisponíveis no momento.'))->toBeFalse();
+});

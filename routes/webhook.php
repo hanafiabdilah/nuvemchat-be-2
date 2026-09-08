@@ -4,7 +4,7 @@ use App\Http\Controllers\Webhook\ApiwayNumbersController;
 use App\Http\Controllers\Webhook\ChatController;
 use App\Http\Controllers\Webhook\FacebookController;
 use App\Http\Controllers\Webhook\InstagramController;
-use App\Http\Controllers\Webhook\MercadoPagoWebhookController;
+use App\Http\Controllers\Webhook\PaymentServiceWebhookController;
 use App\Http\Controllers\Webhook\TikTokController;
 use App\Http\Controllers\Webhook\WhatsAppController;
 use Illuminate\Http\Request;
@@ -27,9 +27,12 @@ Route::post('/webhook/facebook', [FacebookController::class, 'handle'])->name('w
 // TikTokAuthClient::updateWebhookCallback), connection resolved by user_openid.
 Route::post('/webhook/tiktok', [TikTokController::class, 'handle'])->name('webhook.tiktok');
 
-// MercadoPago payment / preapproval notifications. CSRF-exempt via the
-// `/webhook/*` glob in bootstrap/app.php.
-Route::post('/webhook/mercadopago', [MercadoPagoWebhookController::class, 'handle'])->name('webhook.mercadopago');
+// The group's payment service: a payment moved, or a stored instrument stopped
+// working. One route for every product's worth of gateways, because which
+// gateway took the money is decided over there and never reaches us. Signed
+// with HMAC-SHA256 over "{timestamp}.{raw body}" (X-Payment-Signature).
+// CSRF-exempt via the `/webhook/*` glob in bootstrap/app.php.
+Route::post('/webhook/payments', [PaymentServiceWebhookController::class, 'handle'])->name('webhook.payments');
 
 // API Way pushes every SMS received on a rented virtual number here. One
 // webhook per account, and the platform has one account, so this single route

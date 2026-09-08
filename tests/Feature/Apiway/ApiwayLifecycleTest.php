@@ -263,18 +263,6 @@ test('an insufficient balance is warned about a week out, before anything is cha
         ->and(CreditTransaction::count())->toBe(0);
 });
 
-test('a unit card subscription with live auto-debit is left to MercadoPago', function () {
-    $tenant = lifecycleTenant();
-    lifecycleSubscription($tenant, [
-        'mp_preapproval_id' => 'PA-1',
-        'expires_at' => now()->addDays(2),
-    ]);
-
-    $this->artisan('apiway:renew')->assertSuccessful();
-
-    expect(Invoice::count())->toBe(0);
-});
-
 // --- renew() ---------------------------------------------------------------
 
 test('renew mirrors the partner response onto the local row', function () {
@@ -335,7 +323,7 @@ test('a replayed renewal payment reuses the same idempotency key', function () {
 test('sync expires overdue rows, releases connections and voids open invoices', function () {
     Http::fake([
         'portal.proxybr.com.br/api/partner/v1/apiway/subscriptions*' => Http::response(['data' => [], 'meta' => []]),
-        'api.mercadopago.com/v1/payments/*' => Http::response(['status' => 'cancelled']),
+        'gateway.proxybr.com.br/*' => Http::response(['data' => ['id' => 'MP-OPEN-1', 'status' => 'expired']]),
     ]);
 
     $tenant = lifecycleTenant();
@@ -352,7 +340,7 @@ test('sync expires overdue rows, releases connections and voids open invoices', 
         'tenant_id' => $tenant->id, 'apiway_subscription_id' => $row->id,
         'purpose' => InvoicePurpose::ApiwayRenewal, 'status' => InvoiceStatus::Pending,
         'payment_method' => PaymentMethod::Pix, 'amount_cents' => 4990, 'currency' => 'BRL',
-        'mp_payment_id' => 'MP-OPEN-1',
+        'payment_id' => 'MP-OPEN-1',
     ]);
 
     $this->artisan('apiway:sync')->assertSuccessful();
@@ -365,14 +353,13 @@ test('sync expires overdue rows, releases connections and voids open invoices', 
 
 // --- cancel() --------------------------------------------------------------
 
-test('cancel revokes at ProxyBR, kills the preapproval and releases the connection', function () {
+test('cancel revokes at ProxyBR and releases the connection', function () {
     Http::fake([
         'portal.proxybr.com.br/api/partner/v1/apiway/subscriptions/*/cancel' => Http::response(['data' => ['status' => 'cancelled']]),
-        'api.mercadopago.com/preapproval/*' => Http::response(['status' => 'cancelled']),
     ]);
 
     $tenant = lifecycleTenant();
-    $row = lifecycleSubscription($tenant, ['mp_preapproval_id' => 'PA-9']);
+    $row = lifecycleSubscription($tenant);
 
     $connection = Connection::create([
         'tenant_id' => $tenant->id, 'channel' => Channel::WhatsappApiway,

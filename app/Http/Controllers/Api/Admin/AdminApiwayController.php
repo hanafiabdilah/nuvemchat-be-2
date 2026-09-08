@@ -90,7 +90,7 @@ class AdminApiwayController extends Controller
      *
      * Without this the health check below never clears, and an alert that can
      * only go red is an alert operators learn to scroll past. Money moves at
-     * MercadoPago, by hand — this only writes down that it happened.
+     * the payment service, by hand — this only writes down that it happened.
      */
     public function settleRefund(Request $request, ApiwaySubscription $subscription)
     {

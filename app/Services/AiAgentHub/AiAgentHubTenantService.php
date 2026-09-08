@@ -1101,7 +1101,7 @@ class AiAgentHubTenantService
      */
     protected function assertWithinRunQuota(AiHubAgent $agent): void
     {
-        if (! config('services.mercadopago.enforce')) {
+        if (! config('services.billing.enforce')) {
             return;
         }
 
@@ -1144,7 +1144,7 @@ class AiAgentHubTenantService
      */
     protected function assertCanSpendCredit(AiHubAgent $agent): void
     {
-        if (! config('services.mercadopago.enforce')) {
+        if (! config('services.billing.enforce')) {
             return;
         }
 

@@ -13,6 +13,9 @@ class Tenant extends Model
         'lead_settings',
         'entitlement_overrides',
         'audio_dictionary',
+        'billing_name',
+        'billing_document_type',
+        'billing_document_number',
     ];
 
     protected $casts = [
@@ -20,6 +23,29 @@ class Tenant extends Model
         'entitlement_overrides' => 'array',
         'audio_dictionary' => 'array',
     ];
+
+    /**
+     * Whether this workspace can be charged at all.
+     *
+     * The acquirer refuses a Pix or a boleto without a CPF or CNPJ, so the
+     * payment service demands one on every charge — which makes this the
+     * difference between a renewal that runs unattended and one that cannot.
+     * Checked before a scheduler tries rather than after it fails.
+     */
+    public function hasBillingIdentity(): bool
+    {
+        return filled($this->billing_document_number) && filled($this->billing_document_type);
+    }
+
+    /**
+     * How this workspace is addressed at the payment service. Ours, so we never
+     * have to store their identifiers to bill somebody — and stable, because a
+     * retried signup must converge on one person rather than two.
+     */
+    public function paymentCustomerReference(): string
+    {
+        return "tenant:{$this->id}";
+    }
 
     /**
      * The override block if one is in force, or null.

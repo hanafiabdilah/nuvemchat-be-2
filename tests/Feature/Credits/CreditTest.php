@@ -122,7 +122,7 @@ it('never charges the same run twice', function () {
 
 it('lets a run through on the workspace own key with an empty wallet', function () {
     [, , $hubTenant] = CreditFixtures::workspace();
-    config()->set('services.mercadopago.enforce', true);
+    config()->set('services.billing.enforce', true);
 
     // No pool key behind this credential: the workspace is spending its own
     // money at the provider and owes the platform nothing per run. Gating it
@@ -142,7 +142,7 @@ it('lets a run through on the workspace own key with an empty wallet', function 
 
 it('refuses a run on a rented key once the balance is spent', function () {
     [$tenant, , $hubTenant] = CreditFixtures::workspace();
-    config()->set('services.mercadopago.enforce', true);
+    config()->set('services.billing.enforce', true);
     CreditFixtures::poolKey();
     CreditFixtures::fakeHub();
 
@@ -162,16 +162,16 @@ it('credits the balance once when a top-up is paid, however often the webhook fi
         'payment_method' => PaymentMethod::Pix,
         'amount_cents' => 5000,
         'currency' => 'BRL',
-        'mp_payment_id' => 'mp-1',
+        'payment_id' => 'mp-1',
         'idempotency_key' => (string) Str::uuid(),
     ]);
 
     $billing = app(BillingService::class);
 
-    $billing->applyPaymentUpdate(['id' => 'mp-1', 'status' => 'approved']);
+    $billing->applyPaymentUpdate(['id' => 'mp-1', 'status' => 'paid']);
     // MercadoPago delivers the same notification more than once; a credit
     // applied twice is money given away.
-    $billing->applyPaymentUpdate(['id' => 'mp-1', 'status' => 'approved']);
+    $billing->applyPaymentUpdate(['id' => 'mp-1', 'status' => 'paid']);
 
     expect(app(CreditService::class)->balanceCents($tenant->fresh()))->toBe(5000)
         ->and(CreditTransaction::where('invoice_id', $invoice->id)->count())->toBe(1);
@@ -187,12 +187,12 @@ it('takes the credit back when a top-up is refunded', function () {
         'payment_method' => PaymentMethod::Pix,
         'amount_cents' => 5000,
         'currency' => 'BRL',
-        'mp_payment_id' => 'mp-2',
+        'payment_id' => 'mp-2',
         'idempotency_key' => (string) Str::uuid(),
     ]);
 
     $billing = app(BillingService::class);
-    $billing->applyPaymentUpdate(['id' => 'mp-2', 'status' => 'approved']);
+    $billing->applyPaymentUpdate(['id' => 'mp-2', 'status' => 'paid']);
     $billing->applyPaymentUpdate(['id' => 'mp-2', 'status' => 'refunded']);
 
     // Its own negative row, not a deleted credit: the money did arrive and then

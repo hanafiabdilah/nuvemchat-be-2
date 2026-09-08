@@ -53,7 +53,7 @@ class EnsureLeadForConversation implements ShouldQueue
         // day rather than pretending to have a history. Mirrors
         // EnsureFeatureEnabled, master switch included, so the queue and the
         // routes can never disagree about who has the funnel.
-        if (config('services.mercadopago.enforce') && ! $gate->feature($tenant, Feature::Crm->value)) {
+        if (config('services.billing.enforce') && ! $gate->feature($tenant, Feature::Crm->value)) {
             return;
         }
 

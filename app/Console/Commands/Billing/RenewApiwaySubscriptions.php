@@ -99,14 +99,6 @@ class RenewApiwaySubscriptions extends Command
                 continue;
             }
 
-            // Legacy: a unit purchase still riding a MercadoPago preapproval.
-            // MercadoPago charges on its own schedule and the webhook renews, so
-            // charging the balance too would take the money twice. New purchases
-            // never create preapprovals — see ApiwayService::purchaseUnits().
-            if ($row->mp_preapproval_id && ! ($row->meta['autopay_off'] ?? false)) {
-                continue;
-            }
-
             // Legacy: a Pix renewal invoice issued before the balance existed
             // and still payable. Let the customer pay what they were sent.
             $hasOpenRenewal = $row->invoices()

@@ -4,7 +4,7 @@ namespace App\Exceptions\Billing;
 
 /**
  * Thrown when a cancellation loses the race against the payment it was trying to
- * void — the charge settled at MercadoPago first, so the subscription is now
+ * close — the charge settled at the payment service first, so the subscription is now
  * paid for and must not be torn down.
  */
 class PaymentAlreadySettledException extends \RuntimeException

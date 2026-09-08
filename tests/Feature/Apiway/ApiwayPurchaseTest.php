@@ -119,7 +119,7 @@ function legacyPendingPurchase(Tenant $tenant, string $paymentId): array
         'tenant_id' => $tenant->id, 'apiway_subscription_id' => $row->id,
         'purpose' => InvoicePurpose::ApiwayPurchase, 'status' => InvoiceStatus::Pending,
         'payment_method' => PaymentMethod::Pix, 'amount_cents' => 4990, 'currency' => 'BRL',
-        'due_date' => now()->addDay()->toDateString(), 'mp_payment_id' => $paymentId,
+        'due_date' => now()->addDay()->toDateString(), 'payment_id' => $paymentId,
         'idempotency_key' => (string) Str::uuid(),
     ]);
 
@@ -389,7 +389,7 @@ test('an included instance can pick its location', function () {
 // --- Abandoned checkouts ----------------------------------------------------
 
 test('abandoning a legacy unpaid purchase voids the pix charge and deletes the row', function () {
-    Http::fake(['api.mercadopago.com/v1/payments/557' => Http::response(['status' => 'cancelled'])]);
+    Http::fake(['gateway.proxybr.com.br/*' => Http::response(['data' => ['id' => '557', 'status' => 'expired']])]);
 
     $tenant = apiwayTenant();
     [$row, $invoice] = legacyPendingPurchase($tenant, '557');
@@ -405,7 +405,7 @@ test('a legacy purchase that settled meanwhile refuses to be abandoned', functio
     [$row] = legacyPendingPurchase($tenant, '558');
 
     // Pix approved before the user closed the modal.
-    app(BillingService::class)->applyPaymentUpdate(['id' => '558', 'status' => 'approved']);
+    app(BillingService::class)->applyPaymentUpdate(['id' => '558', 'status' => 'paid']);
 
     expect(app(ApiwayService::class)->abandonPendingPurchase($row->fresh()))->toBeFalse()
         ->and($row->fresh()->status)->toBe(ApiwaySubscriptionStatus::Provisioning);

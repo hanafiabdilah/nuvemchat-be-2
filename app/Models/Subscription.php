@@ -24,7 +24,8 @@ class Subscription extends Model
         'grace_ends_at',
         'cancel_at_period_end',
         'cancelled_at',
-        'mp_preapproval_id',
+        'payment_instrument_id',
+        'payment_customer_id',
         'manual_granted_by',
         'manual_note',
     ];

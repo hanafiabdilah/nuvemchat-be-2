@@ -97,8 +97,8 @@ class AdminPlanController extends Controller
             'is_active' => ['boolean'],
             'is_public' => ['boolean'],
             'sort_order' => ['nullable', 'integer'],
-            'mp_card_enabled' => ['boolean'],
-            'mp_pix_enabled' => ['boolean'],
+            'card_enabled' => ['boolean'],
+            'pix_enabled' => ['boolean'],
         ]);
     }
 }

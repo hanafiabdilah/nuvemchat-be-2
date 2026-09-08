@@ -24,8 +24,8 @@ class Plan extends Model
         'is_active',
         'is_public',
         'sort_order',
-        'mp_card_enabled',
-        'mp_pix_enabled',
+        'card_enabled',
+        'pix_enabled',
         'mp_preapproval_plan_id',
     ];
 
@@ -38,8 +38,8 @@ class Plan extends Model
         'is_active' => 'boolean',
         'is_public' => 'boolean',
         'sort_order' => 'integer',
-        'mp_card_enabled' => 'boolean',
-        'mp_pix_enabled' => 'boolean',
+        'card_enabled' => 'boolean',
+        'pix_enabled' => 'boolean',
     ];
 
     public function subscriptions()

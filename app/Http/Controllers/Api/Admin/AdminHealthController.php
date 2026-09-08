@@ -269,7 +269,7 @@ class AdminHealthController extends Controller
                 default => 'ok',
             },
             (string) $rows->count(),
-            'Purchases charged on our side that ProxyBR never provisioned. Refund each one at MercadoPago, then mark it settled on the customer page — this stays red until you do.',
+            'Purchases charged on our side that ProxyBR never provisioned. Refund each one at the payment service, then mark it settled on the customer page — this stays red until you do.',
             [
                 'awaiting_refund' => $owed->count(),
                 'held_at_capacity' => $held,

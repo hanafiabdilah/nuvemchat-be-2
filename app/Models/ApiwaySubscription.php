@@ -27,7 +27,6 @@ class ApiwaySubscription extends Model
         'location_code',
         'status',
         'expires_at',
-        'mp_preapproval_id',
         'renewal_reminder_sent_at',
         'last_synced_at',
         'meta',

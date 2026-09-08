@@ -18,7 +18,7 @@ class EnsureFeatureEnabled
 
     public function handle(Request $request, Closure $next, string $feature): Response
     {
-        if (! config('services.mercadopago.enforce')) {
+        if (! config('services.billing.enforce')) {
             return $next($request);
         }
 

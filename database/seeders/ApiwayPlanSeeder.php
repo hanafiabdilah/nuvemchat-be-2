@@ -29,8 +29,8 @@ class ApiwayPlanSeeder extends Seeder
                 'is_active' => true,
                 'is_public' => true,
                 'sort_order' => 50,
-                'mp_card_enabled' => true,
-                'mp_pix_enabled' => true,
+                'card_enabled' => true,
+                'pix_enabled' => true,
             ],
         );
     }

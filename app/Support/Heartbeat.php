@@ -34,6 +34,7 @@ class Heartbeat
         'discord:gateway' => ['Discord gateway', 90, 'The only way Discord DMs arrive — Discord has no message webhook.'],
         'broadcasts:tick' => ['Broadcast watchdog', 180, 'Starts scheduled campaigns and revives stalled ones.'],
         'media:purge' => ['Media purge', 7200, 'Deletes expired media. Storage only grows without it.'],
+        'billing:charge-renewals' => ['Card renewal charge', 7200, 'The only thing that renews a card subscription. Nothing else charges the stored card, so every card plan lapses silently without it.'],
         'apiway:renew' => ['API Way renewal', 7200, 'ProxyBR gives no grace period — a missed renewal is a permanent revoke.'],
         'apiway:sync' => ['API Way sync', 7200, 'Expires and releases instances whose subscription ended.'],
         'numbers:renew' => ['Virtual number renewal', 90000, 'Charges rented numbers and cancels unpaid ones before API Way bills us again.'],

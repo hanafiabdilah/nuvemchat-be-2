@@ -37,7 +37,7 @@ enum CreditTransactionType: string
      * reconcile.
      */
     case Reversal = 'reversal';
-    /** A top-up that MercadoPago later refunded or charged back. Negative. */
+    /** A top-up the bank later refunded or charged back. Negative. */
     case Refund = 'refund';
     /** A Back Office correction, either direction. */
     case Adjustment = 'adjustment';

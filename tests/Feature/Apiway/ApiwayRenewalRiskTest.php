@@ -91,15 +91,6 @@ it('counts several subscriptions against one balance, in expiry order', function
         ->and($atRisk->contains('id', $first->id))->toBeFalse();
 });
 
-it('ignores a renewal still on legacy card auto-debit', function () {
-    // MercadoPago charges that one on its own schedule, so an empty balance
-    // says nothing about whether it will renew.
-    $tenant = riskTenant(0);
-    riskSubscription($tenant, ['mp_preapproval_id' => 'PA-1']);
-
-    expect(app(ApiwayService::class)->renewalsAtRisk($tenant))->toBeEmpty();
-});
-
 it('ignores renewals outside the window', function () {
     $tenant = riskTenant(0);
     riskSubscription($tenant, ['expires_at' => now()->addDays(30)]);

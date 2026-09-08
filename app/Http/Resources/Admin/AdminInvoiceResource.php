@@ -26,7 +26,8 @@ class AdminInvoiceResource extends JsonResource
             'period_end' => $this->period_end,
             'due_date' => $this->due_date,
             'paid_at' => $this->paid_at,
-            'mp_payment_id' => $this->mp_payment_id,
+            'payment_id' => $this->payment_id,
+            'order_reference' => $this->order_reference,
             'subscription_id' => $this->subscription_id,
             'tenant_id' => $this->tenant_id,
             'tenant' => $this->whenLoaded('tenant', fn () => [

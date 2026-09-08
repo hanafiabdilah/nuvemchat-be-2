@@ -8,17 +8,18 @@ use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Enums\Notification\NotificationType;
 use App\Events\SubscriptionUpdated;
+use App\Exceptions\Billing\MissingBillingIdentityException;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
 use App\Models\Admin;
-use App\Models\ApiwaySubscription;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
-use App\Services\Credits\CreditService;
-use App\Services\Billing\MercadoPago\MercadoPagoClient;
+use App\Models\ApiwaySubscription;
+use App\Services\Billing\PaymentService\PaymentServiceClient;
 use App\Services\Connection\Apiway\ApiwayService;
+use App\Services\Credits\CreditService;
 use App\Services\TrainedAgent\TrainedAgentService;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
@@ -31,28 +32,44 @@ use Illuminate\Support\Str;
  * scheduler command and webhook goes through here so transitions, entitlement
  * snapshots, the tenant.current_subscription_id pointer and the broadcast event
  * stay consistent.
+ *
+ * ⚠️ One thing changed shape when this moved off MercadoPago, and it explains
+ * most of the class: **there is no preapproval any more.** No gateway debits a
+ * card on a schedule of its own. The payment service holds a stored instrument
+ * and charges it when asked, which means the renewal clock is ours — it lives
+ * in `billing:charge-renewals` and `chargeRenewal()` below. What used to be
+ * three inbound webhook shapes (payment, preapproval, authorized_payment) is
+ * now one: a payment changed.
  */
 class BillingService
 {
     public function __construct(
-        protected MercadoPagoClient $mp,
+        protected PaymentServiceClient $payments,
         protected SubscriptionGate $gate,
         protected BillingNotifier $notifier,
     ) {}
 
     /**
-     * Shared MercadoPago client — also used by ApiwayService for the per-unit
-     * preapprovals, so both flows run against the same credentials.
+     * How long a Pix instruction stays payable.
+     *
+     * ⚠️ Set explicitly, and it matters more than it used to. The payment
+     * service has no way to cancel a pending Pix — `void` releases a card
+     * authorisation and refuses anything else — so this window is the only
+     * thing that eventually kills a QR the customer walked away from.
+     * Cancelling now stops us showing it and stops it counting; it does not
+     * stop it being payable. If somebody pays anyway the webhook honours it
+     * (see applyPaymentUpdate), which is the right answer — the money arrived.
+     *
+     * Not shortened to minutes on purpose: someone paying a monthly plan opens
+     * their bank app, and a code that expires while they are doing that turns
+     * our gap into their failed payment.
      */
-    public function mercadoPago(): MercadoPagoClient
-    {
-        return $this->mp;
-    }
+    protected const PIX_WINDOW_HOURS = 24;
 
     /**
      * Subscribe a tenant to a plan via card (recurring) or pix.
      *
-     * @param  array{card_token_id?:string, payer_email:string}  $opts
+     * @param  array{card_token?:string, provider?:string, payer_email:string}  $opts
      */
     public function subscribe(Tenant $tenant, Plan $plan, PaymentMethod $method, array $opts): Subscription
     {
@@ -64,44 +81,88 @@ class BillingService
     }
 
     /**
-     * Card: create a MercadoPago preapproval (auto-debit) and activate.
+     * Card: charge now, and keep the instrument for the cycles after this one.
+     *
+     * A card is synchronous — the response to this one call carries the final
+     * outcome, unlike a Pix which returns an instruction and then waits. So
+     * there is no pending state to render and no webhook to wait for.
+     *
+     * `store_instrument` deliberately stores *after* the charge succeeds. A
+     * card kept without ever being charged is regularly found to be invalid the
+     * first time it is used, which produces a subscription that looks healthy
+     * right up until its first renewal.
      */
     protected function subscribeWithCard(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
+        $this->assertBillable($tenant);
+
         $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card);
+        $periodEnd = $this->nextPeriodEnd($subscription, now());
 
-        $payload = [
-            'reason' => $plan->name,
-            'auto_recurring' => array_merge(
-                $plan->billing_cycle->toMercadoPagoFrequency(),
-                [
-                    'transaction_amount' => $this->toAmount($subscription->price_cents),
-                    'currency_id' => $plan->currency,
-                ],
-            ),
-            'payer_email' => $opts['payer_email'],
-            'card_token_id' => $opts['card_token_id'] ?? null,
-            'back_url' => \App\Services\Billing\MercadoPago\MercadoPagoConfig::backUrl(),
-            'status' => 'authorized',
-            'external_reference' => $this->externalReference($tenant, $subscription),
-        ];
+        $invoice = Invoice::create([
+            'tenant_id' => $tenant->id,
+            'subscription_id' => $subscription->id,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Card,
+            'amount_cents' => $subscription->price_cents,
+            'currency' => $plan->currency ?? 'BRL',
+            'period_start' => $subscription->current_period_start,
+            'period_end' => $periodEnd,
+            'order_reference' => $this->orderReference($subscription, $subscription->current_period_start),
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
 
-        $response = $this->mp->createPreapproval($payload, (string) Str::uuid());
+        try {
+            $response = $this->payments->createPayment([
+                'order_reference' => $invoice->order_reference,
+                'amount' => $invoice->amount_cents,
+                'currency' => $invoice->currency,
+                'payment_method' => 'card',
+                'card_token' => $opts['card_token'] ?? null,
+                'installments' => 1,
+                'initiator' => 'customer',
+                'store_instrument' => true,
+                'description' => "Assinatura {$plan->name}",
+                // The gateway that minted the token in the browser. A token
+                // belongs to one gateway and is meaningless to another, so this
+                // is the one payment where the provider is not ours to choose.
+                'provider' => $opts['provider'] ?? null,
+                'customer' => $this->customerPayload($tenant, $opts['payer_email'] ?? null),
+                'metadata' => ['tenant_id' => $tenant->id, 'subscription_id' => $subscription->id],
+            ], $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            // The row exists before the call because its reference goes in the
+            // payload; a refusal must not strand it looking payable.
+            $invoice->update(['status' => InvoiceStatus::Failed]);
 
-        $subscription->mp_preapproval_id = $response['id'] ?? null;
+            throw $e;
+        }
 
-        if (($response['status'] ?? null) === 'authorized') {
-            $this->activate($subscription, $this->nextPeriodEnd($subscription, now()));
-            $this->recordPaidInvoice($subscription, $response['id'] ?? null, PaymentMethod::Card);
+        $payment = $response['data'] ?? [];
+
+        $invoice->update([
+            'payment_id' => isset($payment['id']) ? (string) $payment['id'] : null,
+        ]);
+
+        $this->rememberInstrument($subscription, $payment);
+
+        if (($payment['status'] ?? null) === 'paid') {
+            $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]);
+            $this->activate($subscription, $periodEnd);
         } else {
-            // Pending authorization — stays past_due until the webhook confirms.
-            // The save still matters: it persists mp_preapproval_id.
-            $subscription->save();
+            // Declined, or the rare `unknown` where the gateway never answered.
+            // Neither activates anything; `unknown` resolves by itself and its
+            // webhook lands on this same invoice through order_reference.
+            $invoice->update([
+                'status' => ($payment['status'] ?? null) === 'unknown'
+                    ? InvoiceStatus::Pending
+                    : InvoiceStatus::Failed,
+            ]);
         }
 
         $this->fireUpdated($subscription);
 
-        return $subscription;
+        return $subscription->fresh();
     }
 
     /**
@@ -109,10 +170,12 @@ class BillingService
      */
     protected function subscribeWithPix(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
+        $this->assertBillable($tenant);
+
         // Starts past_due (createPendingSubscription); becomes active once the pix is paid.
         $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Pix);
 
-        $this->createPixInvoice($subscription, $opts['payer_email']);
+        $this->createPixInvoice($subscription, $opts['payer_email'] ?? null);
         $this->fireUpdated($subscription);
 
         return $subscription;
@@ -123,13 +186,15 @@ class BillingService
      */
     public function createPixInvoice(Subscription $subscription, ?string $payerEmail = null): Invoice
     {
+        $tenant = $subscription->tenant;
+        $this->assertBillable($tenant);
+
         $plan = $subscription->plan;
         $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
             ? $subscription->current_period_end->copy()
             : now();
         $periodEnd = $this->nextPeriodEnd($subscription, $periodStart);
-        $expiresAt = now()->addDay();
-        $payerEmail ??= $subscription->tenant->user?->email ?? 'no-reply@example.com';
+        $expiresAt = now()->addHours(self::PIX_WINDOW_HOURS);
 
         $invoice = Invoice::create([
             'tenant_id' => $subscription->tenant_id,
@@ -141,69 +206,211 @@ class BillingService
             'period_start' => $periodStart,
             'period_end' => $periodEnd,
             'due_date' => $periodEnd?->toDateString(),
+            'order_reference' => $this->orderReference($subscription, $periodStart),
             'idempotency_key' => (string) Str::uuid(),
         ]);
 
-        $payload = [
-            'transaction_amount' => $this->toAmount($invoice->amount_cents),
-            'description' => "Assinatura {$plan?->name} — fatura #{$invoice->id}",
-            'payment_method_id' => 'pix',
-            'payer' => ['email' => $payerEmail],
-            // MercadoPago demands milliseconds here (yyyy-MM-dd'T'HH:mm:ss.SSSZ).
-            // toIso8601String() omits them and the API rejects the whole request
-            // with "must be valid date and format (yyyy-MM-dd'T'HH:mm:ssz)".
-            'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
-            'external_reference' => $this->externalReference($subscription->tenant, $subscription, $invoice),
-        ];
-
         try {
-            $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
+            $response = $this->payments->createPayment([
+                'order_reference' => $invoice->order_reference,
+                'amount' => $invoice->amount_cents,
+                'currency' => $invoice->currency,
+                'payment_method' => 'pix',
+                'description' => "Assinatura {$plan?->name} — fatura #{$invoice->id}",
+                'expires_at' => $expiresAt->toIso8601String(),
+                'customer' => $this->customerPayload($tenant, $payerEmail),
+                'metadata' => ['tenant_id' => $subscription->tenant_id, 'subscription_id' => $subscription->id],
+            ], $invoice->idempotency_key);
         } catch (\Throwable $e) {
-            // The row has to exist before the call (its id goes in the payload), so a
-            // provider rejection would otherwise strand a pending invoice that looks
-            // payable but carries no QR — and the $hasOpen guard in billing:pix-generate
-            // would then refuse to issue a real one.
+            // The row has to exist before the call (its reference goes in the
+            // payload), so a rejection would otherwise strand a pending invoice
+            // that looks payable but carries no QR — and the $hasOpen guard in
+            // billing:pix-generate would then refuse to issue a real one.
             $invoice->update(['status' => InvoiceStatus::Failed]);
 
             throw $e;
         }
 
-        $txData = $response['point_of_interaction']['transaction_data'] ?? [];
+        $this->applyPixInstructions($invoice, $response['data'] ?? [], $expiresAt);
 
-        $invoice->update([
-            'mp_payment_id' => isset($response['id']) ? (string) $response['id'] : null,
-            'pix_qr_code' => $txData['qr_code'] ?? null,
-            'pix_qr_code_base64' => $txData['qr_code_base64'] ?? null,
-            'pix_copy_paste' => $txData['qr_code'] ?? null,
-            'pix_expires_at' => $expiresAt,
-        ]);
-
-        return $invoice;
+        return $invoice->fresh();
     }
 
     /**
-     * Apply a MercadoPago payment notification to the matching invoice.
+     * Create a payable Pix charge that tops up a workspace's prepaid balance.
+     *
+     * Pix only, and that is not a gap: a top-up is "put R$50 in, whenever you
+     * feel like it", which no stored-instrument schedule describes. A card
+     * top-up would be a one-off card charge, and this product has nowhere to
+     * collect a card outside the subscription checkout.
+     *
+     * The amount comes from the caller, which is the first time that is true in
+     * this class: everywhere else the price belongs to a plan or a quote and
+     * client input would be a way to buy something cheaply. Here the customer
+     * genuinely chooses how much to deposit, so the only rule is a floor
+     * (`ai.credits.min_topup_cents`), enforced by the controller.
+     *
+     * There is no period. A balance is not a subscription: it does not expire,
+     * it does not renew, and `period_start`/`period_end` would only be
+     * describing a cycle that does not exist.
      */
-    public function applyPaymentUpdate(array $mpPayment): void
+    public function createCreditTopupPixInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
     {
-        $paymentId = isset($mpPayment['id']) ? (string) $mpPayment['id'] : null;
-        $status = $mpPayment['status'] ?? null;
-        if (! $paymentId) {
-            return;
+        $this->assertBillable($tenant);
+
+        $expiresAt = now()->addHours(self::PIX_WINDOW_HOURS);
+
+        $invoice = Invoice::create([
+            'tenant_id' => $tenant->id,
+            'purpose' => InvoicePurpose::CreditTopup,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Pix,
+            'amount_cents' => $amountCents,
+            'currency' => 'BRL',
+            'due_date' => $expiresAt->toDateString(),
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
+
+        // A top-up has no period, so the invoice id is the whole identity —
+        // unlike a subscription, where the reference must carry the cycle.
+        $invoice->update(['order_reference' => "pingly:topup:{$invoice->id}"]);
+
+        try {
+            $response = $this->payments->createPayment([
+                'order_reference' => $invoice->order_reference,
+                'amount' => $invoice->amount_cents,
+                'currency' => 'BRL',
+                'payment_method' => 'pix',
+                'description' => "Créditos — fatura #{$invoice->id}",
+                'expires_at' => $expiresAt->toIso8601String(),
+                'customer' => $this->customerPayload($tenant, $payerEmail),
+                'metadata' => ['tenant_id' => $tenant->id, 'purpose' => 'credit_topup'],
+            ], $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            throw $e;
         }
 
-        $invoice = Invoice::where('mp_payment_id', $paymentId)->first()
-            ?? $this->matchInvoiceByReference($mpPayment['external_reference'] ?? null);
+        $this->applyPixInstructions($invoice, $response['data'] ?? [], $expiresAt);
+
+        return $invoice->fresh();
+    }
+
+    /**
+     * Charge a cycle against the card stored at subscribe time.
+     *
+     * This is what a MercadoPago preapproval used to do on its own, and moving
+     * it here is the substantive change in this migration: nothing outside this
+     * codebase renews a subscription any more.
+     *
+     * The order reference carries the period, so the exactly-once guarantee is
+     * the payment service's unique constraint rather than a check of ours — a
+     * double-firing scheduler, two racing workers, and an operator pressing
+     * retry all converge on the same payment.
+     *
+     * @return Invoice|null  null when there was nothing to charge.
+     */
+    public function chargeRenewal(Subscription $subscription): ?Invoice
+    {
+        if ($subscription->payment_method !== PaymentMethod::Card || ! $subscription->payment_instrument_id) {
+            return null;
+        }
+
+        $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
+            ? $subscription->current_period_end->copy()
+            : now();
+        $periodEnd = $this->nextPeriodEnd($subscription, $periodStart);
+        $reference = $this->orderReference($subscription, $periodStart);
+
+        // Cheap local guard so a re-run does not even make the call. The
+        // service's constraint is what actually guarantees it.
+        if (Invoice::where('order_reference', $reference)->exists()) {
+            return null;
+        }
+
+        $invoice = Invoice::create([
+            'tenant_id' => $subscription->tenant_id,
+            'subscription_id' => $subscription->id,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Card,
+            'amount_cents' => $subscription->price_cents,
+            'currency' => $subscription->plan?->currency ?? 'BRL',
+            'period_start' => $periodStart,
+            'period_end' => $periodEnd,
+            'order_reference' => $reference,
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
+
+        try {
+            $response = $this->payments->createPayment([
+                'order_reference' => $reference,
+                'amount' => $invoice->amount_cents,
+                'currency' => $invoice->currency,
+                'payment_method' => 'card',
+                'instrument_id' => $subscription->payment_instrument_id,
+                // Nobody is at a screen: no security code, no 3-D Secure, and
+                // the provider must be one that can take such a charge at all.
+                'initiator' => 'merchant',
+                'description' => "Renovação {$subscription->plan?->name}",
+                'metadata' => ['tenant_id' => $subscription->tenant_id, 'subscription_id' => $subscription->id],
+            ], $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            Log::warning('Card renewal charge failed', [
+                'subscription_id' => $subscription->id,
+                'order_reference' => $reference,
+                'error' => $e->getMessage(),
+            ]);
+
+            // Not rethrown: the caller is a scheduler walking a list, and one
+            // dead card must not stop the rest of the run. The subscription
+            // lapses through billing:process-overdue like any unpaid cycle.
+            return $invoice->fresh();
+        }
+
+        $payment = $response['data'] ?? [];
+
+        $invoice->update(['payment_id' => isset($payment['id']) ? (string) $payment['id'] : null]);
+
+        if (($payment['status'] ?? null) === 'paid') {
+            $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]);
+            $this->activate($subscription, $periodEnd);
+            $this->fireUpdated($subscription);
+
+            return $invoice->fresh();
+        }
+
+        $this->handleRenewalDecline($subscription, $invoice, $payment);
+
+        return $invoice->fresh();
+    }
+
+    /**
+     * Apply a payment-service notification to the matching invoice.
+     *
+     * @param  array  $payment  Either a webhook `data` block or a fetched payment.
+     */
+    public function applyPaymentUpdate(array $payment): void
+    {
+        $paymentId = $this->paymentIdOf($payment);
+        $status = $payment['status'] ?? null;
+
+        $invoice = $this->matchInvoice($payment);
 
         if (! $invoice) {
-            Log::warning('MercadoPago payment with no matching invoice', ['payment_id' => $paymentId]);
+            Log::warning('Payment with no matching invoice', [
+                'payment_id' => $paymentId,
+                'order_reference' => $payment['order_reference'] ?? null,
+            ]);
 
             return;
         }
 
-        // Asset purchases (API Way instances, trained agents) have no plan
-        // subscription behind them — their paid hook provisions the asset via
-        // queued jobs instead of moving subscription state.
+        // Asset purchases (API Way instances, trained agents, top-ups) have no
+        // plan subscription behind them — their paid hook provisions the asset
+        // via queued jobs instead of moving subscription state.
         if ($invoice->purpose !== null && $invoice->purpose->isAssetPurchase()) {
             $this->applyAssetPaymentUpdate($invoice, $paymentId, $status);
 
@@ -214,34 +421,40 @@ class BillingService
             $subscription = Subscription::lockForUpdate()->find($invoice->subscription_id);
             $invoice->refresh();
 
-            // Already paid: a repeat 'approved' is a duplicate notification, and a
-            // late 'rejected'/'cancelled' must never un-pay a settled invoice. Only a
-            // refund/chargeback may still move it — those arrive precisely because it
-            // was paid, so a blanket return here made the 'refunded' arm below dead
-            // code and InvoiceStatus::Refunded unreachable.
-            if ($invoice->status === InvoiceStatus::Paid
-                && ! in_array($status, ['refunded', 'charged_back'], true)) {
+            // Already paid: a repeat is a duplicate notification, and a late
+            // decline must never un-pay a settled invoice. Only a refund or a
+            // dispute may still move it — those arrive precisely because it was
+            // paid, so a blanket return here would make the refund arm below
+            // dead code.
+            if ($invoice->status === InvoiceStatus::Paid && ! $this->reversesAPayment($status)) {
                 return;
             }
 
-            $invoice->mp_payment_id ??= $paymentId;
+            if ($paymentId && ! $invoice->payment_id) {
+                $invoice->payment_id = $paymentId;
+            }
 
-            match ($status) {
-                'approved' => $this->onInvoicePaid($subscription, $invoice),
-                'refunded', 'charged_back' => $invoice->update(['status' => InvoiceStatus::Refunded]),
-                'rejected', 'cancelled' => $invoice->update(['status' => InvoiceStatus::Failed]),
-                default => $invoice->save(), // pending / in_process — leave as-is
+            match (true) {
+                $status === 'paid' => $this->onInvoicePaid($subscription, $invoice),
+                $this->reversesAPayment($status) => $invoice->update(['status' => InvoiceStatus::Refunded]),
+                $status === 'expired' => $invoice->update(['status' => InvoiceStatus::Expired]),
+                in_array($status, ['declined', 'voided'], true) => $invoice->update(['status' => InvoiceStatus::Failed]),
+                // created / pending / authorized — and `unknown`, which is the
+                // one worth naming: the gateway did not answer, so nobody knows
+                // whether the charge exists. It is not a failure and must never
+                // be treated as one; it resolves by itself and notifies again.
+                default => $invoice->save(),
             };
         });
     }
 
     /**
-     * Settle a MercadoPago payment against an asset invoice (API Way, trained
-     * agent). Mirrors the subscription path's guards but never touches
+     * Settle a payment against an asset invoice (API Way, trained agent,
+     * top-up). Mirrors the subscription path's guards but never touches
      * Subscription state; the paid hook only flips local status and dispatches
      * provisioning jobs (no partner/hub HTTP inside the webhook transaction).
      */
-    protected function applyAssetPaymentUpdate(Invoice $invoice, string $paymentId, ?string $status): void
+    protected function applyAssetPaymentUpdate(Invoice $invoice, ?string $paymentId, ?string $status): void
     {
         DB::transaction(function () use ($invoice, $paymentId, $status) {
             if ($invoice->apiway_subscription_id) {
@@ -254,21 +467,23 @@ class BillingService
 
             $invoice->refresh();
 
-            if ($invoice->status === InvoiceStatus::Paid
-                && ! in_array($status, ['refunded', 'charged_back'], true)) {
+            if ($invoice->status === InvoiceStatus::Paid && ! $this->reversesAPayment($status)) {
                 return;
             }
 
-            $invoice->mp_payment_id ??= $paymentId;
+            if ($paymentId && ! $invoice->payment_id) {
+                $invoice->payment_id = $paymentId;
+            }
 
-            match ($status) {
-                'approved' => tap($invoice)->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]),
-                'refunded', 'charged_back' => $invoice->update(['status' => InvoiceStatus::Refunded]),
-                'rejected', 'cancelled' => $invoice->update(['status' => InvoiceStatus::Failed]),
-                default => $invoice->save(), // pending / in_process — leave as-is
+            match (true) {
+                $status === 'paid' => tap($invoice)->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]),
+                $this->reversesAPayment($status) => $invoice->update(['status' => InvoiceStatus::Refunded]),
+                $status === 'expired' => $invoice->update(['status' => InvoiceStatus::Expired]),
+                in_array($status, ['declined', 'voided'], true) => $invoice->update(['status' => InvoiceStatus::Failed]),
+                default => $invoice->save(),
             };
 
-            if ($status === 'approved') {
+            if ($status === 'paid') {
                 $fresh = $invoice->fresh();
 
                 match (true) {
@@ -285,300 +500,51 @@ class BillingService
             // or chargeback has to take it back out. The other purposes
             // provision something the customer keeps — reversing those is a
             // support decision, not an automatic one.
-            if (in_array($status, ['refunded', 'charged_back'], true)
-                && $invoice->purpose === InvoicePurpose::CreditTopup) {
+            if ($this->reversesAPayment($status) && $invoice->purpose === InvoicePurpose::CreditTopup) {
                 app(CreditService::class)->reverseTopup($invoice->fresh());
             }
         });
     }
 
     /**
-     * Create a payable Pix charge that tops up a workspace's prepaid balance.
+     * A stored instrument stopped working.
      *
-     * Pix only, and that is not a gap. The card path in this product is a
-     * MercadoPago Preapproval — a recurring authorisation for a fixed monthly
-     * amount — which is the wrong instrument for "put R$50 in, whenever you
-     * feel like it". A card top-up would need the one-off `/v1/payments` flow
-     * this application does not otherwise use.
-     *
-     * The amount comes from the caller, which is the first time that is true in
-     * this class: everywhere else the price belongs to a plan or a quote and
-     * client input would be a way to buy something cheaply. Here the customer
-     * genuinely chooses how much to deposit, so the only rule is a floor
-     * (`ai.credits.min_topup_cents`), enforced by the controller.
-     *
-     * There is no period. A balance is not a subscription: it does not expire,
-     * it does not renew, and `period_start`/`period_end` would only be
-     * describing a cycle that does not exist.
+     * Acting on this is what separates "your card expires next month" from
+     * "your service stopped": without it, `billing:charge-renewals` keeps
+     * charging a dead card, and repeatedly retrying a refused one raises the
+     * failure ratio the networks judge every other transaction by.
      */
-    public function createCreditTopupPixInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
+    public function applyInstrumentUpdate(array $data): void
     {
-        $expiresAt = now()->addDay();
-        $payerEmail ??= $tenant->user?->email ?? 'no-reply@example.com';
+        $instrumentId = isset($data['instrument_id']) ? (string) $data['instrument_id'] : null;
 
-        $invoice = Invoice::create([
-            'tenant_id' => $tenant->id,
-            'purpose' => InvoicePurpose::CreditTopup,
-            'status' => InvoiceStatus::Pending,
-            'payment_method' => PaymentMethod::Pix,
-            'amount_cents' => $amountCents,
-            'currency' => 'BRL',
-            'due_date' => $expiresAt->toDateString(),
-            'idempotency_key' => (string) Str::uuid(),
-        ]);
-
-        $payload = [
-            'transaction_amount' => $this->toAmount($invoice->amount_cents),
-            'description' => "Créditos de IA — fatura #{$invoice->id}",
-            'payment_method_id' => 'pix',
-            'payer' => ['email' => $payerEmail],
-            // Same millisecond-format requirement as createPixInvoice().
-            'date_of_expiration' => $expiresAt->format('Y-m-d\TH:i:s.vP'),
-            'external_reference' => "tenant:{$tenant->id}:credit:inv:{$invoice->id}",
-        ];
-
-        try {
-            $response = $this->mp->createPixPayment($payload, $invoice->idempotency_key);
-        } catch (\Throwable $e) {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
-
-            throw $e;
-        }
-
-        $txData = $response['point_of_interaction']['transaction_data'] ?? [];
-
-        $invoice->update([
-            'mp_payment_id' => isset($response['id']) ? (string) $response['id'] : null,
-            'pix_qr_code' => $txData['qr_code'] ?? null,
-            'pix_qr_code_base64' => $txData['qr_code_base64'] ?? null,
-            'pix_copy_paste' => $txData['qr_code'] ?? null,
-            'pix_expires_at' => $expiresAt,
-        ]);
-
-        return $invoice->fresh();
-    }
-
-    /**
-     * Reconcile a card subscription from a MercadoPago preapproval notification.
-     */
-    public function reconcilePreapproval(array $preapproval): void
-    {
-        $id = $preapproval['id'] ?? null;
-        if (! $id) {
+        if (! $instrumentId) {
             return;
         }
 
-        $subscription = Subscription::where('mp_preapproval_id', $id)->first();
-        if (! $subscription) {
-            // API Way unit purchases carry their own preapprovals.
-            $apiway = ApiwaySubscription::where('mp_preapproval_id', $id)->first();
-            if ($apiway) {
-                app(ApiwayService::class)->handlePreapprovalStatus($apiway, $preapproval['status'] ?? null);
-            }
+        $subscriptions = Subscription::where('payment_instrument_id', $instrumentId)->get();
 
-            return;
-        }
+        foreach ($subscriptions as $subscription) {
+            $subscription->update(['payment_instrument_id' => null]);
 
-        DB::transaction(function () use ($subscription, $preapproval) {
-            $subscription = Subscription::lockForUpdate()->find($subscription->id);
+            Log::info('Payment instrument detached from subscription', [
+                'subscription_id' => $subscription->id,
+                'instrument_id' => $instrumentId,
+                'reason' => $data['reason'] ?? null,
+                'status' => $data['status'] ?? null,
+            ]);
 
-            match ($preapproval['status'] ?? null) {
-                'authorized' => $subscription->status->isUsable()
-                    ? null
-                    : $this->activate($subscription, $this->nextPeriodEnd($subscription, now())),
-                'paused' => $this->markPastDue($subscription),
-                'cancelled' => $this->markCancelled($subscription),
-                default => null,
-            };
-
+            $this->notifier->notify(NotificationType::SubscriptionPastDue, $subscription);
             $this->fireUpdated($subscription);
-        });
+        }
     }
 
     /**
-     * Record a recurring auto-debit charge on a card subscription (MercadoPago
-     * `subscription_authorized_payment`). This is what actually renews a card plan each
-     * cycle: it creates a paid invoice for the next period and advances current_period_end.
-     *
-     * @param  array  $authorizedPayment  { preapproval_id, status, payment: { id, status } }
-     */
-    public function recordRecurringPayment(array $authorizedPayment, bool $force = false): void
-    {
-        $preapprovalId = $authorizedPayment['preapproval_id'] ?? null;
-        $payment = $authorizedPayment['payment'] ?? [];
-        $paymentId = isset($payment['id']) ? (string) $payment['id'] : null;
-        // The nested payment carries the real charge status; fall back to the envelope.
-        $status = $payment['status'] ?? ($authorizedPayment['status'] ?? null);
-
-        if (! $preapprovalId) {
-            return;
-        }
-
-        $subscription = Subscription::where('mp_preapproval_id', $preapprovalId)->first();
-        if (! $subscription) {
-            // API Way unit purchases: the recurring charge pays a renewal.
-            $apiway = ApiwaySubscription::where('mp_preapproval_id', $preapprovalId)->first();
-            if ($apiway) {
-                app(ApiwayService::class)->recordUnitCardRenewal($apiway, $paymentId, $status);
-
-                return;
-            }
-
-            Log::warning('MercadoPago recurring charge with no matching subscription', ['preapproval_id' => $preapprovalId]);
-
-            return;
-        }
-
-        // Only approved charges renew. Rejected/failed cycles are left for the preapproval
-        // status webhook + billing:process-overdue to grace/suspend.
-        if (! in_array($status, ['approved', 'processed'], true)) {
-            return;
-        }
-
-        // Idempotency (exact): this payment already produced an invoice.
-        if ($paymentId && Invoice::where('mp_payment_id', $paymentId)->exists()) {
-            return;
-        }
-
-        DB::transaction(function () use ($subscription, $paymentId, $force) {
-            $subscription = Subscription::lockForUpdate()->find($subscription->id);
-
-            // Webhook path: skip the initial authorization charge (subscribeWithCard already
-            // covered the first period) and any charge while the period is still comfortably
-            // active — a genuine renewal fires at/after the boundary. The reconcile path
-            // passes $force=true because it already dedups per-payment (see syncCardSubscription).
-            if (! $force && $subscription->current_period_end && $subscription->current_period_end->gt(now()->addHours(12))) {
-                return;
-            }
-
-            $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
-                ? $subscription->current_period_end
-                : now();
-            $periodEnd = $this->nextPeriodEnd($subscription, $periodStart);
-
-            Invoice::create([
-                'tenant_id' => $subscription->tenant_id,
-                'subscription_id' => $subscription->id,
-                'status' => InvoiceStatus::Paid,
-                'payment_method' => PaymentMethod::Card,
-                'amount_cents' => $subscription->price_cents,
-                'currency' => $subscription->plan?->currency ?? 'BRL',
-                'period_start' => $periodStart,
-                'period_end' => $periodEnd,
-                'paid_at' => now(),
-                'mp_payment_id' => $paymentId,
-                'mp_preapproval_id' => $subscription->mp_preapproval_id,
-            ]);
-
-            $this->activate($subscription, $periodEnd);
-            $this->fireUpdated($subscription);
-        });
-    }
-
-    /**
-     * Pull model for card subscriptions: reconcile a subscription straight from
-     * MercadoPago without waiting for a webhook. Syncs the preapproval status, then
-     * lists the subscription's charges and applies any new approved ones. Safe to run
-     * repeatedly (idempotent). Returns a small summary for command/CLI output.
-     *
-     * This is the manual counterpart to the subscription_authorized_payment webhook —
-     * use it when webhooks can't be configured (e.g. shared MercadoPago credentials).
-     *
-     * @return array{skipped?:bool, preapproval_status?:string|null, applied:int, linked:int}
-     */
-    public function syncCardSubscription(Subscription $subscription): array
-    {
-        if ($subscription->payment_method !== PaymentMethod::Card || ! $subscription->mp_preapproval_id) {
-            return ['skipped' => true, 'applied' => 0, 'linked' => 0];
-        }
-
-        $preapprovalStatus = null;
-
-        // 1) Sync the preapproval status (authorized / paused / cancelled).
-        try {
-            $preapproval = $this->mp->getPreapproval($subscription->mp_preapproval_id);
-            $preapprovalStatus = $preapproval['status'] ?? null;
-            $this->reconcilePreapproval($preapproval);
-        } catch (\Throwable $e) {
-            Log::warning('syncCardSubscription: preapproval fetch failed', [
-                'subscription_id' => $subscription->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        // 2) List this subscription's charges and apply new approved ones. Charges carry
-        //    the preapproval's external_reference (tenant:X:sub:Y).
-        $applied = 0;
-        $linked = 0;
-
-        try {
-            $ref = $this->externalReference($subscription->tenant, $subscription);
-            $result = $this->mp->searchPayments([
-                'external_reference' => $ref,
-                'sort' => 'date_created',
-                'criteria' => 'asc',
-            ]);
-
-            foreach (($result['results'] ?? []) as $payment) {
-                $paymentId = isset($payment['id']) ? (string) $payment['id'] : null;
-                $status = $payment['status'] ?? null;
-
-                if (! $paymentId || $status !== 'approved') {
-                    continue;
-                }
-
-                // Already linked to an invoice → nothing to do.
-                if (Invoice::where('mp_payment_id', $paymentId)->exists()) {
-                    continue;
-                }
-
-                // Backfill the initial charge: the first paid invoice was recorded at
-                // subscribe time without a payment id. Link it instead of extending —
-                // this is what stops the first charge from being counted as a renewal.
-                $unlinked = $subscription->invoices()
-                    ->where('status', InvoiceStatus::Paid->value)
-                    ->whereNull('mp_payment_id')
-                    ->orderBy('period_start')
-                    ->first();
-
-                if ($unlinked) {
-                    $unlinked->update(['mp_payment_id' => $paymentId]);
-                    $linked++;
-
-                    continue;
-                }
-
-                // A genuinely new approved charge → extend the period (force past the
-                // webhook-only guard; dedup above already handled the initial charge).
-                $this->recordRecurringPayment([
-                    'preapproval_id' => $subscription->mp_preapproval_id,
-                    'status' => $status,
-                    'payment' => ['id' => $paymentId, 'status' => $status],
-                ], force: true);
-
-                $applied++;
-            }
-        } catch (\Throwable $e) {
-            Log::warning('syncCardSubscription: payment search failed', [
-                'subscription_id' => $subscription->id,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        return [
-            'preapproval_status' => $preapprovalStatus,
-            'applied' => $applied,
-            'linked' => $linked,
-        ];
-    }
-
-    /**
-     * Super-admin manual / comp grant — bypasses MercadoPago entirely.
+     * Super-admin manual / comp grant — bypasses the payment service entirely.
      *
      * The grantor is an `Admin`, never a `User`: this is only reachable from
      * the Back Office, and `subscriptions.manual_granted_by` has held admin ids
-     * since they moved out of `users`. Typing it as `User` here is what made
-     * every assign attempt a 500 — the Back Office hands over an `Admin`.
+     * since they moved out of `users`.
      */
     public function grantManual(Tenant $tenant, ?Plan $plan, ?CarbonInterface $endsAt, Admin $admin, ?string $note = null): Subscription
     {
@@ -610,7 +576,11 @@ class BillingService
     }
 
     /**
-     * Cancel at period end (also cancels the MercadoPago preapproval for cards).
+     * Cancel at period end.
+     *
+     * Nothing to tell the provider: without a preapproval there is no standing
+     * authorisation to revoke — the next cycle simply is not charged, because
+     * `billing:charge-renewals` skips a subscription flagged to end.
      */
     public function cancel(Subscription $subscription): Subscription
     {
@@ -620,14 +590,6 @@ class BillingService
         // either, hence the usable-status guard.
         if (! $subscription->status->isUsable() && ! $this->hasSettledInvoice($subscription)) {
             return $this->cancelPendingCheckout($subscription);
-        }
-
-        if ($subscription->payment_method === PaymentMethod::Card && $subscription->mp_preapproval_id) {
-            try {
-                $this->mp->cancelPreapproval($subscription->mp_preapproval_id);
-            } catch (\Throwable $e) {
-                Log::error('Failed to cancel MercadoPago preapproval', ['error' => $e->getMessage()]);
-            }
         }
 
         $subscription->update([
@@ -641,9 +603,8 @@ class BillingService
     }
 
     /**
-     * Abandon a checkout that was never paid: void the open charge at the
-     * provider, drop the preapproval, mark the subscription cancelled and detach
-     * it from the tenant.
+     * Abandon a checkout that was never paid: close the open charge locally,
+     * mark the subscription cancelled and detach it from the tenant.
      *
      * Detaching matters — a cancelled row left in tenant.current_subscription_id
      * still reads as "your current plan" everywhere (the plan grid would keep
@@ -661,22 +622,11 @@ class BillingService
 
         $this->voidOpenPixInvoices($subscription);
 
-        // The void above re-reads any charge MercadoPago refused to cancel, so a
-        // pix paid seconds before this call has already been applied (and the
+        // The step above re-reads each charge at the service, so a pix paid
+        // seconds before this call has already been applied (and the
         // subscription activated). Never tear that down.
         if ($this->hasSettledInvoice($subscription)) {
             throw new PaymentAlreadySettledException;
-        }
-
-        if ($subscription->payment_method === PaymentMethod::Card && $subscription->mp_preapproval_id) {
-            try {
-                $this->mp->cancelPreapproval($subscription->mp_preapproval_id);
-            } catch (\Throwable $e) {
-                Log::error('Failed to cancel MercadoPago preapproval', [
-                    'subscription_id' => $subscription->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
         }
 
         $tenant = $subscription->tenant;
@@ -706,8 +656,8 @@ class BillingService
     }
 
     /**
-     * Void every still-open pix charge on a subscription. Returns how many were
-     * cancelled.
+     * Close every still-open pix charge on a subscription. Returns how many
+     * were cancelled.
      */
     public function voidOpenPixInvoices(Subscription $subscription): int
     {
@@ -726,8 +676,16 @@ class BillingService
     }
 
     /**
-     * Cancel a single pending charge, killing the pix QR at MercadoPago first so
-     * a stale copy-paste code can never settle afterwards.
+     * Close a single pending charge.
+     *
+     * ⚠️ Local only. The payment service cannot cancel a pending Pix — `void`
+     * releases a card authorisation and refuses everything else — so the QR
+     * stays payable until `expires_at` (see PIX_WINDOW_HOURS). What this does
+     * is stop offering it and stop counting it.
+     *
+     * The read before the write is therefore the important half: it honours a
+     * payment that landed in the seconds before the customer pressed cancel,
+     * rather than voiding a charge they actually made.
      */
     public function cancelInvoice(Invoice $invoice): Invoice
     {
@@ -735,30 +693,21 @@ class BillingService
             return $invoice;
         }
 
-        if ($invoice->mp_payment_id) {
+        if ($invoice->payment_id) {
             try {
-                $this->mp->cancelPayment($invoice->mp_payment_id);
-            } catch (\Throwable $e) {
-                // MercadoPago refuses to cancel a charge it already settled. Re-read
-                // it: if the tenant paid moments before hitting cancel, honour the
-                // payment instead of voiding a charge they actually made.
-                $payment = null;
+                $payment = $this->payments->getPayment($invoice->payment_id);
 
-                try {
-                    $payment = $this->mp->getPayment($invoice->mp_payment_id);
-                } catch (\Throwable) {
-                    // Provider unreachable — fall through and void locally.
-                }
-
-                if (($payment['status'] ?? null) === 'approved') {
+                if (($payment['status'] ?? null) === 'paid') {
                     $this->applyPaymentUpdate($payment);
 
                     return $invoice->fresh();
                 }
-
-                Log::warning('Failed to cancel pix charge at MercadoPago', [
+            } catch (\Throwable $e) {
+                // Service unreachable — fall through and close locally. The
+                // webhook still arrives if it is paid later.
+                Log::warning('Could not re-read a charge before cancelling it', [
                     'invoice_id' => $invoice->id,
-                    'mp_payment_id' => $invoice->mp_payment_id,
+                    'payment_id' => $invoice->payment_id,
                     'error' => $e->getMessage(),
                 ]);
             }
@@ -771,17 +720,16 @@ class BillingService
 
     public function markPastDue(Subscription $subscription): void
     {
-        // Already past due — leave the grace window alone. reconcilePreapproval()
-        // calls this unconditionally for 'paused' preapprovals and billing:pull-cards
-        // runs every 15 minutes, so re-stamping grace_ends_at here kept pushing the
-        // deadline forward and suspend() could never fire.
+        // Already past due — leave the grace window alone. Re-stamping
+        // grace_ends_at on every scheduler pass kept pushing the deadline
+        // forward, and suspend() could never fire.
         if ($subscription->status === SubscriptionStatus::PastDue) {
             return;
         }
 
         $subscription->update([
             'status' => SubscriptionStatus::PastDue,
-            'grace_ends_at' => now()->addDays(config('services.mercadopago.grace_days')),
+            'grace_ends_at' => now()->addDays(config('services.billing.grace_days')),
         ]);
         $this->gate->forget($subscription->tenant);
         $this->notifier->notify(NotificationType::SubscriptionPastDue, $subscription);
@@ -793,14 +741,8 @@ class BillingService
             return;
         }
 
-        if ($subscription->payment_method === PaymentMethod::Card && $subscription->mp_preapproval_id) {
-            try {
-                $this->mp->cancelPreapproval($subscription->mp_preapproval_id);
-            } catch (\Throwable $e) {
-                Log::error('Failed to cancel preapproval on suspend', ['error' => $e->getMessage()]);
-            }
-        }
-
+        // No standing authorisation to revoke: a stored instrument is only
+        // charged when we ask, and a suspended subscription is never asked for.
         $subscription->update(['status' => SubscriptionStatus::Suspended]);
         $this->gate->forget($subscription->tenant);
         $this->fireUpdated($subscription);
@@ -808,6 +750,143 @@ class BillingService
     }
 
     // --- internals -------------------------------------------------------
+
+    /**
+     * The idempotency anchor, and the whole reason a cycle cannot be billed
+     * twice.
+     *
+     * Built from the subscription and the period it covers, never from the
+     * attempt. The pair of product and order reference is unique in the payment
+     * service's database, so a double-firing scheduler, two racing workers and
+     * an operator pressing retry days later all land on the same payment.
+     *
+     * ⚠️ A random value per attempt would disable that protection entirely, and
+     * nothing here would notice — the first sign would be a customer charged
+     * twice for one month.
+     */
+    protected function orderReference(Subscription $subscription, CarbonInterface $periodStart): string
+    {
+        return "pingly:sub:{$subscription->id}:".Carbon::instance($periodStart)->toDateString();
+    }
+
+    /**
+     * Who is paying, in the acquirer's terms.
+     *
+     * `consented_to_stored_instruments` is only ever true for a card checkout,
+     * where the customer ticked the box that says so. A pre-ticked box is not
+     * consent under LGPD, and the service refuses storage without it.
+     */
+    protected function customerPayload(Tenant $tenant, ?string $payerEmail = null): array
+    {
+        $user = $tenant->user;
+
+        return array_filter([
+            'reference' => $tenant->paymentCustomerReference(),
+            'name' => $tenant->billing_name ?: $user?->name,
+            'email' => $payerEmail ?: $user?->email,
+            'document_type' => $tenant->billing_document_type,
+            'document_number' => $tenant->billing_document_number,
+            'document_country' => 'BR',
+            'consented_to_stored_instruments' => true,
+        ], fn ($value) => $value !== null && $value !== '');
+    }
+
+    /**
+     * Refuse before calling out, where the sentence can still say what to do.
+     *
+     * The service rejects a charge with no CPF or CNPJ by naming
+     * `customer.document_number` — a field the person reading it has never seen
+     * and cannot find in this product.
+     */
+    protected function assertBillable(?Tenant $tenant): void
+    {
+        if (! $tenant?->hasBillingIdentity()) {
+            throw new MissingBillingIdentityException;
+        }
+    }
+
+    /** Copy a Pix instruction onto the invoice columns the SPA already reads. */
+    protected function applyPixInstructions(Invoice $invoice, array $payment, CarbonInterface $fallbackExpiry): void
+    {
+        $instructions = $payment['instructions'] ?? [];
+
+        $invoice->update([
+            'payment_id' => isset($payment['id']) ? (string) $payment['id'] : null,
+            'pix_qr_code' => $instructions['qr_code'] ?? null,
+            'pix_qr_code_base64' => $instructions['qr_code_image'] ?? null,
+            'pix_copy_paste' => $instructions['qr_code'] ?? null,
+            'pix_expires_at' => isset($instructions['expires_at'])
+                ? Carbon::parse($instructions['expires_at'])
+                : $fallbackExpiry,
+        ]);
+    }
+
+    /**
+     * Keep the instrument the first charge stored, so later cycles have
+     * something to bill.
+     *
+     * Storage failing never fails the payment — the charge went through and the
+     * customer has their plan — so this is a warning, not an error. What it
+     * costs is the next renewal, which is why it is logged loudly enough to be
+     * found before that renewal comes round.
+     */
+    protected function rememberInstrument(Subscription $subscription, array $payment): void
+    {
+        $instrumentId = $payment['instrument']['id'] ?? null;
+        $customerId = $payment['customer']['id'] ?? null;
+
+        if ($instrumentId === null && ($payment['status'] ?? null) === 'paid') {
+            Log::warning('Card charge succeeded but no instrument was stored', [
+                'subscription_id' => $subscription->id,
+                'payment_id' => $payment['id'] ?? null,
+            ]);
+        }
+
+        $subscription->forceFill(array_filter([
+            'payment_instrument_id' => $instrumentId === null ? null : (string) $instrumentId,
+            'payment_customer_id' => $customerId === null ? null : (string) $customerId,
+        ], fn ($value) => $value !== null))->save();
+    }
+
+    /**
+     * A renewal that did not go through.
+     *
+     * The split is `decline.category`, and it is the only thing worth branching
+     * on: a `permanent` refusal — lost, stolen, closed — will refuse again
+     * tomorrow, and retrying it raises the failure ratio the card networks
+     * judge every other transaction by. So the instrument is dropped and the
+     * customer asked for another. A `temporary` one (no funds, limit reached)
+     * is left alone; the next scheduler pass reuses the same order reference,
+     * so trying again cannot double-charge.
+     */
+    protected function handleRenewalDecline(Subscription $subscription, Invoice $invoice, array $payment): void
+    {
+        $status = $payment['status'] ?? null;
+
+        // `unknown` means the gateway never answered. Leave the invoice
+        // pending: the payment may well exist, and issuing a second one is
+        // exactly how a customer is billed twice.
+        if ($status === 'unknown') {
+            return;
+        }
+
+        $invoice->update(['status' => InvoiceStatus::Failed]);
+
+        $category = $payment['decline']['category'] ?? 'unknown';
+
+        Log::warning('Card renewal declined', [
+            'subscription_id' => $subscription->id,
+            'order_reference' => $invoice->order_reference,
+            'category' => $category,
+            'code' => $payment['decline']['code'] ?? null,
+        ]);
+
+        if ($category === 'permanent') {
+            $subscription->update(['payment_instrument_id' => null]);
+        }
+
+        $this->notifier->notify(NotificationType::SubscriptionPastDue, $subscription);
+    }
 
     protected function onInvoicePaid(Subscription $subscription, Invoice $invoice): void
     {
@@ -827,8 +906,9 @@ class BillingService
 
     protected function createPendingSubscription(Tenant $tenant, Plan $plan, PaymentMethod $method): Subscription
     {
-        // Before the tenant moves on: void whatever charge the old subscription
-        // still has open (calls MercadoPago, so keep it out of the transaction).
+        // Before the tenant moves on: close whatever charge the old
+        // subscription still has open (talks to the payment service, so keep it
+        // out of the transaction).
         $this->voidSupersededCharges($tenant);
 
         return DB::transaction(function () use ($tenant, $plan, $method) {
@@ -860,7 +940,7 @@ class BillingService
 
     protected function activate(Subscription $subscription, ?CarbonInterface $periodEnd): void
     {
-        // Renewals land here too (recordRecurringPayment / onInvoicePaid run every
+        // Renewals land here too (chargeRenewal / onInvoicePaid run every
         // cycle), so only a real transition into Active is worth announcing —
         // otherwise a card tenant is congratulated every month.
         $wasActive = $subscription->status === SubscriptionStatus::Active;
@@ -876,31 +956,6 @@ class BillingService
         if (! $wasActive) {
             $this->notifier->notify(NotificationType::SubscriptionActivated, $subscription);
         }
-    }
-
-    protected function markCancelled(Subscription $subscription): void
-    {
-        $subscription->update([
-            'status' => SubscriptionStatus::Cancelled,
-            'cancelled_at' => now(),
-        ]);
-        $this->gate->forget($subscription->tenant);
-    }
-
-    protected function recordPaidInvoice(Subscription $subscription, ?string $mpPaymentId, PaymentMethod $method): Invoice
-    {
-        return Invoice::create([
-            'tenant_id' => $subscription->tenant_id,
-            'subscription_id' => $subscription->id,
-            'status' => InvoiceStatus::Paid,
-            'payment_method' => $method,
-            'amount_cents' => $subscription->price_cents,
-            'currency' => $subscription->plan?->currency ?? 'BRL',
-            'period_start' => $subscription->current_period_start,
-            'period_end' => $subscription->current_period_end,
-            'paid_at' => now(),
-            'mp_preapproval_id' => $subscription->mp_preapproval_id,
-        ]);
     }
 
     /** Whether any charge on this subscription was ever actually paid. */
@@ -924,7 +979,7 @@ class BillingService
      * Without this, switching plans leaves the old QR live: paying it would
      * settle an invoice belonging to a superseded subscription — money in, no
      * access, since the tenant pointer has moved on. Runs outside the caller's
-     * transaction because it talks to MercadoPago.
+     * transaction because it talks to the payment service.
      */
     protected function voidSupersededCharges(Tenant $tenant): void
     {
@@ -939,30 +994,43 @@ class BillingService
         $this->gate->forget($tenant);
     }
 
-    protected function matchInvoiceByReference(?string $reference): ?Invoice
+    /**
+     * Find the invoice a payment belongs to.
+     *
+     * `order_reference` is checked as well as the id, and it is the half that
+     * matters when a webhook overtakes the response that created the payment —
+     * at that moment the invoice has a reference but no id yet.
+     */
+    protected function matchInvoice(array $payment): ?Invoice
     {
-        if (! $reference || ! preg_match('/inv:(\d+)/', $reference, $m)) {
-            return null;
+        $paymentId = $this->paymentIdOf($payment);
+
+        if ($paymentId && $invoice = Invoice::where('payment_id', $paymentId)->first()) {
+            return $invoice;
         }
 
-        return Invoice::find((int) $m[1]);
+        $reference = $payment['order_reference'] ?? null;
+
+        return $reference ? Invoice::where('order_reference', $reference)->first() : null;
     }
 
-    protected function externalReference(Tenant $tenant, Subscription $subscription, ?Invoice $invoice = null): string
+    protected function paymentIdOf(array $payment): ?string
     {
-        $ref = "tenant:{$tenant->id}:sub:{$subscription->id}";
+        // A webhook says `payment_id`; a fetched payment says `id`.
+        $id = $payment['payment_id'] ?? $payment['id'] ?? null;
 
-        return $invoice ? "{$ref}:inv:{$invoice->id}" : $ref;
+        return $id === null ? null : (string) $id;
+    }
+
+    /** Statuses that take money back out of a settled invoice. */
+    protected function reversesAPayment(?string $status): bool
+    {
+        return in_array($status, ['refunded', 'partially_refunded', 'disputed'], true);
     }
 
     protected function nextPeriodEnd(Subscription $subscription, CarbonInterface $from): CarbonInterface
     {
         return $subscription->billing_cycle->advance(Carbon::instance($from));
-    }
-
-    protected function toAmount(int $cents): float
-    {
-        return round($cents / 100, 2);
     }
 
     protected function fireUpdated(Subscription $subscription): void

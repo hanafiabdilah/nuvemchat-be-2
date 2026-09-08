@@ -195,7 +195,7 @@ test('an admin without the permission cannot read platform AI spend', function (
 });
 
 test('a tenant over its AI run quota is refused before the hub is called', function () {
-    config()->set('services.mercadopago.enforce', true);
+    config()->set('services.billing.enforce', true);
     Http::fake();
 
     [$tenant, $agent] = tenantWithAiAgent(runLimit: 2);
@@ -212,7 +212,7 @@ test('a tenant over its AI run quota is refused before the hub is called', funct
 });
 
 test('a plan with no AI run quota is unlimited', function () {
-    config()->set('services.mercadopago.enforce', true);
+    config()->set('services.billing.enforce', true);
 
     [$tenant] = tenantWithAiAgent(runLimit: null);
     aiRun($tenant);
@@ -231,7 +231,7 @@ test('AI runs are counted within the billing period, not the calendar month', fu
 });
 
 test('enforcement follows the billing master switch', function () {
-    config()->set('services.mercadopago.enforce', false);
+    config()->set('services.billing.enforce', false);
     Http::fake(['*' => Http::response(['id' => 'r1', 'status' => 'COMPLETED', 'output' => ['message' => 'hi']], 200)]);
 
     [$tenant, $agent] = tenantWithAiAgent(runLimit: 1);

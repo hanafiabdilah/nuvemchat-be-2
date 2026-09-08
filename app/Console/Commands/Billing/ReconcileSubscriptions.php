@@ -3,72 +3,61 @@
 namespace App\Console\Commands\Billing;
 
 use App\Enums\Billing\InvoiceStatus;
-use App\Enums\Billing\PaymentMethod;
-use App\Enums\Billing\SubscriptionStatus;
 use App\Models\Invoice;
-use App\Models\Subscription;
 use App\Services\Billing\BillingService;
-use App\Services\Billing\MercadoPago\MercadoPagoClient;
+use App\Services\Billing\PaymentService\PaymentServiceClient;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
+/**
+ * The fallback for a webhook that never arrived.
+ *
+ * The payment service retries a delivery eight times over about ten hours and
+ * then gives up — which is only acceptable because of this: every in-flight
+ * charge is re-read straight from the service, so a lost notification costs a
+ * delay rather than a payment nobody noticed.
+ *
+ * Idempotent by construction. Re-applying a payment that already settled its
+ * invoice is a no-op inside applyPaymentUpdate().
+ */
 class ReconcileSubscriptions extends Command
 {
     protected $signature = 'billing:reconcile
-                            {--hours=48 : Look back this many hours for in-flight pix invoices}
-                            {--id= : Reconcile only this subscription id (card pull)}';
+                            {--hours=48 : Look back this many hours for in-flight charges}
+                            {--invoice= : Reconcile only this invoice id}';
 
-    protected $description = 'Safety net / pull model: reconcile in-flight pix payments and card subscriptions (preapproval + recurring charges) straight from MercadoPago, without waiting for webhooks.';
+    protected $description = 'Safety net: re-read in-flight charges from the payment service without waiting for webhooks.';
 
-    public function handle(MercadoPagoClient $mp, BillingService $billing): int
+    public function handle(PaymentServiceClient $payments, BillingService $billing): int
     {
-        // Single subscription (manual card check) — handy when webhooks aren't configured.
-        if ($this->option('id')) {
-            $sub = Subscription::find((int) $this->option('id'));
-            if (! $sub) {
-                $this->error('Subscription not found.');
-                return self::FAILURE;
-            }
-            $r = $billing->syncCardSubscription($sub);
-            $this->info("Sub #{$sub->id}: preapproval={$r['preapproval_status']} applied={$r['applied']} linked={$r['linked']} → period_end={$sub->fresh()->current_period_end}");
-            return self::SUCCESS;
-        }
-
-        // 1) Pending pix invoices missed by webhooks.
         $invoices = Invoice::query()
-            ->where('status', InvoiceStatus::Pending->value)
-            ->whereNotNull('mp_payment_id')
-            ->where('created_at', '>=', now()->subHours((int) $this->option('hours')))
+            ->when(
+                $this->option('invoice'),
+                fn ($q) => $q->whereKey((int) $this->option('invoice')),
+                fn ($q) => $q
+                    ->where('status', InvoiceStatus::Pending->value)
+                    ->where('created_at', '>=', now()->subHours((int) $this->option('hours'))),
+            )
+            // Nothing to ask about without an id: the create call never came
+            // back, and there is no charge on the other side to reconcile with.
+            ->whereNotNull('payment_id')
             ->get();
 
         $reconciled = 0;
+
         foreach ($invoices as $invoice) {
             try {
-                $billing->applyPaymentUpdate($mp->getPayment($invoice->mp_payment_id));
+                $billing->applyPaymentUpdate($payments->getPayment($invoice->payment_id));
                 $reconciled++;
             } catch (\Throwable $e) {
-                Log::error('Reconcile failed for invoice', ['invoice_id' => $invoice->id, 'error' => $e->getMessage()]);
+                Log::error('Reconcile failed for invoice', [
+                    'invoice_id' => $invoice->id,
+                    'error' => $e->getMessage(),
+                ]);
             }
         }
-        $this->info("Reconciled {$reconciled} pix invoice(s).");
 
-        // 2) Card subscriptions — pull preapproval status + recurring charges.
-        $cards = Subscription::query()
-            ->where('payment_method', PaymentMethod::Card->value)
-            ->whereNotNull('mp_preapproval_id')
-            ->whereNotIn('status', [SubscriptionStatus::Cancelled->value])
-            ->get();
-
-        $applied = 0;
-        foreach ($cards as $sub) {
-            try {
-                $r = $billing->syncCardSubscription($sub);
-                $applied += $r['applied'];
-            } catch (\Throwable $e) {
-                Log::error('Reconcile failed for card subscription', ['subscription_id' => $sub->id, 'error' => $e->getMessage()]);
-            }
-        }
-        $this->info("Synced {$cards->count()} card subscription(s), {$applied} renewal(s) applied.");
+        $this->info("Reconciled {$reconciled} of {$invoices->count()} in-flight charge(s).");
 
         return self::SUCCESS;
     }

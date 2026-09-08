@@ -162,7 +162,7 @@ final class UpstreamError
         'graph.facebook.com',
         'api.telegram.org',
         'discord.com/api',
-        'api.mercadopago.com',
+        'gateway.proxybr.com.br',
         'api.elevenlabs.io',
         'api.openai.com',
         'business-api.tiktok.com',
@@ -175,6 +175,9 @@ final class UpstreamError
         'must be a string',
         'must be an object',
         'node_error',
+        // The payment service names the gateway that refused; that sentence is
+        // for whoever operates it, never for the person who pressed Pay.
+        'provider account ',
         'access_token',
         'invalid_grant',
         'invalid_client',
@@ -205,7 +208,7 @@ final class UpstreamError
             UpstreamProvider::Telegram => self::telegram($needle, $code),
             UpstreamProvider::Discord => self::discord($needle, $code),
             UpstreamProvider::TikTok => self::tiktok($needle, $code),
-            UpstreamProvider::MercadoPago => self::mercadoPago($needle, $code),
+            UpstreamProvider::PaymentService => self::paymentService($needle, $code),
             UpstreamProvider::Email => self::email($needle, $code),
             UpstreamProvider::Unknown => null,
         };
@@ -232,6 +235,11 @@ final class UpstreamError
                 UpstreamProvider::ApiwayNumbers => 'Não foi possível contratar este número com as opções escolhidas. Selecione outro aplicativo ou DDD e tente novamente.',
                 UpstreamProvider::AiHub => 'O serviço de IA não aceitou esta configuração. Revise as opções do agente e, se persistir, fale com o suporte.',
                 UpstreamProvider::ApiwayCore => 'A instância do WhatsApp não aceitou esta operação. Verifique se ela está conectada e tente novamente.',
+                // Never "revise seus dados" for a payment we could not read:
+                // the overwhelming majority of unrecognised refusals here are
+                // configuration on our side, and sending someone back to
+                // re-check a card that was fine is the worst of both.
+                UpstreamProvider::PaymentService => 'Não foi possível concluir este pagamento. Tente novamente ou use outro meio de pagamento.',
                 default => 'Não foi possível concluir esta operação. Revise os dados e tente novamente.',
             };
         }
@@ -241,7 +249,7 @@ final class UpstreamError
             UpstreamProvider::ApiwayPartner => 'A contratação de instâncias está indisponível no momento. Tente novamente em instantes.',
             UpstreamProvider::ApiwayCore => 'Não foi possível falar com a instância do WhatsApp. Verifique se ela está ativa e tente novamente.',
             UpstreamProvider::ApiwayNumbers => 'A contratação de números está indisponível no momento. Tente novamente em instantes.',
-            UpstreamProvider::MercadoPago => 'Não foi possível processar o pagamento agora. Tente novamente em instantes.',
+            UpstreamProvider::PaymentService => 'Não foi possível processar o pagamento agora. Tente novamente em instantes.',
             UpstreamProvider::Email => 'Não foi possível falar com o servidor de e-mail. Verifique a conexão e tente novamente.',
             default => 'Não foi possível concluir a ação no canal agora. Tente novamente em instantes.',
         };
@@ -640,28 +648,90 @@ final class UpstreamError
     }
 
     /** @return array{0: string, 1: string, 2?: int}|null */
-    private static function mercadoPago(string $m, string $code): ?array
+    /**
+     * The payment service answers with a stable `code`, so this dictionary
+     * branches on that rather than on prose — the one integration here where
+     * that is possible, because it is ours.
+     *
+     * Its `message` names the gateway that refused and quotes their reason
+     * ("Provider account \"mp-main\" is winding down"). That sentence is written
+     * for whoever operates the payment service, and it is precisely what must
+     * not reach a business owner, so it stays in the log beside the reference.
+     *
+     * @return array{0: string, 1: string, 2?: int}|null
+     */
+    private static function paymentService(string $m, string $code): ?array
     {
         return match (true) {
-            str_contains($m, 'card'),
-            str_contains($m, 'cartao'),
-            str_contains($m, 'token') => [
-                'payment_card_rejected',
-                'Não foi possível usar este cartão. Confira os dados ou tente outro meio de pagamento.',
+            // Ours: no API key, no gateway account, or a vault that is down.
+            // Nothing the customer can check, so nothing that reads like it.
+            $code === 'payment_service_unconfigured',
+            $code === 'no_usable_provider',
+            $code === 'vault_unavailable',
+            $code === 'provider_not_active' => [
+                'payment_unavailable',
+                'Os pagamentos estão indisponíveis no momento. Já estamos verificando — tente novamente em instantes.',
+                502,
+            ],
+
+            // The issuer said no. `decline` on the payment carries whether a
+            // retry is worth anything; here we only have the refusal itself.
+            $code === 'payment_declined',
+            $code === 'instrument_rejected' => [
+                'payment_declined',
+                'O pagamento foi recusado pelo banco emissor. Confira os dados do cartão ou use outro meio de pagamento.',
                 422,
             ],
-            str_contains($m, 'amount'),
-            str_contains($m, 'valor'),
-            str_contains($m, 'minimum') => [
-                'payment_amount_invalid',
-                'O valor desta cobrança não foi aceito pelo provedor de pagamentos. Ajuste o valor e tente novamente.',
+
+            // Refused before any network call. The one case worth naming
+            // separately: this gateway keeps cards only as a checkout
+            // convenience and asks for the security code every time, so an
+            // automatic renewal on it is impossible — and that is ours to fix,
+            // not something the customer can retry into working.
+            str_contains($m, 'merchant-initiated'),
+            str_contains($m, 'merchant initiated') => [
+                'card_autorenew_unsupported',
+                'A cobrança automática no cartão não está disponível no momento. Use Pix para continuar com o plano.',
                 422,
             ],
-            default => [
-                'payment_failed',
-                'Não foi possível processar o pagamento no momento. Tente novamente ou use outro meio de pagamento.',
+
+            $code === 'payment_refused' => [
+                'payment_refused',
+                'Esta cobrança não foi aceita. Revise o valor e o meio de pagamento e tente novamente.',
                 422,
             ],
+
+            // Storing a card was attempted without recorded consent — a bug on
+            // our side, since the checkout is what collects it.
+            $code === 'consent_required' => [
+                'payment_consent_missing',
+                'Não foi possível salvar este meio de pagamento. Tente novamente e, se persistir, fale com o suporte.',
+                422,
+            ],
+
+            $code === 'unsupported_instrument',
+            $code === 'instrument_not_chargeable' => [
+                'payment_method_unavailable',
+                'Este meio de pagamento não pode ser usado agora. Escolha outro para continuar.',
+                422,
+            ],
+
+            $code === 'refund_refused',
+            $code === 'refund_declined' => [
+                'refund_failed',
+                'Não foi possível estornar esta cobrança. Fale com o suporte informando o código abaixo.',
+                422,
+            ],
+
+            // Two requests with the same idempotency key in flight. Genuinely
+            // transient, and the honest instruction is to wait.
+            $code === 'idempotency_in_flight' => [
+                'payment_in_progress',
+                'Este pagamento já está sendo processado. Aguarde alguns instantes antes de tentar de novo.',
+                409,
+            ],
+
+            default => null,
         };
     }
 

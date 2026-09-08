@@ -28,7 +28,7 @@ class UserController extends Controller
             // 403 on. Entitlements alone are status-blind (they come from the plan
             // snapshot), so they cannot answer "is this tenant paid up?".
             $data['billing'] = [
-                'enforced' => (bool) config('services.mercadopago.enforce'),
+                'enforced' => (bool) config('services.billing.enforce'),
                 'subscription_usable' => $gate->usable($tenant),
             ];
         }

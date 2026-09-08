@@ -39,7 +39,7 @@ class EnsureSubscriptionActive
     public function handle(Request $request, Closure $next): Response
     {
         // Master switch for the enforcement rollout.
-        if (! config('services.mercadopago.enforce')) {
+        if (! config('services.billing.enforce')) {
             return $next($request);
         }
 

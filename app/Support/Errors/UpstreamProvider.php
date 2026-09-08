@@ -37,7 +37,15 @@ enum UpstreamProvider: string
 
     case TikTok = 'tiktok';
 
-    case MercadoPago = 'mercadopago';
+    /**
+     * The group's own payment service, which owns every gateway account.
+     *
+     * Named after the service and not after a gateway on purpose: which of
+     * dLocal, MercadoPago or OpenPIX took a charge is decided over there and
+     * changes without notice, so a case per gateway would be a dictionary that
+     * silently stopped matching.
+     */
+    case PaymentService = 'payment_service';
 
     /** The tenant's own mail server (SMTP/IMAP). */
     case Email = 'email';
@@ -81,7 +89,7 @@ enum UpstreamProvider: string
             self::Telegram => 'o Telegram',
             self::Discord => 'o Discord',
             self::TikTok => 'o TikTok',
-            self::MercadoPago => 'o provedor de pagamentos',
+            self::PaymentService => 'o processamento de pagamentos',
             self::Email => 'o servidor de e-mail',
             self::Unknown => 'o serviço externo',
         };

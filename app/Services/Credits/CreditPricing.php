@@ -17,7 +17,7 @@ use App\Services\AiTokens\KnownModelPrices;
  *
  * Every commercial number of the rental offering lives in the `settings` table
  * so the Back Office can move it without a deploy — the same pattern as the
- * MercadoPago and ProxyBR credentials — falling back to config/ai.php until an
+ * payment service and ProxyBR credentials — falling back to config/ai.php until an
  * admin has ever touched it. Prices are set by whoever runs the business, and a
  * price that needs a release is a price nobody adjusts.
  *

@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
  *
  * Queued because the fork is a dozen or more calls to the hub — far too much
  * to hold a checkout request open for, and absolutely too much to do inside a
- * MercadoPago webhook (the API Way lesson: never partner HTTP inside the
+ * payment webhook (the API Way lesson: never partner HTTP inside the
  * webhook transaction).
  *
  * Takes the id rather than the model so a retry always reads current state:

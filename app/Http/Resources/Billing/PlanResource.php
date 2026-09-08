@@ -23,8 +23,8 @@ class PlanResource extends JsonResource
             'is_active' => $this->is_active,
             'is_public' => $this->is_public,
             'sort_order' => $this->sort_order,
-            'mp_card_enabled' => $this->mp_card_enabled,
-            'mp_pix_enabled' => $this->mp_pix_enabled,
+            'card_enabled' => $this->card_enabled,
+            'pix_enabled' => $this->pix_enabled,
             'created_at' => $this->created_at,
         ];
     }

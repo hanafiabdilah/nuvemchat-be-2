@@ -56,10 +56,15 @@ return [
         'capacity_hold_hours' => (int) env('APIWAY_CAPACITY_HOLD_HOURS', 24),
     ],
 
-    'mercadopago' => [
-        // Credentials (access_token, public_key, webhook_secret, back_url) live in
-        // the `settings` table (DB-only) — see App\Services\Billing\MercadoPago\MercadoPagoConfig.
-        // Only operational toggles stay here.
+    'billing' => [
+        // Credentials (base URL, API key, webhook secret, preferred provider)
+        // live in the `settings` table (DB-only) — see
+        // App\Services\Billing\PaymentService\PaymentServiceConfig. Only
+        // operational toggles stay here.
+        //
+        // Named after what it does rather than after a gateway: this block was
+        // `mercadopago` while Pingly called one directly, and every reader of
+        // `enforce` had nothing to do with that company.
         'grace_days' => (int) env('BILLING_GRACE_DAYS', 3),
         'enforce' => (bool) env('BILLING_ENFORCE', false),
     ],

@@ -38,6 +38,7 @@ use App\Http\Controllers\Api\Admin\AdminHealthController;
 use App\Http\Controllers\Api\Admin\AdminInvoiceController;
 use App\Http\Controllers\Api\Admin\AdminLiveController;
 use App\Http\Controllers\Api\Admin\AdminNumbersController;
+use App\Http\Controllers\Api\Admin\AdminPaymentServiceController;
 use App\Http\Controllers\Api\Admin\AdminReportController;
 use App\Http\Controllers\Api\Admin\AdminStorageController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
@@ -136,7 +137,17 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // Billing (tenant-side). Exempt from the subscription.active gate so a
     // suspended tenant can still load the page and pay (see EnsureSubscriptionActive).
     Route::prefix('billing')->name('billing.')->group(function () {
-        Route::get('/config', [BillingController::class, 'config'])->name('config');
+        // What the payment service can actually take right now, plus whether a
+        // card can be auto-renewed at all. Ungated like /config was: the
+        // checkout needs it before it can render a single button.
+        Route::get('/payment-methods', [BillingController::class, 'paymentMethods'])->name('payment-methods');
+        // Opens a tokenisation session: the SDK to load and the key to load it
+        // with. billing.manage, because it is the first step of paying.
+        Route::post('/card-session', [BillingController::class, 'cardSession'])->middleware('permission:billing.manage')->name('card-session');
+        // The CPF/CNPJ every charge needs. Stored on the tenant because a
+        // renewal runs with nobody at a screen to supply it.
+        Route::get('/profile', [BillingController::class, 'billingProfile'])->middleware('permission:billing.view')->name('profile');
+        Route::put('/profile', [BillingController::class, 'updateBillingProfile'])->middleware('permission:billing.manage')->name('profile-update');
         Route::get('/subscription', [BillingController::class, 'subscription'])->middleware('permission:billing.view')->name('subscription');
         Route::get('/invoices', [BillingController::class, 'invoices'])->middleware('permission:billing.view')->name('invoices');
         Route::get('/invoices/{invoice}/status', [BillingController::class, 'invoiceStatus'])->middleware('permission:billing.view')->name('invoice-status');
@@ -665,6 +676,10 @@ Route::prefix('admin')->group(function () {
             // ProxyBR partner catalog — doubles as the "test connection" probe.
             Route::get('/apiway/catalog', [AdminApiwayController::class, 'catalog']);
 
+            // The payment service credential's own proof: what can be charged,
+            // and whether any active gateway can auto-renew a card at all.
+            Route::get('/payment-service/test', [AdminPaymentServiceController::class, 'test']);
+
             // API Way *numbers* — a different account and a different API from
             // the ProxyBR partner surface above. These sit with the settings
             // because they are the credential's own proof and plumbing: log in
@@ -803,7 +818,7 @@ Route::prefix('admin')->group(function () {
         Route::middleware('permission:bo.subscriptions.manage')->group(function () {
             Route::get('/subscriptions', [AdminSubscriptionController::class, 'index']);
             Route::get('/apiway/subscriptions', [AdminApiwayController::class, 'subscriptions']);
-            // Books a manual MercadoPago refund against a purchase that was
+            // Books a manual refund against a purchase that was
             // captured but never provisioned — clears it off the Health page.
             Route::post('/apiway/subscriptions/{subscription}/settle-refund', [AdminApiwayController::class, 'settleRefund']);
             Route::get('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'show']);
