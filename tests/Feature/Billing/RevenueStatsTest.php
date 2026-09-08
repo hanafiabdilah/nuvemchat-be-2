@@ -5,6 +5,7 @@ use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Http\Controllers\Api\Admin\StatisticsController;
+use App\Models\Admin;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
@@ -183,7 +184,7 @@ test('a comped subscription contributes nothing', function () {
     $tenant = Tenant::create(['user_id' => $user->id]);
     $user->forceFill(['tenant_id' => $tenant->id])->save();
 
-    $admin = User::factory()->create(['email' => 'admin-' . uniqid() . '@example.test']);
+    $admin = Admin::factory()->create(['email' => 'admin-' . uniqid() . '@example.test']);
     app(\App\Services\Billing\BillingService::class)->grantManual($tenant->fresh(), planNamed('Pro'), null, $admin);
 
     // grantManual raises no invoice at all, so comps cannot inflate revenue.

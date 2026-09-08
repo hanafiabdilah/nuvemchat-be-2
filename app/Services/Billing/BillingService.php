@@ -9,13 +9,13 @@ use App\Enums\Billing\SubscriptionStatus;
 use App\Enums\Notification\NotificationType;
 use App\Events\SubscriptionUpdated;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
+use App\Models\Admin;
 use App\Models\ApiwaySubscription;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
-use App\Models\User;
 use App\Services\Credits\CreditService;
 use App\Services\Billing\MercadoPago\MercadoPagoClient;
 use App\Services\Connection\Apiway\ApiwayService;
@@ -574,8 +574,13 @@ class BillingService
 
     /**
      * Super-admin manual / comp grant — bypasses MercadoPago entirely.
+     *
+     * The grantor is an `Admin`, never a `User`: this is only reachable from
+     * the Back Office, and `subscriptions.manual_granted_by` has held admin ids
+     * since they moved out of `users`. Typing it as `User` here is what made
+     * every assign attempt a 500 — the Back Office hands over an `Admin`.
      */
-    public function grantManual(Tenant $tenant, ?Plan $plan, ?CarbonInterface $endsAt, User $admin, ?string $note = null): Subscription
+    public function grantManual(Tenant $tenant, ?Plan $plan, ?CarbonInterface $endsAt, Admin $admin, ?string $note = null): Subscription
     {
         $this->voidSupersededCharges($tenant);
 
