@@ -2,12 +2,14 @@
 
 namespace App\Services\Billing\PaymentService;
 
+use App\Exceptions\UserFacingException;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Client\ConnectionException as HttpConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * HTTP client for the group's payment service.
@@ -47,6 +49,8 @@ class PaymentServiceClient
      */
     public function createPayment(array $payload, string $idempotencyKey): array
     {
+        $this->assertReferenceIsPortable($payload['order_reference'] ?? null);
+
         return $this->decode(
             $this->request(timeout: 60)
                 ->withHeaders(['Idempotency-Key' => $idempotencyKey])
@@ -160,6 +164,45 @@ class PaymentServiceClient
         $provider = PaymentServiceConfig::provider();
 
         return $provider === null ? $payload : [...$payload, 'provider' => $provider];
+    }
+
+    /**
+     * The character set every gateway behind the service accepts.
+     *
+     * dLocal Go is the strict one: it forwards `order_reference` as the
+     * payment's `order_id` and refuses anything outside this, under its own
+     * name for the field (`invoiceId`). Others are looser, but nothing is
+     * bought by using the wider set — so this is checked for all of them, and
+     * a reference is portable by construction rather than by which provider
+     * happened to take the charge.
+     */
+    protected const PORTABLE_REFERENCE = '/^[A-Za-z0-9\-_]+$/';
+
+    /**
+     * Refuse a reference no gateway would keep, before one is asked to.
+     *
+     * ⚠️ Ours, never the customer's: they cannot influence this string, so the
+     * message says so and the detail goes to the log. Throwing is the right
+     * answer rather than sanitising here — silently rewriting the idempotency
+     * anchor at the last moment would give one period two references, and the
+     * exactly-once guarantee only holds while a period maps to exactly one.
+     */
+    protected function assertReferenceIsPortable(?string $reference): void
+    {
+        if ($reference !== null && preg_match(self::PORTABLE_REFERENCE, $reference) === 1) {
+            return;
+        }
+
+        Log::error('Refusing to send an order reference no gateway will accept', [
+            'order_reference' => $reference,
+            'expected' => self::PORTABLE_REFERENCE,
+        ]);
+
+        throw new UserFacingException(
+            'Não foi possível iniciar esta cobrança. Já estamos verificando — tente novamente em instantes.',
+            502,
+            'payment_reference_invalid',
+        );
     }
 
     protected function request(int $timeout = 30): PendingRequest

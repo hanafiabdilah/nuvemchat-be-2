@@ -273,7 +273,7 @@ class BillingService
 
         // A top-up has no period, so the invoice id is the whole identity —
         // unlike a subscription, where the reference must carry the cycle.
-        $invoice->update(['order_reference' => "pingly:topup:{$invoice->id}"]);
+        $invoice->update(['order_reference' => "pingly-topup-{$invoice->id}"]);
 
         try {
             $response = $this->payments->createPayment([
@@ -325,7 +325,15 @@ class BillingService
 
         // Cheap local guard so a re-run does not even make the call. The
         // service's constraint is what actually guarantees it.
-        if (Invoice::where('order_reference', $reference)->exists()) {
+        //
+        // Both shapes, because a cycle already invoiced under the colon form
+        // must still read as billed — see legacyOrderReference().
+        $alreadyBilled = Invoice::whereIn('order_reference', [
+            $reference,
+            $this->legacyOrderReference($subscription, $periodStart),
+        ])->exists();
+
+        if ($alreadyBilled) {
             return null;
         }
 
@@ -763,8 +771,36 @@ class BillingService
      * ⚠️ A random value per attempt would disable that protection entirely, and
      * nothing here would notice — the first sign would be a customer charged
      * twice for one month.
+     *
+     * ⚠️ Separated by hyphens, not colons, and that is a hard requirement
+     * rather than a style choice: dLocal Go forwards this string as the
+     * payment's `order_id` and rejects anything outside
+     * `[A-Za-z0-9\-_]` — so `pingly:sub:12:2026-08-01` failed *every* payment
+     * routed there, not merely some. The colon carried no meaning a hyphen does
+     * not, and this charset is the intersection every provider accepts, so it
+     * is used for all of them rather than switched on the routed provider.
+     * Branching on the provider would be worse than the bug: an operator
+     * changing the Back Office setting mid-cycle would give one period two
+     * different references, and the uniqueness guarantee only holds while a
+     * period maps to exactly one string.
      */
     protected function orderReference(Subscription $subscription, CarbonInterface $periodStart): string
+    {
+        return "pingly-sub-{$subscription->id}-".Carbon::instance($periodStart)->toDateString();
+    }
+
+    /**
+     * The colon-separated shape issued before dLocal Go refused it.
+     *
+     * Read-only, and only where a *local* lookup decides whether a cycle has
+     * already been billed. A renewal in flight when this changed has its
+     * invoice stored under the old string; a guard that only knew the new one
+     * would find nothing, issue a second invoice, and — because the payment
+     * service sees a reference it has never had either — take the money twice.
+     * That is the exact failure the reference exists to prevent, so it must not
+     * be introduced by the fix for it.
+     */
+    protected function legacyOrderReference(Subscription $subscription, CarbonInterface $periodStart): string
     {
         return "pingly:sub:{$subscription->id}:".Carbon::instance($periodStart)->toDateString();
     }

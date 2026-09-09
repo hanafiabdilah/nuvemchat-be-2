@@ -94,10 +94,15 @@ test('the order reference carries the period, so a cycle cannot be billed twice'
 
     $reference = Invoice::where('subscription_id', $subscription->id)->value('order_reference');
 
-    // pingly:sub:{id}:{period start}. A random value per attempt would disable
+    // pingly-sub-{id}-{period start}. A random value per attempt would disable
     // the payment service's uniqueness guarantee entirely, and nothing here
     // would notice until somebody was charged twice for one month.
-    expect($reference)->toMatch('/^pingly:sub:\d+:\d{4}-\d{2}-\d{2}$/');
+    expect($reference)->toMatch('/^pingly-sub-\d+-\d{4}-\d{2}-\d{2}$/');
+
+    // And portable: dLocal Go forwards this as the payment's order_id and
+    // refuses anything outside [A-Za-z0-9-_], which the colon-separated shape
+    // this replaces failed on every single payment routed there.
+    expect($reference)->toMatch('/^[A-Za-z0-9\-_]+$/');
 
     Http::assertSent(fn ($request) => $request->data()['order_reference'] === $reference);
 });

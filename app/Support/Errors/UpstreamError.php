@@ -695,6 +695,19 @@ final class UpstreamError
                 422,
             ],
 
+            // A gateway refusing the *shape* of our order reference — dLocal Go
+            // takes only [A-Za-z0-9-_] and calls the field `invoiceId`. Nothing
+            // about it is the customer's: they never see this string and cannot
+            // influence it, so the generic payment_refused copy below ("revise o
+            // valor e o meio de pagamento") would send them to check a card that
+            // was never the problem.
+            str_contains($m, 'order reference'),
+            str_contains($m, 'invoiceid') => [
+                'payment_reference_invalid',
+                'Não foi possível iniciar esta cobrança. Já estamos verificando — tente novamente em instantes.',
+                502,
+            ],
+
             $code === 'payment_refused' => [
                 'payment_refused',
                 'Esta cobrança não foi aceita. Revise o valor e o meio de pagamento e tente novamente.',
