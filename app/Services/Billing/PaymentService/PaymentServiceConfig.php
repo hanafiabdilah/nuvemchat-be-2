@@ -49,7 +49,7 @@ class PaymentServiceConfig
     public const WEBHOOK_TOLERANCE_SECONDS = 300;
 
     /** Providers the service can route to, for the Back Office selector. */
-    public const PROVIDERS = ['dlocal', 'delocal', 'mercadopago', 'openpix'];
+    public const PROVIDERS = ['dlocal', 'dlocalgo', 'mercadopago', 'openpix'];
 
     public static function baseUrl(): string
     {
