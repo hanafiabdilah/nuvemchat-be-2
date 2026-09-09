@@ -57,6 +57,13 @@ prompt. Pressing Save twice does not create a second agent.
 once, on `POST /provider-credentials`; the hub returns an id and that is what is
 stored. (Same trap as `AiTranscription::credentialId()`.)
 
+⚠️ **A 409 is adopted, not reported.** The hub uniques a credential on
+`(tenant, provider, name)` and an agent on `externalId`, so once either exists
+without us holding its id, every re-create answers 409 and provisioning can
+never finish again from any screen. Provisioning therefore lists, finds the one
+we already own, and takes it back — the same dead end
+`AiTokenRentalService::rent()` had to grow an adoption path for.
+
 ### Then give it to a plan
 
 Configuring the platform grants it to nobody. The workspace-facing switch is the
@@ -102,6 +109,22 @@ on any screen saying why.
 
 `POST /api/flows/{id}/assistant/stream` (SSE) — or `/assistant` for the same
 work as one JSON response.
+
+⚠️ **`conversation.channel` is sent as `whatsapp`.** There is no real
+conversation here, so the field is pure ceremony for the hub's DTO — which means
+the only thing that matters is that the hub accepts the value. It was
+`live_chat_widget` at first, which this application *can* send but which no
+workspace here has ever exercised (nobody runs an AI agent on the widget); an
+unproven enum value chosen for tidiness. The hub rejects a whole run over one
+unrecognised field, so guessing costs the entire feature.
+
+⚠️ **Hub failures are parsed with `AiAgentHubTenantService::hubMessage()`**, the
+same parser the workspace-facing client uses. Passing `$response->body()`
+straight to `UpstreamError` — which is what the first version did — guarantees
+the worst possible outcome: a hub 400 reads
+`{"message":["..."],"statusCode":400}`, matches nothing in the dictionary, and
+*every* failure surfaces as the generic "O serviço de IA está indisponível" with
+the real reason nowhere a person would look.
 
 **Turns are stateless.** Each one gets a fresh hub `conversation.externalId` and
 carries its own context: the workspace's real tags / agents / AI agents, the
@@ -190,6 +213,7 @@ spot-checking, it needs its own table.
 | "Não consegui montar um fluxo válido" | `grep 'gave up on a blueprint'` — the problems are logged |
 | Repairs on every request | `grep 'repairing an invalid blueprint'`; usually the prompt and the rules have drifted — check `prompt_hash` |
 | Everything 503 | AI Hub tenant token missing (Integrations → AI Hub) |
+| Generic "O serviço de IA está indisponível" | The hub refused something. **Press Test connection in the Back Office** — it prints the hub's own sentence plus HTTP status and `ref`. In the log: `grep 'Upstream failure translated' \| grep ai_hub` (field `upstream_message`) |
 | Stream arrives all at once | Proxy buffering; check `X-Accel-Buffering` survives the edge |
 
 Tests: `tests/Feature/Flow/FlowAssistantTest.php`.

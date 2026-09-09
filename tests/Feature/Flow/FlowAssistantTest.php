@@ -319,6 +319,75 @@ test('a fenced envelope with a sentence in front of it is still read', function 
     expect($result['flow']['nodes'])->toHaveCount(3);
 });
 
+// ────────────────────────── Talking to the hub ──────────────────────────
+
+test('a hub validation failure keeps its sentence instead of arriving as a JSON blob', function () {
+    assistantUser();
+    provisionAssistant();
+
+    // The shape a NestJS hub answers with. Handing the raw body to UpstreamError
+    // matched nothing in its dictionary, so every failure of this feature came
+    // out as the generic "O serviço de IA está indisponível" with the actual
+    // reason visible nowhere — which is exactly how it was first reported.
+    Http::fake([
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
+        '*/runs' => Http::response([
+            'message' => ['channel must be one of the following values: whatsapp'],
+            'statusCode' => 400,
+        ], 400),
+    ]);
+
+    try {
+        app(FlowAssistantService::class)->ask('Crie um fluxo', ['flow' => null]);
+        $this->fail('the hub failure should have surfaced');
+    } catch (App\Exceptions\UpstreamServiceException $e) {
+        // The customer still gets our copy…
+        expect($e->getMessage())->not->toContain('statusCode');
+        // …but the operator's half carries the hub's own words.
+        expect($e->rawMessage)->toBe('channel must be one of the following values: whatsapp');
+    }
+});
+
+test('the run says whatsapp, the one channel value every working agent already sends', function () {
+    assistantUser();
+    provisionAssistant();
+
+    Http::fake([
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
+        '*/runs' => hubRun(envelope(null, 'ok')),
+    ]);
+
+    app(FlowAssistantService::class)->ask('Oi', ['flow' => null]);
+
+    Http::assertSent(function ($request) {
+        if (! str_ends_with($request->url(), '/runs')) return false;
+
+        return $request->data()['conversation']['channel'] === 'whatsapp';
+    });
+});
+
+test('a credential the hub already holds is adopted rather than deadlocking on 409', function () {
+    // The hub uniques a credential on (tenant, provider, name). Once the local
+    // settings row holding its id is lost, every re-create answers 409 and
+    // provisioning can never finish again from any screen — the same dead end
+    // AiTokenRentalService::rent() had to grow an adoption path for.
+    Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
+
+    Http::fake([
+        '*/provider-credentials/*' => Http::response(['id' => 'existing-cred']),
+        '*/provider-credentials' => Http::sequence()
+            ->push(['message' => 'name already in use'], 409)
+            ->push([['id' => 'existing-cred', 'name' => 'Pingly platform — flow assistant']]),
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1', 'externalId' => 'platform_flow_assistant']),
+        '*/agents' => Http::response(['id' => 'hub-agent-1', 'externalId' => 'platform_flow_assistant']),
+    ]);
+
+    $result = app(FlowAssistantService::class)->provision('sk-platform-key', 'gpt-4o');
+
+    expect($result['credential_id'])->toBe('existing-cred')
+        ->and(FlowAssistantConfig::hubCredentialId())->toBe('existing-cred');
+});
+
 // ───────────────────────────── The endpoints ────────────────────────────
 
 test('the assistant is refused to a plan that does not include it', function () {

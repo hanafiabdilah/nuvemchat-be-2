@@ -1621,7 +1621,7 @@ class AiAgentHubTenantService
      * The shapes: a string; a list of strings (NestJS class-validator); or an
      * object keyed by field, each holding a list.
      */
-    protected static function hubMessage(Response $response, string $fallback): string
+    public static function hubMessage(Response $response, string $fallback): string
     {
         $message = $response->json()['message'] ?? null;
 

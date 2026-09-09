@@ -4,6 +4,7 @@ namespace App\Services\FlowAssistant;
 
 use App\Models\Setting;
 use App\Services\AiAgentHub\AiAgentHubConfig;
+use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\Flow\FlowBlueprint;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
@@ -150,6 +151,28 @@ class FlowAssistantService
                 'metadata' => ['ownerType' => 'platform', 'usage' => ['flow_assistant']],
             ]);
 
+        // ⚠️ The hub uniques a credential on (tenant, provider, name), so once
+        // one exists under this name every re-create answers 409 — and if the
+        // settings row holding its id was ever lost, provisioning would be
+        // permanently stuck with no way out from any screen. This is the same
+        // dead end AiTokenRentalService::rent() had to grow an adoption path
+        // for; the cure is the same: find the one we already own and take it
+        // back, then PATCH the key onto it.
+        if ($response->status() === 409) {
+            $adopted = $this->findCredentialByName($payload['name']);
+
+            if ($adopted !== null) {
+                Log::info('FlowAssistantService: adopted the existing hub credential', [
+                    'hub_credential_id' => $adopted,
+                ]);
+
+                Http::withHeaders($this->headers())
+                    ->patch("{$this->baseUrl}/provider-credentials/{$adopted}", $payload);
+
+                return $adopted;
+            }
+        }
+
         $this->ensureSuccessful($response, 'create the flow assistant credential');
 
         $id = $response->json('id');
@@ -199,7 +222,10 @@ class FlowAssistantService
                 ->patch("{$this->baseUrl}/agents/{$hubAgentId}", $payload);
 
             if ($response->successful()) {
-                return $externalId;
+                // The hub's value again, for the reason on the create path
+                // below — re-provisioning must not overwrite a normalised
+                // external id with the raw constant we sent.
+                return (string) ($response->json('externalId') ?: $externalId);
             }
 
             Log::warning('FlowAssistantService: stored hub agent did not update, re-creating', [
@@ -211,11 +237,112 @@ class FlowAssistantService
         $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/agents", $payload);
 
+        // Same dead end as the credential above: `externalId` is unique at the
+        // hub, so an agent that exists without us holding its id can never be
+        // created again and never be updated.
+        if ($response->status() === 409) {
+            $adopted = $this->findAgentByExternalId($externalId);
+
+            if ($adopted !== null) {
+                Log::info('FlowAssistantService: adopted the existing hub agent', $adopted);
+
+                Setting::set(FlowAssistantConfig::KEY_HUB_AGENT_ID, $adopted['id']);
+
+                Http::withHeaders($this->headers())
+                    ->patch("{$this->baseUrl}/agents/{$adopted['id']}", $payload);
+
+                return $adopted['externalId'];
+            }
+        }
+
         $this->ensureSuccessful($response, 'create the flow assistant agent');
 
         Setting::set(FlowAssistantConfig::KEY_HUB_AGENT_ID, (string) $response->json('id'));
 
+        // ⚠️ The hub's own value, not ours: it is what `POST /runs` matches on,
+        // and if the hub normalises or prefixes what it was given, the string we
+        // sent is not the string that will resolve.
         return (string) ($response->json('externalId') ?: $externalId);
+    }
+
+    /**
+     * The hub id of the credential we already own under this name, if the hub
+     * has one. Null when it does not — in which case the 409 was about
+     * something else and should surface normally.
+     *
+     * A list rather than a GET by id, for the reason `ensureCredentialOnHub()`
+     * gives: we are looking for a thing whose id we do not have, and a 404 from
+     * a by-id route cannot be told apart from that route not existing.
+     */
+    private function findCredentialByName(string $name): ?string
+    {
+        try {
+            $response = Http::withHeaders($this->headers())
+                ->get("{$this->baseUrl}/provider-credentials");
+
+            if (! $response->successful()) {
+                return null;
+            }
+
+            foreach ($this->rows($response->json()) as $row) {
+                if (($row['name'] ?? null) === $name && ! empty($row['id'])) {
+                    return (string) $row['id'];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('FlowAssistantService: could not list hub credentials to adopt one', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    /** @return array{id: string, externalId: string}|null */
+    private function findAgentByExternalId(string $externalId): ?array
+    {
+        try {
+            $response = Http::withHeaders($this->headers())
+                ->get("{$this->baseUrl}/agents");
+
+            if (! $response->successful()) {
+                return null;
+            }
+
+            foreach ($this->rows($response->json()) as $row) {
+                // Endswith rather than equals: the hub may have namespaced what
+                // it was given, and the id we are hunting for is the one it
+                // stored, not the one we sent.
+                $candidate = (string) ($row['externalId'] ?? '');
+
+                if ($candidate !== '' && str_ends_with($candidate, $externalId) && ! empty($row['id'])) {
+                    return ['id' => (string) $row['id'], 'externalId' => $candidate];
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('FlowAssistantService: could not list hub agents to adopt one', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    /**
+     * The rows out of a hub list response, which comes back either as a bare
+     * array or wrapped in `data` depending on the endpoint.
+     *
+     * @return list<array>
+     */
+    private function rows(mixed $body): array
+    {
+        if (! is_array($body)) {
+            return [];
+        }
+
+        $rows = array_is_list($body) ? $body : ($body['data'] ?? $body['items'] ?? []);
+
+        return is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [];
     }
 
     /**
@@ -382,7 +509,17 @@ class FlowAssistantService
             'responseMode' => 'sync',
             'conversation' => [
                 'externalId' => $conversationId,
-                'channel' => 'live_chat_widget',
+                // ⚠️ There is no real conversation here, so this field is pure
+                // ceremony for the hub's DTO — which means the only thing that
+                // matters about the value is that the hub accepts it. It was
+                // 'live_chat_widget', which this application can technically
+                // send but which no workspace here has ever exercised (nobody
+                // runs an AI agent on the widget), so it was an unproven enum
+                // value chosen for tidiness. 'whatsapp' is the one every
+                // working agent run in this deployment already sends. The hub
+                // rejects a whole run over one unrecognised field, so guessing
+                // costs the entire feature.
+                'channel' => 'whatsapp',
                 'contactExternalId' => $conversationId,
                 'contactName' => 'Flow builder',
             ],
@@ -780,22 +917,40 @@ class FlowAssistantService
         ];
     }
 
+    /**
+     * Same failure handling the workspace-facing hub client uses.
+     *
+     * ⚠️ This used to hand `$response->body()` — the raw JSON string — to
+     * UpstreamError, and that guaranteed the least useful outcome available: a
+     * hub 400 reads `{"message":["property x should not exist"],...}`, which
+     * matches nothing in the dictionary, so *every* failure of this feature came
+     * out as the generic "O serviço de IA está indisponível", with the actual
+     * reason visible nowhere a person would look. The hub answers `message` in
+     * three different shapes (string, list, per-field object) and
+     * {@see AiAgentHubTenantService::hubMessage()} already knows all three —
+     * writing a second parser here is the same mistake as writing a second copy
+     * of the flow rules.
+     */
     private function ensureSuccessful(Response $response, string $action): void
     {
         if ($response->successful()) {
             return;
         }
 
+        $message = AiAgentHubTenantService::hubMessage($response, "Failed to {$action}");
+
         // The hub's own words go to the log and the `ref`, never to the
-        // customer — see App\Support\Errors\UpstreamError.
-        Log::error("FlowAssistantService: failed to {$action}", [
+        // customer — see App\Support\Errors\UpstreamError. Worded like the
+        // tenant client's line so one grep finds hub validation failures
+        // whichever surface provoked them.
+        Log::error("FlowAssistantService: Validation failed to {$action}", [
             'status' => $response->status(),
             'body' => $response->body(),
         ]);
 
         throw UpstreamError::exception(
             UpstreamProvider::AiHub,
-            $response->body(),
+            $message,
             status: $response->status(),
             context: ['action' => $action],
         );

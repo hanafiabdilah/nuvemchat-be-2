@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Models\Setting;
 use App\Services\FlowAssistant\FlowAssistantConfig;
@@ -133,11 +134,22 @@ class AdminFlowAssistantController extends Controller
                         : 'The assistant answered but produced no flow: ' . $result['reply'],
                 ],
             ]);
+        } catch (UpstreamServiceException $e) {
+            // ⚠️ `getMessage()` is the customer-facing translation — here it
+            // would print "O serviço de IA está indisponível", which is exactly
+            // the sentence the operator pressed this button to get behind. The
+            // Back Office is exempt from the sanitiser precisely so the hub's
+            // own words reach the person who can act on them, and
+            // `rawMessage` is where they are kept.
+            return response()->json([
+                'data' => [
+                    'ok' => false,
+                    'status' => $e->httpStatus,
+                    'ref' => $e->reference,
+                    'message' => $e->rawMessage ?: $e->getMessage(),
+                ],
+            ]);
         } catch (\Throwable $e) {
-            // Back Office is exempt from the upstream-error sanitiser on
-            // purpose: the operator here is the person who fixes the
-            // integration, and the vendor's exact words are the only thing
-            // that says which part is broken.
             return response()->json([
                 'data' => [
                     'ok' => false,
