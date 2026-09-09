@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\NodeType;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\FlowResource;
@@ -10,32 +9,27 @@ use App\Http\Resources\FlowSummaryResource;
 use App\Models\Flow;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
-use App\Services\Flow\ActionNodes;
+use App\Services\Flow\FlowBlueprint;
 use App\Services\Flow\InteractiveNodes;
-use App\Services\Flow\MessageNodes;
-use App\Services\Flow\ResponseNodes;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
 class FlowController extends Controller
 {
-    /** Allowed node types (frontend must stay in sync). */
-    private const NODE_TYPES = ['start', 'message', 'response', 'status', 'tagging', 'condition', 'action', 'ai_agent', 'http_request', 'interactive'];
-
     /**
-     * Edge branch values: the fixed pair per branching node — condition
-     * (true/false), http_request (success/error) — plus an interactive node's
-     * option ids, which are authored per node and so can only be pattern-checked.
+     * The file contract lives in FlowBlueprint, which the AI assistant also
+     * validates against. Two copies of these rules would be identical on the
+     * day they were written and silently divergent after the next node type —
+     * with the divergence surfacing as a generated flow the save endpoint
+     * refuses, which is the one failure the assistant exists to prevent.
      */
-    private const BRANCH_VALUE_PATTERN = 'regex:/^[A-Za-z0-9_\-]{1,64}$/';
-
-    /** Portable export envelope identifiers. */
-    private const EXPORT_FORMAT = 'nuvemchat.flow';
-    private const EXPORT_VERSION = 1;
+    private const NODE_TYPES = FlowBlueprint::NODE_TYPES;
+    private const BRANCH_VALUE_PATTERN = FlowBlueprint::BRANCH_VALUE_PATTERN;
+    private const EXPORT_FORMAT = FlowBlueprint::EXPORT_FORMAT;
+    private const EXPORT_VERSION = FlowBlueprint::EXPORT_VERSION;
 
     /**
      * Display a listing of flows.
@@ -333,21 +327,7 @@ class FlowController extends Controller
         $this->validateNodesData($nodes);
 
         // Structural integrity: unique keys, exactly one start, edges resolve.
-        $keys = array_map(fn ($node) => $node['key'], $nodes);
-        if (count($keys) !== count(array_unique($keys))) {
-            throw ValidationException::withMessages(['flow.nodes' => ['Duplicate node keys in the flow export.']]);
-        }
-
-        if (collect($nodes)->where('type', 'start')->count() !== 1) {
-            throw ValidationException::withMessages(['flow.nodes' => ['A flow must contain exactly one start node.']]);
-        }
-
-        $keySet = array_flip($keys);
-        foreach ($edges as $edge) {
-            if (!isset($keySet[$edge['source_key']]) || !isset($keySet[$edge['target_key']])) {
-                throw ValidationException::withMessages(['flow.edges' => ['An edge references a node that is not in the flow.']]);
-            }
-        }
+        FlowBlueprint::assertStructure($nodes, $edges);
 
         $name = $validated['name'] ?? $validated['flow']['name'];
 
@@ -427,169 +407,6 @@ class FlowController extends Controller
      */
     private function validateNodesData(array $nodes): void
     {
-        foreach ($nodes as $index => $node) {
-            $type = $node['type'];
-            $data = $node['data'] ?? null;
-
-            if ($data === null) {
-                if ($type === 'start') continue;
-
-                throw ValidationException::withMessages([
-                    "nodes.{$index}.data" => ["The data field is required for node type {$type}."]
-                ]);
-            }
-
-            $rules = $this->getValidationRulesForNodeType($type);
-
-            $validator = Validator::make($data, $rules);
-
-            if ($validator->fails()) {
-                $errors = [];
-                foreach ($validator->errors()->messages() as $field => $messages) {
-                    $errors["nodes.{$index}.data.{$field}"] = $messages;
-                }
-                throw ValidationException::withMessages($errors);
-            }
-        }
-    }
-
-    /**
-     * Get validation rules for node data based on type.
-     */
-    private function getValidationRulesForNodeType(string $type): array
-    {
-        return match ($type) {
-            // A message node holds a list of bubbles in `messages`; the flat
-            // body/message_type/attachment_url/delay are what nodes saved
-            // before that list looked like, and MessageNodes::items() reads
-            // whichever is there. Both are nullable for the same reason
-            // http_request's url is: the builder auto-saves a node the moment
-            // it lands on the canvas, and the executor skips a bubble with
-            // nothing in it rather than failing the save.
-            'message' => [
-                'body' => ['nullable', 'string'],
-                'message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
-                'attachment_url' => ['nullable', 'string'],
-                'delay' => ['nullable', 'integer', 'min:0', 'max:' . MessageNodes::MAX_DELAY_SECONDS],
-                'wait_for_reply' => ['nullable', 'boolean'],
-                'messages' => ['nullable', 'array', 'max:' . MessageNodes::MAX_ITEMS],
-                'messages.*.body' => ['nullable', 'string'],
-                'messages.*.message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
-                'messages.*.attachment_url' => ['nullable', 'string'],
-                'messages.*.delay' => ['nullable', 'integer', 'min:0', 'max:' . MessageNodes::MAX_DELAY_SECONDS],
-            ],
-            'response' => [
-                'body' => ['required', 'string'],
-                'message_type' => ['required', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
-                'attachment_url' => ['nullable', 'string'],
-                'variable_key' => ['required', 'string'],
-                'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
-                'error_message' => ['nullable', 'string'],
-                // 0 (or absent) = wait forever, which is what this node did
-                // before it grew a second output.
-                'timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:' . ResponseNodes::MAX_TIMEOUT_SECONDS],
-            ],
-            // Resolved is the only status a flow may set; the reasoning is on
-            // NodeType::data and FlowExecutor::executeStatusNode. Strict rather
-            // than lenient because nothing in the builder can produce anything
-            // else — a different value arriving here is a bug, not old data.
-            'status' => [
-                'value' => ['required', 'string', Rule::in([ConversationStatus::Resolved->value])],
-            ],
-            'tagging' => [
-                'action' => ['required', 'string', Rule::in(['add', 'remove'])],
-                'tags' => ['nullable', 'array'],
-                'tags.*' => ['integer', 'exists:tags,id'],
-            ],
-            'condition' => [
-                'field' => ['required', 'string'],
-                'operator' => ['required', 'string', Rule::in(['equals', 'not_equals', 'contains', 'not_contains', 'greater_than', 'less_than', 'is_empty', 'is_not_empty'])],
-                'value' => ['nullable', 'string'], // nullable for is_empty/is_not_empty operators
-            ],
-            // Nullable like http_request's url: a node is dropped on the canvas
-            // and auto-saved before its author has picked anything, and the
-            // executor skips one that never got configured. The parameters are
-            // a flat union across the three actions rather than a per-type
-            // shape — the unused keys are simply absent, and a rule that has to
-            // read `type` to know whether a field is required is a rule that
-            // breaks the moment auto-save catches the node mid-edit.
-            'action' => [
-                'type' => ['nullable', 'string', Rule::in(ActionNodes::TYPES)],
-                'parameters' => ['nullable', 'array'],
-                'parameters.agent_id' => [
-                    'nullable',
-                    'integer',
-                    // Tenant-scoped here as well as at runtime: this is what
-                    // stops one workspace's flow naming another workspace's user.
-                    Rule::exists('users', 'id')->where('tenant_id', auth()->user()->tenant_id),
-                ],
-                'parameters.when_unavailable' => ['nullable', 'string', Rule::in(ActionNodes::UNAVAILABLE_MODES)],
-                'parameters.note' => ['nullable', 'string', 'max:4000'],
-            ],
-            'ai_agent' => [
-                'ai_hub_agent_id' => [
-                    'required',
-                    'integer',
-                    Rule::exists('ai_hub_agents', 'id')->where(function ($query) {
-                        $tenantId = auth()->user()->tenant_id;
-                        $query->whereIn('ai_hub_tenant_id', function ($sub) use ($tenantId) {
-                            $sub->select('id')
-                                ->from('ai_hub_tenants')
-                                ->where('tenant_id', $tenantId);
-                        })->where('status', 'ACTIVE');
-                    }),
-                ],
-                'welcoming_message' => ['required', 'string', 'max:4000'],
-                'store_summary_to_variable' => ['nullable', 'string', 'alpha_dash'],
-            ],
-            // Lengths mirror the WhatsApp Cloud API limits so the builder warns
-            // long before a send fails. Texts stay nullable (like http_request)
-            // so auto-save never fights a half-finished node; the executor skips
-            // a node with no body or no options at runtime.
-            'interactive' => [
-                'interactive_type' => ['required', 'string', Rule::in(InteractiveNodes::TYPES)],
-                'header' => ['nullable', 'string', 'max:60'],
-                'body' => ['nullable', 'string', 'max:1024'],
-                'footer' => ['nullable', 'string', 'max:60'],
-                'buttons' => ['nullable', 'array', 'max:3'],
-                'buttons.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
-                'buttons.*.title' => ['nullable', 'string', 'max:20'],
-                'button_label' => ['nullable', 'string', 'max:20'],
-                'sections' => ['nullable', 'array', 'max:10'],
-                'sections.*.title' => ['nullable', 'string', 'max:24'],
-                'sections.*.rows' => ['nullable', 'array', 'max:10'],
-                'sections.*.rows.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
-                'sections.*.rows.*.title' => ['nullable', 'string', 'max:24'],
-                'sections.*.rows.*.description' => ['nullable', 'string', 'max:72'],
-                // Carousel. The card floor is Meta's, but it is not enforced
-                // here: a node grows one card at a time and auto-save fires in
-                // between. The executor skips a carousel that never got there.
-                'card_button_type' => ['nullable', 'string', Rule::in(['quick_reply', 'cta_url'])],
-                'cards' => ['nullable', 'array', 'max:' . InteractiveNodes::CAROUSEL_MAX_CARDS],
-                'cards.*.header_type' => ['nullable', 'string', Rule::in(['image', 'video'])],
-                'cards.*.header_url' => ['nullable', 'string', 'max:2000'],
-                'cards.*.body' => ['nullable', 'string', 'max:160'],
-                'cards.*.buttons' => ['nullable', 'array', 'max:2'],
-                'cards.*.buttons.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
-                'cards.*.buttons.*.title' => ['nullable', 'string', 'max:20'],
-                'cards.*.button_label' => ['nullable', 'string', 'max:20'],
-                'cards.*.button_url' => ['nullable', 'string', 'max:2000'],
-            ],
-            'http_request' => [
-                'method' => ['required', 'string', Rule::in(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])],
-                // nullable so an in-progress node doesn't break auto-save; the
-                // executor takes the error branch when the URL is empty at runtime.
-                'url' => ['nullable', 'string', 'max:2000'],
-                'headers' => ['nullable', 'array'],
-                'headers.*.key' => ['nullable', 'string', 'max:255'],
-                'headers.*.value' => ['nullable', 'string', 'max:2000'],
-                'body' => ['nullable', 'string'],
-                'timeout' => ['nullable', 'integer', 'min:1', 'max:120'],
-                'response_mappings' => ['nullable', 'array'],
-                'response_mappings.*.path' => ['nullable', 'string', 'max:255'],
-                'response_mappings.*.variable' => ['nullable', 'string', 'max:255'],
-            ],
-            default => [],
-        };
+        FlowBlueprint::validateNodes($nodes);
     }
 }

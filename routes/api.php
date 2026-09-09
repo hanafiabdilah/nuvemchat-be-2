@@ -44,6 +44,7 @@ use App\Http\Controllers\Api\Admin\AdminStorageController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
 use App\Http\Controllers\Api\Admin\AdminTrainedAgentController;
+use App\Http\Controllers\Api\Admin\AdminFlowAssistantController;
 use App\Http\Controllers\Api\Admin\AdminSettingsController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionController;
@@ -68,6 +69,7 @@ use App\Http\Controllers\Api\Instagram\InstagramPostController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\ConversationNoteController;
+use App\Http\Controllers\Api\FlowAssistantController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\LeadController;
@@ -474,6 +476,23 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/flows', [FlowController::class, 'index'])->middleware('permission:flows.view');
         Route::post('/flows', [FlowController::class, 'store'])->middleware('permission:flows.create');
         Route::post('/flows/import', [FlowController::class, 'import'])->middleware('permission:flows.create');
+
+        // The AI that writes flows. Its own plan feature on top of `flow`: a
+        // plan can sell the builder without selling the assistant, which costs
+        // the platform on every turn (it runs on the platform's OpenAI key).
+        //
+        // ⚠️ Registered before `/flows/{id}` — that route has no numeric
+        // constraint, so anything declared after it would be swallowed as an id.
+        Route::middleware(['feature:flow_assistant', 'permission:flows.update'])->group(function () {
+            Route::get('/flows/assistant/status', [FlowAssistantController::class, 'status']);
+            Route::get('/flows/assistant/specification', [FlowAssistantController::class, 'specification']);
+            // A turn is one synchronous hub call plus up to two repairs, so the
+            // throttle is per-minute rather than generous: it is a chat box, and
+            // nobody types faster than this on purpose.
+            Route::post('/flows/{id}/assistant/stream', [FlowAssistantController::class, 'stream'])->middleware('throttle:20,1');
+            Route::post('/flows/{id}/assistant', [FlowAssistantController::class, 'ask'])->middleware('throttle:20,1');
+        });
+
         Route::get('/flows/{id}/export', [FlowController::class, 'export'])->middleware('permission:flows.view');
         Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
         Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
@@ -679,6 +698,14 @@ Route::prefix('admin')->group(function () {
             // The payment service credential's own proof: what can be charged,
             // and whether any active gateway can auto-renew a card at all.
             Route::get('/payment-service/test', [AdminPaymentServiceController::class, 'test']);
+
+            // The flow builder's AI assistant. Not part of the bulk settings
+            // save: storing the key provisions a credential and an agent at the
+            // AI Hub, and an unreachable hub must not fail an unrelated edit on
+            // the same screen.
+            Route::get('/flow-assistant', [AdminFlowAssistantController::class, 'show']);
+            Route::put('/flow-assistant', [AdminFlowAssistantController::class, 'update']);
+            Route::post('/flow-assistant/test', [AdminFlowAssistantController::class, 'test']);
 
             // API Way *numbers* — a different account and a different API from
             // the ProxyBR partner surface above. These sit with the settings
