@@ -776,7 +776,7 @@ class FlowAssistantService
           something works, a request you need clarified, or something the platform
           cannot do. Then say so in `reply`.
         - Only use ids (tags, agents, AI agents, payment and pixel integrations,
-          other flows) that appear in the context below. Never invent one. If what
+          other flows, lead stages) that appear in the context below. Never invent one. If what
           the person asked for needs a tag, an agent or an integration that does not
           exist, build the rest and say in `reply` which piece is missing and where
           to create it.
@@ -811,6 +811,7 @@ class FlowAssistantService
             'payment_integrations' => $context['payment_integrations'] ?? [],
             'pixel_integrations' => $context['pixel_integrations'] ?? [],
             'flows' => $context['flows'] ?? [],
+            'lead_stages' => $context['lead_stages'] ?? [],
             'channels' => $context['channels'] ?? [],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
 

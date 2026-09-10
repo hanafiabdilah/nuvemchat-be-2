@@ -11,6 +11,8 @@ use App\Models\FlowAssistantMessage;
 use App\Models\FlowEdge;
 use App\Models\GalleryAsset;
 use App\Models\Integration;
+use App\Models\LeadPipeline;
+use App\Models\LeadStage;
 use App\Models\Tag;
 use App\Models\User;
 use App\Services\Flow\FlowBlueprint;
@@ -320,6 +322,7 @@ class FlowAssistantController extends Controller
                 ->get(['id', 'name'])
                 ->map(fn (Flow $other) => ['id' => $other->id, 'name' => $other->name])
                 ->all(),
+            'lead_stages' => $this->leadStageContext($tenantId),
             // Which channels this flow actually drives. It decides whether the
             // interactive node is on the table at all — a WhatsApp button block
             // proposed for a Telegram flow is refused by the save endpoint, and
@@ -331,6 +334,30 @@ class FlowAssistantController extends Controller
                 ->values()
                 ->all(),
         ];
+    }
+
+    /**
+     * The funnel's columns, for the lead node. Read, never provisioned: a
+     * workspace that has not opened its board has no pipeline yet, and asking
+     * the assistant about a flow is not a reason to create one.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function leadStageContext(int $tenantId): array
+    {
+        return LeadPipeline::where('tenant_id', $tenantId)
+            ->with('stages')
+            ->orderByDesc('is_default')
+            ->orderBy('position')
+            ->get()
+            ->flatMap(fn (LeadPipeline $pipeline) => $pipeline->stages->map(fn (LeadStage $stage) => [
+                'id' => $stage->id,
+                'name' => $stage->name,
+                'kind' => $stage->kind->value,
+                'pipeline' => $pipeline->name,
+            ]))
+            ->values()
+            ->all();
     }
 
     /**

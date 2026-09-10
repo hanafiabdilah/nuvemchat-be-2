@@ -38,7 +38,7 @@ class FlowBlueprint
     public const NODE_TYPES = [
         'start', 'message', 'response', 'status', 'tagging',
         'condition', 'action', 'ai_agent', 'http_request', 'interactive',
-        'payment', 'pixel', 'go_to_flow',
+        'payment', 'pixel', 'go_to_flow', 'lead',
     ];
 
     /**
@@ -274,6 +274,28 @@ class FlowBlueprint
             'go_to_flow' => [
                 'flow_id' => ['nullable', 'integer', Rule::exists('flows', 'id')->where('tenant_id', self::tenantId())],
                 'carry_variables' => ['nullable', 'boolean'],
+            ],
+            // A stage is scoped through its pipeline: stages carry no tenant of
+            // their own, and a node naming another workspace's column would
+            // otherwise move this workspace's cards into it.
+            'lead' => [
+                'pipeline_id' => ['nullable', 'integer', Rule::exists('lead_pipelines', 'id')->where('tenant_id', self::tenantId())],
+                'stage_id' => [
+                    'nullable',
+                    'integer',
+                    Rule::exists('lead_stages', 'id')->where(function ($query) {
+                        $tenantId = self::tenantId();
+                        $query->whereIn('pipeline_id', fn ($sub) => $sub
+                            ->select('id')
+                            ->from('lead_pipelines')
+                            ->where('tenant_id', $tenantId));
+                    }),
+                ],
+                'only_forward' => ['nullable', 'boolean'],
+                'title' => ['nullable', 'string', 'max:255'],
+                'value' => ['nullable', 'string', 'max:64'],
+                'owner_id' => ['nullable', 'integer', Rule::exists('users', 'id')->where('tenant_id', self::tenantId())],
+                'lost_reason' => ['nullable', 'string', 'max:255'],
             ],
             default => [],
         };
@@ -767,6 +789,25 @@ class FlowBlueprint
         - Invisible to the customer and never waits. One output.
         - Natural places: "lead" after the customer gave their contact details,
           "purchase" on a payment node's "{$paid}" branch.
+
+        ### lead — put the contact on the sales board
+        { "stage_id": 14, "only_forward": true, "value": "{{payment_value}}" }
+        - Makes sure the contact has an open lead (opens one when there is none)
+          and, when `stage_id` is set, moves the lead to that stage. `stage_id`
+          MUST come from the lead stages listed in the context; leave it null to
+          only make sure the lead exists. If no lead stages are listed, DO NOT use
+          this node.
+        - `only_forward` (default true): never moves a lead back to an earlier
+          stage of the same pipeline, so a returning customer already in a later
+          stage stays there.
+        - Optional: `title` and `value` (both accept {{variable}}), `owner_id` (an
+          agent from the context), `lost_reason` (only used on a stage whose kind
+          is "lost").
+        - Afterwards {{lead_id}}, {{lead_stage}} and {{lead_status}} are set.
+        - Invisible to the customer. One output.
+        - Natural places: a qualification stage right after the customer answered
+          the deciding question; the "won" stage on a payment node's "{$paid}"
+          branch.
 
         ### go_to_flow — continue in another flow
         { "flow_id": 12, "carry_variables": true }

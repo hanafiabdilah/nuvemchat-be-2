@@ -17,6 +17,7 @@ enum NodeType: string
     case Payment = 'payment';
     case Pixel = 'pixel';
     case GoToFlow = 'go_to_flow';
+    case Lead = 'lead';
 
     public function data(): array
     {
@@ -154,6 +155,18 @@ enum NodeType: string
             self::GoToFlow => [
                 'flow_id' => null,
                 'carry_variables' => true,
+            ],
+            // Puts the contact on the sales board — opens a lead when they have
+            // no open one — and moves the card to a stage. One output; see
+            // App\Services\Flow\LeadNodes.
+            self::Lead => [
+                'pipeline_id' => null,
+                'stage_id' => null, // null = only make sure the lead exists
+                'only_forward' => true, // never drag a card back to an earlier stage
+                'title' => '', // supports {{variable}}
+                'value' => '', // "1.500,00" or "{{payment_value}}"
+                'owner_id' => null,
+                'lost_reason' => '', // used only when the stage is a lost stage
             ],
         };
     }

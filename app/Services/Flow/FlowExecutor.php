@@ -2,15 +2,18 @@
 
 namespace App\Services\Flow;
 
+use App\Enums\Billing\Feature;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\FlowPaymentStatus;
 use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
 use App\Enums\Integration\IntegrationCategory;
+use App\Enums\Lead\StageKind;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationHandoff;
 use App\Events\ConversationUpdated;
+use App\Events\LeadUpdated;
 use App\Events\MessageReceived;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
@@ -29,6 +32,7 @@ use App\Models\FlowNode;
 use App\Models\FlowPayment;
 use App\Models\FlowState;
 use App\Models\Integration;
+use App\Models\LeadStage;
 use App\Models\Message;
 use App\Models\User;
 use App\Observers\ConversationObserver;
@@ -39,9 +43,12 @@ use App\Services\AiAgentHub\AiFirstMessage;
 use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\AiAgentHub\AiVoiceReply;
+use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
 use App\Services\Contact\ContactTags;
 use App\Services\Conversation\SystemMessage;
+use App\Services\Lead\LeadResolver;
+use App\Services\Lead\TemperatureScorer;
 use App\Services\Live\LiveActivity;
 use App\Services\Message\MessageService;
 use Illuminate\Support\Collection;
@@ -248,6 +255,10 @@ class FlowExecutor
 
             case NodeType::GoToFlow:
                 $this->executeGoToFlowNode($flowState, $node);
+                break;
+
+            case NodeType::Lead:
+                $this->executeLeadNode($flowState, $node);
                 break;
 
             default:
@@ -3416,6 +3427,172 @@ class FlowExecutor
         }
 
         $this->moveToNextNode($flowState, $node);
+    }
+
+    // ────────────────────────────────  Lead  ────────────────────────────────
+
+    /**
+     * Execute a Lead node — put this contact on the sales board, and move the
+     * card when the author named a stage.
+     *
+     * Goes through LeadResolver, the same one the queued automatic creation
+     * uses, so the flow (running inside the webhook request) and the
+     * EnsureLeadForConversation job converge on one card instead of racing to
+     * open two. Unlike that job it ignores the workspace's "create leads
+     * automatically" switch: a node the author wired is an explicit decision,
+     * not an automatic one.
+     *
+     * Always carries on. A funnel that could not be updated is not a reason to
+     * leave the customer halfway through the conversation — the same rule the
+     * tagging node follows.
+     */
+    protected function executeLeadNode(FlowState $flowState, FlowNode $node): void
+    {
+        try {
+            $this->applyLeadNode($flowState, $node);
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing lead node', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
+        $this->moveToNextNode($flowState, $node);
+    }
+
+    protected function applyLeadNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+        $tenant = $conversation->connection?->tenant;
+
+        if (!$tenant) {
+            return;
+        }
+
+        // The gate EnsureLeadForConversation uses, master switch included, so
+        // the queue, the routes and the flow can never disagree about who has
+        // a funnel. A plan without the CRM feature should not quietly fill a
+        // board it cannot open.
+        if (config('services.billing.enforce') && !app(SubscriptionGate::class)->feature($tenant, Feature::Crm->value)) {
+            Log::info('FlowExecutor: Lead node skipped, the plan has no CRM', [
+                'node_id' => $node->id,
+                'tenant_id' => $tenant->id,
+            ]);
+            return;
+        }
+
+        // Null for a group or a thread with no contact — nobody sells to a
+        // group chat, and the resolver says so.
+        $lead = app(LeadResolver::class)->attach($conversation);
+
+        if (!$lead) {
+            Log::info('FlowExecutor: Lead node skipped, this conversation cannot hold a lead', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+            ]);
+            return;
+        }
+
+        $changes = [];
+
+        $title = trim($this->interpolateVariables((string) ($data['title'] ?? ''), $flowState));
+        if ($title !== '') {
+            $changes['title'] = Str::limit($title, 255, '');
+        }
+
+        // Read the way the payment node reads an amount, so "1.500" means
+        // fifteen hundred in both, and {{payment_value}} carries straight over.
+        $rawValue = trim($this->interpolateVariables((string) ($data['value'] ?? ''), $flowState));
+        $cents = $rawValue !== '' ? PaymentNodes::parseAmount($rawValue) : null;
+        if ($cents !== null) {
+            $changes['value'] = number_format($cents / 100, 2, '.', '');
+        }
+
+        // Scoped at runtime as well as on save: a user deleted or moved since
+        // the flow was built must not end up owning another workspace's card.
+        $ownerId = (int) ($data['owner_id'] ?? 0);
+        if ($ownerId > 0 && ($owner = User::where('tenant_id', $tenant->id)->find($ownerId))) {
+            $changes['owner_id'] = $owner->id;
+        }
+
+        if ($changes !== []) {
+            $lead->update($changes);
+        }
+
+        $moved = false;
+        $stageId = (int) ($data['stage_id'] ?? 0);
+
+        if ($stageId > 0) {
+            $stage = LeadStage::whereKey($stageId)
+                ->whereHas('pipeline', fn ($query) => $query->where('tenant_id', $tenant->id))
+                ->first();
+            $current = $lead->stage;
+
+            if (!$stage) {
+                Log::warning('FlowExecutor: Lead node points at a stage that no longer exists', [
+                    'node_id' => $node->id,
+                    'stage_id' => $stageId,
+                ]);
+            } elseif ($current?->id === $stage->id) {
+                // Already there: no move, no event, no note.
+            } elseif (LeadNodes::onlyForward($data) && LeadNodes::isBackward($current, $stage)) {
+                Log::info('FlowExecutor: Lead is already further along, not moving it back', [
+                    'lead_id' => $lead->id,
+                    'from_stage_id' => $current?->id,
+                    'to_stage_id' => $stage->id,
+                ]);
+            } else {
+                $lostReason = $stage->kind === StageKind::Lost
+                    ? (trim($this->interpolateVariables((string) ($data['lost_reason'] ?? ''), $flowState)) ?: null)
+                    : null;
+
+                // No actor: the stage event's null user reads "the system moved
+                // the card", which is exactly what happened.
+                $lead->moveToStage($stage, null, $lostReason);
+                $moved = true;
+
+                // The board shows the move; the thread is where the agent who
+                // picks the conversation up will be reading.
+                SystemMessage::info(
+                    $conversation,
+                    "The flow moved the lead to \"{$stage->name}\".",
+                    LeadNodes::INFO_STAGE_CHANGED,
+                    ['stage' => $stage->name],
+                );
+            }
+        }
+
+        // Every lead node visit is a sign of life, and a move is a signal the
+        // scorer reads — rescored now rather than at the top of the next hour.
+        app(TemperatureScorer::class)->apply($lead);
+
+        $lead->refresh()->load('stage');
+
+        $flowState->update(['state_data' => array_merge($flowState->state_data ?? [], [
+            'lead_id' => $lead->id,
+            'lead_stage' => $lead->stage?->name,
+            'lead_status' => $lead->status->value,
+        ])]);
+
+        try {
+            broadcast(new LeadUpdated($lead, moved: $moved));
+        } catch (\Throwable $e) {
+            // The card is saved and any board fetch picks it up; a websocket
+            // hiccup is not worth failing the node over.
+            Log::warning('FlowExecutor: Lead updated but could not be broadcast', [
+                'lead_id' => $lead->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        Log::info('FlowExecutor: Lead node applied', [
+            'node_id' => $node->id,
+            'lead_id' => $lead->id,
+            'moved' => $moved,
+            'changed' => array_keys($changes),
+        ]);
     }
 
     // ────────────────────────────  Go to flow  ────────────────────────────
