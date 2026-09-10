@@ -166,3 +166,62 @@ test('a download job for a message that already has its file is a no-op that sti
     expect($message->fresh()->attachment_status)->toBeNull();
     Event::assertDispatched(MessageUpdated::class);
 });
+
+function stickerWebhookPayload(): array
+{
+    $payload = imageWebhookPayload();
+    $payload['changes'][0]['value']['messages'][0] = [
+        'from' => '12134098546',
+        'id' => 'wamid.STICKER-1',
+        'timestamp' => '1785943076',
+        'type' => 'sticker',
+        'sticker' => [
+            'mime_type' => 'image/webp',
+            'sha256' => 'q1c2Zx1ZrQ2yZ8QpX0bO6Wn5oS0xNmRkM2Q1Y2E=',
+            'id' => '555444333',
+            'animated' => false,
+        ],
+    ];
+
+    return $payload;
+}
+
+test('a cloud api sticker is stored as a sticker and its file is queued', function () {
+    Event::fake();
+    Queue::fake();
+    Http::preventStrayRequests();
+
+    $connection = mediaTestConnection();
+
+    (new WhatsappOfficialHandler)->handle($connection, stickerWebhookPayload());
+
+    $message = Message::first();
+
+    // Stickers used to land as "unsupported": the thread told the agent the
+    // customer sent something we couldn't show, when it was an ordinary WebP.
+    expect($message->message_type)->toBe(MessageType::Sticker)
+        ->and($message->body)->toBeNull()
+        ->and($message->attachment_status)->toBe(AttachmentStatus::Pending);
+
+    Queue::assertPushed(DownloadInboundMedia::class);
+});
+
+test('the queued sticker download stores the webp', function () {
+    Event::fake();
+    Storage::fake('local');
+
+    $connection = mediaTestConnection();
+
+    Http::fake([
+        'graph.facebook.com/v25.0/555444333' => Http::response(['url' => 'https://cdn.example/sticker.webp']),
+        'cdn.example/*' => Http::response('webp-bytes'),
+    ]);
+
+    (new WhatsappOfficialHandler)->handle($connection, stickerWebhookPayload());
+
+    $message = Message::first()->fresh();
+
+    expect($message->attachment)->toEndWith('.webp')
+        ->and($message->attachment_status)->toBeNull()
+        ->and(Storage::disk('local')->get($message->attachment))->toBe('webp-bytes');
+});

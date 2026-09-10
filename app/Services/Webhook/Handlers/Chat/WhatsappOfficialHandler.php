@@ -35,6 +35,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
         MessageType::Video,
         MessageType::Document,
         MessageType::Audio,
+        MessageType::Sticker,
     ];
 
     public function getConversationId(array $payload): ?string
@@ -98,7 +99,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             'audio' => MessageType::Audio,
             'voice' => MessageType::Audio,
             'interactive' => MessageType::Interactive,
-            'sticker' => MessageType::Unsupported,
+            'sticker' => MessageType::Sticker,
             'location' => MessageType::Unsupported,
             'contacts' => MessageType::Contact,
             default => MessageType::Unsupported,
@@ -524,6 +525,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             MessageType::Image => 'image',
             MessageType::Video => 'video',
             MessageType::Document => 'document',
+            MessageType::Sticker => 'sticker',
             MessageType::Audio => null, // Will check both 'audio' and 'voice'
             default => null,
         };
