@@ -171,18 +171,93 @@ better than one that appears broken.
 
 ---
 
-## Applying to the canvas
+## The proposal lands on the canvas, not in a card
 
-The panel **proposes**; the person applies. Nothing is written until they press
-the button, because the canvas auto-saves three seconds after any change and an
-auto-apply would commit a rewrite of a flow customers are being routed through
-right now. One undo step is kept.
+A flow is a picture, and the only way to judge one is to look at it. So an
+answer carrying a blueprint is drawn **on the canvas immediately**, and the
+Accept / Discard buttons float over it — next to the thing being judged. There
+is no "Apply" button in the chat panel; reading "6 nós, 2 ramificações" and
+pressing Apply is agreeing to something unseen.
 
-Applying is a whole-canvas replacement — the assistant always returns the
+It builds itself a piece at a time, and the order is the point:
+
+1. what already exists stays put, moving to its new position (CSS transition on
+   the node wrapper — React Flow positions with `transform`, so without it a
+   rearrangement is a jump);
+2. new nodes land one at a time (`NODE_STAGGER_MS`);
+3. then the edges that join them (`EDGE_STAGGER_MS`);
+4. then the viewport frames the result.
+
+Nodes the proposal **drops** stay on screen, dimmed and red-outlined, until the
+decision is made. "It is about to delete this" is the single most important
+thing a preview can say, and a node that simply vanished would say it too late.
+
+⚠️ **Nothing is saved while a proposal is on screen.** The auto-save timer's
+callback checks `previewRef` at fire time, not when its effect was set up — a
+machine-written rewrite of a live flow committing itself three seconds after it
+appeared is the exact thing this exists to prevent. Accepting sets
+`flushSaveRef` so the next pass saves immediately instead of waiting.
+
+⚠️ **Accepting must not call `handleSave()` directly.** It closes over the
+`nodes`/`edges` of the render that created it, and the accept/undo callbacks are
+memoised on stable setters — so they capture the *first* render, whose `nodes`
+is the empty array the canvas started with. That saved an empty flow. The flag
+exists so the save runs from the auto-save effect, which re-runs on every
+`[nodes, edges]` change and therefore always holds the current one.
+
+Accepting is a whole-canvas replacement — the assistant always returns the
 complete flow, never a patch. A blueprint key matching a node already on the
 canvas keeps that node's id (so the save endpoint UPDATEs it); everything else
 gets a fresh non-numeric id (which is how that endpoint recognises a new node).
-The start node is pinned to the existing one either way.
+The start node is pinned to the existing one either way. One undo step is kept
+after accepting.
+
+⚠️ Preview styling goes through `node.className` and CSS in `app.css`, never
+through `node.data` — `data` is the payload posted to the save endpoint, so
+anything put there for appearance is written to the database. And the "new node"
+keyframe scales the node's **child**: React Flow puts an inline
+`transform: translate(...)` on the node itself, so a keyframe touching
+`transform` there wins and drops the node at the origin.
+
+## The thread belongs to the flow
+
+`flow_assistant_messages`, keyed on `flow_id` — not on the person. It used to
+live in the browser and be posted back with every turn, which made it private
+to one tab: closing the panel lost it, and a colleague opening the same flow saw
+an empty box with no idea what had been asked or why the flow looks the way it
+does. A flow is shared, so the reasoning behind it is too.
+
+- `GET|DELETE /api/flows/{id}/assistant/messages` — read, or clear.
+- `user_id` is who spoke, not who may read, and is nullable: the row outlives
+  the account.
+- Each assistant turn stores its blueprint, so an old proposal can be put back
+  on the canvas ("Show on canvas") without paying for a second run.
+- Only the last `HISTORY_TURNS` (12) are replayed to the model, and **never the
+  blueprints** — they are enormous, stale the moment the flow changes, and the
+  current flow is sent separately every turn.
+
+## Media from the library
+
+The composer has a paperclip that opens the same `GalleryPickerModal` the chat
+composer uses. Picked files travel as **`gallery_asset_ids`**, and the server
+resolves them to URLs — the same rule every send route follows
+(`GalleryMediaResolver`). A URL the browser supplied is a URL the browser chose,
+and this one gets written into a saved flow that keeps sending it for months.
+
+The prompt lists them as their own section with an instruction to copy the `url`
+values verbatim into `attachment_url` (with the matching `message_type`) or a
+carousel card's `header_url`. A model that invents a media URL produces a flow
+that saves perfectly and fails at send time, in front of a customer.
+
+## Calling an API from a flow
+
+Yes — that is the `http_request` node, and the specification carries worked GET
+and POST examples: headers, a JSON body as a string (`{{variable}}` interpolated
+into it), `response_mappings` turning the response into variables the later
+nodes read, and both `success`/`error` branches wired. Give the assistant an
+endpoint and say what it is for. It is told never to guess a credential: if a
+token is needed and was not supplied, it leaves a placeholder and names the node
+to open.
 
 ---
 

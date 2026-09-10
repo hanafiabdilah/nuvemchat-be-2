@@ -630,14 +630,37 @@ class FlowBlueprint
           team, never sent to the customer. This one CONTINUES — it has one output.
 
         ### http_request — call an external API
+        GET, reading a value back out:
         { "method": "GET", "url": "https://api.exemplo.com/pedidos/{{pedido}}",
-          "headers": [ { "key": "Authorization", "value": "Bearer …" } ],
+          "headers": [ { "key": "Authorization", "value": "Bearer SEU_TOKEN" } ],
           "timeout": 15,
-          "response_mappings": [ { "path": "data.status", "variable": "status_pedido" } ] }
-        - `url` supports {{variable}}. `response_mappings[].path` is a dot-path into
-          the JSON response; the special paths "http_status" and "raw_body" also work.
+          "response_mappings": [
+            { "path": "data.status", "variable": "status_pedido" },
+            { "path": "http_status", "variable": "codigo_http" }
+          ] }
+        POST, sending what the customer answered:
+        { "method": "POST", "url": "https://api.exemplo.com/leads",
+          "headers": [ { "key": "Content-Type", "value": "application/json" } ],
+          "body": "{\\"nome\\": \\"{{nome}}\\", \\"telefone\\": \\"{{contact.phone}}\\"}",
+          "response_mappings": [ { "path": "id", "variable": "lead_id" } ] }
+        - When the person gives you an endpoint, USE THIS NODE — that is what it is
+          for. Pick the verb from what they are doing: reading something about the
+          customer is GET, recording something is POST. Both work.
+        - `url`, every header value and `body` support {{variable}}, so anything a
+          response node stored can be sent onward. `body` is a STRING containing
+          JSON, not a JSON object — escape the quotes inside it.
+        - Send `Content-Type: application/json` yourself on POST/PUT/PATCH; nothing
+          adds it for you.
+        - `response_mappings[].path` is a dot-path into the JSON response
+          ("data.user.name"); the special paths "http_status" and "raw_body" also
+          work. Whatever you map becomes a {{variable}} the later nodes can read —
+          usually into a message ("Seu pedido está {{status_pedido}}") or a condition.
+        - If the endpoint needs a token or a key the person did not give you, put a
+          clear placeholder in the header value and say in `reply` exactly which
+          node they must open to paste the real one. Never guess a credential.
         - TWO outputs: "success" and "error". Wire BOTH — an unwired error branch is
-          a flow that goes silent when the API is down.
+          a flow that goes silent when the API is down. The error branch should say
+          something human and usually hand over to a person.
 
         ### status — close the conversation
         { "value": "{$resolved}" }

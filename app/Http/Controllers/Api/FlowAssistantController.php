@@ -6,7 +6,9 @@ use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Models\AiHubAgent;
 use App\Models\Flow;
+use App\Models\FlowAssistantMessage;
 use App\Models\FlowEdge;
+use App\Models\GalleryAsset;
 use App\Models\Tag;
 use App\Models\User;
 use App\Services\Flow\FlowBlueprint;
@@ -29,6 +31,18 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
  */
 class FlowAssistantController extends Controller
 {
+    /**
+     * How much of the thread is replayed to the model.
+     *
+     * The transcript is now durable and shared, so it grows without limit — but
+     * a turn should not get more expensive every time somebody asks another
+     * question. The tail is what carries the current line of thought.
+     */
+    private const HISTORY_TURNS = 12;
+
+    /** Files a single request may hand the assistant to build with. */
+    private const MAX_GALLERY_ASSETS = 12;
+
     public function __construct(
         private readonly FlowAssistantService $assistant,
     ) {}
@@ -53,6 +67,52 @@ class FlowAssistantController extends Controller
     }
 
     /**
+     * The flow's assistant thread.
+     *
+     * Per flow, not per person: whoever can edit the flow reads why it looks
+     * the way it does. An agent opening a flow a colleague built with the
+     * assistant last week gets the reasoning, not an empty box.
+     */
+    public function messages(int $id): JsonResponse
+    {
+        $flow = $this->flow($id);
+
+        $messages = FlowAssistantMessage::forFlow($flow->id, auth()->user()->tenant_id)
+            ->with('user:id,name')
+            ->get();
+
+        return response()->json([
+            'data' => $messages->map(fn (FlowAssistantMessage $message) => [
+                'id' => (string) $message->id,
+                'role' => $message->role,
+                'content' => $message->content,
+                'flow' => $message->blueprint,
+                'warnings' => $message->warnings ?? [],
+                'author' => $message->user?->name,
+                'created_at' => $message->created_at?->toIso8601String(),
+            ])->all(),
+        ]);
+    }
+
+    /**
+     * Clear the thread.
+     *
+     * Deliberately available: the transcript is shared, so a session full of
+     * false starts is something a colleague has to read past. Only the
+     * conversation goes — the flow it produced is a separate thing and stays.
+     */
+    public function clear(int $id): JsonResponse
+    {
+        $flow = $this->flow($id);
+
+        FlowAssistantMessage::where('flow_id', $flow->id)
+            ->where('tenant_id', auth()->user()->tenant_id)
+            ->delete();
+
+        return response()->json(['data' => ['cleared' => true]]);
+    }
+
+    /**
      * One turn, streamed as Server-Sent Events.
      *
      * Events: `status` (stage changes), `result` ({reply, flow, warnings}),
@@ -62,9 +122,16 @@ class FlowAssistantController extends Controller
     {
         $flow = $this->flow($id);
         $input = $this->validated($request);
-        $context = $this->context($flow);
 
-        return response()->stream(function () use ($input, $context) {
+        // Everything that touches the database happens here, before the
+        // response starts streaming: inside the callback the headers are
+        // already sent, so a query that throws there has no status code left to
+        // fail with.
+        $context = $this->context($flow, $input['gallery_asset_ids']);
+        $history = $this->history($flow);
+        $this->record($flow, 'user', $input['message']);
+
+        return response()->stream(function () use ($input, $context, $history, $flow) {
             $emit = function (string $event, array $data): void {
                 echo "event: {$event}\n";
                 echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
@@ -79,7 +146,11 @@ class FlowAssistantController extends Controller
             };
 
             try {
-                $result = $this->assistant->ask($input['message'], $context, $input['history'], $emit);
+                $result = $this->assistant->ask($input['message'], $context, $history, $emit);
+
+                $message = $this->record($flow, 'assistant', $result['reply'], $result['flow'], $result['warnings']);
+                $result['id'] = (string) $message->id;
+
                 $emit('result', $result);
             } catch (\Throwable $e) {
                 // The stream has already sent 200 and its headers, so there is
@@ -111,7 +182,14 @@ class FlowAssistantController extends Controller
         $flow = $this->flow($id);
         $input = $this->validated($request);
 
-        $result = $this->assistant->ask($input['message'], $this->context($flow), $input['history']);
+        $context = $this->context($flow, $input['gallery_asset_ids']);
+        $history = $this->history($flow);
+        $this->record($flow, 'user', $input['message']);
+
+        $result = $this->assistant->ask($input['message'], $context, $history);
+
+        $message = $this->record($flow, 'assistant', $result['reply'], $result['flow'], $result['warnings']);
+        $result['id'] = (string) $message->id;
 
         return response()->json(['data' => $result]);
     }
@@ -124,38 +202,85 @@ class FlowAssistantController extends Controller
     }
 
     /**
-     * @return array{message: string, history: list<array{role: string, content: string}>}
+     * @return array{message: string, gallery_asset_ids: list<int>}
      */
     private function validated(Request $request): array
     {
         $validated = $request->validate([
             'message' => ['required', 'string', 'max:' . FlowAssistantConfig::MAX_MESSAGE_CHARS],
-            // The transcript is held by the browser and sent back, because
-            // turns are stateless server-side (see FlowAssistantService). It is
-            // the person's own conversation with themselves, so there is
-            // nothing to leak — but it is still client input, hence the caps.
-            'history' => ['nullable', 'array', 'max:' . FlowAssistantConfig::MAX_HISTORY_TURNS],
-            'history.*.role' => ['required', 'string', 'in:user,assistant'],
-            'history.*.content' => ['required', 'string', 'max:' . FlowAssistantConfig::MAX_MESSAGE_CHARS],
+            // Ids, never URLs — the same reason `gallery_asset_id` is an id on
+            // every send route (see GalleryMediaResolver). A URL the client
+            // supplied is a URL the client chose, and it would end up baked
+            // into a saved flow that sends it to customers.
+            'gallery_asset_ids' => ['nullable', 'array', 'max:' . self::MAX_GALLERY_ASSETS],
+            'gallery_asset_ids.*' => ['integer'],
         ]);
 
         return [
             'message' => $validated['message'],
-            'history' => $validated['history'] ?? [],
+            'gallery_asset_ids' => array_values(array_unique($validated['gallery_asset_ids'] ?? [])),
         ];
     }
 
     /**
+     * The tail of the thread, as the model sees it.
+     *
+     * Read from the database rather than taken from the request. It used to be
+     * posted back by the browser, which made it per-tab — and also made it
+     * client input that shaped a paid request. Now it is the same thread every
+     * agent on this flow is reading.
+     *
+     * Blueprints are deliberately left out: they are enormous, they are stale
+     * the moment the flow changes, and the current flow is sent separately.
+     *
+     * @return list<array{role: string, content: string}>
+     */
+    private function history(Flow $flow): array
+    {
+        return FlowAssistantMessage::forFlow($flow->id, auth()->user()->tenant_id)
+            ->latest('id')
+            ->limit(self::HISTORY_TURNS)
+            ->get(['role', 'content'])
+            ->reverse()
+            ->map(fn (FlowAssistantMessage $message) => [
+                'role' => $message->role,
+                'content' => $message->content,
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function record(
+        Flow $flow,
+        string $role,
+        string $content,
+        ?array $blueprint = null,
+        array $warnings = [],
+    ): FlowAssistantMessage {
+        return FlowAssistantMessage::create([
+            'flow_id' => $flow->id,
+            'tenant_id' => auth()->user()->tenant_id,
+            'user_id' => auth()->id(),
+            'role' => $role,
+            'content' => $content,
+            'blueprint' => $blueprint,
+            'warnings' => $warnings ?: null,
+        ]);
+    }
+
+    /**
      * What the model is allowed to build with: this workspace's real tags,
-     * agents and AI agents, plus the flow as it stands.
+     * agents, AI agents and picked media, plus the flow as it stands.
      *
      * Sending the real ids is what makes "marque a conversa como urgente" work
      * — and, just as important, what makes asking for a tag that does not exist
      * fail as a sentence in the reply instead of as a validation error on save.
      * The model is told in the prompt never to invent one; the validator is
      * what enforces it.
+     *
+     * @param  list<int>  $galleryAssetIds
      */
-    private function context(Flow $flow): array
+    private function context(Flow $flow, array $galleryAssetIds = []): array
     {
         $tenantId = auth()->user()->tenant_id;
 
@@ -181,6 +306,7 @@ class FlowAssistantController extends Controller
                 ->get(['id', 'name'])
                 ->map(fn (AiHubAgent $agent) => ['id' => $agent->id, 'name' => $agent->name])
                 ->all(),
+            'gallery' => $this->galleryContext($tenantId, $galleryAssetIds),
             // Which channels this flow actually drives. It decides whether the
             // interactive node is on the table at all — a WhatsApp button block
             // proposed for a Telegram flow is refused by the save endpoint, and
@@ -192,6 +318,40 @@ class FlowAssistantController extends Controller
                 ->values()
                 ->all(),
         ];
+    }
+
+    /**
+     * The media the person picked, resolved to the URLs a flow node can carry.
+     *
+     * ⚠️ Resolved here, from ids, and never taken from the request. A gallery
+     * URL is permanent and signed, so it is safe to put in a flow that will
+     * send it for months — but only because this is the one place that checks
+     * the file belongs to this workspace. The alternative (the browser posting
+     * the URL it already has) would let a saved flow point anywhere, and there
+     * would be no moment at which the platform knew a library file was in use.
+     *
+     * @param  list<int>  $ids
+     * @return list<array<string, mixed>>
+     */
+    private function galleryContext(int $tenantId, array $ids): array
+    {
+        if ($ids === []) {
+            return [];
+        }
+
+        return GalleryAsset::forTenant($tenantId)
+            ->whereIn('id', $ids)
+            ->get()
+            ->map(fn (GalleryAsset $asset) => [
+                'name' => $asset->name,
+                // The node field names, so the model does not have to map
+                // "image" onto a message type itself.
+                'message_type' => $asset->type->value,
+                'url' => $asset->publicUrl(),
+                'mime_type' => $asset->mime_type,
+            ])
+            ->values()
+            ->all();
     }
 
     /**

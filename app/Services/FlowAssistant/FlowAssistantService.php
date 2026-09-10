@@ -817,6 +817,26 @@ class FlowAssistantService
             'channels' => $context['channels'] ?? [],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
 
+        // Media the person picked from their library for this request. Listed
+        // as its own section rather than buried in the context blob because it
+        // is an instruction, not background: these URLs are the only ones the
+        // model may put in a node, and it has no other way to obtain a valid
+        // one — a made-up URL saves fine and then fails at send time, months
+        // later, in front of a customer.
+        $gallery = (array) ($context['gallery'] ?? []);
+
+        if ($gallery !== []) {
+            $sections[] = "# Media the person attached (from their library)\n"
+                . json_encode($gallery, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)
+                . "\n\n"
+                . 'Use these EXACT `url` values — copy them character for character — as '
+                . '`attachment_url` on a message/response bubble (with the matching '
+                . '`message_type`), or as `header_url` on a carousel card. Never invent a '
+                . 'media URL and never alter one of these. Use each file where the person '
+                . 'asked for it; if they did not say, put it on the step it obviously '
+                . 'belongs to and say in `reply` where you placed it.';
+        }
+
         // Whether the interactive node is even available is a channel question,
         // and the model cannot infer it — a flow wired to Telegram that answers
         // with WhatsApp buttons saves and then never renders.

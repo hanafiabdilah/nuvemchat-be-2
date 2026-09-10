@@ -1,10 +1,13 @@
 <?php
 
 use App\Enums\Billing\BillingCycle;
+use App\Enums\Gallery\AssetType;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Enums\Flow\NodeType;
 use App\Models\Flow;
+use App\Models\FlowAssistantMessage;
+use App\Models\GalleryAsset;
 use App\Models\Plan;
 use App\Models\Setting;
 use App\Models\Subscription;
@@ -74,6 +77,24 @@ function provisionAssistant(): void
     Setting::set(FlowAssistantConfig::KEY_AGENT_EXTERNAL_ID, FlowAssistantConfig::AGENT_EXTERNAL_ID);
     Setting::set(FlowAssistantConfig::KEY_HUB_AGENT_ID, 'hub-agent-1');
     Setting::set(FlowAssistantConfig::KEY_HUB_CREDENTIAL_ID, 'hub-cred-1');
+}
+
+/** One file in a workspace's media library. */
+function galleryAsset(int $tenantId, string $name): GalleryAsset
+{
+    $extension = pathinfo($name, PATHINFO_EXTENSION) ?: 'png';
+
+    return GalleryAsset::create([
+        'tenant_id' => $tenantId,
+        'uuid' => (string) Illuminate\Support\Str::uuid(),
+        'public_filename' => $name,
+        'name' => $name,
+        'path' => "gallery/{$tenantId}/" . Illuminate\Support\Str::random(12) . ".{$extension}",
+        'mime_type' => $extension === 'pdf' ? 'application/pdf' : 'image/png',
+        'type' => $extension === 'pdf' ? AssetType::Document : AssetType::Image,
+        'size_bytes' => 2048,
+        'checksum' => hash('sha256', $name),
+    ]);
 }
 
 /** The decoded body of one hub run, carrying whatever the model "wrote". */
@@ -453,6 +474,181 @@ test('the workspace real tags and agents reach the model, and nothing else does'
             && str_contains($request->body(), (string) $tag->id)
             && ! str_contains($request->body(), 'SegredoAlheio');
     });
+});
+
+// ──────────────────── A thread that belongs to the flow ─────────────────
+
+test('the thread is readable by another agent on the same flow', function () {
+    // The whole point of persisting it. The transcript used to live in one tab
+    // and be posted back with every turn, so closing the panel lost it and a
+    // colleague opening the same flow saw an empty box with no idea what had
+    // been asked or why the flow looks the way it does.
+    $owner = assistantUser();
+    provisionAssistant();
+
+    $flow = Flow::create(['tenant_id' => $owner->tenant_id, 'name' => 'Fluxo']);
+    $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
+
+    Http::fake([
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
+        '*/runs' => hubRun(envelope(validBlueprint(), 'Montei o fluxo.')),
+    ]);
+
+    $this->actingAs($owner, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant", ['message' => 'Crie um atendimento'])
+        ->assertOk();
+
+    // A second agent in the same workspace, who was not there when it was asked.
+    $colleague = User::factory()->create(['tenant_id' => $owner->tenant_id]);
+    $colleague->assignRole('flow-assistant-' . $owner->tenant_id);
+
+    $this->actingAs($colleague->fresh(), 'sanctum')
+        ->getJson("/api/flows/{$flow->id}/assistant/messages")
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.role', 'user')
+        ->assertJsonPath('data.0.author', $owner->name)
+        ->assertJsonPath('data.1.content', 'Montei o fluxo.')
+        // The blueprint travels with the turn, so an old proposal can go back
+        // on the canvas without paying for a second run.
+        ->assertJsonCount(3, 'data.1.flow.nodes');
+});
+
+test('another workspace cannot read the thread', function () {
+    $owner = assistantUser();
+    $flow = Flow::create(['tenant_id' => $owner->tenant_id, 'name' => 'Fluxo']);
+
+    FlowAssistantMessage::create([
+        'flow_id' => $flow->id, 'tenant_id' => $owner->tenant_id,
+        'user_id' => $owner->id, 'role' => 'user', 'content' => 'segredo',
+    ]);
+
+    $stranger = assistantUser();
+
+    $this->actingAs($stranger, 'sanctum')
+        ->getJson("/api/flows/{$flow->id}/assistant/messages")
+        ->assertNotFound();
+});
+
+test('the model is told the earlier turns, without the blueprints', function () {
+    $user = assistantUser();
+    provisionAssistant();
+
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
+    $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
+
+    FlowAssistantMessage::create([
+        'flow_id' => $flow->id, 'tenant_id' => $user->tenant_id, 'user_id' => $user->id,
+        'role' => 'user', 'content' => 'Quero um menu de pizzaria',
+    ]);
+    FlowAssistantMessage::create([
+        'flow_id' => $flow->id, 'tenant_id' => $user->tenant_id, 'user_id' => null,
+        'role' => 'assistant', 'content' => 'Feito.', 'blueprint' => validBlueprint(),
+    ]);
+
+    Http::fake([
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
+        '*/runs' => hubRun(envelope(null, 'ok')),
+    ]);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant", ['message' => 'Adicione o encerramento'])
+        ->assertOk();
+
+    Http::assertSent(function ($request) {
+        if (! str_ends_with($request->url(), '/runs')) return false;
+
+        $content = $request->data()['message']['content'];
+
+        // The words carry the thread; a past blueprint is enormous, stale the
+        // moment the flow changes, and the current flow is sent separately.
+        return str_contains($content, 'Quero um menu de pizzaria')
+            && str_contains($content, 'Earlier in this conversation')
+            && ! str_contains($content, 'position_x": 280');
+    });
+});
+
+// ─────────────────────────── Media from the library ─────────────────────
+
+test('picked library files reach the model as URLs it is told to copy exactly', function () {
+    $user = assistantUser();
+    provisionAssistant();
+
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
+    $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
+
+    $asset = galleryAsset($user->tenant_id, 'menu-2026.png');
+
+    Http::fake([
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
+        '*/runs' => hubRun(envelope(null, 'ok')),
+    ]);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant", [
+            'message' => 'Mande esta imagem na saudação',
+            'gallery_asset_ids' => [$asset->id],
+        ])
+        ->assertOk();
+
+    Http::assertSent(function ($request) use ($asset) {
+        if (! str_ends_with($request->url(), '/runs')) return false;
+
+        $content = $request->data()['message']['content'];
+
+        return str_contains($content, 'menu-2026.png')
+            && str_contains($content, $asset->publicUrl())
+            && str_contains($content, 'attachment_url');
+    });
+});
+
+test('a library file from another workspace is silently not offered to the model', function () {
+    // Resolved from ids here, so a picker that has gone stale — or a request
+    // built by hand — cannot put a stranger's file into a flow that will send
+    // it to customers for months.
+    $user = assistantUser();
+    provisionAssistant();
+
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
+    $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
+
+    $stranger = assistantUser();
+    $foreign = galleryAsset($stranger->tenant_id, 'contrato-alheio.pdf');
+
+    Http::fake([
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
+        '*/runs' => hubRun(envelope(null, 'ok')),
+    ]);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant", [
+            'message' => 'Use este arquivo',
+            'gallery_asset_ids' => [$foreign->id],
+        ])
+        ->assertOk();
+
+    Http::assertSent(function ($request) {
+        if (! str_ends_with($request->url(), '/runs')) return false;
+
+        return ! str_contains($request->data()['message']['content'], 'contrato-alheio.pdf');
+    });
+});
+
+test('the specification tells the model how to call an API with GET and POST', function () {
+    // The answer to "can it build a flow that calls my endpoint?" — the node
+    // has always existed, but the prompt has to say enough for the model to
+    // wire it: a verb, a JSON body as a string, mapped variables, both branches.
+    $spec = FlowBlueprint::specification();
+
+    expect($spec)
+        ->toContain('http_request')
+        ->toContain('"method": "GET"')
+        ->toContain('"method": "POST"')
+        ->toContain('response_mappings')
+        ->toContain('Content-Type')
+        // Both outputs wired: an unwired error branch is a flow that goes
+        // silent when the endpoint is down.
+        ->toContain('"success" and "error"');
 });
 
 test('the assistant reports itself unavailable until the platform provisions it', function () {

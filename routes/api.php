@@ -491,6 +491,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
             // nobody types faster than this on purpose.
             Route::post('/flows/{id}/assistant/stream', [FlowAssistantController::class, 'stream'])->middleware('throttle:20,1');
             Route::post('/flows/{id}/assistant', [FlowAssistantController::class, 'ask'])->middleware('throttle:20,1');
+            // The thread is per flow, not per person: whoever may edit the flow
+            // reads why it looks the way it does.
+            Route::get('/flows/{id}/assistant/messages', [FlowAssistantController::class, 'messages']);
+            Route::delete('/flows/{id}/assistant/messages', [FlowAssistantController::class, 'clear']);
         });
 
         Route::get('/flows/{id}/export', [FlowController::class, 'export'])->middleware('permission:flows.view');
