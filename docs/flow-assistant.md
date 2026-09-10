@@ -219,6 +219,46 @@ keyframe scales the node's **child**: React Flow puts an inline
 `transform: translate(...)` on the node itself, so a keyframe touching
 `transform` there wins and drops the node at the origin.
 
+## Making room for what was added
+
+`FlowAssistant\FlowLayout`, run from `normalize()` after every answer.
+
+The bug it exists for: insert a step into an existing chain — A → B → C becomes
+A → B → D → C — and the model wires it correctly and then puts D exactly where
+C is. It has no reason not to; it was told to keep the nodes it is not changing,
+so C comes back with the coordinates we sent it, and D gets something plausible.
+Two nodes on one spot reads as a node that failed to appear.
+
+The rule, in one sentence: **nodes may not overlap, and when two do, the one
+further from the start moves right — together with everything downstream of it**,
+because a node that moved without its children would just land on them instead.
+
+- Depth is the **longest** route from the start, not the shortest: in a diamond
+  (A → C and A → B → C) the shortest route puts C in B's column.
+- Positions that are already there are **kept**. A flow's layout is usually the
+  work of somebody who dragged the nodes where they wanted them, and a pass that
+  recomputed every coordinate would tidy that away every time the assistant was
+  asked for anything. This only ever *adds* space.
+- A node with no position at all is placed beside its parent, not at an
+  arbitrary index.
+
+⚠️ `MIN_H_SEPARATION` / `MIN_V_SEPARATION` are **separation thresholds, not node
+dimensions.** The first version used the node box (300px wide plus a 40px gap),
+which is wider than the 280–300px column spacing this product has always drawn
+at — so every ordinary pair of adjacent nodes read as overlapping and the pass
+rearranged perfectly good flows. The question is not "how big is a node" but
+"how close is too close, given the spacing already in use".
+
+⚠️ Both axes must be too close before it counts: a branch pair one above the
+other is not a collision, and pushing one of them right would misrepresent the
+flow as having an extra step.
+
+⚠️ Geometry, not a prompt instruction. "Shift the downstream nodes" has one
+right answer, and coordinate arithmetic over a whole graph is exactly what a
+model gets subtly wrong — intermittently, silently, and differently every time.
+The spec *also* tells it to shift on insertion, which reduces the work, but the
+guarantee is here. Tests: `tests/Feature/Flow/FlowLayoutTest.php`.
+
 ## The thread belongs to the flow
 
 `flow_assistant_messages`, keyed on `flow_id` — not on the person. It used to

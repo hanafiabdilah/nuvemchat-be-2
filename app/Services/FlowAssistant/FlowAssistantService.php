@@ -701,28 +701,19 @@ class FlowAssistantService
      * positions, string keys, a name.
      *
      * Positions especially. They are not validated — the save endpoint takes
-     * any number — so a model that omits them produces a flow that saves
-     * perfectly and draws as a single pile of nodes on top of each other,
-     * which reads as a broken feature.
+     * any number — so a model that omits them, or reuses one, produces a flow
+     * that saves perfectly and draws as a pile of nodes on one spot, which
+     * reads as nodes that failed to appear. {@see FlowLayout} is what makes
+     * room; everything here is shape.
      */
     private function normalize(array $blueprint): array
     {
         $nodes = array_values(array_filter((array) ($blueprint['nodes'] ?? []), 'is_array'));
         $edges = array_values(array_filter((array) ($blueprint['edges'] ?? []), 'is_array'));
 
-        $column = 0;
         foreach ($nodes as $index => $node) {
             $nodes[$index]['key'] = (string) ($node['key'] ?? $index);
             $nodes[$index]['data'] = ($node['type'] ?? '') === 'start' ? null : ($node['data'] ?? []);
-
-            if (! is_numeric($node['position_x'] ?? null) || ! is_numeric($node['position_y'] ?? null)) {
-                $nodes[$index]['position_x'] = $column * 280;
-                $nodes[$index]['position_y'] = ($index % 2) * 160;
-                $column++;
-            } else {
-                $nodes[$index]['position_x'] = (float) $node['position_x'];
-                $nodes[$index]['position_y'] = (float) $node['position_y'];
-            }
         }
 
         foreach ($edges as $index => $edge) {
@@ -737,7 +728,9 @@ class FlowAssistantService
 
         return [
             'name' => trim((string) ($blueprint['name'] ?? '')) ?: 'Fluxo gerado por IA',
-            'nodes' => $nodes,
+            // Last, and after the edges are cleaned: the layout is derived from
+            // the graph, so it needs the connections to be readable first.
+            'nodes' => FlowLayout::resolve($nodes, $edges),
             'edges' => $edges,
         ];
     }

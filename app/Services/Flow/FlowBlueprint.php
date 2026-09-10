@@ -535,6 +535,10 @@ class FlowBlueprint
             interactive   → the id of one of that node's own options
         - Lay the canvas out left to right: x grows by ~280 per step, y separates
           branches by ~180. Never stack two nodes on the same coordinates.
+        - When you INSERT a step into an existing chain, the steps after it move
+          along: give the new node the position the next one had, and add ~280 to
+          the x of that node and of everything after it. Leaving them where they
+          were puts two nodes on one spot.
         - Text is written for the end customer, in the language the user is speaking
           to you in (Brazilian Portuguese unless they write otherwise).
 
