@@ -122,6 +122,12 @@ class RoleAndPermissionSeeder extends Seeder
             // and rents storage against the prepaid balance.
             'gallery.view',
             'gallery.manage',
+
+            // External apps: payment gateways and pixels. `view` lists them and
+            // the payments flows took; `manage` pastes the keys that move the
+            // workspace's money, which is why editing a flow does not imply it.
+            'integrations.view',
+            'integrations.manage',
         ];
 
         foreach ($permissions as $permission) {

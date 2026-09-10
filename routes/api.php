@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
 use App\Http\Controllers\Api\Numbers\VirtualNumberController;
 use App\Http\Controllers\Api\Gallery\GalleryAssetController;
 use App\Http\Controllers\Api\Gallery\GalleryStorageController;
+use App\Http\Controllers\Api\IntegrationController;
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
@@ -211,6 +212,21 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/', [GalleryAssetController::class, 'store'])->middleware('permission:gallery.manage')->name('store');
         Route::put('/{id}', [GalleryAssetController::class, 'update'])->whereNumber('id')->middleware('permission:gallery.manage')->name('update');
         Route::delete('/{id}', [GalleryAssetController::class, 'destroy'])->whereNumber('id')->middleware('permission:gallery.manage')->name('destroy');
+    });
+
+    // External apps the workspace connects its own accounts to: payment
+    // gateways and pixels, used by the flow builder's Payment and Pixel nodes.
+    // The list is readable with `flows.update` as well, because the builder's
+    // pickers need it — the resource never carries a secret, and the webhook
+    // URL only appears for `integrations.view`. Everything that writes a key is
+    // `integrations.manage`, which editing a flow deliberately does not imply.
+    Route::prefix('integrations')->name('integrations.')->group(function () {
+        Route::get('/', [IntegrationController::class, 'index'])->middleware('permission:integrations.view|flows.update')->name('index');
+        Route::post('/', [IntegrationController::class, 'store'])->middleware('permission:integrations.manage')->name('store');
+        Route::put('/{id}', [IntegrationController::class, 'update'])->whereNumber('id')->middleware('permission:integrations.manage')->name('update');
+        Route::post('/{id}/test', [IntegrationController::class, 'test'])->whereNumber('id')->middleware(['permission:integrations.manage', 'throttle:20,1'])->name('test');
+        Route::delete('/{id}', [IntegrationController::class, 'destroy'])->whereNumber('id')->middleware('permission:integrations.manage')->name('destroy');
+        Route::get('/{id}/payments', [IntegrationController::class, 'payments'])->whereNumber('id')->middleware('permission:integrations.view')->name('payments');
     });
 
     Route::middleware('feature:' . Feature::Chat->value)->group(function () {

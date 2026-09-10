@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\ConnectionController;
+use App\Http\Controllers\FlowPaymentQrController;
 use App\Http\Controllers\GalleryFileController;
 use Illuminate\Http\Middleware\HandleCors;
 use Illuminate\Support\Facades\Route;
@@ -59,6 +60,15 @@ Route::get('/gallery/{uuid}/{filename}', [GalleryFileController::class, 'show'])
     ->where('filename', '.*')
     ->middleware('signed')
     ->name('gallery.file');
+
+/**
+ * The QR image of a Pix a flow's payment node sent — public and signed for the
+ * same reason as the gallery route above. Ends in `.png` because that is how
+ * OutboundMedia decides what it is sending.
+ */
+Route::get('/flow-payments/{reference}/qr.png', [FlowPaymentQrController::class, 'show'])
+    ->middleware('signed')
+    ->name('flow-payments.qr');
 
 require __DIR__.'/settings.php';
 require __DIR__.'/webhook.php';

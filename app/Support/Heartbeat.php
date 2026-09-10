@@ -41,6 +41,7 @@ class Heartbeat
         'numbers:sync' => ['Virtual number sync', 7200, 'Refreshes renewal dates and finds numbers we pay for that nobody owns.'],
         'emails:fetch' => ['Email inbox sync', 900, 'IMAP polling. Without it, e-mail conversations stop arriving.'],
         'gallery:renew' => ['Gallery storage renewal', 90000, 'Charges rented library space. Silently free storage if it stops.'],
+        'flow-payments:sync' => ['Flow payment sync', 180, 'Confirms Pix payments whose webhook never arrived and expires unpaid ones. Without it a flow can wait on a payment forever.'],
     ];
 
     /**

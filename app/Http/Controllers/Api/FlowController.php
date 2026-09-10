@@ -159,6 +159,8 @@ class FlowController extends Controller
         // one cannot stay wired to any other channel.
         $this->assertInteractiveNodesAllowed($flow, $validated['nodes']);
 
+        $this->assertNoSelfJump($flow, $validated['nodes']);
+
         DB::transaction(function () use ($flow, $validated) {
             // Get all existing nodes for this flow
             $existingNodes = FlowNode::where('flow_id', $flow->id)->get()->keyBy('id');
@@ -400,6 +402,24 @@ class FlowController extends Controller
                 . 'Unlink it from these connections first: ' . InteractiveNodes::describeConnections($conflicting) . '.',
             ],
         ]);
+    }
+
+    /**
+     * A go-to-flow node pointing at its own flow would restart it from the top
+     * with every variable still set — a loop dressed up as a step. Going back
+     * to an earlier point is what an edge is for, and it is one drag away.
+     */
+    private function assertNoSelfJump(Flow $flow, array $nodes): void
+    {
+        foreach ($nodes as $index => $node) {
+            if (($node['type'] ?? null) === 'go_to_flow' && (int) (($node['data'] ?? [])['flow_id'] ?? 0) === (int) $flow->id) {
+                throw ValidationException::withMessages([
+                    "nodes.{$index}.data.flow_id" => [
+                        'A flow cannot continue into itself. To go back to an earlier step, connect an edge to it instead.',
+                    ],
+                ]);
+            }
+        }
     }
 
     /**

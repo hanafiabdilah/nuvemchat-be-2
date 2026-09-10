@@ -166,6 +166,10 @@ final class UpstreamError
         'api.elevenlabs.io',
         'api.openai.com',
         'business-api.tiktok.com',
+        'api.openpix.com.br',
+        'api.woovi-sandbox.com',
+        'api.mercadopago.com',
+        'google-analytics.com',
         // Vendor vocabulary.
         'oauthexception',
         'fbtrace_id',
@@ -210,6 +214,10 @@ final class UpstreamError
             UpstreamProvider::TikTok => self::tiktok($needle, $code),
             UpstreamProvider::PaymentService => self::paymentService($needle, $code),
             UpstreamProvider::Email => self::email($needle, $code),
+            UpstreamProvider::OpenPix => self::openPix($needle, $code),
+            UpstreamProvider::MercadoPago => self::mercadoPago($needle, $code),
+            UpstreamProvider::MetaPixel => self::metaPixel($needle, $code),
+            UpstreamProvider::GoogleAnalytics => self::googleAnalytics($needle, $code),
             UpstreamProvider::Unknown => null,
         };
 
@@ -240,11 +248,17 @@ final class UpstreamError
                 // configuration on our side, and sending someone back to
                 // re-check a card that was fine is the worst of both.
                 UpstreamProvider::PaymentService => 'Não foi possível concluir este pagamento. Tente novamente ou use outro meio de pagamento.',
+                UpstreamProvider::OpenPix, UpstreamProvider::MercadoPago => 'A cobrança não foi aceita pelo provedor de pagamento. Revise o valor e a configuração da integração.',
+                UpstreamProvider::MetaPixel, UpstreamProvider::GoogleAnalytics => 'O evento não foi aceito. Revise a configuração da integração e do nó de Pixel.',
                 default => 'Não foi possível concluir esta operação. Revise os dados e tente novamente.',
             };
         }
 
         return match ($provider) {
+            UpstreamProvider::OpenPix => 'Não foi possível falar com a OpenPix agora. Tente novamente em instantes.',
+            UpstreamProvider::MercadoPago => 'Não foi possível falar com o Mercado Pago agora. Tente novamente em instantes.',
+            UpstreamProvider::MetaPixel => 'Não foi possível enviar o evento para a Meta agora. Tente novamente em instantes.',
+            UpstreamProvider::GoogleAnalytics => 'Não foi possível enviar o evento para o Google Analytics agora. Tente novamente em instantes.',
             UpstreamProvider::AiHub => 'O serviço de IA está indisponível no momento. Tente novamente em instantes.',
             UpstreamProvider::ApiwayPartner => 'A contratação de instâncias está indisponível no momento. Tente novamente em instantes.',
             UpstreamProvider::ApiwayCore => 'Não foi possível falar com a instância do WhatsApp. Verifique se ela está ativa e tente novamente.',
@@ -775,6 +789,171 @@ final class UpstreamError
                 502,
             ],
             default => null,
+        };
+    }
+
+    // --- The workspace's own accounts (Integrations page) -------------------
+    //
+    // Unlike every dictionary above, the fix here is usually the customer's:
+    // they pasted the key, they own the account, they can open its dashboard.
+    // So the copy names the app and says where to go — which is still the
+    // rule, not an exception to it: the actionable sentence, in our words.
+
+    /**
+     * What every connected account has in common: a key that stopped working,
+     * and a provider asking us to slow down. Callers pass the HTTP status as
+     * the code for 401/403/429, because that is the one signal every vendor's
+     * wording agrees on.
+     *
+     * @return array{0: string, 1: string, 2?: int}|null
+     */
+    private static function connectedAccount(string $app, string $m, string $code): ?array
+    {
+        return match (true) {
+            in_array($code, ['401', '403'], true),
+            str_contains($m, 'unauthorized'),
+            str_contains($m, 'invalid token'),
+            str_contains($m, 'invalid_token'),
+            str_contains($m, 'invalid access token') => [
+                'integration_credentials_invalid',
+                "{$app} recusou a chave cadastrada. Atualize as credenciais em Configurações → Integrações.",
+                422,
+            ],
+
+            $code === '429',
+            str_contains($m, 'too many requests'),
+            str_contains($m, 'rate limit') => [
+                'integration_rate_limited',
+                "{$app} está limitando as requisições agora. Tente novamente em instantes.",
+                429,
+            ],
+
+            default => null,
+        };
+    }
+
+    /** @return array{0: string, 1: string, 2?: int}|null */
+    private static function openPix(string $m, string $code): ?array
+    {
+        return self::connectedAccount('A OpenPix', $m, $code) ?? match (true) {
+            str_contains($m, 'appid'),
+            str_contains($m, 'app id') => [
+                'integration_credentials_invalid',
+                'A OpenPix recusou o AppID cadastrado. Gere um novo em API/Plugins e atualize a integração.',
+                422,
+            ],
+            str_contains($m, 'taxid'),
+            str_contains($m, 'cpf'),
+            str_contains($m, 'cnpj') => [
+                'payment_payer_document_invalid',
+                'A OpenPix recusou o CPF/CNPJ do pagador. Confira a variável usada no nó de pagamento.',
+                422,
+            ],
+            str_contains($m, 'value must'),
+            str_contains($m, 'invalid value'),
+            str_contains($m, 'valor') => [
+                'payment_amount_invalid',
+                'A OpenPix não aceitou o valor desta cobrança. Confira o valor configurado no fluxo.',
+                422,
+            ],
+            default => null,
+        };
+    }
+
+    /** @return array{0: string, 1: string, 2?: int}|null */
+    private static function mercadoPago(string $m, string $code): ?array
+    {
+        return self::connectedAccount('O Mercado Pago', $m, $code) ?? match (true) {
+            // No Pix key on the account. The most common reason a brand-new
+            // integration fails its very first Pix, and fixable in two minutes
+            // in the Mercado Pago app — worth naming precisely.
+            $code === '13253',
+            str_contains($m, 'without key enabled'),
+            str_contains($m, 'key enabled for qr') => [
+                'payment_pix_key_missing',
+                'Sua conta do Mercado Pago não tem uma chave Pix cadastrada. Cadastre uma chave Pix no app do Mercado Pago e tente novamente.',
+                422,
+            ],
+            str_contains($m, 'payer.email'),
+            str_contains($m, 'payer email') => [
+                'payment_payer_email_invalid',
+                'O Mercado Pago recusou o e-mail do pagador. Defina um e-mail padrão na integração ou use uma variável com um e-mail válido.',
+                422,
+            ],
+            str_contains($m, 'identification'),
+            str_contains($m, 'cpf'),
+            str_contains($m, 'cnpj') => [
+                'payment_payer_document_invalid',
+                'O Mercado Pago recusou o CPF/CNPJ do pagador. Confira a variável usada no nó de pagamento.',
+                422,
+            ],
+            str_contains($m, 'date_of_expiration'),
+            str_contains($m, 'expiration') => [
+                'payment_expiration_invalid',
+                'O Mercado Pago não aceitou o prazo desta cobrança. Para Pix, use um prazo entre 30 minutos e 30 dias.',
+                422,
+            ],
+            str_contains($m, 'transaction_amount'),
+            str_contains($m, 'unit_price') => [
+                'payment_amount_invalid',
+                'O Mercado Pago não aceitou o valor desta cobrança. Confira o valor configurado no fluxo.',
+                422,
+            ],
+            default => null,
+        };
+    }
+
+    /** @return array{0: string, 1: string, 2?: int}|null */
+    private static function metaPixel(string $m, string $code): ?array
+    {
+        return match (true) {
+            $code === '190',
+            str_contains($m, 'session has expired'),
+            str_contains($m, 'error validating access token') => [
+                'integration_credentials_invalid',
+                'A Meta recusou o token da API de Conversões. Gere um novo no Gerenciador de Eventos e atualize a integração.',
+                422,
+            ],
+            str_contains($m, 'does not exist'),
+            str_contains($m, 'cannot be loaded'),
+            str_contains($m, 'missing permissions') => [
+                'pixel_not_found',
+                'O Pixel informado não existe ou o token não tem acesso a ele. Confira o ID do Pixel e o token na integração.',
+                422,
+            ],
+            // Graph's catch-all for a field it did not like — here, almost
+            // always an event name or parameter the author typed.
+            $code === '100' => [
+                'pixel_event_rejected',
+                'A Meta recusou este evento. Revise o nome e os parâmetros do evento no nó de Pixel.',
+                422,
+            ],
+            default => self::connectedAccount('A Meta', $m, $code),
+        };
+    }
+
+    /** @return array{0: string, 1: string, 2?: int}|null */
+    private static function googleAnalytics(string $m, string $code): ?array
+    {
+        return match (true) {
+            str_contains($m, 'measurement_id'),
+            str_contains($m, 'measurement id') => [
+                'pixel_not_found',
+                'O Google Analytics não reconheceu o ID de métricas. Confira o ID (G-...) na integração.',
+                422,
+            ],
+            str_contains($m, 'api_secret') => [
+                'integration_credentials_invalid',
+                'O Google Analytics recusou o API secret. Crie um novo no fluxo de dados e atualize a integração.',
+                422,
+            ],
+            str_contains($m, 'event name'),
+            str_contains($m, 'events[') => [
+                'pixel_event_rejected',
+                'O Google Analytics recusou este evento. Revise o nome e os parâmetros do evento no nó de Pixel.',
+                422,
+            ],
+            default => self::connectedAccount('O Google Analytics', $m, $code),
         };
     }
 

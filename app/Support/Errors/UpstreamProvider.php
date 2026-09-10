@@ -50,6 +50,23 @@ enum UpstreamProvider: string
     /** The tenant's own mail server (SMTP/IMAP). */
     case Email = 'email';
 
+    /*
+     * The workspace's own accounts, connected on the Integrations page.
+     *
+     * Named after the vendor, unlike the platform's suppliers above — and that
+     * is the same rule, not an exception to it. The customer never heard of
+     * ProxyBR; they did sign up to OpenPix, paste its key into our form, and
+     * can open its dashboard. Here the vendor's name is the actionable part.
+     */
+
+    case OpenPix = 'openpix';
+
+    case MercadoPago = 'mercadopago';
+
+    case MetaPixel = 'meta_pixel';
+
+    case GoogleAnalytics = 'google_analytics';
+
     /** Something outside we could not attribute; always the vaguest copy. */
     case Unknown = 'unknown';
 
@@ -91,6 +108,10 @@ enum UpstreamProvider: string
             self::TikTok => 'o TikTok',
             self::PaymentService => 'o processamento de pagamentos',
             self::Email => 'o servidor de e-mail',
+            self::OpenPix => 'a OpenPix',
+            self::MercadoPago => 'o Mercado Pago',
+            self::MetaPixel => 'o Pixel da Meta',
+            self::GoogleAnalytics => 'o Google Analytics',
             self::Unknown => 'o serviço externo',
         };
     }

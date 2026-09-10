@@ -3,8 +3,10 @@
 namespace App\Services\Flow;
 
 use App\Enums\Conversation\Status as ConversationStatus;
+use App\Enums\Flow\FlowPaymentStatus;
 use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
+use App\Enums\Integration\IntegrationCategory;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationHandoff;
@@ -12,16 +14,21 @@ use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
+use App\Jobs\ExpireFlowPayment;
 use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowResponseTimeout;
+use App\Jobs\SendPixelEvent;
 use App\Models\AiHubAgent;
 use App\Models\AiHubRun;
 use App\Models\Connection;
 use App\Models\Conversation;
+use App\Models\Flow;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
+use App\Models\FlowPayment;
 use App\Models\FlowState;
+use App\Models\Integration;
 use App\Models\Message;
 use App\Models\User;
 use App\Observers\ConversationObserver;
@@ -180,7 +187,7 @@ class FlowExecutor
             'node_type' => $node->type->value,
         ]);
 
-        // Every node passes through here, so one emit covers all ten types.
+        // Every node passes through here, so one emit covers every type.
         // Most of them finish in under a millisecond and are superseded almost
         // immediately — the panel's status line barely shows them. They are
         // broadcast anyway because the client keeps a trail of the last few,
@@ -229,6 +236,18 @@ class FlowExecutor
 
             case NodeType::Action:
                 $this->executeActionNode($flowState, $node);
+                break;
+
+            case NodeType::Payment:
+                $this->executePaymentNode($flowState, $node);
+                break;
+
+            case NodeType::Pixel:
+                $this->executePixelNode($flowState, $node);
+                break;
+
+            case NodeType::GoToFlow:
+                $this->executeGoToFlowNode($flowState, $node);
                 break;
 
             default:
@@ -1868,6 +1887,15 @@ class FlowExecutor
             return;
         }
 
+        // The customer wrote, so whatever chain of go-to-flow jumps led here
+        // was a conversation, not a loop. The counter only guards jumps made
+        // with nobody on the other end.
+        if (!empty(($flowState->state_data ?? [])[FlowLinkNodes::JUMPS_KEY])) {
+            $stateData = $flowState->state_data;
+            $stateData[FlowLinkNodes::JUMPS_KEY] = 0;
+            $flowState->update(['state_data' => $stateData]);
+        }
+
         $currentNode = $flowState->currentNode;
 
         if (!$currentNode) {
@@ -1921,6 +1949,18 @@ class FlowExecutor
 
             // Prompt already sent - handle user input
             $this->handleResponseNodeInput($flowState, $currentNode, $userInput);
+            return;
+        }
+
+        // A payment node waits for the gateway, not for the customer. Writing
+        // "já paguei" does not move it — the webhook, the expiry job or the
+        // sweep does, through resumeFromPayment(). Re-running the node here
+        // would issue a second charge for the same step.
+        if ($currentNode->type === NodeType::Payment && $this->pendingPaymentId($flowState, $currentNode) !== null) {
+            Log::info('FlowExecutor: Customer wrote while a payment is pending, still waiting on the gateway', [
+                'conversation_id' => $conversation->id,
+                'node_id' => $currentNode->id,
+            ]);
             return;
         }
 
@@ -3099,6 +3139,395 @@ class FlowExecutor
         broadcast(new MessageReceived($message));
 
         return $message;
+    }
+
+    // ──────────────────────────────  Payment  ──────────────────────────────
+
+    /**
+     * Execute a Payment node — charge the customer and wait for the money.
+     *
+     * The charge is issued in the workspace's own gateway, its details become
+     * flow variables, the customer is sent the means to pay, and the flow parks
+     * here. What moves it on is the gateway, not the customer: FlowPaymentService
+     * settles the charge (webhook, expiry job or sweep — whichever gets there
+     * first) and calls resumeFromPayment(), which takes `paid` or `failed`.
+     *
+     * A charge that could not be created at all takes `failed` right away, with
+     * a note for the agents saying why — "the bot asked for money and went
+     * quiet" is the failure nobody can diagnose after the fact.
+     */
+    protected function executePaymentNode(FlowState $flowState, FlowNode $node): void
+    {
+        if ($this->pendingPaymentId($flowState, $node) !== null) {
+            // Already waiting on a charge from this visit to the node. A second
+            // charge for the same step is the one thing this node must never
+            // do, whatever re-entered it.
+            return;
+        }
+
+        $payments = new FlowPaymentService;
+
+        try {
+            $payment = $payments->createForNode(
+                $flowState,
+                $node,
+                fn (string $template) => $this->interpolateVariables($template, $flowState),
+            );
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Payment node failed before a charge existed', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+                'error' => $th->getMessage(),
+            ]);
+
+            $this->storePaymentVariables($flowState, null, 'Não foi possível gerar a cobrança.');
+            $this->moveToNextNodeByBranch($flowState, $node, PaymentNodes::BRANCH_FAILED);
+
+            return;
+        }
+
+        $this->storePaymentVariables($flowState, $payment);
+
+        if ($payment->status !== FlowPaymentStatus::Pending) {
+            $paid = $payment->status === FlowPaymentStatus::Paid;
+
+            $payments->note($payment, $paid ? PaymentNodes::INFO_PAID : PaymentNodes::INFO_FAILED);
+            $this->moveToNextNodeByBranch($flowState, $node, $paid ? PaymentNodes::BRANCH_PAID : PaymentNodes::BRANCH_FAILED);
+
+            return;
+        }
+
+        // Parked before anything is sent: nobody can pay before they have the
+        // code, so by the time a webhook could possibly arrive, the key it is
+        // matched against is already here.
+        $stateData = $flowState->state_data ?? [];
+        $stateData[PaymentNodes::stateKey($node->id)] = $payment->id;
+        $flowState->update(['state_data' => $stateData]);
+
+        $this->sendPaymentMessages($flowState, $node, $payment);
+
+        $payments->note($payment, PaymentNodes::INFO_CREATED);
+
+        if ($payment->expires_at) {
+            ExpireFlowPayment::dispatch($payment->id)->delay($payment->expires_at->copy()->addSeconds(30));
+        }
+
+        LiveActivity::flowPayment(
+            $flowState->conversation,
+            $node,
+            $payment->amount_cents,
+            $payment->provider?->value,
+            $payment->expires_at,
+        );
+
+        Log::info('FlowExecutor: Payment requested, waiting for the gateway', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'flow_payment_id' => $payment->id,
+            'provider' => $payment->provider?->value,
+        ]);
+    }
+
+    /**
+     * The gateway settled a charge this flow issued — take the matching branch.
+     *
+     * Called by FlowPaymentService once, after the row left `pending`. Every
+     * early return is a flow that stopped waiting in the meantime: an agent
+     * took the conversation, the flow was edited and the node removed, or it
+     * moved on by some other path. The charge is still recorded and noted in
+     * the thread; only the automation is not replayed.
+     */
+    public function resumeFromPayment(FlowPayment $payment): void
+    {
+        $nodeId = (int) $payment->flow_node_id;
+        $flowState = $payment->flow_state_id ? FlowState::find($payment->flow_state_id) : null;
+
+        if (!$flowState || $nodeId <= 0 || $flowState->status !== FlowStateStatus::Running || (int) $flowState->current_node_id !== $nodeId) {
+            Log::info('FlowExecutor: Payment settled, but the flow is no longer waiting on it', [
+                'flow_payment_id' => $payment->id,
+                'flow_state_id' => $payment->flow_state_id,
+            ]);
+            return;
+        }
+
+        $key = PaymentNodes::stateKey($nodeId);
+
+        if ((int) (($flowState->state_data ?? [])[$key] ?? 0) !== (int) $payment->id) {
+            return;
+        }
+
+        $conversation = $flowState->conversation;
+        $node = FlowNode::find($nodeId);
+
+        if (!$conversation || !$node || $node->type !== NodeType::Payment
+            || !in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return;
+        }
+
+        $paid = $payment->status === FlowPaymentStatus::Paid;
+
+        $stateData = $flowState->state_data ?? [];
+        unset($stateData[$key]);
+        $stateData['payment_status'] = $payment->status->value;
+        $stateData['payment_error'] = $paid ? null : $payment->failure_reason;
+        $flowState->update(['state_data' => $stateData]);
+
+        // Whatever the flow does next announces itself; this clears the
+        // "waiting for payment" line in case the branch is unwired and nothing
+        // does.
+        LiveActivity::idle($conversation);
+
+        Log::info('FlowExecutor: Payment settled, resuming the flow', [
+            'flow_payment_id' => $payment->id,
+            'conversation_id' => $conversation->id,
+            'status' => $payment->status->value,
+        ]);
+
+        $this->moveToNextNodeByBranch($flowState, $node, $paid ? PaymentNodes::BRANCH_PAID : PaymentNodes::BRANCH_FAILED);
+    }
+
+    protected function pendingPaymentId(FlowState $flowState, FlowNode $node): ?int
+    {
+        $id = (int) (($flowState->state_data ?? [])[PaymentNodes::stateKey($node->id)] ?? 0);
+
+        return $id > 0 ? $id : null;
+    }
+
+    /**
+     * The charge's details as flow variables — written before the node's own
+     * message goes out, so that message can say {{payment_amount}}, and kept
+     * for every later node ({{payment_status}} in a condition, {{payment_value}}
+     * in a pixel on the paid branch).
+     */
+    protected function storePaymentVariables(FlowState $flowState, ?FlowPayment $payment, ?string $error = null): void
+    {
+        $hasAmount = $payment !== null && $payment->amount_cents > 0;
+
+        $stateData = array_merge($flowState->state_data ?? [], [
+            'payment_id' => $payment?->reference,
+            'payment_status' => $payment?->status->value ?? FlowPaymentStatus::Failed->value,
+            'payment_amount' => $hasAmount ? $payment->formattedAmount() : null,
+            'payment_value' => $hasAmount ? $payment->amountDecimal() : null,
+            'payment_link' => $payment?->payment_url,
+            'payment_pix_code' => $payment?->pix_code,
+            'payment_error' => $error ?? $payment?->failure_reason,
+        ]);
+
+        $flowState->update(['state_data' => $stateData]);
+    }
+
+    /**
+     * What the customer receives: the node's message (with the link, when it
+     * goes out), the QR image, and the copy-and-paste code on a bubble of its
+     * own — alone, so a long-press copies exactly the code, which is how
+     * people pay a Pix from the phone they are chatting on.
+     */
+    protected function sendPaymentMessages(FlowState $flowState, FlowNode $node, FlowPayment $payment): void
+    {
+        $data = $node->data ?? [];
+        $text = trim((string) ($data['message'] ?? ''));
+
+        $linkSent = PaymentNodes::sendsLink($data) && $payment->payment_url;
+
+        if ($linkSent && !str_contains($text, '{{payment_link}}')) {
+            $text = trim($text."\n\n".$payment->payment_url);
+        }
+
+        $bubbles = [];
+
+        if ($text !== '') {
+            $bubbles[] = ['message_type' => 'text', 'body' => $text];
+        }
+
+        if ($payment->pix_code) {
+            $qrUrl = PaymentNodes::sendsQrCode($data) ? $payment->qrImageUrl() : null;
+            $copyPaste = PaymentNodes::sendsCopyPaste($data);
+
+            if ($qrUrl) {
+                $bubbles[] = ['message_type' => 'image', 'body' => '', 'attachment_url' => $qrUrl];
+            }
+
+            // A Pix nobody can see cannot be paid: with every other way of
+            // delivering it switched off, the code goes out anyway.
+            $delivered = $qrUrl || $copyPaste || $linkSent || str_contains($text, '{{payment_pix_code}}');
+
+            if ($copyPaste || !$delivered) {
+                $bubbles[] = ['message_type' => 'text', 'body' => $payment->pix_code];
+            }
+        }
+
+        foreach ($bubbles as $index => $bubble) {
+            $this->sendMessageItem($flowState, $node, $bubble, $index);
+        }
+    }
+
+    // ───────────────────────────────  Pixel  ───────────────────────────────
+
+    /**
+     * Execute a Pixel node — report a conversion, then move straight on.
+     *
+     * One queued job per selected account, and the flow never waits for any of
+     * them. A pixel that refuses the event records it on its integration,
+     * where somebody reviewing their ad numbers will look — not in the
+     * conversation, where nothing about the customer's experience changed.
+     */
+    protected function executePixelNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+
+        try {
+            if (!PixelNodes::isConfigured($data)) {
+                Log::info('FlowExecutor: Pixel node has nothing to send, skipping', [
+                    'node_id' => $node->id,
+                ]);
+            } else {
+                $conversation = $flowState->conversation;
+
+                $integrations = Integration::forTenant((int) $conversation->connection->tenant_id)
+                    ->inCategory(IntegrationCategory::Pixel)
+                    ->whereIn('id', PixelNodes::integrationIds($data))
+                    ->where('enabled', true)
+                    ->get();
+
+                $event = PixelNodes::buildEvent(
+                    $data,
+                    fn (string $template) => $this->interpolateVariables($template, $flowState),
+                    $conversation->contact,
+                    "fs{$flowState->id}-n{$node->id}-".Str::lower(Str::random(10)),
+                );
+
+                foreach ($integrations as $integration) {
+                    SendPixelEvent::dispatch($integration->id, $event->toArray());
+                }
+
+                Log::info('FlowExecutor: Pixel event queued', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $conversation->id,
+                    'event' => $event->event,
+                    'integrations' => $integrations->pluck('id')->all(),
+                ]);
+            }
+        } catch (\Throwable $th) {
+            // Tracking never costs the customer their next message.
+            Log::error('FlowExecutor: Error executing pixel node', [
+                'node_id' => $node->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
+        $this->moveToNextNode($flowState, $node);
+    }
+
+    // ────────────────────────────  Go to flow  ────────────────────────────
+
+    /**
+     * Execute a Go-to-flow node — continue in another flow, from its start.
+     *
+     * The conversation's one flow state is moved onto the other flow rather
+     * than a second one being opened (see FlowLinkNodes for why). Variables go
+     * along unless the author said otherwise; node bookkeeping never does,
+     * because it is keyed by node ids of the flow being left.
+     */
+    protected function executeGoToFlowNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+        $targetId = FlowLinkNodes::targetFlowId($data);
+
+        if ($targetId === null) {
+            // Dropped on the canvas and never pointed anywhere. The node is
+            // terminal either way, so the flow ends here rather than sitting
+            // "running" on a step that will never do anything.
+            Log::warning('FlowExecutor: Go-to-flow node has no target, ending the flow', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+            ]);
+            $this->endFlowHere($flowState, FlowStateStatus::Completed);
+            return;
+        }
+
+        $target = Flow::where('tenant_id', $conversation->connection->tenant_id)->find($targetId);
+        $start = $target
+            ? FlowNode::where('flow_id', $target->id)->where('type', NodeType::Start)->first()
+            : null;
+
+        if (!$target || !$start) {
+            SystemMessage::info(
+                $conversation,
+                'The flow tried to continue in another flow that no longer exists.',
+                FlowLinkNodes::INFO_TARGET_MISSING,
+            );
+            $this->endFlowHere($flowState, FlowStateStatus::Failed);
+            return;
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        $jumps = (int) ($stateData[FlowLinkNodes::JUMPS_KEY] ?? 0) + 1;
+
+        if ($jumps > FlowLinkNodes::MAX_CONSECUTIVE_JUMPS) {
+            SystemMessage::info(
+                $conversation,
+                'The flow stopped: it kept moving between flows without the customer writing, which looks like a loop.',
+                FlowLinkNodes::INFO_LOOP,
+                ['count' => FlowLinkNodes::MAX_CONSECUTIVE_JUMPS],
+            );
+            $this->endFlowHere($flowState, FlowStateStatus::Failed);
+
+            Log::warning('FlowExecutor: Go-to-flow loop stopped', [
+                'conversation_id' => $conversation->id,
+                'trail' => $stateData[FlowLinkNodes::TRAIL_KEY] ?? [],
+            ]);
+            return;
+        }
+
+        $carried = FlowLinkNodes::carriedState($stateData, FlowLinkNodes::carriesVariables($data));
+        $carried[FlowLinkNodes::JUMPS_KEY] = $jumps;
+        $carried[FlowLinkNodes::TRAIL_KEY] = array_slice(
+            array_merge((array) ($stateData[FlowLinkNodes::TRAIL_KEY] ?? []), [(int) $flowState->flow_id]),
+            -20,
+        );
+
+        $fromFlowId = (int) $flowState->flow_id;
+
+        $flowState->update([
+            'flow_id' => $target->id,
+            'current_node_id' => $start->id,
+            'state_data' => $carried,
+            'status' => FlowStateStatus::Running,
+            'completed_at' => null,
+        ]);
+        $flowState->unsetRelation('currentNode');
+        $flowState->unsetRelation('flow');
+
+        // Written into the thread because nothing else says it: an agent
+        // reading a conversation that switched from "Vendas" to "Suporte" would
+        // otherwise see the bot change subject for no reason.
+        SystemMessage::info(
+            $conversation,
+            "The flow continued in \"{$target->name}\".",
+            FlowLinkNodes::INFO_JUMPED,
+            ['flow' => $target->name],
+        );
+
+        Log::info('FlowExecutor: Continuing in another flow', [
+            'conversation_id' => $conversation->id,
+            'from_flow_id' => $fromFlowId,
+            'to_flow_id' => $target->id,
+            'jumps' => $jumps,
+        ]);
+
+        $this->executeFromNode($flowState, $start);
+    }
+
+    /** End the flow on a node that has nowhere to go, and clear its live line. */
+    protected function endFlowHere(FlowState $flowState, FlowStateStatus $status): void
+    {
+        $flowState->update([
+            'status' => $status,
+            'completed_at' => now(),
+        ]);
+
+        LiveActivity::idle($flowState->conversation);
     }
 
     /**

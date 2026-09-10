@@ -137,6 +137,12 @@ class Tenant extends Model
         return $this->hasOne(GalleryStorageRental::class);
     }
 
+    /** External apps (payment gateways, pixels) this workspace connected. */
+    public function integrations()
+    {
+        return $this->hasMany(Integration::class);
+    }
+
     public function users()
     {
         return $this->hasMany(User::class);

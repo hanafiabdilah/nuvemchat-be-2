@@ -775,10 +775,11 @@ class FlowAssistantService
         - Set `flow` to null when there is nothing to build: a question about how
           something works, a request you need clarified, or something the platform
           cannot do. Then say so in `reply`.
-        - Only use ids (tags, agents, AI agents) that appear in the context below.
-          Never invent one. If what the person asked for needs a tag or an agent that
-          does not exist, build the rest and say in `reply` which piece is missing and
-          where to create it.
+        - Only use ids (tags, agents, AI agents, payment and pixel integrations,
+          other flows) that appear in the context below. Never invent one. If what
+          the person asked for needs a tag, an agent or an integration that does not
+          exist, build the rest and say in `reply` which piece is missing and where
+          to create it.
         - Keep `reply` short: a sentence on what the flow does, then the steps as a
           brief list. The person is looking at the flow you drew — do not narrate it
           twice.
@@ -789,9 +790,9 @@ class FlowAssistantService
           a greeting, one question, two or three branches, and a handoff to a human.
         - Every branch must lead somewhere. An unwired branch is a customer left in
           silence, which is worse than no automation at all.
-        - End every path: either the conversation is closed (status) or a person takes
-          it over (action / transfer_human). A flow that just stops leaves the thread
-          in limbo.
+        - End every path: the conversation is closed (status), a person takes it over
+          (action / transfer_human), or another flow continues it (go_to_flow). A
+          flow that just stops leaves the thread in limbo.
         - When the request is genuinely ambiguous, ask ONE question in `reply` with
           `flow` set to null. Do not ask two, and do not ask when a sensible default
           exists — build it and say what you assumed.
@@ -807,6 +808,9 @@ class FlowAssistantService
             'tags' => $context['tags'] ?? [],
             'agents' => $context['agents'] ?? [],
             'ai_agents' => $context['ai_agents'] ?? [],
+            'payment_integrations' => $context['payment_integrations'] ?? [],
+            'pixel_integrations' => $context['pixel_integrations'] ?? [],
+            'flows' => $context['flows'] ?? [],
             'channels' => $context['channels'] ?? [],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
 

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Integration\IntegrationCategory;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Models\AiHubAgent;
@@ -9,6 +10,7 @@ use App\Models\Flow;
 use App\Models\FlowAssistantMessage;
 use App\Models\FlowEdge;
 use App\Models\GalleryAsset;
+use App\Models\Integration;
 use App\Models\Tag;
 use App\Models\User;
 use App\Services\Flow\FlowBlueprint;
@@ -307,6 +309,17 @@ class FlowAssistantController extends Controller
                 ->map(fn (AiHubAgent $agent) => ['id' => $agent->id, 'name' => $agent->name])
                 ->all(),
             'gallery' => $this->galleryContext($tenantId, $galleryAssetIds),
+            // The accounts a payment or pixel node may point at, and the flows a
+            // go-to-flow node may continue in. This is the only place the model
+            // can learn a valid id, and an invented one is refused on save.
+            'payment_integrations' => $this->integrationContext($tenantId, IntegrationCategory::Payment),
+            'pixel_integrations' => $this->integrationContext($tenantId, IntegrationCategory::Pixel),
+            'flows' => Flow::where('tenant_id', $tenantId)
+                ->whereKeyNot($flow->id)
+                ->orderBy('name')
+                ->get(['id', 'name'])
+                ->map(fn (Flow $other) => ['id' => $other->id, 'name' => $other->name])
+                ->all(),
             // Which channels this flow actually drives. It decides whether the
             // interactive node is on the table at all — a WhatsApp button block
             // proposed for a Telegram flow is refused by the save endpoint, and
@@ -318,6 +331,31 @@ class FlowAssistantController extends Controller
                 ->values()
                 ->all(),
         ];
+    }
+
+    /**
+     * Enabled integrations of one kind, named the way the person knows them.
+     * `payment_methods` rides along because whether "checkout" exists depends
+     * on the provider, and a node asking OpenPix for a card link fails at the
+     * moment a customer is waiting to pay.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function integrationContext(int $tenantId, IntegrationCategory $category): array
+    {
+        return Integration::forTenant($tenantId)
+            ->inCategory($category)
+            ->where('enabled', true)
+            ->orderBy('name')
+            ->get()
+            ->map(fn (Integration $integration) => array_filter([
+                'id' => $integration->id,
+                'name' => $integration->name,
+                'provider' => $integration->provider->label(),
+                'payment_methods' => $integration->provider->paymentMethods() ?: null,
+            ]))
+            ->values()
+            ->all();
     }
 
     /**

@@ -37,6 +37,14 @@ final class LiveActivity
     /** An HTTP Request node with a call in flight. */
     public const FLOW_HTTP = 'flow_http';
 
+    /**
+     * A Payment node, parked until the gateway confirms the charge. Its own
+     * phase rather than `flow_awaiting`: that one means "the customer owes us
+     * an answer", and an agent who reads it as that will step in and ask what
+     * the customer already paid for.
+     */
+    public const FLOW_PAYMENT = 'flow_payment';
+
     /** The debounce window: waiting for the customer to stop typing. */
     public const AI_ARMED = 'ai_armed';
 
@@ -139,6 +147,27 @@ final class LiveActivity
             'method' => strtoupper($method),
             'host' => parse_url($url, PHP_URL_HOST) ?: null,
         ]);
+    }
+
+    /**
+     * The amount and the gateway, never the Pix code or the link — both are
+     * payable instruments, and this event reaches every agent on the connection.
+     */
+    public static function flowPayment(
+        Conversation $conversation,
+        FlowNode $node,
+        int $amountCents,
+        ?string $provider,
+        ?\DateTimeInterface $expiresAt,
+    ): void {
+        $seconds = $expiresAt ? max(0, $expiresAt->getTimestamp() - now()->timestamp) : 0;
+
+        self::emit($conversation, self::FLOW_PAYMENT, $node, array_filter([
+            'amount_cents' => $amountCents,
+            'currency' => 'BRL',
+            'provider' => $provider,
+            'timeout_at' => $seconds > 0 ? $expiresAt->getTimestamp() : null,
+        ], fn ($value) => $value !== null), $seconds > 0 ? $seconds + 5 : self::AWAITING_TTL);
     }
 
     public static function aiArmed(Conversation $conversation, FlowNode $node, int $seconds): void

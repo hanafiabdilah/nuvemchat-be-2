@@ -59,6 +59,15 @@ Schedule::command('email:fetch')
         logger()->error('Email inbox fetch failed');
     });
 
+// Payment nodes: confirm charges whose webhook never arrived and expire the
+// unpaid ones. Every minute because somebody may be sitting in the chat having
+// just paid — each pass is capped, and one that finds nothing is two indexed
+// queries. Without it a flow can wait on a payment forever.
+Schedule::command('flow-payments:sync')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('Flow payment sync failed'));
+
 // Close conversations whose channel reply window has run out (WhatsApp Official
 // 24h, TikTok 48h): they leave an info note in the thread and move to Resolved,
 // so the Active column only holds work an agent can actually answer. Capped per

@@ -14,6 +14,9 @@ enum NodeType: string
     case AIAgent = 'ai_agent';
     case HttpRequest = 'http_request';
     case Interactive = 'interactive';
+    case Payment = 'payment';
+    case Pixel = 'pixel';
+    case GoToFlow = 'go_to_flow';
 
     public function data(): array
     {
@@ -118,6 +121,39 @@ enum NodeType: string
                 //   [{ 'path' => 'data.user.name', 'variable' => 'name' }]
                 //   special paths: "http_status" (status code), "raw_body" (whole body)
                 'response_mappings' => [],
+            ],
+            // Charges the customer in the workspace's own gateway and waits
+            // for the money. Two outputs: `paid`, and `failed` for a charge
+            // that expired unpaid or could not be created at all. See
+            // App\Services\Flow\PaymentNodes.
+            self::Payment => [
+                'integration_id' => null, // FK to integrations.id (a payment provider)
+                'method' => 'pix', // pix | checkout (checkout: Mercado Pago only)
+                'amount' => '', // "49,90" or "{{valor}}" — parsed after interpolation
+                'description' => '',
+                'expires_in_minutes' => 60,
+                'message' => '', // sent before the Pix; supports {{payment_amount}}, {{payment_link}}
+                'send_qr_code' => true,
+                'send_copy_paste' => true,
+                'send_link' => false,
+                'payer_email' => '', // optional, supports {{variable}}
+                'payer_document' => '', // optional CPF/CNPJ, supports {{variable}}
+            ],
+            // Reports a conversion to one or more pixel integrations and moves
+            // straight on — tracking never holds a customer up.
+            self::Pixel => [
+                'integration_ids' => [],
+                'event' => 'lead', // App\Services\Integrations\Pixels\PixelEvents::EVENTS
+                'custom_event_name' => '',
+                'value' => '',
+                'currency' => 'BRL',
+                'parameters' => [], // [{ key, value }] — values support {{variable}}
+            ],
+            // Hands the conversation to another flow's start node. Terminal:
+            // whatever the other flow does is where this one ends.
+            self::GoToFlow => [
+                'flow_id' => null,
+                'carry_variables' => true,
             ],
         };
     }

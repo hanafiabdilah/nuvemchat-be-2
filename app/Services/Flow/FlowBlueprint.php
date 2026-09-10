@@ -3,6 +3,9 @@
 namespace App\Services\Flow;
 
 use App\Enums\Conversation\Status as ConversationStatus;
+use App\Enums\Integration\IntegrationCategory;
+use App\Enums\Integration\IntegrationProvider;
+use App\Services\Integrations\Pixels\PixelEvents;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -35,6 +38,7 @@ class FlowBlueprint
     public const NODE_TYPES = [
         'start', 'message', 'response', 'status', 'tagging',
         'condition', 'action', 'ai_agent', 'http_request', 'interactive',
+        'payment', 'pixel', 'go_to_flow',
     ];
 
     /**
@@ -60,14 +64,17 @@ class FlowBlueprint
         'condition' => ['true', 'false'],
         'http_request' => ['success', 'error'],
         'response' => [ResponseNodes::BRANCH_REPLIED, ResponseNodes::BRANCH_TIMEOUT],
+        'payment' => PaymentNodes::BRANCHES,
     ];
 
     /**
      * Node types that end the flow and therefore have no outgoing edge.
-     * `status` always does; `action` does for two of its three types, which is
-     * a per-node question and lives in {@see ActionNodes::isTerminal()}.
+     * `status` closes the conversation; `go_to_flow` hands it to another flow,
+     * whose start node takes over. `action` is terminal for two of its three
+     * types, which is a per-node question and lives in
+     * {@see ActionNodes::isTerminal()}.
      */
-    public const TERMINAL_NODE_TYPES = ['status'];
+    public const TERMINAL_NODE_TYPES = ['status', 'go_to_flow'];
 
     /**
      * Validation rules for a node's `data`, by node type.
@@ -222,6 +229,51 @@ class FlowBlueprint
                 'response_mappings' => ['nullable', 'array'],
                 'response_mappings.*.path' => ['nullable', 'string', 'max:255'],
                 'response_mappings.*.variable' => ['nullable', 'string', 'max:255'],
+            ],
+            // Nullable throughout for the reason every other node is: the
+            // builder auto-saves a node the moment it lands, and the executor
+            // takes the failed branch (payment) or skips (pixel, go_to_flow)
+            // for one that never got configured. What is strict is ownership:
+            // an integration or a flow must belong to this workspace — and to
+            // the right category — or the save is refused.
+            'payment' => [
+                'integration_id' => [
+                    'nullable',
+                    'integer',
+                    Rule::exists('integrations', 'id')
+                        ->where('tenant_id', self::tenantId())
+                        ->whereIn('provider', IntegrationProvider::valuesFor(IntegrationCategory::Payment)),
+                ],
+                'method' => ['nullable', 'string', Rule::in(PaymentNodes::METHODS)],
+                'amount' => ['nullable', 'string', 'max:64'],
+                'description' => ['nullable', 'string', 'max:140'],
+                'expires_in_minutes' => ['nullable', 'integer', 'min:'.PaymentNodes::MIN_EXPIRES_MINUTES, 'max:'.PaymentNodes::MAX_EXPIRES_MINUTES],
+                'message' => ['nullable', 'string', 'max:2000'],
+                'send_qr_code' => ['nullable', 'boolean'],
+                'send_copy_paste' => ['nullable', 'boolean'],
+                'send_link' => ['nullable', 'boolean'],
+                'payer_email' => ['nullable', 'string', 'max:255'],
+                'payer_document' => ['nullable', 'string', 'max:64'],
+            ],
+            'pixel' => [
+                'integration_ids' => ['nullable', 'array', 'max:10'],
+                'integration_ids.*' => [
+                    'integer',
+                    Rule::exists('integrations', 'id')
+                        ->where('tenant_id', self::tenantId())
+                        ->whereIn('provider', IntegrationProvider::valuesFor(IntegrationCategory::Pixel)),
+                ],
+                'event' => ['nullable', 'string', Rule::in(PixelEvents::EVENTS)],
+                'custom_event_name' => ['nullable', 'string', 'regex:'.PixelEvents::CUSTOM_NAME_PATTERN],
+                'value' => ['nullable', 'string', 'max:64'],
+                'currency' => ['nullable', 'string', 'size:3'],
+                'parameters' => ['nullable', 'array', 'max:20'],
+                'parameters.*.key' => ['nullable', 'string', 'max:40'],
+                'parameters.*.value' => ['nullable', 'string', 'max:500'],
+            ],
+            'go_to_flow' => [
+                'flow_id' => ['nullable', 'integer', Rule::exists('flows', 'id')->where('tenant_id', self::tenantId())],
+                'carry_variables' => ['nullable', 'boolean'],
             ],
             default => [],
         };
@@ -407,8 +459,15 @@ class FlowBlueprint
             return [];
         }
 
+        // A terminal node's edge saves fine and is simply never followed —
+        // which, in generated output, is a step the person was told about that
+        // will never happen.
+        if (in_array($type, self::TERMINAL_NODE_TYPES, true)) {
+            return ["Node \"{$sourceKey}\" ({$type}) ends the flow, so nothing may follow it — remove the edge leaving it."];
+        }
+
         if ($value !== null && $value !== '') {
-            return ["Edge from node \"{$sourceKey}\" ({$type}) must not carry a condition_value — only condition, response, http_request and interactive nodes branch."];
+            return ["Edge from node \"{$sourceKey}\" ({$type}) must not carry a condition_value — only condition, response, http_request, payment and interactive nodes branch."];
         }
 
         return [];
@@ -507,6 +566,13 @@ class FlowBlueprint
         $timeout = ResponseNodes::BRANCH_TIMEOUT;
         $format = self::EXPORT_FORMAT;
         $version = self::EXPORT_VERSION;
+        $paid = PaymentNodes::BRANCH_PAID;
+        $failed = PaymentNodes::BRANCH_FAILED;
+        $paymentMethods = self::quoted(PaymentNodes::METHODS);
+        $minExpiry = PaymentNodes::MIN_EXPIRES_MINUTES;
+        $maxExpiry = PaymentNodes::MAX_EXPIRES_MINUTES;
+        $pixelEvents = self::quoted(PixelEvents::EVENTS);
+        $paymentVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', PaymentNodes::VARIABLES));
 
         return <<<SPEC
         # Flow file format ("{$format}", version {$version})
@@ -528,11 +594,14 @@ class FlowBlueprint
         - Exactly ONE node of type "start". Its `data` is null. It has no incoming edge.
         - Every other node must be reachable from "start" by following edges.
         - `condition_value` is null on ordinary edges. Only condition, response,
-          http_request and interactive nodes branch, and their values are fixed:
+          http_request, payment and interactive nodes branch, and their values
+          are fixed:
             condition     → "true" / "false"
             response      → "{$replied}" / "{$timeout}"
             http_request  → "success" / "error"
+            payment       → "{$paid}" / "{$failed}"
             interactive   → the id of one of that node's own options
+        - status and go_to_flow END the flow: no edge may leave them.
         - Lay the canvas out left to right: x grows by ~280 per step, y separates
           branches by ~180. Never stack two nodes on the same coordinates.
         - When you INSERT a step into an existing chain, the steps after it move
@@ -665,6 +734,46 @@ class FlowBlueprint
         - TWO outputs: "success" and "error". Wire BOTH — an unwired error branch is
           a flow that goes silent when the API is down. The error branch should say
           something human and usually hand over to a person.
+
+        ### payment — charge the customer and wait for the money
+        { "integration_id": 4, "method": "pix", "amount": "49,90",
+          "description": "Pedido {{pedido}}", "expires_in_minutes": 60,
+          "message": "Segue o Pix de {{payment_amount}} para finalizar:",
+          "send_qr_code": true, "send_copy_paste": true, "send_link": false }
+        - `integration_id` MUST be the id of one of the workspace's payment
+          integrations listed in the context. If none is listed, DO NOT use this
+          node — say in `reply` that a payment gateway has to be connected first
+          under Settings → Integrations.
+        - `method`: {$paymentMethods}. "checkout" is a link that also takes cards
+          and boleto, and only exists on integrations whose `payment_methods`
+          include it.
+        - `amount`: reais as a person writes them ("49,90") or a variable
+          ("{{valor}}"). Never leave it empty.
+        - `expires_in_minutes`: {$minExpiry}–{$maxExpiry}.
+        - Once the charge exists these variables are set, for this node's own
+          `message` and for every later node: {$paymentVariables}.
+        - The customer can write while it waits; that does not move the flow. The
+          gateway does.
+        - TWO outputs: "{$paid}" (the gateway confirmed the money) and "{$failed}"
+          (it expired unpaid or could not be created). Wire BOTH — the failed
+          branch usually offers a new attempt or hands over to a person.
+
+        ### pixel — report a conversion to an ad or analytics account
+        { "integration_ids": [7], "event": "purchase", "value": "{{payment_value}}", "currency": "BRL" }
+        - `integration_ids`: ids of pixel integrations from the context. If none
+          is listed, DO NOT use this node.
+        - `event`: {$pixelEvents}. With "custom", also set `custom_event_name`
+          (letters, digits and underscore, starting with a letter).
+        - Invisible to the customer and never waits. One output.
+        - Natural places: "lead" after the customer gave their contact details,
+          "purchase" on a payment node's "{$paid}" branch.
+
+        ### go_to_flow — continue in another flow
+        { "flow_id": 12, "carry_variables": true }
+        - `flow_id` MUST be the id of one of the workspace's OTHER flows listed in
+          the context — never the flow being edited.
+        - `carry_variables`: whether the answers collected so far go along.
+        - TERMINAL: no outgoing edge. The other flow's start node takes over.
 
         ### status — close the conversation
         { "value": "{$resolved}" }
