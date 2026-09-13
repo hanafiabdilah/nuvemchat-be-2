@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Broadcast\AddressType;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status;
@@ -35,6 +36,7 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
@@ -483,7 +485,7 @@ class ConversationController extends Controller
      */
     public function variables(int $id)
     {
-        $conversation = Conversation::with('contact')->visibleTo(Auth::user())->findOrFail($id);
+        $conversation = Conversation::with(['contact', 'connection'])->visibleTo(Auth::user())->findOrFail($id);
 
         // Latest flow run for this conversation (state is preserved after it ends).
         $flowState = $conversation->flowState()->latest('id')->first();
@@ -493,9 +495,24 @@ class ConversationController extends Controller
             ->map(fn ($value) => is_array($value) ? json_encode($value) : $value)
             ->all();
 
-        $variables['contact.name'] = $conversation->contact?->name;
-        $variables['contact.username'] = $conversation->contact?->username;
-        $variables['contact.phone'] = $conversation->contact?->external_id;
+        $contact = $conversation->contact;
+        $channel = $conversation->connection?->channel;
+
+        $variables['contact.name'] = $contact?->name;
+        $variables['contact.username'] = $contact?->username;
+        // A phone number only where the channel addresses people by one. The
+        // external id is an e-mail address on e-mail, a platform id on
+        // Telegram/Discord/Instagram and a group JID on a WhatsApp group —
+        // none of which is something to send a customer as "your number".
+        // Left out (and so sent empty) rather than filled with the wrong thing.
+        $variables['contact.phone'] = $contact
+            && ! $contact->is_group
+            && $channel instanceof Channel
+            && $channel->broadcastAddressType() === AddressType::Phone
+                ? $contact->external_id
+                : null;
+        // The raw enum value; the composer puts it in words (the inbox's own
+        // status labels) — this API has no language to pick them in.
         $variables['conversation.status'] = $conversation->status?->value;
         // The composing agent — mirrors {{agent_name}} in accept/closing messages.
         $variables['agent_name'] = Auth::user()->name;
@@ -1034,17 +1051,40 @@ class ConversationController extends Controller
 
         // An agent can pick up a conversation from the unassigned Pending queue
         // or take it over from the AI while it is being handled.
-        if (! in_array($conversation->status, [Status::Pending, Status::AiHandling], true)) {
+        if (in_array($conversation->status, [Status::Pending, Status::AiHandling], true)
+            && $this->applyAccept($conversation)) {
             return response()->json([
-                'message' => 'Conversation is not pending',
-            ], 400);
+                'message' => 'Conversation accepted',
+            ]);
         }
 
-        $this->applyAccept($conversation);
+        // Not claimable: either it never was, or a colleague won the race a
+        // moment ago (applyAccept re-read their write under the lock). Answer
+        // from what the row says now.
+        $conversation->refresh();
+
+        // A double click, or a second tab: it is already this agent's, so
+        // the request has nothing left to do and nothing to complain about.
+        if ($conversation->status === Status::Active && (int) $conversation->user_id === (int) Auth::id()) {
+            return response()->json([
+                'message' => 'Conversation accepted',
+            ]);
+        }
+
+        // The common race in a shared queue: a colleague clicked first.
+        // A stable code, because the SPA words it for the agent — the
+        // English below is only for API callers.
+        if ($conversation->status === Status::Active) {
+            return response()->json([
+                'message' => 'This conversation was already accepted by another agent.',
+                'code' => 'conversation_already_accepted',
+            ], 409);
+        }
 
         return response()->json([
-            'message' => 'Conversation accepted',
-        ]);
+            'message' => 'Conversation is not pending',
+            'code' => 'conversation_not_pending',
+        ], 400);
     }
 
     public function resolve(int $id)
@@ -1329,23 +1369,47 @@ class ConversationController extends Controller
     }
 
     /**
-     * Accept semantics (assumes the conversation is Pending or AiHandling):
-     * assign to the current agent, mark Active, clear the human flag, stop any
-     * running flow when taking over from the AI, then broadcast + send the
-     * connection's accept message. Shared by accept() and bulkUpdateStatus().
+     * Accept semantics: assign to the current agent, mark Active, clear the
+     * human flag, stop any running flow when taking over from the AI, then
+     * broadcast + send the connection's accept message. Shared by accept() and
+     * bulkUpdateStatus(). Returns false, having changed nothing, when the
+     * conversation is no longer Pending/AiHandling once its row is locked.
      */
-    protected function applyAccept(Conversation $conversation): void
+    protected function applyAccept(Conversation $conversation): bool
     {
-        $wasAiHandling = $conversation->status === Status::AiHandling;
+        // Claimed under a row lock. Two agents clicking Accept in the same
+        // instant both read "Pending" before either wrote, so both won: the
+        // customer got two accept messages, the thread two notes, and it
+        // silently belonged to whoever saved last. Under the lock the later
+        // request re-reads the earlier one's write and backs off.
+        $wasAiHandling = DB::transaction(function () use ($conversation) {
+            $locked = Conversation::query()->lockForUpdate()->find($conversation->id);
 
-        $conversation->user_id = Auth::id();
-        $conversation->status = Status::Active;
-        $conversation->needs_human = false;
+            if (! $locked || ! in_array($locked->status, [Status::Pending, Status::AiHandling], true)) {
+                return null;
+            }
 
-        // The automatic status note is suppressed here because the note written
-        // a few lines below says more: it names who picked the thread up, which
-        // "pending → active" only implies. Two notes for one click is noise.
-        ConversationObserver::withoutStatusNote(fn () => $conversation->save());
+            $wasAiHandling = $locked->status === Status::AiHandling;
+
+            $locked->user_id = Auth::id();
+            $locked->status = Status::Active;
+            $locked->needs_human = false;
+
+            // The automatic status note is suppressed here because the note written
+            // a few lines below says more: it names who picked the thread up, which
+            // "pending → active" only implies. Two notes for one click is noise.
+            ConversationObserver::withoutStatusNote(fn () => $locked->save());
+
+            return $wasAiHandling;
+        });
+
+        if ($wasAiHandling === null) {
+            return false;
+        }
+
+        // The rest of this method (and the bulk loop) works with the caller's
+        // instance; bring it up to the row just written.
+        $conversation->refresh();
 
         // Taking over from the AI: stop the running flow so it no longer auto-replies.
         if ($wasAiHandling) {
@@ -1392,6 +1456,8 @@ class ConversationController extends Controller
                 ]);
             }
         }
+
+        return true;
     }
 
     /**
@@ -1464,8 +1530,13 @@ class ConversationController extends Controller
                         continue;
                     }
 
-                    $this->applyAccept($conversation);
-                    $updated++;
+                    // False when a colleague claimed it between the read above
+                    // and the lock: skipped, like any other ineligible row.
+                    if ($this->applyAccept($conversation)) {
+                        $updated++;
+                    } else {
+                        $skipped++;
+                    }
                 } else { // Status::Resolved
                     // Resolve: only Active, and only accessible conversations
                     // (own, or any e-mail shared-inbox conversation) unless owner.

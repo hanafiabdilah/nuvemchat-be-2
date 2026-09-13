@@ -44,6 +44,24 @@ test('list returns the templates from the WABA', function () {
     );
 });
 
+test('list asks Meta for the rejection reason and passes it through', function () {
+    Http::fake([
+        'graph.facebook.com/*/message_templates*' => Http::response([
+            'data' => [
+                ['name' => 'promo', 'status' => 'REJECTED', 'language' => 'pt_BR', 'rejected_reason' => 'INVALID_FORMAT'],
+            ],
+        ], 200),
+    ]);
+
+    $templates = (new WhatsappTemplateService())->list(templateConnection());
+
+    expect($templates[0]['rejected_reason'])->toBe('INVALID_FORMAT');
+
+    Http::assertSent(fn ($request) =>
+        str_contains((string) ($request->data()['fields'] ?? ''), 'rejected_reason')
+    );
+});
+
 test('create posts the template definition and returns Metas response', function () {
     Http::fake([
         'graph.facebook.com/*/message_templates' => Http::response([

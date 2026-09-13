@@ -261,6 +261,38 @@ class BillingController extends Controller
     }
 
     /**
+     * Undo a scheduled cancellation. `cancel()` never told the provider
+     * anything (there is no preapproval to revoke), so undoing it is just as
+     * local: clear the flag before `billing:charge-renewals`/`pix-generate`
+     * read it and skip the subscription for good.
+     */
+    public function resume(Request $request)
+    {
+        $subscription = $this->tenant($request)->currentSubscription;
+        abort_if($subscription === null, 404, 'No subscription');
+
+        abort_if(
+            ! $subscription->cancel_at_period_end,
+            422,
+            'Esta assinatura não está agendada para cancelamento.',
+        );
+
+        // The deadline already having passed means the period is over and
+        // access lapsed regardless of the flag — resuming would silently
+        // resurrect a subscription the tenant no longer has, instead of the
+        // "keep what you already have" the button promises.
+        abort_if(
+            ! $subscription->isUsable(),
+            422,
+            'O período atual desta assinatura já terminou.',
+        );
+
+        $subscription = $this->billing->resume($subscription);
+
+        return response()->json(['data' => new SubscriptionResource($subscription->loadMissing('plan'))]);
+    }
+
+    /**
      * Abandon an unpaid checkout (typically a pix QR that was never settled) so
      * the tenant is free to pick a different plan.
      */

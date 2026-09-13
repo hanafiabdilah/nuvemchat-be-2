@@ -65,8 +65,14 @@ class ConversationObserver
 
     /**
      * Handle the Conversation "updated" event.
-     * Stop flow when conversation status changes from Pending to Active/Resolved (admin handover).
-     * Also broadcasts a widget event so embedded SDKs can react to status changes.
+     * Stop the flow when the conversation leaves the statuses the flow runs in
+     * (Pending, AiHandling) for Active or Resolved — a person took it, or it was
+     * closed. Also broadcasts a widget event so embedded SDKs can react to
+     * status changes.
+     *
+     * The engine's own moves between Pending and AiHandling never reach this
+     * method: FlowExecutor writes them as a compare-and-set query, so they write
+     * no note, stop nothing and are not announced to the widget.
      */
     public function updated(Conversation $conversation): void
     {
@@ -81,8 +87,12 @@ class ConversationObserver
 
         $this->noteStatusChange($conversation, $oldStatus, $newStatus);
 
-        // If status changed from Pending to Active or Resolved, stop the flow
-        if ($oldStatus === Status::Pending && in_array($newStatus, [Status::Active, Status::Resolved])) {
+        // Leaving the statuses the flow runs in means a person took the thread
+        // or it was closed, and the bot falls silent either way — from the AI
+        // as much as from the queue ("Assumir da IA", a resolution while the AI
+        // was serving).
+        if (in_array($oldStatus, Status::flowEligible(), true)
+            && in_array($newStatus, [Status::Active, Status::Resolved], true)) {
             Log::info('ConversationObserver: Conversation status changed, stopping flow', [
                 'conversation_id' => $conversation->id,
                 'old_status' => $oldStatus->value,

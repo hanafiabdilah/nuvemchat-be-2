@@ -122,6 +122,83 @@ test('a post left queued by a dead worker is picked up again', function () {
     Queue::assertPushed(PublishInstagramPost::class);
 });
 
+test('a draft can be saved before any media is picked', function () {
+    Queue::fake();
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $response = $this->actingAs($user)
+        ->postJson("/api/instagram/accounts/{$connection->id}/posts", [
+            'media_type' => 'image',
+            'caption' => 'Ainda pensando na legenda',
+        ])
+        ->assertCreated();
+
+    expect($response->json('data.status'))->toBe('draft')
+        ->and($response->json('data.items'))->toBe([]);
+
+    Queue::assertNothingPushed();
+});
+
+test('scheduling or publishing an empty post still needs media', function () {
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $this->actingAs($user)
+        ->postJson("/api/instagram/accounts/{$connection->id}/posts", [
+            'media_type' => 'image',
+            'scheduled_at' => now()->addHours(3)->toIso8601String(),
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('items');
+
+    $this->actingAs($user)
+        ->postJson("/api/instagram/accounts/{$connection->id}/posts", [
+            'media_type' => 'image',
+            'publish_now' => true,
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('items');
+});
+
+test('an empty draft cannot be published directly either', function () {
+    Queue::fake();
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $post = InstagramPost::create([
+        'tenant_id' => $user->tenant_id,
+        'connection_id' => $connection->id,
+        'created_by' => $user->id,
+        'status' => PostStatus::Draft,
+        'media_type' => 'image',
+    ]);
+
+    $this->actingAs($user)
+        ->postJson("/api/instagram/posts/{$post->id}/publish")
+        ->assertStatus(422);
+
+    Queue::assertNothingPushed();
+    expect($post->fresh()->status)->toBe(PostStatus::Draft);
+});
+
+test('a carousel still needs between two and ten items once media is added, draft or not', function () {
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    // One item is not "no media" — it is the wrong shape for a carousel, and
+    // that rule holds for a draft exactly as it does for a schedule.
+    $this->actingAs($user)
+        ->postJson("/api/instagram/accounts/{$connection->id}/posts", [
+            'media_type' => 'carousel',
+            'items' => [['url' => 'https://cdn.example.com/a.jpg', 'media_type' => 'image']],
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('items');
+});
+
 test('a carousel needs between two and ten items', function () {
     $user = InstagramFixtures::user();
     $connection = InstagramFixtures::connection($user);

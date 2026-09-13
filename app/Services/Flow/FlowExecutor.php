@@ -3,6 +3,7 @@
 namespace App\Services\Flow;
 
 use App\Enums\Billing\Feature;
+use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\FlowPaymentStatus;
 use App\Enums\Flow\FlowStateStatus;
@@ -25,6 +26,7 @@ use App\Jobs\SendPixelEvent;
 use App\Models\AiHubAgent;
 use App\Models\AiHubRun;
 use App\Models\Connection;
+use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Flow;
 use App\Models\FlowEdge;
@@ -45,6 +47,7 @@ use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
+use App\Services\Contact\ContactIdentity;
 use App\Services\Contact\ContactTags;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Lead\LeadResolver;
@@ -968,8 +971,7 @@ class FlowExecutor
         // Reaching the node the author wired as the end is not the same event as
         // a human interrupting the bot, which is what the observer's stopFlow
         // records — hence Completed, written after the save so it is the state
-        // that survives. It is also the only thing that ends a flow whose
-        // conversation was AiHandling: that stopFlow only fires from Pending.
+        // that survives.
         $flowState->update([
             'status' => FlowStateStatus::Completed,
             'completed_at' => now(),
@@ -1102,8 +1104,8 @@ class FlowExecutor
             ])->save();
         });
 
-        // Belt and braces: the observer stops the flow on pending → active but
-        // not on ai_handling → active, and the bot has to fall silent either way.
+        // Belt and braces: the observer already stops the flow on the way out of
+        // pending or ai_handling, and the bot has to fall silent either way.
         $this->stopFlow($conversation);
 
         // Written before the broadcast so the inbox row lands on its final
@@ -1518,8 +1520,8 @@ class FlowExecutor
             // prefixes) so "variable.x" and "variable.variable.x" both read
             // state_data['x'].
             'variable' => $flowState->state_data[preg_replace('/^(?:variable\.)+/', '', $field)] ?? null,
-            'contact' => $conversation->contact->{$key} ?? null,
-            'conversation' => $conversation->{$key} ?? null,
+            'contact' => $this->contactField($conversation->contact, $key),
+            'conversation' => $this->plainValue($conversation->{$key} ?? null),
             // "service_hours.is_open" → "true"/"false" so a Condition node can
             // branch on whether the conversation's connection is currently
             // within its service hours.
@@ -1528,6 +1530,43 @@ class FlowExecutor
                 : null,
             default => null,
         };
+    }
+
+    /**
+     * A contact field, the way a flow reads it.
+     *
+     * `phone` and `email` are not columns: a contact only has the address its
+     * channel knows it by. ContactIdentity already decides when that address
+     * is a phone (WhatsApp) or an e-mail (the e-mail channel), and leaves both
+     * empty everywhere else — so a Telegram chat id never reaches a customer
+     * as "your phone". Reading the property instead returned null for every
+     * contact on every channel: the variable picker offered {{contact.phone}}
+     * and the flow always sent a blank.
+     */
+    protected function contactField(?Contact $contact, string $key)
+    {
+        if (!$contact) {
+            return null;
+        }
+
+        if ($key === 'phone' || $key === 'email') {
+            return ContactIdentity::for($contact)[$key] ?? null;
+        }
+
+        return $this->plainValue($contact->{$key} ?? null);
+    }
+
+    /**
+     * An enum-cast attribute read as the value it is stored as.
+     *
+     * `conversations.status` comes back as an enum instance: a condition
+     * comparing it with "pending" was always false (an object is never equal
+     * to a string), and interpolating it into a message threw instead of
+     * sending — {{conversation.status}} broke the node it was used in.
+     */
+    protected function plainValue($value)
+    {
+        return $value instanceof \BackedEnum ? $value->value : $value;
     }
 
     /**
@@ -1699,6 +1738,11 @@ class FlowExecutor
             // Don't delete flow state - preserve context data
             // Flow will automatically stop executing due to status check
         }
+
+        // Every caller today has already moved the conversation out of the AI
+        // (accept, handoff, resolve). One that has not would leave a thread in
+        // the AI tab with nothing behind it that will ever answer.
+        $this->releaseAiHandling($conversation);
     }
 
     /**
@@ -1760,18 +1804,38 @@ class FlowExecutor
     }
 
     /**
-     * Mark the conversation as being handled by the AI. Only flips a conversation
-     * that is still in the unassigned Pending queue — never clobbers Active (a
-     * human already took over) or Resolved. Broadcasts so the dashboard moves the
-     * conversation into the "AI" tab in realtime.
+     * Put the conversation in the "AI" tab: an AI Agent node is serving it.
+     *
+     * Only ever from Pending — never over Active (a person already took it) or
+     * Resolved — and never for a group or an e-mail thread, which no AI serves.
+     *
+     * Written as a compare-and-set query rather than a model save, and both
+     * halves of that matter. Through the model, ConversationObserver would leave
+     * a "pending → ai_handling" note in every AI conversation and announce the
+     * status to the chat widget — but the engine moving a thread between the
+     * queue and the AI is bookkeeping, not an event anybody needs to read about.
+     * And the `where status = pending` is what stops a stale copy of the
+     * conversation from pulling back a thread an agent accepted a moment ago.
+     *
+     * The query still bumps `updated_at`, so a dashboard that was offline picks
+     * the move up on its next sync; the broadcast moves the row between tabs for
+     * everyone who is online.
      */
     protected function markAiHandling(Conversation $conversation): void
     {
+        // From memory first, like releaseAiHandling(): every AI turn calls this,
+        // and a conversation already in the AI tab should not cost a query.
         if ($conversation->status !== ConversationStatus::Pending) {
             return;
         }
 
-        $conversation->forceFill(['status' => ConversationStatus::AiHandling])->save();
+        if ($conversation->isGroup() || $conversation->connection?->channel === Channel::Email) {
+            return;
+        }
+
+        if (! $this->swapEngineStatus($conversation, ConversationStatus::Pending, ConversationStatus::AiHandling)) {
+            return;
+        }
 
         broadcast(new ConversationUpdated($conversation->fresh()));
 
@@ -1781,23 +1845,63 @@ class FlowExecutor
     }
 
     /**
-     * The AI is done handling (handed off to the flow's next node / flow ended).
-     * Drop the conversation back into the Pending queue so it is no longer shown
-     * as AI-handled. No-op unless it is currently AI-handling.
+     * The AI stopped serving — the flow moved past its node, or ended — and the
+     * conversation still needs somebody: back to the Pending queue. No-op unless
+     * it is AI-handling. Same compare-and-set as markAiHandling(), for the same
+     * reasons.
      */
     protected function releaseAiHandling(Conversation $conversation): void
     {
+        // Read from memory first: most callers hold a conversation that is not
+        // AI-handling at all, and should not pay a query to learn it.
         if ($conversation->status !== ConversationStatus::AiHandling) {
             return;
         }
 
-        $conversation->forceFill(['status' => ConversationStatus::Pending])->save();
+        if (! $this->swapEngineStatus($conversation, ConversationStatus::AiHandling, ConversationStatus::Pending)) {
+            return;
+        }
 
         broadcast(new ConversationUpdated($conversation->fresh()));
 
         Log::info('FlowExecutor: AI released conversation back to Pending', [
             'conversation_id' => $conversation->id,
         ]);
+    }
+
+    /**
+     * Move the conversation between the two statuses the engine owns, only if it
+     * is still in the first one, and bring the in-memory model along.
+     *
+     * @return bool whether this call made the change
+     */
+    protected function swapEngineStatus(Conversation $conversation, ConversationStatus $from, ConversationStatus $to): bool
+    {
+        $changed = Conversation::whereKey($conversation->getKey())
+            ->where('status', $from->value)
+            ->update(['status' => $to->value]);
+
+        if ($changed === 0) {
+            return false;
+        }
+
+        $conversation->status = $to;
+        $conversation->syncOriginalAttribute('status');
+
+        return true;
+    }
+
+    /**
+     * Whether the conversation is still in a status the flow runs in, read from
+     * the database rather than from the copy this request has been holding.
+     */
+    protected function stillWithTheFlow(Conversation $conversation): bool
+    {
+        // Through the model query, so the value comes back already cast.
+        $status = Conversation::whereKey($conversation->getKey())->value('status');
+
+        return $status instanceof ConversationStatus
+            && in_array($status, ConversationStatus::flowEligible(), true);
     }
 
     /**
@@ -1808,13 +1912,36 @@ class FlowExecutor
     {
         $conversation = $flowState->conversation;
 
-        $conversation->forceFill([
-            'needs_human' => true,
-            'handoff_reason' => $reason,
-            'handoff_at' => now(),
-            'user_id' => null,                 // unassigned — any agent can pick it up
-            'status' => ConversationStatus::Pending,
-        ])->save();
+        // A compare-and-set, like the AI's own moves. An agent can press
+        // "Assumir da IA" while the model is still thinking, and a handoff that
+        // lands after that must not undo it — without the `where` it would wipe
+        // the agent off the thread and drop it back into the queue under them.
+        // It also keeps the move out of ai_handling from writing a status note:
+        // the badge, the toast and the live board already say a person is
+        // needed, and a note would say it a fourth time.
+        $changed = Conversation::whereKey($conversation->getKey())
+            ->whereIn('status', array_map(
+                fn (ConversationStatus $status) => $status->value,
+                ConversationStatus::flowEligible(),
+            ))
+            ->update([
+                'needs_human' => true,
+                'handoff_reason' => $reason,
+                'handoff_at' => now(),
+                'user_id' => null,                 // unassigned — any agent can pick it up
+                'status' => ConversationStatus::Pending->value,
+            ]);
+
+        if ($changed === 0) {
+            Log::info('FlowExecutor: Handoff skipped, the conversation already left the flow', [
+                'conversation_id' => $conversation->id,
+                'reason' => $reason,
+            ]);
+
+            return;
+        }
+
+        $conversation->refresh();
 
         // Stop the AI so it no longer auto-replies; flow state is preserved.
         $this->stopFlow($conversation);
@@ -1884,7 +2011,13 @@ class FlowExecutor
 
         $flowState = FlowState::where('conversation_id', $conversation->id)->first();
 
+        // The customer just wrote, and on each of the dead ends below nothing
+        // is going to answer them. A conversation still shown as AI-handling
+        // there — its flow was deleted, or the node it sat on — goes back to
+        // the queue, where a person will see it. No-op for everything else.
         if (!$flowState) {
+            $this->releaseAiHandling($conversation);
+
             return; // No active flow
         }
 
@@ -1895,6 +2028,9 @@ class FlowExecutor
                 'flow_state_id' => $flowState->id,
                 'status' => $flowState->status->value,
             ]);
+
+            $this->releaseAiHandling($conversation);
+
             return;
         }
 
@@ -1913,6 +2049,8 @@ class FlowExecutor
             Log::error('FlowExecutor: Current node not found (flow state preserved)', [
                 'flow_state_id' => $flowState->id,
             ]);
+
+            $this->releaseAiHandling($conversation);
 
             // Don't delete flow state - preserve for debugging
             return;
@@ -1940,6 +2078,12 @@ class FlowExecutor
             $this->scheduleAIAgentTurn($flowState, $currentNode);
             return;
         }
+
+        // Past this point the message is not the AI's to answer. The AI node
+        // always releases the conversation on its way out, so this only ever
+        // mends a state that should not exist — cheaply: it reads the status
+        // it already holds before touching the database.
+        $this->releaseAiHandling($conversation);
 
         // Special handling for Response nodes - validate and store input
         if ($currentNode->type === NodeType::Response) {
@@ -2228,6 +2372,28 @@ class FlowExecutor
             return;
         }
 
+        // A node nobody finished configuring. The save endpoint accepts one —
+        // a single half-built step must not stop the rest of the flow from
+        // being saved — so this is where it is made safe: with no agent to
+        // talk to, the node does what it does when an agent hands off (the
+        // next node, or the human queue in the handoff modes). Checked before
+        // the welcome, because greeting the customer on behalf of an AI that
+        // will never answer is a promise the flow cannot keep, and before the
+        // conversation is moved to the AI tab it would leave straight away.
+        if (empty($data['ai_hub_agent_id'])) {
+            Log::warning('FlowExecutor: AIAgent node has no agent configured, handing off', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+            ]);
+
+            $stateData = $flowState->state_data ?? [];
+            $stateData["_ai_handoff_reason_{$node->id}"] = 'agent_missing';
+            $flowState->update(['state_data' => $stateData]);
+
+            $this->routeHandoff($flowState, $node, 'agent_missing', false);
+            return;
+        }
+
         // From here the AI owns the conversation — surface it in the "AI" tab.
         $this->markAiHandling($flowState->conversation);
 
@@ -2269,14 +2435,23 @@ class FlowExecutor
             $welcomingMessage = trim((string) ($data['welcoming_message'] ?? ''));
 
             if ($welcomingMessage === '') {
-                Log::error('FlowExecutor: AIAgent node missing required welcoming_message, skipping AI on first turn', [
+                // No greeting to send, so nothing stands in for an answer: the
+                // AI takes the opening itself, whatever it says. This used to
+                // skip the first turn and answer the next message instead,
+                // which left a customer who wrote "oi" talking to silence until
+                // they wrote again. Zero, not the newest id, is the watermark
+                // that puts the opening into the turn — the value the welcome
+                // path writes when it lets the AI answer (pendingAiMessages()).
+                Log::info('FlowExecutor: AIAgent node has no welcoming message, the AI answers the opening', [
                     'node_id' => $node->id,
                     'conversation_id' => $flowState->conversation_id,
                 ]);
 
                 $stateData[$turnsKey] = 1;
-                $stateData[$lastProcessedKey] = $newestPendingId;
+                $stateData[$lastProcessedKey] = 0;
                 $flowState->update(['state_data' => $stateData]);
+
+                $this->scheduleAIAgentTurn($flowState, $node);
                 return;
             }
 
@@ -2857,6 +3032,12 @@ class FlowExecutor
 
         $speak = AiDeliveryPolicy::speaks($decision);
 
+        // The AI is about to answer, so the conversation is the AI's — also when
+        // it had been handed back to the queue and the flow stayed parked on
+        // this node (always-AI with nothing wired after it). No-op when it is
+        // already in the AI tab.
+        $this->markAiHandling($conversation);
+
         try {
             $run = $this->aiAgentHubService->runAgent(
                 $agent,
@@ -2873,6 +3054,21 @@ class FlowExecutor
             // customer's message, and an agent reading the thread from the top
             // should not find the answer above the question.
             AiTranscripts::store($run, $attachmentEntries);
+
+            // The model takes seconds, and "Assumir da IA" is offered for exactly
+            // those seconds. If a person took the conversation meanwhile, their
+            // accept message is already in the thread: a bot reply landing under
+            // it would talk over them, and a handoff would undo the assignment.
+            // The run is spent either way; its reply is not sent.
+            if (! $this->stillWithTheFlow($conversation)) {
+                Log::info('FlowExecutor: AIAgent reply dropped, a person took the conversation during the run', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $conversation->id,
+                    'run_id' => $run->id,
+                ]);
+
+                return;
+            }
 
             $replyText = $run->output_message;
 
@@ -3705,6 +3901,10 @@ class FlowExecutor
         ]);
 
         LiveActivity::idle($flowState->conversation);
+
+        // Nothing will answer this conversation any more; if it was still in
+        // the AI tab, the queue is where somebody will see it.
+        $this->releaseAiHandling($flowState->conversation);
     }
 
     /**

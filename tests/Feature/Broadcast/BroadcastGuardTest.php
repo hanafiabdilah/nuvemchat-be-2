@@ -98,6 +98,86 @@ test('free-form content is skipped once the session window has shut', function (
     Http::assertNothingSent();
 });
 
+test('free-form content is skipped once Instagram\'s window has shut', function () {
+    // InstagramHandler posts to graph.instagram.com, not graph.facebook.com
+    // (that one is Messenger's) — unfaked here on purpose, since a skip must
+    // never reach the network at all.
+    Http::fake(['graph.instagram.com/*' => Http::response(['message_id' => 'insta-1'])]);
+
+    $user = BroadcastFixtures::user();
+    // Instagram is not in MessagingWindow's table (that one also drives the
+    // live chat guard) but carries the same 24h limitation — see
+    // Channel::broadcastWindowHours().
+    $instagram = BroadcastFixtures::connection($user, Channel::Instagram);
+    $ana = BroadcastFixtures::contact($user, 'ig-ana', 'Ana', Channel::Instagram);
+
+    BroadcastFixtures::conversationWithInbound($instagram, $ana, now()->subDays(2)->timestamp);
+
+    $broadcast = guardedCampaign([
+        'name' => 'Aviso Instagram',
+        'connection_id' => $instagram->id,
+        'content_type' => 'text',
+        'payload' => ['body' => 'Olá!'],
+        'contact_ids' => [$ana->id],
+    ], $user);
+
+    $recipient = BroadcastRecipient::where('broadcast_id', $broadcast->id)->first();
+
+    expect($recipient->status)->toBe(RecipientStatus::Skipped)
+        ->and($recipient->error)->toContain('window')
+        // Instagram has no template to fall back on — the TikTok/WhatsApp
+        // wording would point at a button that does not exist here.
+        ->and($recipient->error)->not->toContain('template')
+        ->and($broadcast->skipped_count)->toBe(1);
+
+    Http::assertNothingSent();
+});
+
+test('a message reaches an Instagram contact still inside the window', function () {
+    Http::fake(['graph.instagram.com/*' => Http::response(['message_id' => 'insta-1'])]);
+
+    $user = BroadcastFixtures::user();
+    $instagram = BroadcastFixtures::connection($user, Channel::Instagram);
+    $ana = BroadcastFixtures::contact($user, 'ig-ana', 'Ana', Channel::Instagram);
+
+    BroadcastFixtures::conversationWithInbound($instagram, $ana, now()->subHours(2)->timestamp);
+
+    $broadcast = guardedCampaign([
+        'name' => 'Aviso Instagram',
+        'connection_id' => $instagram->id,
+        'content_type' => 'text',
+        'payload' => ['body' => 'Olá!'],
+        'contact_ids' => [$ana->id],
+    ], $user);
+
+    expect($broadcast->sent_count)->toBe(1);
+});
+
+test('Messenger is windowed the same way Instagram is', function () {
+    Http::fake(['graph.facebook.com/*' => Http::response(['message_id' => 'fb-1'])]);
+
+    $user = BroadcastFixtures::user();
+    $messenger = BroadcastFixtures::connection($user, Channel::Messenger);
+    $ana = BroadcastFixtures::contact($user, 'fb-ana', 'Ana', Channel::Messenger);
+
+    BroadcastFixtures::conversationWithInbound($messenger, $ana, now()->subDays(2)->timestamp);
+
+    $broadcast = guardedCampaign([
+        'name' => 'Aviso Messenger',
+        'connection_id' => $messenger->id,
+        'content_type' => 'text',
+        'payload' => ['body' => 'Olá!'],
+        'contact_ids' => [$ana->id],
+    ], $user);
+
+    $recipient = BroadcastRecipient::where('broadcast_id', $broadcast->id)->first();
+
+    expect($recipient->status)->toBe(RecipientStatus::Skipped)
+        ->and($recipient->error)->toContain('window');
+
+    Http::assertNothingSent();
+});
+
 test('a template reaches someone whose window has long since shut', function () {
     Http::fake(['graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.sent']]])]);
 

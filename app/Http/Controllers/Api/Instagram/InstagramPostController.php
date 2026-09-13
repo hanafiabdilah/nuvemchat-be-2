@@ -235,6 +235,14 @@ class InstagramPostController extends Controller
             throw new HttpException(422, 'This post is already on its way to Instagram.');
         }
 
+        // A draft may have been saved with no media at all (see
+        // validatePayload) — the one thing that composer could not skip is
+        // the same one thing this endpoint has to check before handing it to
+        // the queue, or the job would build a container for nothing.
+        if ($post->items->isEmpty()) {
+            throw new HttpException(422, 'Add at least one photo or video before publishing this post.');
+        }
+
         // Stamped before the dispatch, so the response already says what is
         // happening and a second press finds a post that is no longer
         // publishable rather than queueing it twice.
@@ -305,20 +313,39 @@ class InstagramPostController extends Controller
      * and (for a carousel) every child uploaded — so catching them here is the
      * difference between an inline form error and a post that fails minutes
      * later for reasons the user never sees.
+     *
+     * A draft is the one exception: it may be saved with no media at all.
+     * Composing usually starts with a caption, and the shape rules below exist
+     * to catch something Meta would refuse — an empty draft has no shape yet to
+     * be wrong. The moment it carries a scheduled date or is sent with
+     * `publish_now`, the real rules apply again, same as `store()` decides
+     * `initialStatus()` from the same two facts.
      */
     private function validatePayload(Request $request): array
     {
+        $isDraft = ! $request->boolean('publish_now') && blank($request->input('scheduled_at'));
+
         $data = $request->validate([
             'media_type' => ['required', Rule::enum(PostMediaType::class)],
             'caption' => ['nullable', 'string', 'max:' . self::MAX_CAPTION],
-            'items' => ['required', 'array', 'min:1', 'max:10'],
+            'items' => [$isDraft ? 'nullable' : 'required', 'array', 'max:10'],
             'items.*.url' => ['required', 'string', 'max:2048'],
             'items.*.path' => ['nullable', 'string', 'max:1024'],
             'items.*.media_type' => ['required', Rule::in(['image', 'video'])],
             'scheduled_at' => ['nullable', 'date', 'after:now'],
         ]);
 
+        $data['items'] = $data['items'] ?? [];
         $type = PostMediaType::from($data['media_type']);
+
+        if ($isDraft && count($data['items']) === 0) {
+            if (! $type->supportsCaption()) {
+                $data['caption'] = null;
+            }
+
+            return $data;
+        }
+
         [$min, $max] = $type->itemRange();
         $count = count($data['items']);
 

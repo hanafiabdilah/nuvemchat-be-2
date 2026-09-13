@@ -167,9 +167,19 @@ class FlowBlueprint
                 'parameters.when_unavailable' => ['nullable', 'string', Rule::in(ActionNodes::UNAVAILABLE_MODES)],
                 'parameters.note' => ['nullable', 'string', 'max:4000'],
             ],
+            // Both nullable, like every other node auto-save catches mid-edit.
+            // They used to be required, and a single AI node without an agent
+            // or a welcome made every save of the whole flow fail — edits to
+            // unrelated nodes included — for as long as it stayed that way.
+            // The executor covers both gaps (FlowExecutor::executeAIAgentNode):
+            // no agent → the node moves on the way a handoff does; no welcome →
+            // the AI answers the opening itself. Ownership stays strict: an id
+            // that is there must still be an active agent of this workspace.
+            // The assistant is still held to both fields, in
+            // incompleteNodeProblems() — generated output has no mid-edit.
             'ai_agent' => [
                 'ai_hub_agent_id' => [
-                    'required',
+                    'nullable',
                     'integer',
                     Rule::exists('ai_hub_agents', 'id')->where(function ($query) {
                         $tenantId = self::tenantId();
@@ -180,7 +190,7 @@ class FlowBlueprint
                         })->where('status', 'ACTIVE');
                     }),
                 ],
-                'welcoming_message' => ['required', 'string', 'max:4000'],
+                'welcoming_message' => ['nullable', 'string', 'max:4000'],
                 'store_summary_to_variable' => ['nullable', 'string', 'alpha_dash'],
             ],
             // Lengths mirror the WhatsApp Cloud API limits so the builder warns
@@ -415,6 +425,43 @@ class FlowBlueprint
             $key = (string) ($node['key'] ?? '');
             if ($key !== '' && ! isset($reachable[$key])) {
                 $problems[] = "Node \"{$key}\" cannot be reached from the start node — every node needs an incoming edge.";
+            }
+        }
+
+        return array_merge($problems, self::incompleteNodeProblems($nodes));
+    }
+
+    /**
+     * Fields the save endpoint lets a person leave empty while building, but
+     * that generated output has no reason to leave out.
+     *
+     * The builder saves a node the moment it lands and its author fills it in
+     * one field at a time, so the save rules are lenient where a half-built
+     * node is harmless at runtime. A model hands over a finished flow in one
+     * go: an AI node without an agent there is a step it described in `reply`
+     * and did not build, and the repair loop should hear about it.
+     *
+     * @param  list<array>  $nodes
+     * @return list<string>
+     */
+    private static function incompleteNodeProblems(array $nodes): array
+    {
+        $problems = [];
+
+        foreach ($nodes as $node) {
+            if (($node['type'] ?? null) !== 'ai_agent') {
+                continue;
+            }
+
+            $key = (string) ($node['key'] ?? '');
+            $data = (array) ($node['data'] ?? []);
+
+            if (empty($data['ai_hub_agent_id'])) {
+                $problems[] = "Node \"{$key}\" (ai_agent) needs an ai_hub_agent_id from the AI agents listed in the context. If none is listed, do not use this node type.";
+            }
+
+            if (trim((string) ($data['welcoming_message'] ?? '')) === '') {
+                $problems[] = "Node \"{$key}\" (ai_agent) needs a welcoming_message.";
             }
         }
 

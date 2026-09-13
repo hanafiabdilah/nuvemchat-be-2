@@ -157,6 +157,8 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/subscribe', [BillingController::class, 'subscribe'])->middleware('permission:billing.manage')->name('subscribe');
         Route::post('/pix/refresh', [BillingController::class, 'refreshPix'])->middleware('permission:billing.manage')->name('pix-refresh');
         Route::post('/cancel', [BillingController::class, 'cancel'])->middleware('permission:billing.manage')->name('cancel');
+        // Undo a scheduled cancellation before the period actually ends.
+        Route::post('/resume', [BillingController::class, 'resume'])->middleware('permission:billing.manage')->name('resume');
         // Abandon an unpaid checkout (frees the tenant to pick another plan).
         Route::post('/pending/cancel', [BillingController::class, 'cancelPending'])->middleware('permission:billing.manage')->name('pending-cancel');
         Route::post('/invoices/{invoice}/cancel', [BillingController::class, 'cancelInvoice'])->middleware('permission:billing.manage')->name('invoice-cancel');
@@ -482,7 +484,9 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     Route::post('/agents/{id}/assign-permissions', [AgentController::class, 'assignPermissions'])->middleware('permission:agents.assign-permissions');
 
     // Role management - protected by permissions
-    Route::get('/roles', [RoleController::class, 'index'])->middleware('permission:roles.view');
+    // Also readable with agents.assign-roles: that permission's dialog is a
+    // list of roles to pick from, and without the list it cannot be used.
+    Route::get('/roles', [RoleController::class, 'index'])->middleware('permission:roles.view|agents.assign-roles');
     Route::post('/roles', [RoleController::class, 'store'])->middleware('permission:roles.create');
     Route::put('/roles/{id}', [RoleController::class, 'update'])->middleware('permission:roles.update');
     Route::delete('/roles/{id}', [RoleController::class, 'destroy'])->middleware('permission:roles.delete');

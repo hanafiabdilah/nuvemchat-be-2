@@ -37,6 +37,7 @@ class BroadcastController extends Controller
             ->where('tenant_id', $request->user()->tenant_id)
             ->when($request->filled('status'), fn ($query) => $query->where('status', $request->string('status')))
             ->when($request->filled('connection_id'), fn ($query) => $query->where('connection_id', $request->integer('connection_id')))
+            ->when($request->filled('search'), fn ($query) => $query->where('name', 'like', '%' . $request->string('search') . '%'))
             ->orderByDesc('id')
             ->paginate($request->integer('per_page', 20));
 
@@ -80,6 +81,7 @@ class BroadcastController extends Controller
         $connection = $this->resolveConnection($request, (int) $data['connection_id']);
 
         $this->assertChannelAccepts($connection, ContentType::from($data['content_type']), $data['rate_per_minute'] ?? null);
+        $this->assertCanDecideToSend($request, $data);
 
         $broadcast = DB::transaction(function () use ($request, $data, $connection) {
             $broadcast = Broadcast::create([
@@ -135,6 +137,7 @@ class BroadcastController extends Controller
         $connection = $this->resolveConnection($request, (int) $data['connection_id']);
 
         $this->assertChannelAccepts($connection, ContentType::from($data['content_type']), $data['rate_per_minute'] ?? null);
+        $this->assertCanDecideToSend($request, $data);
 
         DB::transaction(function () use ($broadcast, $connection, $data) {
             $broadcast->update([
@@ -296,6 +299,27 @@ class BroadcastController extends Controller
                 'rate_per_minute' => "This channel is capped at {$max} messages per minute.",
             ]);
         }
+    }
+
+    /**
+     * `broadcasts.create` only earns a draft. Firing it now (`start_now`) or
+     * scheduling it (`scheduled_at`) is the same decision `/start` requires
+     * `broadcasts.send` for — reachable a second way here, so it needs the
+     * same gate, or the permission split on the dedicated endpoint is
+     * decorative.
+     */
+    private function assertCanDecideToSend(Request $request, array $data): void
+    {
+        $decidesToSend = $request->boolean('start_now') || ! empty($data['scheduled_at']);
+
+        if (! $decidesToSend || $request->user()->can('broadcasts.send')) {
+            return;
+        }
+
+        abort(response()->json([
+            'message' => 'Starting or scheduling a campaign requires the permission to send campaigns.',
+            'code' => 'broadcasts_send_required',
+        ], 403));
     }
 
     private function resolveConnection(Request $request, int $connectionId): Connection

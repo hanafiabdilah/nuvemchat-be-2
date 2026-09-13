@@ -4,6 +4,7 @@ namespace App\Services\Broadcast;
 
 use App\Enums\Broadcast\ContentType;
 use App\Enums\Broadcast\RecipientStatus;
+use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
@@ -100,7 +101,7 @@ class BroadcastSender
         // Free-form content outside the session window is accepted by the Cloud
         // API and rejected minutes later by webhook, so asking first is the only
         // way to report the truth. A template is exempt: that is what it is for.
-        if ($broadcast->content_type->isFreeForm() && MessagingWindow::appliesTo($conversation) && ! MessagingWindow::isOpen($conversation)) {
+        if ($broadcast->content_type->isFreeForm() && $this->freeFormWindowClosed($conversation)) {
             if ($resolved->wasCreated) {
                 $conversation->delete();
             }
@@ -108,7 +109,7 @@ class BroadcastSender
             return $this->finish(
                 $recipient,
                 RecipientStatus::Skipped,
-                'The messaging window for this contact has closed — only an approved template can reach them now',
+                $this->windowClosedReason($connection->channel),
             );
         }
 
@@ -217,7 +218,10 @@ class BroadcastSender
     {
         $updates = [];
 
-        if ($conversation->status === ConversationStatus::Pending) {
+        // Only promoted when someone will own it: a campaign whose author has
+        // since been removed (created_by null) would otherwise leave an Active
+        // thread nobody can answer — it stays in the queue instead.
+        if ($conversation->status === ConversationStatus::Pending && $broadcast->created_by) {
             $updates['status'] = ConversationStatus::Active;
         }
 
@@ -251,6 +255,45 @@ class BroadcastSender
         }
 
         broadcast(new ConversationUpdated($conversation->load('contact')));
+    }
+
+    /**
+     * Whether this conversation's channel would refuse free-form content right
+     * now. Two sources, checked separately because they cover different
+     * channels: MessagingWindow (WhatsApp Official, TikTok) also drives the
+     * live chat guard, while Channel::broadcastWindowHours() (Instagram,
+     * Messenger) exists only for campaigns — see its docblock for why those
+     * two cannot share one list.
+     */
+    private function freeFormWindowClosed(Conversation $conversation): bool
+    {
+        if (MessagingWindow::appliesTo($conversation)) {
+            return ! MessagingWindow::isOpen($conversation);
+        }
+
+        $hours = $conversation->connection?->channel?->broadcastWindowHours();
+
+        if ($hours === null) {
+            return false;
+        }
+
+        $lastInbound = MessagingWindow::lastInboundAt($conversation);
+
+        // Never written to us at all is closed too — there is no session to
+        // reply inside of, same reasoning as MessagingWindow::isOpen().
+        return $lastInbound === null || $lastInbound->copy()->addHours($hours)->isPast();
+    }
+
+    /**
+     * Only WhatsApp Official has a template to fall back on; telling an
+     * Instagram or TikTok operator to send one would point at a button that
+     * does not exist for that channel.
+     */
+    private function windowClosedReason(Channel $channel): string
+    {
+        return $channel->broadcastRequiresTemplate()
+            ? 'The messaging window for this contact has closed — only an approved template can reach them now'
+            : 'The messaging window for this contact has closed — they will have to write to you again before this campaign can reach them';
     }
 
     /**

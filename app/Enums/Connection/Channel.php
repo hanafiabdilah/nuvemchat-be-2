@@ -86,6 +86,28 @@ enum Channel: string
     }
 
     /**
+     * Hours of free-form content a campaign may still send after the
+     * recipient's last message here, or null where a campaign has no such
+     * ceiling (or where broadcastRequiresTemplate() already means every send
+     * is a template and the window is beside the point).
+     *
+     * Deliberately not MessagingWindow::hoursFor(): that table also drives the
+     * live chat send guard and the scheduler that auto-resolves an expired
+     * thread, and a human agent's own reply legitimately rides Meta's
+     * "human agent" tag past the standard window — a campaign message never
+     * does, so it cannot borrow that list. Instagram and Messenger carry the
+     * same platform limitation as WhatsApp Official (see canStartConversation)
+     * but were never added there because nothing used to check it for them.
+     */
+    public function broadcastWindowHours(): ?int
+    {
+        return match ($this) {
+            self::Instagram, self::Messenger => 24,
+            default => null,
+        };
+    }
+
+    /**
      * Messages per minute a new campaign defaults to.
      *
      * Deliberately conservative: the ceiling that matters is rarely the API's

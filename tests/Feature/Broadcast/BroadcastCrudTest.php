@@ -200,3 +200,124 @@ test('permissions are enforced separately for drafting and for firing', function
 
     $this->actingAs($drafter)->postJson("/api/broadcasts/{$id}/start")->assertForbidden();
 });
+
+test('start_now on create needs broadcasts.send, not just broadcasts.create', function () {
+    $drafter = BroadcastFixtures::user(['broadcasts.view', 'broadcasts.create']);
+    $connection = BroadcastFixtures::connection($drafter);
+    $contact = BroadcastFixtures::contact($drafter, '5511999990001', 'Ana');
+
+    $response = $this->actingAs($drafter)->postJson('/api/broadcasts', BroadcastFixtures::templateCampaign($connection, [
+        'contact_ids' => [$contact->id],
+        'start_now' => true,
+    ]));
+
+    $response->assertForbidden()->assertJsonPath('code', 'broadcasts_send_required');
+
+    // Refused before anything is written — not left behind as a draft either.
+    expect(Broadcast::count())->toBe(0);
+});
+
+test('scheduling on create is the same decision to send, and needs the same permission', function () {
+    $drafter = BroadcastFixtures::user(['broadcasts.view', 'broadcasts.create']);
+    $connection = BroadcastFixtures::connection($drafter);
+    $contact = BroadcastFixtures::contact($drafter, '5511999990001', 'Ana');
+
+    $this->actingAs($drafter)->postJson('/api/broadcasts', BroadcastFixtures::templateCampaign($connection, [
+        'contact_ids' => [$contact->id],
+        'scheduled_at' => now()->addHour()->toIso8601String(),
+    ]))->assertForbidden()->assertJsonPath('code', 'broadcasts_send_required');
+
+    expect(Broadcast::count())->toBe(0);
+});
+
+test('a plain draft — no start_now, no schedule — only needs broadcasts.create', function () {
+    $drafter = BroadcastFixtures::user(['broadcasts.view', 'broadcasts.create']);
+    $connection = BroadcastFixtures::connection($drafter);
+    $contact = BroadcastFixtures::contact($drafter, '5511999990001', 'Ana');
+
+    $this->actingAs($drafter)
+        ->postJson('/api/broadcasts', BroadcastFixtures::templateCampaign($connection, ['contact_ids' => [$contact->id]]))
+        ->assertCreated()
+        ->assertJsonPath('data.status', Status::Draft->value);
+});
+
+test('scheduling on update needs broadcasts.send too', function () {
+    $sender = BroadcastFixtures::user();
+    $drafter = BroadcastFixtures::coworker($sender, ['broadcasts.view', 'broadcasts.create']);
+    $connection = BroadcastFixtures::connection($sender);
+    $contact = BroadcastFixtures::contact($sender, '5511999990001', 'Ana');
+
+    $id = $this->actingAs($sender)
+        ->postJson('/api/broadcasts', BroadcastFixtures::templateCampaign($connection, ['contact_ids' => [$contact->id]]))
+        ->assertCreated()
+        ->json('data.id');
+
+    // A drafter in the same tenant can still edit the wording...
+    $this->actingAs($drafter)
+        ->putJson("/api/broadcasts/{$id}", BroadcastFixtures::templateCampaign($connection, [
+            'contact_ids' => [$contact->id],
+        ]))
+        ->assertOk();
+
+    // ...but turning that edit into a schedule is the same decision start_now is.
+    $this->actingAs($drafter)
+        ->putJson("/api/broadcasts/{$id}", BroadcastFixtures::templateCampaign($connection, [
+            'contact_ids' => [$contact->id],
+            'scheduled_at' => now()->addHour()->toIso8601String(),
+        ]))
+        ->assertForbidden()
+        ->assertJsonPath('code', 'broadcasts_send_required');
+
+    expect(Broadcast::find($id)->status)->toBe(Status::Draft);
+});
+
+test('the campaign list can be paginated and searched by name', function () {
+    $user = BroadcastFixtures::user();
+    $connection = BroadcastFixtures::connection($user);
+    $contact = BroadcastFixtures::contact($user, '5511999990001', 'Ana');
+
+    foreach (['Promo de janeiro', 'Promo de fevereiro', 'Aviso de manutenção'] as $name) {
+        $this->actingAs($user)->postJson('/api/broadcasts', BroadcastFixtures::templateCampaign($connection, [
+            'name' => $name,
+            'contact_ids' => [$contact->id],
+        ]))->assertCreated();
+    }
+
+    $this->actingAs($user)->getJson('/api/broadcasts?search=Promo')
+        ->assertOk()
+        ->assertJsonCount(2, 'data');
+
+    $this->actingAs($user)->getJson('/api/broadcasts?per_page=2')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('meta.total', 3)
+        ->assertJsonPath('meta.last_page', 2);
+
+    $this->actingAs($user)->getJson('/api/broadcasts?per_page=2&page=2')
+        ->assertOk()
+        ->assertJsonCount(1, 'data');
+});
+
+test('the delivery report can be searched by recipient name or address', function () {
+    $user = BroadcastFixtures::user();
+    $connection = BroadcastFixtures::connection($user);
+    $ana = BroadcastFixtures::contact($user, '5511999990001', 'Ana Souza');
+    $bruno = BroadcastFixtures::contact($user, '5511999990002', 'Bruno Lima');
+
+    $id = $this->actingAs($user)
+        ->postJson('/api/broadcasts', BroadcastFixtures::templateCampaign($connection, [
+            'contact_ids' => [$ana->id, $bruno->id],
+        ]))
+        ->assertCreated()
+        ->json('data.id');
+
+    $this->actingAs($user)->getJson("/api/broadcasts/{$id}/recipients?search=Ana")
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.name', 'Ana Souza');
+
+    $this->actingAs($user)->getJson("/api/broadcasts/{$id}/recipients?search=5511999990002")
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.address', '5511999990002');
+});

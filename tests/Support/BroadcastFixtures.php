@@ -42,6 +42,26 @@ class BroadcastFixtures
         return $user->fresh();
     }
 
+    /**
+     * A second agent in the same workspace as `$owner`, with their own
+     * permission set — for tests that check two people in one tenant get
+     * different answers from the same endpoint (e.g. drafting vs firing).
+     */
+    public static function coworker(User $owner, array $permissions): User
+    {
+        $user = User::factory()->create(['tenant_id' => $owner->tenant_id]);
+
+        $role = Role::findOrCreate('broadcaster-coworker-' . $user->id, 'web');
+
+        foreach ($permissions as $permission) {
+            $role->givePermissionTo(Permission::findOrCreate($permission, 'web'));
+        }
+
+        $user->assignRole($role);
+
+        return $user->fresh();
+    }
+
     public static function connection(User $user, Channel $channel = Channel::WhatsappOfficial): Connection
     {
         return Connection::create([

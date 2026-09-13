@@ -2,14 +2,20 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Conversation\Status;
 use App\Events\ConnectionAccessUpdated;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Http\Resources\UserResource;
+use App\Models\Conversation;
 use App\Models\User;
+use App\Services\Access\TenantRoles;
+use App\Services\User\AgentRemoval;
 use App\Services\User\AvatarStorage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class AgentController extends Controller
 {
@@ -17,8 +23,21 @@ class AgentController extends Controller
     {
         $users = request()->user()->tenant->users()->with(['connections', 'roles', 'permissions'])->orderBy('created_at', 'DESC')->get();
 
+        // How many unresolved conversations each person holds: the number the
+        // delete dialog has to decide about. One grouped query for the page,
+        // kept beside the list rather than in UserResource, which half the app
+        // serializes.
+        $open = Conversation::query()
+            ->whereIn('user_id', $users->pluck('id'))
+            ->where('status', '!=', Status::Resolved->value)
+            ->groupBy('user_id')
+            ->selectRaw('user_id, COUNT(*) as aggregate')
+            ->pluck('aggregate', 'user_id')
+            ->map(fn ($count) => (int) $count);
+
          return response()->json([
             'data' => $users->toResourceCollection(UserResource::class),
+            'open_conversations' => (object) $open->all(),
         ]);
     }
 
@@ -29,10 +48,21 @@ class AgentController extends Controller
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
             'password' => ['required', 'string', 'min:8'],
             'roles' => ['nullable', 'array'],
-            'roles.*' => ['exists:roles,name'],
+            'roles.*' => ['string'],
         ]);
 
         $tenant = request()->user()->tenant;
+
+        // Resolved before the account exists, so a role from another workspace
+        // (or one deleted a moment ago) fails the request instead of leaving a
+        // half-made agent behind. The owner role is still dropped silently, as
+        // it always was: it is never offered, and nobody is made owner here.
+        $roles = TenantRoles::resolve(
+            $tenant->id,
+            collect($request->input('roles', []))
+                ->reject(fn ($name) => is_string($name) && mb_strtolower($name) === 'owner')
+                ->all(),
+        );
 
         if (! app(\App\Services\Billing\SubscriptionGate::class)->canConsume($tenant, 'max_agents', $tenant->users()->count())) {
             return response()->json([
@@ -48,13 +78,9 @@ class AgentController extends Controller
             'password' => bcrypt($request->password),
         ]);
 
-        // Assign roles if provided (optional, no default role)
-        if ($request->has('roles') && !empty($request->roles)) {
-            // Prevent assigning owner role
-            $roles = array_diff($request->roles, ['owner']);
-            if (!empty($roles)) {
-                $user->assignRole($roles);
-            }
+        // Optional, no default role. Models, never names — see TenantRoles.
+        if ($roles->isNotEmpty()) {
+            $user->syncRoles($roles);
         }
 
         return response()->json([
@@ -161,9 +187,18 @@ class AgentController extends Controller
             ->toResource(UserResource::class);
     }
 
-    public function destroy(int $id, AvatarStorage $avatars)
+    /**
+     * Remove a person, keeping everything they worked on.
+     *
+     * `reassign_to` (optional, query or body) names who receives their open
+     * conversations; without it — or for any conversation on a connection that
+     * person cannot reach — the conversation goes back to the queue. Resolved
+     * history stays, unassigned. See AgentRemoval for what happens to the rest.
+     */
+    public function destroy(Request $request, int $id, AgentRemoval $removal)
     {
-        $user = request()->user()->tenant->users()->findOrFail($id);
+        $actor = $request->user();
+        $user = $actor->tenant->users()->findOrFail($id);
 
         if($user->hasRole('owner')){
             return response()->json([
@@ -171,15 +206,27 @@ class AgentController extends Controller
             ], 403);
         }
 
-        // Nothing else ever revisits this file — there is no sweep over the
-        // avatar directory — so the row going away is the only moment its photo
-        // can be collected.
-        $avatars->forget($user);
+        $validated = $request->validate([
+            'reassign_to' => ['nullable', 'integer'],
+        ]);
 
-        $user->delete();
+        $target = null;
+
+        if (! empty($validated['reassign_to'])) {
+            $target = $actor->tenant->users()->find($validated['reassign_to']);
+
+            if (! $target || (int) $target->id === (int) $user->id) {
+                throw ValidationException::withMessages([
+                    'reassign_to' => 'Choose another person from this workspace to receive the conversations.',
+                ]);
+            }
+        }
+
+        $summary = $removal->remove($user, $actor, $target);
 
         return response()->json([
             'message' => 'Agent deleted successfully',
+            'data' => $summary,
         ], 200);
     }
 
@@ -234,19 +281,24 @@ class AgentController extends Controller
             ], 403);
         }
 
+        // `present`, not `required`: an empty list is a real answer — it takes
+        // the last role away. `required` refused it, so nobody could be left
+        // with no role once they had one.
         $validated = $request->validate([
-            'roles' => 'required|array',
-            'roles.*' => 'exists:roles,name',
+            'roles' => ['present', 'array'],
+            'roles.*' => ['string'],
         ]);
 
         // Prevent assigning owner role
-        if (in_array('owner', $validated['roles'])) {
+        if (collect($validated['roles'])->contains(fn ($name) => mb_strtolower((string) $name) === 'owner')) {
             return response()->json([
                 'message' => 'Cannot assign owner role',
             ], 403);
         }
 
-        $user->syncRoles($validated['roles']);
+        // Only this workspace's roles, as models: a name shared with another
+        // workspace must not resolve to theirs.
+        $user->syncRoles(TenantRoles::resolve($user->tenant_id, $validated['roles']));
 
         return response()->json([
             'message' => 'Roles assigned successfully',
@@ -268,9 +320,20 @@ class AgentController extends Controller
             ], 403);
         }
 
+        // Empty is allowed (it removes the last extra permission), and only
+        // workspace permissions exist here — never the Back Office's.
         $validated = $request->validate([
-            'permissions' => 'required|array',
-            'permissions.*' => 'exists:permissions,name',
+            'permissions' => ['present', 'array'],
+            'permissions.*' => [
+                'string',
+                // A closure, not ->where('is_platform', false): the rule's
+                // string form turns `false` into '' and SQLite matches nothing.
+                Rule::exists('permissions', 'name')->where(fn ($query) => $query
+                    ->where('is_platform', false)
+                    ->where('guard_name', 'web')),
+            ],
+        ], [
+            'permissions.*.exists' => 'One of the selected permissions does not exist.',
         ]);
 
         $user->syncPermissions($validated['permissions']);

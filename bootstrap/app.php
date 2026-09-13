@@ -104,4 +104,20 @@ return Application::configure(basePath: dirname(__DIR__))
                 context: ['meta_subcode' => $e->metaSubcode(), 'route' => $request->path()],
             );
         });
+
+        // Spatie's permission middleware answers 403 with its own English
+        // sentence — "User does not have the right permissions." — which the
+        // dashboard printed as-is. A stable code lets the SPA say it in the
+        // reader's language (lib/axios.ts). The Back Office keeps the package's
+        // wording: its operators are the audience it was written for.
+        $exceptions->render(function (\Spatie\Permission\Exceptions\UnauthorizedException $e, \Illuminate\Http\Request $request) {
+            if (! $request->is('api/*') || $request->is('api/admin/*')) {
+                return null;
+            }
+
+            return response()->json([
+                'message' => 'You do not have permission to do this.',
+                'code' => 'forbidden',
+            ], 403);
+        });
     })->create();

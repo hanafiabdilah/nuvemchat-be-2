@@ -13,8 +13,13 @@ class PermissionController extends Controller
      */
     public function index()
     {
-        // Exclude platform (Back Office) permissions from the tenant UI.
-        $permissions = Permission::where('is_platform', false)->orderBy('name')->get();
+        // Exclude platform (Back Office) permissions from the tenant UI. The
+        // name check is the belt to the flag's braces: a `bo.*` permission
+        // created without the flag once reached every workspace's picker.
+        $permissions = Permission::where('is_platform', false)
+            ->where('name', 'not like', 'bo.%')
+            ->orderBy('name')
+            ->get();
 
         return response()->json([
             'data' => $permissions,

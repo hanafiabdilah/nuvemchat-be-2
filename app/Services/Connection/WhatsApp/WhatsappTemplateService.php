@@ -33,8 +33,11 @@ class WhatsappTemplateService
             ->get(self::GRAPH_BASE . "/{$wabaId}/message_templates", [
                 // parameter_format tells the send form whether a template's
                 // variables are numbered or named — the two take different
-                // parameter shapes on the Cloud API.
-                'fields' => 'name,status,category,language,components,quality_score,parameter_format',
+                // parameter shapes on the Cloud API. rejected_reason is the
+                // one thing a REJECTED status cannot explain by itself — Meta
+                // only ever tells us why through this field, never through the
+                // status update webhook body alone once it is read back later.
+                'fields' => 'name,status,category,language,components,quality_score,parameter_format,rejected_reason',
                 'limit' => 200,
             ]));
 

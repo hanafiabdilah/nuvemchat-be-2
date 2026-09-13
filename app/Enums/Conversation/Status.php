@@ -9,8 +9,12 @@ enum Status: string
     case Resolved = 'resolved';
 
     /**
-     * AI (flow agent) is currently handling the conversation. When the AI stops
-     * handling (handoff / flow end) the conversation moves back to Pending.
+     * An AI Agent flow node is serving the conversation: set by FlowExecutor
+     * when the node starts answering (never for groups or e-mail, never when the
+     * node sends the customer straight to a person). When the AI stops serving
+     * — handoff for any reason, the flow moving past the node or ending — the
+     * conversation goes back to Pending; accepting it ("Assumir da IA") makes
+     * it Active and stops the flow. Only the engine writes this status.
      */
     case AiHandling = 'ai_handling';
 

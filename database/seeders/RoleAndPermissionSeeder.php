@@ -143,15 +143,19 @@ class RoleAndPermissionSeeder extends Seeder
             ['guard_name' => 'web']
         );
 
-        // Assign all permissions to owner role
-        $ownerRole->syncPermissions(Permission::all());
+        // Every workspace permission — not Permission::all(), which also swept
+        // in the Back Office's `bo.*` ones when PlatformRbacSeeder had run first
+        // and printed them in every workspace's role summary.
+        $ownerRole->syncPermissions(Permission::where('is_platform', false)->get());
 
         // Platform-level Back Office admin role. Access is gated by being an
         // App\Models\Admin holding a platform role (EnsureUserIsSuperAdmin),
-        // so it does not need the tenant-scoped permissions above.
-        Role::firstOrCreate(
-            ['name' => 'super-admin'],
-            ['guard_name' => 'web']
+        // so it does not need the tenant-scoped permissions above. Flagged
+        // here too, so it never shows as a workspace role on an install where
+        // PlatformRbacSeeder has not run.
+        Role::updateOrCreate(
+            ['name' => 'super-admin', 'guard_name' => 'web'],
+            ['is_platform' => true]
         );
 
         $this->command->info('Roles and permissions created successfully!');

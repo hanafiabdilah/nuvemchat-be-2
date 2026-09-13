@@ -111,10 +111,23 @@ trait Workspace
             'Estagiário' => [],
         ];
 
+        // The demo workspace's own roles (roles.tenant_id): names are only
+        // unique inside a workspace, so they are created and assigned as models
+        // rather than looked up by name.
         foreach ($roles as $name => $permissions) {
-            Role::findOrCreate($name, 'web')->syncPermissions($permissions);
+            $role = Role::query()->firstOrCreate([
+                'name' => $name,
+                'guard_name' => 'web',
+                'tenant_id' => $this->tenant->id,
+            ]);
+
+            $role->syncPermissions($permissions);
+            $this->demoRoles[$name] = $role;
         }
     }
+
+    /** @var array<string, Role> The demo workspace's roles, by name. */
+    private array $demoRoles = [];
 
     private function seedTeam(): void
     {
@@ -139,7 +152,7 @@ trait Workspace
             ]);
 
             foreach ($roles as $role) {
-                $user->assignRole($role);
+                $user->assignRole($this->demoRoles[$role]);
             }
 
             if ($photo) {

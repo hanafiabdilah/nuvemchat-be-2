@@ -611,6 +611,24 @@ class BillingService
     }
 
     /**
+     * Undo `cancel()`. Symmetric with it for the same reason it exists: there
+     * was nothing to tell the provider when cancelling (no preapproval to
+     * revoke), so there is nothing to tell it here either — clearing the flag
+     * before the renewal commands next read it is the whole operation.
+     */
+    public function resume(Subscription $subscription): Subscription
+    {
+        $subscription->update([
+            'cancel_at_period_end' => false,
+            'cancelled_at' => null,
+        ]);
+
+        $this->fireUpdated($subscription);
+
+        return $subscription;
+    }
+
+    /**
      * Abandon a checkout that was never paid: close the open charge locally,
      * mark the subscription cancelled and detach it from the tenant.
      *
