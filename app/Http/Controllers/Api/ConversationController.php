@@ -16,6 +16,7 @@ use App\Events\MessageReceived;
 use App\Exceptions\ChannelCapabilityException;
 use App\Exceptions\ConnectionException;
 use App\Exceptions\UpstreamServiceException;
+use App\Exceptions\UserFacingException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ContactResource;
 use App\Http\Resources\ConversationResource;
@@ -916,6 +917,12 @@ class ConversationController extends Controller
             return $th->toResponse();
         } catch (ChannelCapabilityException $th) {
             return response()->json(['message' => $th->getMessage()], 422);
+        } catch (UserFacingException $th) {
+            // The audio converter's refusal names the formats that do work, and
+            // that sentence is the whole value of it. The catch-all below would
+            // replace it with "tente novamente em instantes" — advice to repeat
+            // an attempt that fails identically.
+            return $th->toResponse();
         } catch (\Throwable $th) {
             Log::error('ConversationController: failed to send audio', [
                 'conversation_id' => $conversation->id,

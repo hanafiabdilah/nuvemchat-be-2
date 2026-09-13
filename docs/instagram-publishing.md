@@ -178,8 +178,10 @@ dengan pesan yang baru muncul setelah container dibuat.
 - Gambar: JPEG, ≤ 8 MB, rasio 4:5 – 1.91:1, sisi 320–1920 px.
   Di luar rasio itu **di-fit**, bukan ditolak: `crop` (default, seperti app
   Instagram) atau `pad` (bar putih), dipilih user di composer.
-- Video: MP4/MOV, diteruskan apa adanya (tidak ada ffmpeg di app ini; Meta
-  transcode sendiri). Video yang ditolak Meta muncul sebagai `status` container,
-  dan teks Meta ditampilkan verbatim di tile yang gagal.
+- Video: MP4/MOV, diteruskan apa adanya — Meta transcode sendiri, jadi tak ada
+  yang dibeli dengan melakukannya di sini. (Sejak Set 2026 `ffmpeg` **ada** di
+  image, dipasang untuk audio; ia sengaja tidak dipakai di jalur ini.) Video
+  yang ditolak Meta muncul sebagai `status` container, dan teks Meta
+  ditampilkan verbatim di tile yang gagal.
 - HEIC/AVIF **tidak** didukung: butuh Imagick dengan delegate yang tidak dijamin
   ada di host, dan diam-diam merusaknya lebih buruk daripada menolak.

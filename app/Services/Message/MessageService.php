@@ -3,13 +3,12 @@
 namespace App\Services\Message;
 
 use App\Exceptions\ChannelCapabilityException;
-use App\Exceptions\ConnectionException;
-use App\Exceptions\UpstreamServiceException;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
+use App\Support\Errors\HasUserSafeMessage;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Illuminate\Support\Collection;
@@ -186,16 +185,24 @@ class MessageService
      * "(#131047) Re-engagement message outside the allowed window" is read by
      * someone who has never heard of a re-engagement message.
      *
-     * Three kinds of failure leave here unchanged, because each is already ours
+     * Two kinds of failure leave here unchanged, because each is already ours
      * and each says more than a translation could:
      *
      *  - ValidationException — we rejected the request before anyone was called.
-     *  - ChannelCapabilityException — a rule of the platform ("Instagram não
-     *    permite editar"), specific and final; retrying is pointless and the
-     *    agent should be told so.
-     *  - ConnectionException — raised by the channel classes, which already
-     *    phrase for the person who has to act (mailbox credentials, an instance
-     *    that is not paired).
+     *  - anything marked HasUserSafeMessage — the marker means "getMessage() is
+     *    copy we wrote". That covers a rule of the platform
+     *    (ChannelCapabilityException: "Instagram não permite editar", final, so
+     *    retrying is pointless and the agent should be told so), a channel class
+     *    phrasing for the person who has to act (ConnectionException: mailbox
+     *    credentials, an unpaired instance), an already-translated upstream
+     *    refusal (UpstreamServiceException), and a sentence we chose outright
+     *    (UserFacingException: "send an .mp3 instead").
+     *
+     * ⚠️ Matching on the interface rather than on a list of classes is the
+     * point. The list was the whole of it once, and a sentence written for the
+     * agent — the audio converter's "try an .mp3" — was flattened into "não foi
+     * possível enviar" purely by not being named in it, which is the failure
+     * the marker exists to prevent and the one nothing records.
      *
      * @template T
      * @param  callable(): T  $send
@@ -205,7 +212,7 @@ class MessageService
     {
         try {
             return $send();
-        } catch (ValidationException|ChannelCapabilityException|ConnectionException|UpstreamServiceException $th) {
+        } catch (ValidationException|HasUserSafeMessage $th) {
             throw $th;
         } catch (\Throwable $th) {
             throw UpstreamError::exception(

@@ -48,4 +48,17 @@ return [
 
     'widget_upload_ttl_hours' => (int) env('MEDIA_WIDGET_UPLOAD_TTL_HOURS', 24),
 
+    /*
+    | Where ffmpeg lives. Audio recorded in a browser arrives in a container
+    | the channel may refuse (Chrome records WebM, which WhatsApp rejects), so
+    | `AudioNormalizer` re-encodes it on the way out.
+    |
+    | Left as a bare name so the shell resolves it on PATH, which is what the
+    | container image provides; set an absolute path only where the binary is
+    | somewhere PATH does not reach. An unset or missing binary is not a crash
+    | — the send fails with a sentence telling the agent which formats work.
+    */
+
+    'ffmpeg_path' => env('FFMPEG_PATH', 'ffmpeg'),
+
 ];

@@ -10,6 +10,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Message\AudioNormalizer;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
@@ -383,23 +384,114 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
         );
     }
 
+    /**
+     * What the Cloud API accepts as audio, and the MIME it wants each declared
+     * as. The table is the whole point of itself: the type we put on the upload
+     * is read from here rather than sniffed off the bytes, because a sniffer
+     * answers about containers, not about audio. A WebM voice note comes back
+     * `video/webm` and an .m4a comes back `audio/x-m4a` — neither is on Meta's
+     * list even when the file inside is perfectly fine.
+     *
+     * Ogg additionally has to be Opus-coded and mono. We do not verify the
+     * codec, and that is deliberate: the one path that produces Ogg here is the
+     * AI's own voice reply, which is already Opus mono, and sending it through
+     * ffmpeg to prove it would make a working feature depend on a binary it
+     * never needed.
+     */
+    private const CLOUD_API_AUDIO = [
+        'aac' => 'audio/aac',
+        'amr' => 'audio/amr',
+        'mp3' => 'audio/mpeg',
+        'm4a' => 'audio/mp4',
+        'ogg' => 'audio/ogg',
+    ];
+
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required_without:media_url|file|mimes:aac,m4a,wav,mp4,mp3,ogg,opus,webm|max:25600',
+            // 16 MB, which is Meta's own ceiling for audio. The rule used to
+            // allow 25 and every other channel allowed 16: a 20 MB file passed
+            // here and was refused upstream, where the refusal reads like a
+            // fault of ours. Formats the Cloud API will not take are still
+            // accepted, because they are converted below rather than rejected.
+            'audio' => 'required_without:media_url|file|mimes:aac,amr,m4a,wav,mp4,mp3,ogg,opus,webm|max:16384',
             'media_url' => 'required_without:audio|url',
         ])->validate();
 
-        $media = OutboundMedia::fromData($data, 'audio');
+        $original = OutboundMedia::fromData($data, 'audio');
+        $media = $this->normalizeAudio($original);
+        $mime = $media === null ? null : self::audioMime($media->extension);
 
-        return $this->sendMedia(
-            $conversation,
-            $media,
-            'audio',
-            MessageType::Audio,
-            $this->voiceNoteFields($media),
-            null,
-        );
+        try {
+            return $this->sendMedia(
+                $conversation,
+                $media,
+                'audio',
+                MessageType::Audio,
+                $this->voiceNoteFields($mime),
+                null,
+                mimeType: $mime,
+            );
+        } finally {
+            // A converted file is a temp file this request created; nothing
+            // else will collect it.
+            if ($media !== null && $media !== $original && $media->file !== null) {
+                @unlink($media->file->getRealPath());
+            }
+        }
+    }
+
+    /**
+     * Turn whatever audio arrived into audio the Cloud API will accept.
+     *
+     * The case that matters is an agent's own voice note: Chrome and Edge
+     * record WebM, which Meta refuses outright, so before this existed the
+     * recorder shipped a file that could never be delivered — while the AI's
+     * voice replies worked, because those are asked for as Opus. The recording
+     * is re-encoded to mono Ogg/Opus, which is also the only format WhatsApp
+     * will draw as a voice note rather than a file.
+     *
+     * A URL is left alone whenever its extension is already accepted: Meta
+     * fetches it itself, and downloading a gallery mp3 to hand back the same
+     * bytes buys nothing. An unacceptable one is pulled down and converted,
+     * which costs a round trip on exactly the sends that would otherwise fail.
+     */
+    private function normalizeAudio(?OutboundMedia $media): ?OutboundMedia
+    {
+        if ($media === null || self::audioMime($media->extension) !== null) {
+            return $media;
+        }
+
+        $file = $media->toUploadedFile();
+
+        if ($file === null) {
+            throw new Exception('Failed to read the audio before converting it for WhatsApp');
+        }
+
+        $converted = app(AudioNormalizer::class)->toOggOpus($file);
+
+        // The download was only ever a step towards the conversion.
+        if ($media->isUrl()) {
+            @unlink($file->getRealPath());
+        }
+
+        return OutboundMedia::fromFile($converted);
+    }
+
+    /**
+     * The MIME to declare for an extension, or null when the Cloud API will not
+     * take it at all. `.opus` is spelled differently and is the same Ogg
+     * container, so it is answered rather than converted.
+     */
+    private static function audioMime(string $extension): ?string
+    {
+        $extension = strtolower($extension);
+
+        if ($extension === 'opus') {
+            $extension = 'ogg';
+        }
+
+        return self::CLOUD_API_AUDIO[$extension] ?? null;
     }
 
     /**
@@ -415,16 +507,9 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
      * Applies to anything we send as audio, not just the AI's replies — an
      * agent's own recording is a voice note for the same reason.
      */
-    private function voiceNoteFields(?OutboundMedia $media): array
+    private function voiceNoteFields(?string $mime): array
     {
-        if ($media === null) {
-            return [];
-        }
-
-        $isOgg = in_array($media->extension, ['ogg', 'oga', 'opus'], true)
-            || $media->mimeType === 'audio/ogg';
-
-        return $isOgg ? ['voice' => true] : [];
+        return $mime === 'audio/ogg' ? ['voice' => true] : [];
     }
 
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
@@ -582,6 +667,14 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
         array $extraMediaFields,
         ?string $body,
         array $extraMeta = [],
+        /**
+         * The MIME to declare on the upload, when the caller knows better than
+         * the sniffer does. Audio is the reason: the sniffer describes the
+         * container (`video/webm` for a voice note, `audio/x-m4a` for an .m4a)
+         * and Meta matches against its own list of audio types, so the guess is
+         * wrong in ways the bytes are not.
+         */
+        ?string $mimeType = null,
     ): ?Message {
         $connection = $conversation->connection;
 
@@ -623,10 +716,11 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
         try {
             $content = file_get_contents($uploadedFile->getRealPath());
             $extension = $uploadedFile->getClientOriginalExtension() ?: $media->extension;
-            $mimeType = $uploadedFile->getMimeType() ?: ($media->mimeType ?? 'application/octet-stream');
+            $declaredMime = $mimeType
+                ?: ($uploadedFile->getMimeType() ?: ($media->mimeType ?? 'application/octet-stream'));
             $filename = $uploadedFile->getClientOriginalName() ?: ('file.' . $extension);
 
-            $mediaId = $this->uploadMedia($connection, $content, $mimeType, $filename);
+            $mediaId = $this->uploadMedia($connection, $content, $declaredMime, $filename);
 
             $message = $this->postMedia(
                 $conversation,
