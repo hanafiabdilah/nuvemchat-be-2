@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Broadcast\ContentType;
 use App\Enums\Broadcast\RecipientStatus;
+use App\Enums\Broadcast\Source;
 use App\Enums\Broadcast\Status;
 use Illuminate\Database\Eloquent\Model;
 
@@ -23,6 +24,8 @@ class Broadcast extends Model
         'tag_id',
         'name',
         'status',
+        'source',
+        'resolve_after',
         'content_type',
         'payload',
         'scheduled_at',
@@ -37,8 +40,20 @@ class Broadcast extends Model
         'error',
     ];
 
+    /**
+     * Mirrors the column defaults, so a model fresh out of create() already
+     * answers `source` before it has been re-read — start() branches on it in
+     * the same request.
+     */
+    protected $attributes = [
+        'source' => 'campaign',
+        'resolve_after' => false,
+    ];
+
     protected $casts = [
         'status' => Status::class,
+        'source' => Source::class,
+        'resolve_after' => 'boolean',
         'content_type' => ContentType::class,
         'payload' => 'array',
         'scheduled_at' => 'datetime',

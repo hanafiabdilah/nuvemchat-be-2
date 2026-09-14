@@ -28,6 +28,7 @@ use App\Models\Conversation;
 use App\Models\Tag;
 use App\Observers\ConversationObserver;
 use App\Services\AutomatedMessageService;
+use App\Services\Conversation\ConversationResolver;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Gallery\GalleryMediaResolver;
@@ -1470,37 +1471,12 @@ class ConversationController extends Controller
     /**
      * Resolve semantics (assumes the conversation is Active and the caller is
      * authorised): send the connection's closing message, mark Resolved, then
-     * broadcast. Shared by resolve() and bulkUpdateStatus().
+     * broadcast. Shared by resolve() and bulkUpdateStatus(); the queued inbox
+     * send resolves through the same service.
      */
     protected function applyResolve(Conversation $conversation): void
     {
-        // Send closing message before resolving
-        $automatedMessageService = new AutomatedMessageService;
-        $closingMessage = $automatedMessageService->getClosingMessage($conversation->connection, Auth::user());
-
-        $closingMsg = null;
-        if ($closingMessage) {
-            try {
-                $messageService = new MessageService;
-                $closingMsg = $messageService->sendMessage($conversation, ['message' => $closingMessage]);
-                $closingMsg?->update(['sent_by_user_id' => Auth::id()]);
-            } catch (\Throwable $th) {
-                Log::error('ConversationController: Failed to send closing message', [
-                    'conversation_id' => $conversation->id,
-                    'error' => $th->getMessage(),
-                ]);
-            }
-        }
-
-        $conversation->markResolved(Auth::id());
-
-        broadcast(new ConversationUpdated($conversation));
-
-        // Broadcast closing message AFTER conversation status update
-        if ($closingMsg) {
-            broadcast(new MessageReceived($closingMsg));
-            broadcast(new ConversationUpdated($closingMsg->conversation));
-        }
+        app(ConversationResolver::class)->resolve($conversation, Auth::user());
     }
 
     /**

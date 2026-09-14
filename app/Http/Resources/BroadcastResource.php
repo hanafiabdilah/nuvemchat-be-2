@@ -21,6 +21,10 @@ class BroadcastResource extends JsonResource
             'id' => $this->id,
             'name' => $this->name,
             'status' => $this->status->value,
+            // `inbox` = sent into threads selected in the inbox; the pages
+            // label those so they are not mistaken for a campaign.
+            'source' => ($this->source ?? \App\Enums\Broadcast\Source::Campaign)->value,
+            'resolve_after' => (bool) $this->resolve_after,
             'content_type' => $this->content_type->value,
             'payload' => $this->payload,
             'connection_id' => $this->connection_id,

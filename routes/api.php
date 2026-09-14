@@ -345,6 +345,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // very different levels of trust.
         Route::get('/broadcasts', [BroadcastController::class, 'index'])->middleware('permission:broadcasts.view');
         Route::post('/broadcasts', [BroadcastController::class, 'store'])->middleware('permission:broadcasts.create');
+        // One message into the active threads selected in the inbox (optionally
+        // resolving each). It creates a campaign and starts it in one click, so
+        // it needs both halves of the create/send split `store` + `start` do.
+        Route::post('/broadcasts/conversations', [BroadcastController::class, 'storeForConversations'])
+            ->middleware(['permission:broadcasts.create', 'permission:broadcasts.send']);
         Route::get('/broadcasts/{id}', [BroadcastController::class, 'show'])->middleware('permission:broadcasts.view');
         Route::get('/broadcasts/{id}/recipients', [BroadcastController::class, 'recipients'])->middleware('permission:broadcasts.view');
         Route::put('/broadcasts/{id}', [BroadcastController::class, 'update'])->middleware('permission:broadcasts.create');

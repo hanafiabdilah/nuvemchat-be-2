@@ -3,16 +3,20 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Broadcast\ContentType;
+use App\Enums\Broadcast\Source;
 use App\Enums\Broadcast\Status;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
+use App\Enums\Conversation\Status as ConversationStatus;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\BroadcastRecipientResource;
 use App\Http\Resources\BroadcastResource;
 use App\Models\Broadcast;
 use App\Models\Connection;
+use App\Models\Conversation;
 use App\Services\Broadcast\BroadcastService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -27,6 +31,13 @@ use Illuminate\Validation\ValidationException;
  */
 class BroadcastController extends Controller
 {
+    /**
+     * Ceiling on one inbox selection. "Select all" picks every thread the
+     * filters match, not only the ones on screen, and the ids travel in one
+     * request body.
+     */
+    private const MAX_SELECTED_THREADS = 1000;
+
     public function __construct(
         private BroadcastService $broadcasts,
     ) {}
@@ -115,6 +126,112 @@ class BroadcastController extends Controller
         return (new BroadcastResource($broadcast->fresh(['connection', 'creator', 'tag'])))
             ->response()
             ->setStatusCode(201);
+    }
+
+    /**
+     * Send one message into the active threads an agent selected in the inbox,
+     * optionally resolving each one right after.
+     *
+     * This is a campaign underneath, not a loop in the request: the channel's
+     * rate limit and send jitter still apply (twenty threads on API Way is two
+     * minutes of sending, and a burst is what gets a number banned), the
+     * delivery report still says who was skipped and why, and failures can
+     * still be retried. What differs is the recipient row, which points at a
+     * thread instead of an address — see BroadcastSender::deliverIntoThread().
+     *
+     * A selection can span several lines, and a campaign sends from one, so
+     * this creates one campaign per connection.
+     *
+     * Only threads the caller could reply to by hand are included — Active,
+     * theirs (or any, for an owner), on an active connection — and never
+     * e-mail, which composes a mail with a subject rather than a chat message.
+     * Everything else in the selection is counted as skipped, not refused: the
+     * inbox bar lets people select across statuses.
+     */
+    public function storeForConversations(Request $request)
+    {
+        $contentType = $request->input('content_type');
+
+        $data = $request->validate([
+            'conversation_ids' => ['required', 'array', 'min:1', 'max:' . self::MAX_SELECTED_THREADS],
+            'conversation_ids.*' => ['integer'],
+            'name' => ['nullable', 'string', 'max:255'],
+            'content_type' => ['required', Rule::in([ContentType::Text->value, ContentType::Media->value])],
+            'payload' => ['required', 'array'],
+            'payload.body' => [Rule::requiredIf($contentType === ContentType::Text->value), 'string'],
+            'payload.media_type' => [Rule::requiredIf($contentType === ContentType::Media->value), Rule::in(['image', 'video', 'document', 'audio'])],
+            'payload.media_url' => [Rule::requiredIf($contentType === ContentType::Media->value), 'url'],
+            'payload.caption' => ['nullable', 'string'],
+            'resolve_after' => ['nullable', 'boolean'],
+        ]);
+
+        $user = $request->user();
+        $ids = array_values(array_unique(array_map('intval', $data['conversation_ids'])));
+
+        $eligible = Conversation::with(['connection', 'contact'])
+            ->visibleTo($user)
+            ->whereIn('id', $ids)
+            ->where('status', ConversationStatus::Active)
+            ->orderBy('id')
+            ->get()
+            ->filter(function (Conversation $conversation) use ($user) {
+                $connection = $conversation->getRelationValue('connection');
+
+                return $connection
+                    && $connection->status === ConnectionStatus::Active
+                    && $connection->channel !== Channel::Email
+                    && $conversation->isAccessibleBy($user);
+            });
+
+        if ($eligible->isEmpty()) {
+            throw ValidationException::withMessages([
+                'conversation_ids' => 'None of the selected conversations can receive this message. Only active conversations you are handling, on an active connection, are included.',
+            ]);
+        }
+
+        $payload = Arr::only($data['payload'], $contentType === ContentType::Text->value
+            ? ['body']
+            : ['media_type', 'media_url', 'caption']);
+
+        $byConnection = $eligible->groupBy('connection_id');
+        $baseName = trim((string) ($data['name'] ?? '')) ?: 'Inbox message';
+
+        $campaigns = DB::transaction(function () use ($byConnection, $baseName, $contentType, $payload, $data, $user) {
+            return $byConnection->map(function ($conversations) use ($byConnection, $baseName, $contentType, $payload, $data, $user) {
+                $connection = $conversations->first()->getRelationValue('connection');
+
+                $broadcast = Broadcast::create([
+                    'tenant_id' => $connection->tenant_id,
+                    'connection_id' => $connection->id,
+                    'created_by' => $user->id,
+                    // Several campaigns from one click share a name otherwise,
+                    // and the list would show the same line twice.
+                    'name' => $byConnection->count() > 1 ? mb_substr("{$baseName} · {$connection->name}", 0, 255) : $baseName,
+                    'status' => Status::Draft,
+                    'source' => Source::Inbox,
+                    'resolve_after' => (bool) ($data['resolve_after'] ?? false),
+                    'content_type' => $contentType,
+                    'payload' => $payload,
+                    'rate_per_minute' => $connection->channel->broadcastDefaultRatePerMinute(),
+                ]);
+
+                $this->broadcasts->createThreadRecipients($broadcast, $conversations);
+
+                return $broadcast;
+            })->values();
+        });
+
+        foreach ($campaigns as $broadcast) {
+            $this->broadcasts->start($broadcast);
+        }
+
+        $queued = (int) $campaigns->sum(fn (Broadcast $broadcast) => $broadcast->total_recipients);
+
+        return response()->json([
+            'data' => BroadcastResource::collection($campaigns->map->fresh(['connection', 'creator', 'tag'])),
+            'queued' => $queued,
+            'skipped' => count($ids) - $queued,
+        ], 201);
     }
 
     /**

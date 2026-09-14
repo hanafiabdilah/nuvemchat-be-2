@@ -4,6 +4,7 @@ namespace App\Services\Broadcast;
 
 use App\Enums\Broadcast\AddressType;
 use App\Enums\Broadcast\RecipientStatus;
+use App\Enums\Broadcast\Source;
 use App\Enums\Broadcast\Status;
 use App\Events\BroadcastProgress;
 use App\Jobs\RunBroadcastJob;
@@ -11,6 +12,7 @@ use App\Models\Broadcast;
 use App\Models\BroadcastRecipient;
 use App\Models\Connection;
 use App\Models\Contact;
+use App\Models\Conversation;
 use App\Models\Tag;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -60,6 +62,53 @@ class BroadcastService
             throw ValidationException::withMessages([
                 'recipients' => 'No valid recipients — check the numbers you pasted.',
             ]);
+        }
+
+        $now = now();
+
+        BroadcastRecipient::insert(array_map(fn (array $row) => $row + [
+            'broadcast_id' => $broadcast->id,
+            'status' => RecipientStatus::Pending->value,
+            'attempts' => 0,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], array_values($rows)));
+
+        $broadcast->update(['total_recipients' => count($rows)]);
+
+        return count($rows);
+    }
+
+    /**
+     * The recipient list of an inbox send: one row per selected thread, with
+     * the conversation already filled in — that id, not the address, is what
+     * the sender writes to.
+     *
+     * The address is still stored because the delivery report prints it and
+     * the table's unique key is built on it. It also collapses the one
+     * duplicate a selection can contain (two open threads for the same person
+     * on the same line): first thread wins, and the person hears it once.
+     *
+     * @param  iterable<int, Conversation>  $conversations  All on the campaign's connection.
+     */
+    public function createThreadRecipients(Broadcast $broadcast, iterable $conversations): int
+    {
+        $rows = [];
+
+        foreach ($conversations as $conversation) {
+            $contact = $conversation->getRelationValue('contact');
+            $address = (string) ($contact?->external_id ?: $conversation->external_id ?: 'conversation:' . $conversation->id);
+
+            if (isset($rows[$address])) {
+                continue;
+            }
+
+            $rows[$address] = [
+                'contact_id' => $contact?->id,
+                'conversation_id' => $conversation->id,
+                'address' => mb_substr($address, 0, 255),
+                'name' => $contact?->name ?: null,
+            ];
         }
 
         $now = now();
@@ -142,7 +191,10 @@ class BroadcastService
 
         $broadcast->update([
             'status' => Status::Running,
-            'tag_id' => $broadcast->tag_id ?? $this->campaignTag($broadcast)->id,
+            // An inbox send writes into threads that already carry their own
+            // tags; stamping each with a tag named after a one-off message
+            // would only litter the tag list.
+            'tag_id' => $broadcast->tag_id ?? ($broadcast->source === Source::Inbox ? null : $this->campaignTag($broadcast)->id),
             'started_at' => $broadcast->started_at ?? now(),
             'finished_at' => null,
             'last_tick_at' => now(),

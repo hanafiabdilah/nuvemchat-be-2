@@ -4,6 +4,7 @@ namespace App\Services\Broadcast;
 
 use App\Enums\Broadcast\ContentType;
 use App\Enums\Broadcast\RecipientStatus;
+use App\Enums\Broadcast\Source;
 use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Events\ConversationUpdated;
@@ -15,6 +16,8 @@ use App\Models\BroadcastRecipient;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\User;
+use App\Services\Conversation\ConversationResolver;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
@@ -43,6 +46,7 @@ class BroadcastSender
         private OutboundConversationResolver $conversations,
         private VariableResolver $variables,
         private MessageService $messages,
+        private ConversationResolver $resolver,
     ) {}
 
     public function send(Broadcast $broadcast, BroadcastRecipient $recipient): RecipientStatus
@@ -65,6 +69,10 @@ class BroadcastSender
 
     private function deliver(Broadcast $broadcast, BroadcastRecipient $recipient): RecipientStatus
     {
+        if ($broadcast->source === Source::Inbox) {
+            return $this->deliverIntoThread($broadcast, $recipient);
+        }
+
         $connection = $broadcast->connection;
         $contact = $this->contactFor($broadcast, $recipient);
 
@@ -137,6 +145,90 @@ class BroadcastSender
         $this->announce($conversation, $message);
 
         return $this->finish($recipient, RecipientStatus::Sent, null);
+    }
+
+    /**
+     * An inbox send: the thread was picked by hand, so there is nothing to find
+     * or open — only a check that it is still the thread that was picked.
+     *
+     * Everything is re-read here rather than trusted from the moment of
+     * selection. A slow channel (API Way sends a dozen a minute) can put
+     * minutes between the click and a given thread's turn, and in those
+     * minutes a colleague may resolve it or take it over. Writing into it
+     * anyway reaches a customer whose chat someone just closed — and "resolve
+     * after" would close one a colleague just took.
+     *
+     * Groups are allowed, unlike in a campaign: a campaign guesses who to reach
+     * from a contact list, while here an agent looked at the group and chose to
+     * write to it — the message they could have typed in its composer.
+     */
+    private function deliverIntoThread(Broadcast $broadcast, BroadcastRecipient $recipient): RecipientStatus
+    {
+        $conversation = $recipient->conversation_id
+            ? Conversation::with(['connection', 'contact'])->find($recipient->conversation_id)
+            : null;
+
+        if (! $conversation || (int) $conversation->connection_id !== (int) $broadcast->connection_id) {
+            return $this->finish($recipient, RecipientStatus::Skipped, 'The conversation no longer exists');
+        }
+
+        if ($conversation->getRelationValue('contact')?->hasOptedOutOfBroadcasts()) {
+            return $this->finish($recipient, RecipientStatus::Skipped, 'Contact opted out of broadcasts');
+        }
+
+        if ($conversation->status !== ConversationStatus::Active) {
+            return $this->finish($recipient, RecipientStatus::Skipped, 'The conversation was no longer active when its turn came');
+        }
+
+        $creator = $broadcast->creator;
+
+        if (! $creator || ! $conversation->isAccessibleBy($creator)) {
+            return $this->finish($recipient, RecipientStatus::Skipped, 'The conversation was handed to someone else before its turn came');
+        }
+
+        if ($broadcast->content_type->isFreeForm() && $this->freeFormWindowClosed($conversation)) {
+            return $this->finish($recipient, RecipientStatus::Skipped, $this->windowClosedReason($conversation->getRelationValue('connection')->channel));
+        }
+
+        $message = $this->dispatchMessage($broadcast, $conversation, $recipient);
+        $message?->update(['sent_by_user_id' => $broadcast->created_by]);
+
+        $recipient->forceFill(['message_id' => $message?->id]);
+
+        $this->announce($conversation, $message);
+
+        return $this->finish($recipient, RecipientStatus::Sent, $this->resolveAfterSend($broadcast, $conversation, $creator));
+    }
+
+    /**
+     * Close the thread the message just went into, when the sender asked for
+     * it. Returns what goes in the row's error column: null when it resolved
+     * (or was not asked to), a sentence when it did not.
+     *
+     * A failure here never turns the row into a failure. The message is
+     * already on the customer's phone, and a row reported as failed invites
+     * "retry failed" — which would send it a second time. So the row stays
+     * sent and says what did not happen.
+     */
+    private function resolveAfterSend(Broadcast $broadcast, Conversation $conversation, User $creator): ?string
+    {
+        if (! $broadcast->resolve_after) {
+            return null;
+        }
+
+        try {
+            $this->resolver->resolve($conversation, $creator);
+
+            return null;
+        } catch (\Throwable $th) {
+            Log::error('BroadcastSender: resolve after send failed', [
+                'broadcast_id' => $broadcast->id,
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            return 'Sent, but the conversation could not be resolved — resolve it by hand';
+        }
     }
 
     /**
