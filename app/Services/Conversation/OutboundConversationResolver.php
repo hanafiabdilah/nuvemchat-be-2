@@ -49,6 +49,10 @@ class OutboundConversationResolver
      * @param  string|null  $emailSubject  Required on the e-mail channel; ignored elsewhere.
      * @param  bool  $activateOnReuse  Promote a reused thread to Active. Callers that
      *                                 must not interrupt a running AI turn pass false.
+     * @param  Status  $createAs  Status of a thread this call creates. Active suits a
+     *                            sender who is about to own it; a lead received through
+     *                            the public API with nobody named goes to the Pending
+     *                            queue instead, where every agent can see it.
      * @return ResolvedConversation|null  Null when the channel offers no way to address
      *                                    this contact yet (see the class docblock).
      */
@@ -58,6 +62,7 @@ class OutboundConversationResolver
         ?int $assignedUserId = null,
         ?string $emailSubject = null,
         bool $activateOnReuse = true,
+        Status $createAs = Status::Active,
     ): ?ResolvedConversation {
         $externalId = $this->externalIdFor($connection, $contact, $emailSubject);
 
@@ -95,7 +100,7 @@ class OutboundConversationResolver
                 'contact_id' => $contact->id,
                 'connection_id' => $connection->id,
                 'external_id' => $externalId,
-                'status' => Status::Active,
+                'status' => $createAs,
                 'user_id' => $assignedUserId,
                 // Placeholder ordering so the thread surfaces immediately; the
                 // Message::created hook replaces it with the real timestamp.

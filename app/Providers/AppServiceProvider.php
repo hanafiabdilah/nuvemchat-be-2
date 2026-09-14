@@ -9,8 +9,11 @@ use App\Observers\MessageAttachmentObserver;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\WebklexEmailInboxClientFactory;
 use App\Support\Heartbeat;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 
@@ -34,6 +37,15 @@ class AppServiceProvider extends ServiceProvider
         Message::observe(MessageAttachmentObserver::class);
 
         $this->registerQueueHeartbeat();
+
+        // Workspace-level public API. Counted per key, not per IP: the callers
+        // are servers, and two integrations behind one NAT must not share a
+        // budget. Runs after V1\TenantApiAuth has put the key on the request.
+        RateLimiter::for('public-api', function (Request $request) {
+            $key = $request->attributes->get('tenant_api_key');
+
+            return Limit::perMinute(120)->by($key ? 'tenant-api-key:'.$key->id : 'ip:'.$request->ip());
+        });
     }
 
     /**

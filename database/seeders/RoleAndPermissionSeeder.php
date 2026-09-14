@@ -32,6 +32,10 @@ class RoleAndPermissionSeeder extends Seeder
             'connections.delete',
             'connections.update-automated-messages',
 
+            // Workspace API keys (public API: /v1/leads). Apart from the
+            // per-connection key above — see the migration that added it.
+            'api-keys.manage',
+
             // Tags
             'tags.create',
             'tags.update',

@@ -87,8 +87,12 @@ use App\Http\Controllers\Api\StatisticsController;
 use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\TenantApiKeyController;
+use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
+use App\Http\Controllers\Api\V1\LeadController as V1LeadController;
 use App\Http\Controllers\Api\V1\SendMessageController;
 use App\Http\Middleware\V1\Auth;
+use App\Http\Middleware\V1\TenantApiAuth;
 use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
@@ -230,6 +234,15 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::delete('/{id}', [IntegrationController::class, 'destroy'])->whereNumber('id')->middleware('permission:integrations.manage')->name('destroy');
         Route::get('/{id}/payments', [IntegrationController::class, 'payments'])->whereNumber('id')->middleware('permission:integrations.view')->name('payments');
         Route::get('/{id}/invoices', [IntegrationController::class, 'invoices'])->whereNumber('id')->middleware('permission:integrations.view')->name('invoices');
+    });
+
+    // Workspace API keys — the credential for the tenant-level public API
+    // (/v1/leads). One permission for all three: listing names is harmless, but
+    // nobody without the right to create or revoke a key has a reason to be here.
+    Route::prefix('api-keys')->name('api-keys.')->middleware('permission:api-keys.manage')->group(function () {
+        Route::get('/', [TenantApiKeyController::class, 'index'])->name('index');
+        Route::post('/', [TenantApiKeyController::class, 'store'])->name('store');
+        Route::delete('/{id}', [TenantApiKeyController::class, 'destroy'])->whereNumber('id')->name('destroy');
     });
 
     Route::middleware('feature:' . Feature::Chat->value)->group(function () {
@@ -658,6 +671,14 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
 
 Route::prefix('/v1')->middleware(Auth::class)->group(function(){
     Route::post('send-message', [SendMessageController::class, 'handle']);
+});
+
+// Public API, workspace level: authenticated by a workspace key (Developer ›
+// Chaves da conta), never by a connection key — these endpoints act across all
+// of the workspace's connections. Throttle after auth, so it counts per key.
+Route::prefix('/v1')->middleware([TenantApiAuth::class, 'throttle:public-api'])->group(function () {
+    Route::post('leads', [V1LeadController::class, 'store']);
+    Route::get('connections', [V1ConnectionController::class, 'index']);
 });
 
 /*

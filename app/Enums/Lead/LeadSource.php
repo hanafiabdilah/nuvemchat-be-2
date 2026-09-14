@@ -20,4 +20,12 @@ enum LeadSource: string
     case Broadcast = 'broadcast';
 
     case Import = 'import';
+
+    /**
+     * Handed over by another system through POST /api/v1/leads — typically a
+     * sign-up that never paid. Its own source because it converts like neither
+     * inbound (the person did not write to us) nor a campaign (they did ask for
+     * something, just not from us).
+     */
+    case Api = 'api';
 }
