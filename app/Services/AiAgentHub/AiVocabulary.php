@@ -8,28 +8,34 @@ use App\Models\Tenant;
  * The workspace's own words, and the one place that turns them into the shape
  * the hub takes.
  *
- * What this is for: a transcription model that has never heard of the business
- * spells its vocabulary phonetically. "SOCKS5" arrives as "socks five",
- * "ProxyBR" as "proxy be erre", and the agent then answers a question nobody
- * asked. Handing the provider the terms up front is the documented fix, and
- * ElevenLabs takes them as `inputAudio.keyterms`.
+ * One list, both directions of a voice conversation:
  *
- * ⚠️ This is the *listening* half only. Correcting how the agent **pronounces**
- * a word when it speaks is not possible from here, and not because it has not
- * been written yet: the reply's text and its audio are produced inside the same
- * hub run, so nothing on this side ever holds the sentence before it becomes
- * sound. The hub normalises a fixed list of its own (IPv6, SOCKS5, ProxyBR,
- * ISP, ASN) before TTS; extending that list per tenant needs a field on
- * `responseAudio` that the hub does not offer yet. Until it does, this model
- * deliberately has no `speak_as`: a field that stores what somebody typed and
- * then ignores it reads as a broken feature rather than a missing one.
+ * **Listening** (`inputAudio`). A transcription model that has never heard of
+ * the business spells its vocabulary phonetically. "SOCKS5" arrives as "socks
+ * five", "ProxyBR" as "proxy be erre", and the agent then answers a question
+ * nobody asked. Handing the provider the term and its aliases up front is the
+ * documented fix — `keyterms` for ElevenLabs, a sentence of `prompt` for OpenAI.
+ *
+ * **Speaking** (`responseAudio.pronunciationReplacements`). The opposite
+ * problem: the agent writes "IPv6" correctly and the voice reads it wrong. The
+ * reply's text and its audio come out of the same hub run, so nothing on this
+ * side ever holds the sentence in between — which is why this travels as a
+ * list the hub applies to the text *before* handing it to ElevenLabs, on top of
+ * the fixed normalisation it already does (IPv6, SOCKS5, HTTP, ProxyBR…).
  *
  * Stored on the tenant (`tenants.audio_dictionary`) as:
  *
- *   [{"term": "SOCKS5", "aliases": ["socks 5", "socks five"]}, …]
+ *   [{"term": "SOCKS5", "aliases": ["socks 5", "socks five"], "speak_as": "sócs cinco"}, …]
  *
- * `aliases` are the spellings the model is likely to *produce*; listing them
- * costs nothing and catches the near-misses the term alone does not.
+ * `aliases` are the other spellings of the term — the ones the transcription
+ * is likely to *produce*, and the variants the reply text may contain. They
+ * serve both directions. `speak_as` serves only the voice, and is optional:
+ * most words are only a listening problem, and an entry without one never
+ * reaches `responseAudio`.
+ *
+ * ⚠️ `speak_as` is never a keyterm. It is a phonetic spelling ("ipê vê seis"),
+ * and biasing the transcription towards it is exactly the mistake the listening
+ * half exists to undo.
  */
 class AiVocabulary
 {
@@ -45,6 +51,12 @@ class AiVocabulary
     private const MIN_LENGTH = 2;
 
     private const MAX_LENGTH = 50;
+
+    /**
+     * Longer than a term on purpose: spelling a word out phonetically takes
+     * more letters than writing it ("CNPJ" → "cê ene pê jota").
+     */
+    public const MAX_SPEAK_AS_LENGTH = 100;
 
     private const HUB_LIMIT = 1000;
 
@@ -108,11 +120,41 @@ class AiVocabulary
     }
 
     /**
+     * The speaking half, for `responseAudio.pronunciationReplacements`.
+     *
+     * Only entries somebody gave a pronunciation to — the rest of the list is a
+     * listening problem, and a replacement that says "IPv6" → "IPv6" is noise
+     * the hub would have to skip. `aliases` travel so "IPV6" and "IP v6" in the
+     * reply text are read the same way as the term, and are left out when there
+     * are none rather than sent empty.
+     *
+     * @return array<int, array{term: string, speakAs: string, aliases?: array<int, string>}>
+     */
+    public static function pronunciations(?Tenant $tenant): array
+    {
+        $replacements = [];
+
+        foreach (self::dictionary($tenant) as $entry) {
+            if ($entry['speak_as'] === null) {
+                continue;
+            }
+
+            $replacements[] = array_filter([
+                'term' => $entry['term'],
+                'speakAs' => $entry['speak_as'],
+                'aliases' => $entry['aliases'],
+            ], fn ($value) => $value !== []);
+        }
+
+        return $replacements;
+    }
+
+    /**
      * The tenant's dictionary, in the stored shape, with anything malformed
      * dropped rather than repaired — this is read on the path of a live run,
      * and a half-understood entry is not worth failing a customer's reply over.
      *
-     * @return array<int, array{term: string, aliases: array<int, string>}>
+     * @return array<int, array{term: string, aliases: array<int, string>, speak_as: ?string}>
      */
     public static function dictionary(?Tenant $tenant): array
     {
@@ -125,7 +167,7 @@ class AiVocabulary
      * Shared by the write path (so what is saved is already clean) and the read
      * path (so rows written before a rule existed still behave).
      *
-     * @return array<int, array{term: string, aliases: array<int, string>}>
+     * @return array<int, array{term: string, aliases: array<int, string>, speak_as: ?string}>
      */
     public static function sanitize(mixed $raw): array
     {
@@ -164,6 +206,7 @@ class AiVocabulary
                     self::clean($aliases, self::MAX_ALIASES),
                     [$term],
                 )),
+                'speak_as' => self::speakAs(is_array($item) ? ($item['speak_as'] ?? null) : null, $term),
             ];
 
             if (count($entries) >= self::MAX_TERMS) {
@@ -203,6 +246,30 @@ class AiVocabulary
         }
 
         return $out;
+    }
+
+    /**
+     * One usable pronunciation, or null.
+     *
+     * Blank means "no opinion", and so does repeating the term exactly: the
+     * voice already reads the term as written, so that replacement changes
+     * nothing. A case-variant is kept — "ipv6" can be a deliberate instruction.
+     * Too long is dropped rather than cut, same as a term: half a phonetic
+     * spelling is a different word.
+     */
+    private static function speakAs(mixed $value, string $term): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $speakAs = trim(preg_replace('/\s+/u', ' ', $value) ?? '');
+
+        if ($speakAs === '' || $speakAs === $term || mb_strlen($speakAs) > self::MAX_SPEAK_AS_LENGTH) {
+            return null;
+        }
+
+        return $speakAs;
     }
 
     /**

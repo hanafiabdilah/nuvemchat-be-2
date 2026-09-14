@@ -96,9 +96,35 @@ test('malformed rows are dropped rather than repaired', function () {
     ]))->toBe([
         // Whitespace collapsed, aliases deduped, the one-character alias and
         // the alias that merely repeats the term both gone.
-        ['term' => 'SOCKS5', 'aliases' => ['socks 5']],
-        ['term' => 'ProxyBR', 'aliases' => []],
+        ['term' => 'SOCKS5', 'aliases' => ['socks 5'], 'speak_as' => null],
+        ['term' => 'ProxyBR', 'aliases' => [], 'speak_as' => null],
     ]);
+});
+
+test('only entries given a pronunciation reach the voice, and the phonetic spelling is never listened for', function () {
+    config(['ai.audio.keyterms' => []]);
+
+    $tenant = new Tenant(['audio_dictionary' => [
+        ['term' => 'IPv6', 'aliases' => ['IPV6', 'IP v6'], 'speak_as' => '  ipê  vê seis '],
+        ['term' => 'SOCKS5', 'aliases' => [], 'speak_as' => 'sócs cinco'],
+        ['term' => 'ProxyBR', 'aliases' => ['proxy br'], 'speak_as' => 'ProxyBR'],   // changes nothing
+        ['term' => 'Pix', 'aliases' => ['piques'], 'speak_as' => '   '],           // blank = no opinion
+        ['term' => 'CNPJ', 'aliases' => [], 'speak_as' => str_repeat('x', 101)],   // half a word is another word
+        ['term' => 'Shopee', 'aliases' => ['xopi']],                              // a listening problem only
+    ]]);
+
+    expect(AiVocabulary::pronunciations($tenant))->toBe([
+        ['term' => 'IPv6', 'speakAs' => 'ipê vê seis', 'aliases' => ['IPV6', 'IP v6']],
+        // No aliases → no empty array for the hub to validate.
+        ['term' => 'SOCKS5', 'speakAs' => 'sócs cinco'],
+    ]);
+
+    // Biasing the transcription towards "ipê vê seis" is the exact mistake the
+    // listening half exists to undo.
+    expect(AiVocabulary::keyterms($tenant))
+        ->toContain('IPv6', 'SOCKS5', 'Shopee')
+        ->not->toContain('ipê vê seis')
+        ->not->toContain('sócs cinco');
 });
 
 test('the caps cannot push the list past what the hub accepts', function () {

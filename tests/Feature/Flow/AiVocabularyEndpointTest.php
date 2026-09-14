@@ -43,17 +43,28 @@ test('terms are stored cleaned rather than exactly as typed', function () {
 
     $this->actingAs($user)
         ->putJson('/api/ai-hub/vocabulary', ['terms' => [
-            ['term' => '  SOCKS5 ', 'aliases' => ['socks 5', 'socks 5']],
+            ['term' => '  SOCKS5 ', 'aliases' => ['socks 5', 'socks 5'], 'speak_as' => ' sócs  cinco '],
             ['term' => 'socks5'],
-            ['term' => 'IPv6', 'aliases' => []],
+            ['term' => 'IPv6', 'aliases' => [], 'speak_as' => ''],
         ]])
         ->assertOk()
         ->assertJsonPath('data.terms', [
-            ['term' => 'SOCKS5', 'aliases' => ['socks 5']],
-            ['term' => 'IPv6', 'aliases' => []],
+            ['term' => 'SOCKS5', 'aliases' => ['socks 5'], 'speak_as' => 'sócs cinco'],
+            ['term' => 'IPv6', 'aliases' => [], 'speak_as' => null],
         ]);
 
     expect($tenant->fresh()->audio_dictionary)->toHaveCount(2);
+});
+
+test('a pronunciation longer than the limit is refused with a message', function () {
+    [$user] = vocabularyUser();
+
+    $this->actingAs($user)
+        ->putJson('/api/ai-hub/vocabulary', ['terms' => [
+            ['term' => 'CNPJ', 'speak_as' => str_repeat('x', 101)],
+        ]])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('terms.0.speak_as');
 });
 
 test('clearing the list empties the column rather than leaving an empty array', function () {

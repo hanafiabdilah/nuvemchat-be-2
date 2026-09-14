@@ -3046,7 +3046,7 @@ class FlowExecutor
                 $flowState->id,
                 $node->id,
                 attachments: $attachments,
-                responseAudio: $speak ? AiVoiceReply::options($voice, $conversation->connection->channel) : [],
+                responseAudio: $speak ? AiVoiceReply::options($voice, $conversation->connection->channel, $conversation->connection->tenant) : [],
                 inputAudio: AiTranscription::options($data, $attachments, $conversation->connection->tenant)
             );
 

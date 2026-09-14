@@ -384,15 +384,15 @@ trait Workspace
             ['term' => 'Aurora Run', 'aliases' => ['aurora ran', 'aurora rum']],
             ['term' => 'Pingly', 'aliases' => ['pingli', 'ping li']],
             ['term' => 'Pix', 'aliases' => ['piques', 'pics']],
-            ['term' => 'CNPJ', 'aliases' => ['cê ene pê jota']],
-            ['term' => 'NF-e', 'aliases' => ['nfe', 'nota fiscal eletrônica']],
-            ['term' => 'Dry-fit', 'aliases' => ['draifit', 'dry fit']],
+            ['term' => 'CNPJ', 'aliases' => ['cnpj'], 'speak_as' => 'cê ene pê jota'],
+            ['term' => 'NF-e', 'aliases' => ['nfe', 'NFe'], 'speak_as' => 'nota fiscal eletrônica'],
+            ['term' => 'Dry-fit', 'aliases' => ['draifit', 'dry fit'], 'speak_as' => 'drai fit'],
             ['term' => 'Corta-vento', 'aliases' => ['corta vento']],
-            ['term' => 'iFood', 'aliases' => ['ai food']],
+            ['term' => 'iFood', 'aliases' => ['ai food'], 'speak_as' => 'ai fúd'],
             ['term' => 'Shopee', 'aliases' => ['xopi']],
             ['term' => 'Mercado Livre', 'aliases' => []],
             ['term' => 'WhatsApp Business', 'aliases' => []],
-            ['term' => 'AURORA10', 'aliases' => ['aurora dez', 'aurora 10']],
+            ['term' => 'AURORA10', 'aliases' => ['aurora 10'], 'speak_as' => 'aurora dez'],
         ];
     }
 }

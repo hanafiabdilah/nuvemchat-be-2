@@ -6,6 +6,7 @@ use App\Enums\Message\SenderType;
 use App\Models\FlowNode;
 use App\Models\FlowState;
 use App\Models\Message;
+use App\Models\Tenant;
 use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\Flow\FlowExecutor;
@@ -399,6 +400,54 @@ test('the pronunciation fields can be emptied without a deploy', function () {
         ->and($block)->not->toHaveKey('applyTextNormalization')
         // Still spoken: the switch is about the two hints, not about the voice.
         ->and(outgoing(MessageType::Audio))->toHaveCount(1);
+});
+
+test("the workspace's pronunciations travel with an ElevenLabs voice", function () {
+    Storage::fake('local', ['serve' => true]);
+    AiAgentFixtures::fakeChannelsAndHub(extra: voiceReplyFakes(), output: hubSpokenAnswer());
+
+    [$conversation, $node] = AiAgentFixtures::flow();
+    speakingNode($node, ['provider' => 'elevenlabs', 'voice_id' => 'v0iceId11labs']);
+    $conversation->connection->tenant->forceFill(['audio_dictionary' => [
+        ['term' => 'IPv6', 'aliases' => ['IP v6'], 'speak_as' => 'ipê vê seis'],
+        ['term' => 'Pix', 'aliases' => ['piques']],
+    ]])->save();
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    AiAgentFixtures::incomingMedia($conversation, MessageType::Audio, null, 'media/36c_abc.ogg');
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), '');
+
+    // The reply is written inside the run that speaks it, so the list goes to
+    // the hub, which rewrites the text before ElevenLabs reads it. Only the
+    // entry somebody gave a pronunciation to.
+    expect(AiAgentFixtures::hubRuns()[0]['responseAudio']['pronunciationReplacements'])->toBe([
+        ['term' => 'IPv6', 'speakAs' => 'ipê vê seis', 'aliases' => ['IP v6']],
+    ]);
+});
+
+test('pronunciations stay off the OpenAI voice, and can be switched off without a deploy', function () {
+    $tenant = new Tenant(['audio_dictionary' => [
+        ['term' => 'IPv6', 'aliases' => [], 'speak_as' => 'ipê vê seis'],
+    ]]);
+
+    $elevenLabs = AiVoiceReply::config(['response_audio' => [
+        'enabled' => true, 'provider' => 'elevenlabs', 'voice_id' => 'v0iceId11labs',
+    ]]);
+    $openAi = AiVoiceReply::config(['response_audio' => ['enabled' => true]]);
+
+    expect(AiVoiceReply::options($elevenLabs, Channel::WhatsappOfficial, $tenant))
+        ->toHaveKey('pronunciationReplacements')
+        // The hub applies the list before ElevenLabs; nothing says the OpenAI
+        // path reads it, and it validates every field it gets.
+        ->and(AiVoiceReply::options($openAi, Channel::WhatsappOfficial, $tenant))
+        ->not->toHaveKey('pronunciationReplacements');
+
+    // Same way out as languageCode: a hub that does not know the field fails
+    // the run and every voice reply quietly lands as text.
+    config(['ai.voice.pronunciation' => false]);
+
+    expect(AiVoiceReply::options($elevenLabs, Channel::WhatsappOfficial, $tenant))
+        ->not->toHaveKey('pronunciationReplacements');
 });
 
 test('ElevenLabs without a voice id speaks with OpenAI, and leaves its fields behind', function () {

@@ -3,6 +3,7 @@
 namespace App\Services\AiAgentHub;
 
 use App\Enums\Connection\Channel;
+use App\Models\Tenant;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -215,9 +216,10 @@ class AiVoiceReply
      * question anybody should have to answer per flow.
      *
      * @param  array<string, mixed>  $config  from config()
+     * @param  Tenant|null  $tenant  whose pronunciation list the voice should follow
      * @return array<string, mixed>
      */
-    public static function options(array $config, Channel $channel): array
+    public static function options(array $config, Channel $channel, ?Tenant $tenant = null): array
     {
         $common = array_filter([
             'enabled' => true,
@@ -232,20 +234,20 @@ class AiVoiceReply
                 'voiceId' => $config['voice_id'],
                 'outputFormat' => self::elevenLabsOutputFormat($channel),
                 'voiceSettings' => $config['voice_settings'] ?: null,
-                // The two levers the hub gives us over how the reply is
-                // *pronounced*. Naming the language is the bigger of them:
-                // left to guess, "HTTP" and "site" in a Portuguese sentence
-                // come out read in English. Normalisation expands numbers,
-                // dates and abbreviations before the voice sees them.
-                //
-                // Neither is a per-word dictionary, and there is no way to
-                // build one from here — the reply's text is written inside the
-                // same run that speaks it, so nothing on this side ever holds
-                // the sentence in between. The hub normalises its own fixed
-                // list (IPv6, SOCKS5, ProxyBR…); extending that per tenant
-                // needs a field on this block that does not exist yet.
+                // How the reply is *pronounced*. Naming the language is the
+                // broadest lever: left to guess, "HTTP" and "site" in a
+                // Portuguese sentence come out read in English. Normalisation
+                // expands numbers, dates and abbreviations.
                 'languageCode' => config('ai.voice.language'),
                 'applyTextNormalization' => config('ai.voice.text_normalization'),
+                // And the per-word one: the workspace's own "say IPv6 like
+                // this". The reply is written inside the same run that speaks
+                // it, so nothing here can rewrite the sentence — the hub
+                // applies the list to the text before ElevenLabs sees it, on
+                // top of its own fixed normalisation.
+                'pronunciationReplacements' => config('ai.voice.pronunciation')
+                    ? (AiVocabulary::pronunciations($tenant) ?: null)
+                    : null,
             ]), fn ($value) => $value !== null && $value !== '');
         }
 
