@@ -196,8 +196,34 @@ class BroadcastController extends Controller
         $byConnection = $eligible->groupBy('connection_id');
         $baseName = trim((string) ($data['name'] ?? '')) ?: 'Inbox message';
 
-        $campaigns = DB::transaction(function () use ($byConnection, $baseName, $contentType, $payload, $data, $user) {
-            return $byConnection->map(function ($conversations) use ($byConnection, $baseName, $contentType, $payload, $data, $user) {
+        // Messages per minute, keyed by connection id. A selection can span API
+        // Way (capped at 60) and WhatsApp Official (1200), and one number for
+        // both would be reckless on one line or crawl on the other. A line left
+        // out gets its channel's default — the same ceiling and fallback a
+        // campaign uses (see assertChannelAccepts()).
+        $requestedRates = $request->validate([
+            'rates_per_minute' => ['nullable', 'array'],
+            'rates_per_minute.*' => ['integer', 'min:1'],
+        ])['rates_per_minute'] ?? [];
+
+        $rates = [];
+
+        foreach ($byConnection as $connectionId => $conversations) {
+            $channel = $conversations->first()->getRelationValue('connection')->channel;
+            $max = $channel->broadcastMaxRatePerMinute();
+            $rate = isset($requestedRates[$connectionId]) ? (int) $requestedRates[$connectionId] : null;
+
+            if ($rate !== null && $rate > $max) {
+                throw ValidationException::withMessages([
+                    "rates_per_minute.{$connectionId}" => "This channel is capped at {$max} messages per minute.",
+                ]);
+            }
+
+            $rates[$connectionId] = $rate ?? $channel->broadcastDefaultRatePerMinute();
+        }
+
+        $campaigns = DB::transaction(function () use ($byConnection, $baseName, $contentType, $payload, $data, $user, $rates) {
+            return $byConnection->map(function ($conversations) use ($byConnection, $baseName, $contentType, $payload, $data, $user, $rates) {
                 $connection = $conversations->first()->getRelationValue('connection');
 
                 $broadcast = Broadcast::create([
@@ -212,7 +238,7 @@ class BroadcastController extends Controller
                     'resolve_after' => (bool) ($data['resolve_after'] ?? false),
                     'content_type' => $contentType,
                     'payload' => $payload,
-                    'rate_per_minute' => $connection->channel->broadcastDefaultRatePerMinute(),
+                    'rate_per_minute' => $rates[$connection->id],
                 ]);
 
                 $this->broadcasts->createThreadRecipients($broadcast, $conversations);

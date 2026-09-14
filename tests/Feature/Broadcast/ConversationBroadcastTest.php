@@ -244,3 +244,41 @@ test('sending from the inbox needs the permission to send campaigns', function (
 
     expect(Broadcast::count())->toBe(0);
 });
+
+test('each line sends at the pace chosen for it, and a line left out keeps its channel default', function () {
+    $this->line->forceFill(['name' => 'Suporte'])->save();
+    $sales = BroadcastFixtures::connection($this->user, Channel::WhatsappOfficial);
+    $sales->forceFill(['name' => 'Vendas'])->save();
+    $this->user->connections()->attach($sales->id);
+
+    $ana = ($this->thread)('5511999990001', 'Ana Souza');
+    $bruno = ($this->thread)('5511999990002', 'Bruno Lima', [], $sales);
+
+    $this->actingAs($this->user)->postJson('/api/broadcasts/conversations', [
+        'conversation_ids' => [$ana->id, $bruno->id],
+        'name' => 'Aviso',
+        'content_type' => 'text',
+        'payload' => ['body' => 'Aviso'],
+        'rates_per_minute' => [$this->line->id => 30],
+    ])->assertCreated();
+
+    expect((int) Broadcast::where('connection_id', $this->line->id)->value('rate_per_minute'))->toBe(30)
+        ->and((int) Broadcast::where('connection_id', $sales->id)->value('rate_per_minute'))
+        ->toBe(Channel::WhatsappOfficial->broadcastDefaultRatePerMinute());
+});
+
+test('a pace above the channel ceiling is refused before anything is sent', function () {
+    $apiway = BroadcastFixtures::connection($this->user, Channel::WhatsappApiway);
+    $this->user->connections()->attach($apiway->id);
+    $ana = ($this->thread)('5511999990001', 'Ana Souza', [], $apiway);
+
+    $this->actingAs($this->user)->postJson('/api/broadcasts/conversations', [
+        'conversation_ids' => [$ana->id],
+        'content_type' => 'text',
+        'payload' => ['body' => 'Aviso'],
+        'rates_per_minute' => [$apiway->id => Channel::WhatsappApiway->broadcastMaxRatePerMinute() + 1],
+    ])->assertUnprocessable()->assertJsonValidationErrors("rates_per_minute.{$apiway->id}");
+
+    expect(Broadcast::count())->toBe(0)
+        ->and(($this->said)($ana))->toBe([]);
+});
