@@ -425,28 +425,40 @@ test("the workspace's pronunciations travel with an ElevenLabs voice", function 
     ]);
 });
 
-test('pronunciations stay off the OpenAI voice, and can be switched off without a deploy', function () {
+test('every request that produces audio carries the list, whichever provider speaks', function () {
     $tenant = new Tenant(['audio_dictionary' => [
-        ['term' => 'IPv6', 'aliases' => [], 'speak_as' => 'ipê vê seis'],
+        ['term' => 'IPv6', 'aliases' => ['IPV6', 'IP v6'], 'speak_as' => 'ipê ver seis'],
+        ['term' => 'SOCKS5', 'aliases' => ['SOCKS 5', 'socks five'], 'speak_as' => 'socks cinco'],
     ]]);
 
-    $elevenLabs = AiVoiceReply::config(['response_audio' => [
-        'enabled' => true, 'provider' => 'elevenlabs', 'voice_id' => 'v0iceId11labs',
-    ]]);
-    $openAi = AiVoiceReply::config(['response_audio' => ['enabled' => true]]);
+    // The exact shape the hub asked for.
+    $expected = [
+        ['term' => 'IPv6', 'speakAs' => 'ipê ver seis', 'aliases' => ['IPV6', 'IP v6']],
+        ['term' => 'SOCKS5', 'speakAs' => 'socks cinco', 'aliases' => ['SOCKS 5', 'socks five']],
+    ];
 
-    expect(AiVoiceReply::options($elevenLabs, Channel::WhatsappOfficial, $tenant))
-        ->toHaveKey('pronunciationReplacements')
-        // The hub applies the list before ElevenLabs; nothing says the OpenAI
-        // path reads it, and it validates every field it gets.
-        ->and(AiVoiceReply::options($openAi, Channel::WhatsappOfficial, $tenant))
-        ->not->toHaveKey('pronunciationReplacements');
+    $elevenLabs = AiVoiceReply::options(AiVoiceReply::config(['response_audio' => [
+        'enabled' => true, 'provider' => 'elevenlabs', 'voice_id' => 'v0iceId11labs', 'model' => 'eleven_multilingual_v2',
+    ]]), Channel::WhatsappOfficial, $tenant);
+
+    $openAi = AiVoiceReply::options(AiVoiceReply::config(['response_audio' => [
+        'enabled' => true, 'voice' => 'nova',
+    ]]), Channel::WhatsappOfficial, $tenant);
+
+    // Added to the block, not replacing it: voice and model survive.
+    expect($elevenLabs['pronunciationReplacements'])->toBe($expected)
+        ->and($elevenLabs['voiceId'])->toBe('v0iceId11labs')
+        ->and($elevenLabs['model'])->toBe('eleven_multilingual_v2')
+        ->and($openAi['pronunciationReplacements'])->toBe($expected)
+        ->and($openAi['voice'])->toBe('nova');
 
     // Same way out as languageCode: a hub that does not know the field fails
     // the run and every voice reply quietly lands as text.
     config(['ai.voice.pronunciation' => false]);
 
-    expect(AiVoiceReply::options($elevenLabs, Channel::WhatsappOfficial, $tenant))
+    $again = AiVoiceReply::config(['response_audio' => ['enabled' => true]]);
+
+    expect(AiVoiceReply::options($again, Channel::WhatsappOfficial, $tenant))
         ->not->toHaveKey('pronunciationReplacements');
 });
 

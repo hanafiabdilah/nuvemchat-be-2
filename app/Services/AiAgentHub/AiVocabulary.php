@@ -20,7 +20,7 @@ use App\Models\Tenant;
  * problem: the agent writes "IPv6" correctly and the voice reads it wrong. The
  * reply's text and its audio come out of the same hub run, so nothing on this
  * side ever holds the sentence in between — which is why this travels as a
- * list the hub applies to the text *before* handing it to ElevenLabs, on top of
+ * list the hub applies to the text *before* the voice reads it, on top of
  * the fixed normalisation it already does (IPv6, SOCKS5, HTTP, ProxyBR…).
  *
  * Stored on the tenant (`tenants.audio_dictionary`) as:

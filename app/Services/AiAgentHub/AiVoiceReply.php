@@ -226,6 +226,14 @@ class AiVoiceReply
             'provider' => strtoupper($config['provider']),
             'providerCredentialId' => $config['credential_id'],
             'speed' => $config['speed'] ?? config('ai.voice.speed'),
+            // The workspace's own "say IPv6 like this", on every request that
+            // produces audio, whichever provider speaks. The reply is written
+            // inside the same run that voices it, so nothing here can rewrite
+            // the sentence — the hub applies the list to the text before the
+            // voice reads it, on top of its own fixed normalisation.
+            'pronunciationReplacements' => config('ai.voice.pronunciation')
+                ? (AiVocabulary::pronunciations($tenant) ?: null)
+                : null,
         ], fn ($value) => $value !== null && $value !== '');
 
         if ($config['provider'] === AiTranscription::ELEVENLABS) {
@@ -240,14 +248,6 @@ class AiVoiceReply
                 // expands numbers, dates and abbreviations.
                 'languageCode' => config('ai.voice.language'),
                 'applyTextNormalization' => config('ai.voice.text_normalization'),
-                // And the per-word one: the workspace's own "say IPv6 like
-                // this". The reply is written inside the same run that speaks
-                // it, so nothing here can rewrite the sentence — the hub
-                // applies the list to the text before ElevenLabs sees it, on
-                // top of its own fixed normalisation.
-                'pronunciationReplacements' => config('ai.voice.pronunciation')
-                    ? (AiVocabulary::pronunciations($tenant) ?: null)
-                    : null,
             ]), fn ($value) => $value !== null && $value !== '');
         }
 

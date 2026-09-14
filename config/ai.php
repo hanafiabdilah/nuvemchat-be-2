@@ -182,8 +182,9 @@ return [
         | The workspace's own pronunciations ("IPv6" → "ipê vê seis"), from the
         | "Como pronunciar" column of the audio vocabulary — see
         | App\Services\AiAgentHub\AiVocabulary. Sent as
-        | `responseAudio.pronunciationReplacements`, ElevenLabs only, and only
-        | for workspaces that filled at least one in.
+        | `responseAudio.pronunciationReplacements` on every request that
+        | produces audio (OpenAI and ElevenLabs alike), for workspaces that
+        | filled at least one in.
         |
         | Same warning as the two above, and the same way out: a hub that does
         | not know the field fails the run, the retry drops the voice, and the
