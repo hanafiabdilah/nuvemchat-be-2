@@ -43,6 +43,7 @@ use App\Models\User;
 use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
+use App\Services\AiAgentHub\AiConversationContext;
 use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiFirstMessage;
 use App\Services\AiAgentHub\AiTranscription;
@@ -2423,18 +2424,37 @@ class FlowExecutor
             $flowState->update(['state_data' => $stateData]);
         }
 
-        $lastProcessedId = $stateData[$lastProcessedKey] ?? 0;
+        $isFirstTurn = ($stateData[$turnsKey] ?? 0) === 0;
+
+        // On entry, what the customer said before the last message anybody
+        // sent them was already dealt with — a Response node took it, a Message
+        // node answered it. It reaches the agent as context, not as a question
+        // still owed an answer (see AiConversationContext).
+        $lastProcessedId = array_key_exists($lastProcessedKey, $stateData)
+            ? (int) $stateData[$lastProcessedKey]
+            : AiConversationContext::answeredUpTo($flowState->conversation_id);
 
         // The whole burst, not just its first line. "oi" and the question that
         // follows it a second later are one opening, and reading only the
         // earlier of the two is how a real question gets filed as a greeting.
-        $pendingMessages = Message::where('conversation_id', $flowState->conversation_id)
-            ->where('sender_type', SenderType::Incoming)
-            ->whereNull('unsend_at')
-            ->where('id', '>', $lastProcessedId)
-            ->orderBy('id')
-            ->limit(self::AI_MAX_INPUT_MESSAGES)
-            ->get();
+        $pendingMessages = $this->pendingAiMessages($flowState, $lastProcessedId);
+
+        if ($pendingMessages->isEmpty() && $isFirstTurn && $lastProcessedId > 0) {
+            // Reached straight after the flow spoke, with nothing from the
+            // customer still unanswered: greet and wait for their reply, which
+            // the agent then reads alongside everything the flow told them.
+            $welcomingMessage = trim((string) ($data['welcoming_message'] ?? ''));
+
+            if ($welcomingMessage !== '') {
+                $this->sendAIAgentWelcome($flowState, $node, $welcomingMessage, $lastProcessedId);
+            } else {
+                $stateData[$turnsKey] = 1;
+                $stateData[$lastProcessedKey] = $lastProcessedId;
+                $flowState->update(['state_data' => $stateData]);
+            }
+
+            return;
+        }
 
         if ($pendingMessages->isEmpty()) {
             Log::info('FlowExecutor: AIAgent node reached, no pending input — waiting', [
@@ -2446,7 +2466,6 @@ class FlowExecutor
         }
 
         $newestPendingId = (int) $pendingMessages->last()->id;
-        $isFirstTurn = ($stateData[$turnsKey] ?? 0) === 0;
 
         if ($isFirstTurn) {
             $welcomingMessage = trim((string) ($data['welcoming_message'] ?? ''));
@@ -2456,8 +2475,8 @@ class FlowExecutor
                 // AI takes the opening itself, whatever it says. This used to
                 // skip the first turn and answer the next message instead,
                 // which left a customer who wrote "oi" talking to silence until
-                // they wrote again. Zero, not the newest id, is the watermark
-                // that puts the opening into the turn — the value the welcome
+                // they wrote again. The entry watermark, not the newest id, is
+                // what puts the opening into the turn — the value the welcome
                 // path writes when it lets the AI answer (pendingAiMessages()).
                 Log::info('FlowExecutor: AIAgent node has no welcoming message, the AI answers the opening', [
                     'node_id' => $node->id,
@@ -2465,7 +2484,7 @@ class FlowExecutor
                 ]);
 
                 $stateData[$turnsKey] = 1;
-                $stateData[$lastProcessedKey] = 0;
+                $stateData[$lastProcessedKey] = $lastProcessedId;
                 $flowState->update(['state_data' => $stateData]);
 
                 $this->scheduleAIAgentTurn($flowState, $node);
@@ -2486,13 +2505,13 @@ class FlowExecutor
                 'answering_now' => $answerNow,
             ]);
 
-            // No watermark when the AI is about to answer: leaving these
+            // The entry watermark when the AI is about to answer: leaving these
             // messages unprocessed is exactly what puts them in the turn.
             $this->sendAIAgentWelcome(
                 $flowState,
                 $node,
                 $welcomingMessage,
-                $answerNow ? null : $newestPendingId
+                $answerNow ? $lastProcessedId : $newestPendingId
             );
 
             if ($answerNow) {
@@ -2705,6 +2724,15 @@ class FlowExecutor
 
         $spokenTo = $messages->contains(fn (Message $message) => $message->message_type === MessageType::Audio);
 
+        // What the hub never saw — the flow's own messages before this node,
+        // the customer's answers to them, an agent who wrote in between —
+        // travels ahead of the customer's words, once.
+        [$context, $contextSeenUpTo] = AiConversationContext::build(
+            $flowState->conversation,
+            (int) ($stateData["_ai_context_seen_{$node->id}"] ?? 0),
+            $messages
+        );
+
         // The hub round-trip is the longest silence in the whole path, and the
         // only one where something really is happening. Cleared in `finally`
         // so a run that throws does not leave the thread spinning — the ttl
@@ -2715,10 +2743,11 @@ class FlowExecutor
             $this->handleAIAgentInput(
                 $flowState,
                 $node,
-                $text,
+                AiConversationContext::compose($context, $text),
                 (int) $messages->last()->id,
                 $entries,
-                $spokenTo
+                $spokenTo,
+                $contextSeenUpTo
             );
         } finally {
             LiveActivity::idle($flowState->conversation);
@@ -2785,9 +2814,10 @@ class FlowExecutor
      * The incoming messages this turn owes an answer to, oldest first.
      *
      * $lastProcessedId is null only when no welcome turn has run — the key is
-     * always written once it has, and zero is a real value there: it means the
-     * welcome went out alongside an opening the AI is meant to answer, so
-     * everything in the conversation is still owed a reply.
+     * always written once it has. When the welcome went out alongside an
+     * opening the AI is meant to answer, it holds the id the node's entry found
+     * already answered (zero in a conversation nobody had written to yet), so
+     * everything the customer sent after it is still owed a reply.
      *
      * @return Collection<int, Message>
      */
@@ -2914,12 +2944,12 @@ class FlowExecutor
      * Send the configured welcoming message and advance the turn counter.
      *
      * $watermark is the id of the last message the welcome is taken to have
-     * answered — pass null when the AI is about to answer them itself, which
-     * leaves them unprocessed and therefore inside the turn that follows. The
-     * key is written either way: its absence is what tells a later turn that
-     * no welcome has happened at all.
+     * answered — pass the entry watermark when the AI is about to answer the
+     * opening itself, which leaves it unprocessed and therefore inside the
+     * turn that follows. Its absence is what tells a later turn that no
+     * welcome has happened at all.
      */
-    protected function sendAIAgentWelcome(FlowState $flowState, FlowNode $node, string $welcomingMessage, ?int $watermark): void
+    protected function sendAIAgentWelcome(FlowState $flowState, FlowNode $node, string $welcomingMessage, int $watermark): void
     {
         $conversation = $flowState->conversation;
         $welcomingMessage = $this->interpolateVariables($welcomingMessage, $flowState);
@@ -2950,7 +2980,7 @@ class FlowExecutor
 
         $stateData = $flowState->state_data ?? [];
         $stateData["_ai_turns_{$node->id}"] = ($stateData["_ai_turns_{$node->id}"] ?? 0) + 1;
-        $stateData["_ai_last_processed_message_id_{$node->id}"] = $watermark ?? 0;
+        $stateData["_ai_last_processed_message_id_{$node->id}"] = $watermark;
         $flowState->update(['state_data' => $stateData]);
 
         Log::info('FlowExecutor: AIAgent welcoming message sent', [
@@ -2983,7 +3013,8 @@ class FlowExecutor
         string $userInput,
         ?int $sourceMessageId = null,
         array $attachmentEntries = [],
-        bool $customerSpoke = false
+        bool $customerSpoke = false,
+        ?int $contextSeenUpTo = null
     ): void {
         $attachments = array_column($attachmentEntries, 'attachment');
 
@@ -2996,6 +3027,12 @@ class FlowExecutor
 
         if ($sourceMessageId !== null) {
             $stateData[$lastProcessedKey] = $sourceMessageId;
+
+            // Moved with the input and for the same reason: the transcript is
+            // in this run's message, so the hub has it from here on.
+            if ($contextSeenUpTo !== null) {
+                $stateData["_ai_context_seen_{$node->id}"] = $contextSeenUpTo;
+            }
 
             // Written before the hub is called, not after it answers. The model
             // takes seconds, and a message that lands in that gap belongs to the

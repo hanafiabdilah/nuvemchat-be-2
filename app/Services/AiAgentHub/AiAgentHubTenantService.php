@@ -786,7 +786,9 @@ class AiAgentHubTenantService
      *
      * The hub maintains its own conversation state keyed by
      * `conversation.externalId`, so we only forward the latest user
-     * message — history is tracked hub-side.
+     * message — history is tracked hub-side. The hub only knows what went
+     * through it, though: what the flow said before an AI node was reached is
+     * folded into the message by the caller (AiConversationContext).
      *
      * The caller is responsible for delivering the AI reply to the contact
      * (via MessageService) and linking the produced Message back to the
