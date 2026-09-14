@@ -54,6 +54,17 @@ trait Automation
             'openpix' => ['openpix', 'Loja principal', ['app_id' => 'Q2xpZW50X0lkX21hbnVhbF9kZW1v'], [], ['account' => ['environment' => 'production'], 'webhook' => ['webhook_ids' => ['wh_manual_demo']]], null],
             'pixel' => ['meta_pixel', 'Pixel Loja', ['access_token' => 'EAAmanualdemo000000000000000000'], ['pixel_id' => '123456789012345', 'test_event_code' => 'TEST12345'], ['account' => ['environment' => 'test']], null],
             'ga4' => ['google_analytics', 'GA4 Site', ['api_secret' => 'manualDemoSecret99'], ['measurement_id' => 'G-ABC123XYZ9'], ['account' => ['environment' => 'production']], 'Não foi possível enviar o evento ao Google Analytics: o segredo da API foi recusado.'],
+            // Appended after the three above, so their ids (and every picture
+            // that shows them) stay the same.
+            'asaas' => ['asaas', 'Aurora Assessoria', ['api_key' => '$aact_prod_DemoAurora00'], [],
+                ['account' => ['account_name' => 'Aurora Moda Esportiva', 'account_email' => 'financeiro@lojaaurora.example', 'account_status' => 'APPROVED', 'environment' => 'production'],
+                    'webhook' => ['webhook_ids' => ['wh_asaas_manual_demo']]], null],
+            'stripe' => ['stripe', 'Loja online', ['secret_key' => 'sk_live_DemoAurora00'], ['success_url' => 'https://lojaaurora.example/obrigado'],
+                ['account' => ['account_id' => 'acct_1ManualDemoAurora', 'account_name' => 'Loja Aurora', 'account_email' => 'financeiro@lojaaurora.example', 'country' => 'BR', 'environment' => 'production'],
+                    'webhook' => ['webhook_ids' => ['we_manual_demo']]], null],
+            'spedy' => ['spedy', 'Notas Aurora', ['api_key' => 'spedyManualDemoAurora000000'], ['sandbox' => false, 'federal_service_code' => '6.04', 'cnae_code' => '8591-1/00'],
+                ['account' => ['account_name' => 'Aurora Moda Esportiva', 'account_id' => '12345678000181', 'environment' => 'production'],
+                    'webhook' => ['webhook_ids' => ['spd_wh_manual_demo']]], null],
         ];
 
         foreach ($defs as $key => [$provider, $name, $credentials, $settings, $meta, $error]) {
@@ -213,7 +224,7 @@ trait Automation
         // Rows first, so go-to-flow nodes can point at flows built later.
         foreach (['inicial' => 'Atendimento inicial', 'pix' => 'Cobrança Pix', 'fora' => 'Fora do horário',
                   'pesquisa' => 'Pesquisa de satisfação', 'api' => 'Qualificação de leads (API)', 'suporte' => 'Suporte técnico',
-                  'rascunho' => 'Black Friday (rascunho)'] as $key => $name) {
+                  'rascunho' => 'Black Friday (rascunho)', 'nota' => 'Cobrança com nota fiscal'] as $key => $name) {
             $this->flows[$key] = $this->make(Flow::class, ['name' => $name, 'tenant_id' => $this->tenant->id]);
         }
 
@@ -302,6 +313,29 @@ trait Automation
         ], [['start', 'msg', null], ['msg', 'ai', null]], 50);
 
         $this->buildFlow('rascunho', 'Black Friday (rascunho)', [['start', 'start', null, 0, 160]], [], 2);
+
+        // Built last, so the node ids of every flow above stay the same
+        // (the capture scripts address nodes by id).
+        $this->buildFlow('nota', 'Cobrança com nota fiscal', [
+            ['start', 'start', null, 0, 200],
+            ['cpf', 'response', ['label' => 'Pergunta: CPF/CNPJ', 'body' => 'Para emitir a cobrança e a nota fiscal, qual é o seu CPF ou CNPJ?', 'message_type' => 'text',
+                'variable_key' => 'cpf', 'validation' => 'number', 'error_message' => 'Digite só os números do CPF ou do CNPJ, por favor.', 'timeout_seconds' => 0], 280, 160],
+            ['pay', 'payment', ['integration_id' => $this->integrations['asaas']->id, 'method' => 'pix', 'amount' => '149,90',
+                'description' => 'Assessoria de corrida — {{contact.name}}', 'expires_in_minutes' => 60,
+                'message' => 'Sua vaga na assessoria está reservada! Pague {{payment_amount}} com o Pix abaixo:', 'send_qr_code' => true,
+                'send_copy_paste' => true, 'send_link' => false, 'payer_document' => '{{cpf}}'], 620, 160],
+            ['invoice', 'invoice', ['integration_id' => $this->integrations['spedy']->id, 'amount' => '{{payment_value}}',
+                'description' => 'Assessoria de corrida — plano mensal', 'customer_name' => '', 'customer_document' => '{{cpf}}',
+                'customer_email' => '', 'customer_address' => [], 'wait_minutes' => 30,
+                'message' => 'Pagamento confirmado! Sua nota fiscal nº {{invoice_number}} foi emitida. Segue o PDF:', 'send_pdf' => true, 'send_email' => true], 980, 40],
+            ['thanks', 'message', ['wait_for_reply' => false, 'messages' => [$text('Obrigada por treinar com a Aurora! Qualquer dúvida, é só chamar 💙')]], 1340, -20],
+            ['note', 'action', ['type' => 'internal_note', 'parameters' => ['note' => 'Pagamento recebido, mas a nota fiscal não foi emitida: {{invoice_error}}']], 1340, 300],
+            ['human', 'action', ['type' => 'transfer_human', 'parameters' => []], 1700, 360],
+            ['expired', 'message', ['wait_for_reply' => false, 'messages' => [$text('O Pix expirou, mas posso gerar outro! Um atendente vai te ajudar.')]], 1000, 480],
+        ], [
+            ['start', 'cpf', null], ['cpf', 'pay', 'replied'], ['pay', 'invoice', 'paid'], ['pay', 'expired', 'failed'],
+            ['invoice', 'thanks', 'issued'], ['invoice', 'note', 'failed'], ['note', 'human', null], ['expired', 'human', null],
+        ], 12);
 
         $blueprint = $this->blueprintOf($this->flows['inicial']);
         $this->make(FlowAssistantMessage::class, [

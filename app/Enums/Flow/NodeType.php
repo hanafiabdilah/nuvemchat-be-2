@@ -15,6 +15,7 @@ enum NodeType: string
     case HttpRequest = 'http_request';
     case Interactive = 'interactive';
     case Payment = 'payment';
+    case Invoice = 'invoice';
     case Pixel = 'pixel';
     case GoToFlow = 'go_to_flow';
     case Lead = 'lead';
@@ -139,6 +140,23 @@ enum NodeType: string
                 'send_link' => false,
                 'payer_email' => '', // optional, supports {{variable}}
                 'payer_document' => '', // optional CPF/CNPJ, supports {{variable}}
+            ],
+            // Asks the workspace's own nota fiscal platform for an invoice and
+            // waits for the authority to authorize it. Two outputs: `issued`
+            // (the document went to the customer) and `failed`. See
+            // App\Services\Flow\InvoiceNodes.
+            self::Invoice => [
+                'integration_id' => null, // FK to integrations.id (an invoice platform)
+                'amount' => '', // "49,90" or "{{payment_value}}"
+                'description' => '', // what was sold, printed on the document
+                'customer_name' => '', // blank = the contact's name
+                'customer_document' => '', // CPF/CNPJ, usually "{{cpf}}"
+                'customer_email' => '', // blank = the contact's e-mail, when there is one
+                'customer_address' => [], // optional: postal_code, street, number, complement, district, city, state
+                'wait_minutes' => 30, // how long the flow waits for the authorization
+                'message' => '', // sent with the PDF; supports {{invoice_number}}, {{invoice_pdf_url}}
+                'send_pdf' => true,
+                'send_email' => true, // the platform e-mails the document too
             ],
             // Reports a conversion to one or more pixel integrations and moves
             // straight on — tracking never holds a customer up.

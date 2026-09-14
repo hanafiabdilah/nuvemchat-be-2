@@ -19,6 +19,9 @@ use App\Events\MessageReceived;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Jobs\ExpireFlowPayment;
+use App\Jobs\ReleaseFlowInvoice;
+use App\Models\FlowInvoice;
+use App\Enums\Flow\FlowInvoiceStatus;
 use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowResponseTimeout;
@@ -250,6 +253,10 @@ class FlowExecutor
 
             case NodeType::Payment:
                 $this->executePaymentNode($flowState, $node);
+                break;
+
+            case NodeType::Invoice:
+                $this->executeInvoiceNode($flowState, $node);
                 break;
 
             case NodeType::Pixel:
@@ -2119,6 +2126,16 @@ class FlowExecutor
             return;
         }
 
+        // The same for an invoice node: the authority moves it, and running it
+        // again would ask for a second fiscal document for the same sale.
+        if ($currentNode->type === NodeType::Invoice && $this->pendingInvoiceId($flowState, $currentNode) !== null) {
+            Log::info('FlowExecutor: Customer wrote while an invoice is being authorized, still waiting', [
+                'conversation_id' => $conversation->id,
+                'node_id' => $currentNode->id,
+            ]);
+            return;
+        }
+
         // Interactive nodes wait the same way: send once, then treat the next
         // inbound message as the customer's pick.
         if ($currentNode->type === NodeType::Interactive) {
@@ -3561,6 +3578,208 @@ class FlowExecutor
             if ($copyPaste || !$delivered) {
                 $bubbles[] = ['message_type' => 'text', 'body' => $payment->pix_code];
             }
+        }
+
+        foreach ($bubbles as $index => $bubble) {
+            $this->sendMessageItem($flowState, $node, $bubble, $index);
+        }
+    }
+
+    // ──────────────────────────────  Invoice  ──────────────────────────────
+
+    /**
+     * Execute an Invoice node — ask for a nota fiscal and wait for the
+     * authority to authorize it.
+     *
+     * The request goes to the workspace's own issuing platform, its details
+     * become flow variables, and the flow parks here. What moves it on is the
+     * authorization, not the customer: FlowInvoiceService settles the invoice
+     * (webhook, deadline job or sweep) and calls resumeFromInvoice(), which
+     * sends the document and takes `issued` — or takes `failed`.
+     *
+     * Nothing is sent to the customer before the authorization: a document
+     * that may still be rejected is not something to hand them.
+     */
+    protected function executeInvoiceNode(FlowState $flowState, FlowNode $node): void
+    {
+        if ($this->pendingInvoiceId($flowState, $node) !== null) {
+            // Already waiting on an invoice from this visit to the node. A
+            // second fiscal document for the same step is a tax record
+            // somebody has to cancel by hand.
+            return;
+        }
+
+        $invoices = new FlowInvoiceService;
+
+        try {
+            $invoice = $invoices->createForNode(
+                $flowState,
+                $node,
+                fn (string $template) => $this->interpolateVariables($template, $flowState),
+            );
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Invoice node failed before an invoice was requested', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+                'error' => $th->getMessage(),
+            ]);
+
+            $this->storeInvoiceVariables($flowState, null, 'Não foi possível solicitar a nota fiscal.');
+            $this->moveToNextNodeByBranch($flowState, $node, InvoiceNodes::BRANCH_FAILED);
+
+            return;
+        }
+
+        $this->storeInvoiceVariables($flowState, $invoice);
+
+        if ($invoice->status !== FlowInvoiceStatus::Processing) {
+            $issued = $invoice->status === FlowInvoiceStatus::Issued;
+
+            $invoices->note($invoice, $issued ? InvoiceNodes::INFO_ISSUED : InvoiceNodes::INFO_FAILED);
+
+            if ($issued) {
+                $this->sendInvoiceMessages($flowState, $node, $invoice);
+            }
+
+            $this->moveToNextNodeByBranch($flowState, $node, $issued ? InvoiceNodes::BRANCH_ISSUED : InvoiceNodes::BRANCH_FAILED);
+
+            return;
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[InvoiceNodes::stateKey($node->id)] = $invoice->id;
+        $flowState->update(['state_data' => $stateData]);
+
+        $invoices->note($invoice, InvoiceNodes::INFO_REQUESTED);
+
+        if ($invoice->wait_until) {
+            ReleaseFlowInvoice::dispatch($invoice->id)->delay($invoice->wait_until->copy()->addSeconds(30));
+        }
+
+        LiveActivity::flowInvoice(
+            $flowState->conversation,
+            $node,
+            $invoice->amount_cents,
+            $invoice->provider?->value,
+            $invoice->wait_until,
+        );
+
+        Log::info('FlowExecutor: Invoice requested, waiting for the authorization', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'flow_invoice_id' => $invoice->id,
+            'provider' => $invoice->provider?->value,
+        ]);
+    }
+
+    /**
+     * An invoice this flow asked for settled — or the flow stopped waiting for
+     * it (`$released`) — so take the matching branch.
+     *
+     * Called by FlowInvoiceService once. Every early return is a flow that
+     * stopped waiting in the meantime; the invoice is still recorded and noted.
+     */
+    public function resumeFromInvoice(FlowInvoice $invoice, bool $released = false): void
+    {
+        $nodeId = (int) $invoice->flow_node_id;
+        $flowState = $invoice->flow_state_id ? FlowState::find($invoice->flow_state_id) : null;
+
+        if (!$flowState || $nodeId <= 0 || $flowState->status !== FlowStateStatus::Running || (int) $flowState->current_node_id !== $nodeId) {
+            Log::info('FlowExecutor: Invoice settled, but the flow is no longer waiting on it', [
+                'flow_invoice_id' => $invoice->id,
+                'flow_state_id' => $invoice->flow_state_id,
+            ]);
+            return;
+        }
+
+        $key = InvoiceNodes::stateKey($nodeId);
+
+        if ((int) (($flowState->state_data ?? [])[$key] ?? 0) !== (int) $invoice->id) {
+            return;
+        }
+
+        $conversation = $flowState->conversation;
+        $node = FlowNode::find($nodeId);
+
+        if (!$conversation || !$node || $node->type !== NodeType::Invoice
+            || !in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return;
+        }
+
+        $issued = !$released && $invoice->status === FlowInvoiceStatus::Issued;
+
+        $stateData = $flowState->state_data ?? [];
+        unset($stateData[$key]);
+        $flowState->update(['state_data' => $stateData]);
+
+        $this->storeInvoiceVariables(
+            $flowState,
+            $invoice,
+            $released ? 'A nota fiscal ainda está em processamento na prefeitura.' : null,
+        );
+
+        LiveActivity::idle($conversation);
+
+        Log::info('FlowExecutor: Invoice settled, resuming the flow', [
+            'flow_invoice_id' => $invoice->id,
+            'conversation_id' => $conversation->id,
+            'status' => $invoice->status->value,
+            'released' => $released,
+        ]);
+
+        if ($issued) {
+            $this->sendInvoiceMessages($flowState, $node, $invoice);
+        }
+
+        $this->moveToNextNodeByBranch($flowState, $node, $issued ? InvoiceNodes::BRANCH_ISSUED : InvoiceNodes::BRANCH_FAILED);
+    }
+
+    protected function pendingInvoiceId(FlowState $flowState, FlowNode $node): ?int
+    {
+        $id = (int) (($flowState->state_data ?? [])[InvoiceNodes::stateKey($node->id)] ?? 0);
+
+        return $id > 0 ? $id : null;
+    }
+
+    /**
+     * The invoice's details as flow variables. The document links are ours and
+     * signed (FlowInvoice::documentUrl()), and only exist once it is issued.
+     */
+    protected function storeInvoiceVariables(FlowState $flowState, ?FlowInvoice $invoice, ?string $error = null): void
+    {
+        $issued = $invoice !== null && $invoice->status === FlowInvoiceStatus::Issued;
+
+        $stateData = array_merge($flowState->state_data ?? [], [
+            'invoice_id' => $invoice?->reference,
+            'invoice_status' => $invoice?->status->value ?? FlowInvoiceStatus::Failed->value,
+            'invoice_amount' => $invoice !== null && $invoice->amount_cents > 0 ? $invoice->formattedAmount() : null,
+            'invoice_number' => $invoice?->number,
+            'invoice_pdf_url' => $issued ? $invoice->documentUrl('pdf') : null,
+            'invoice_xml_url' => $issued ? $invoice->documentUrl('xml') : null,
+            'invoice_error' => $error ?? ($issued ? null : $invoice?->failure_reason),
+        ]);
+
+        $flowState->update(['state_data' => $stateData]);
+    }
+
+    /**
+     * What the customer receives once the invoice is authorized: the node's
+     * message, then the PDF as a document of its own.
+     */
+    protected function sendInvoiceMessages(FlowState $flowState, FlowNode $node, FlowInvoice $invoice): void
+    {
+        $data = $node->data ?? [];
+        $text = trim((string) ($data['message'] ?? ''));
+        $pdfUrl = InvoiceNodes::sendsPdf($data) ? $invoice->documentUrl('pdf') : null;
+
+        $bubbles = [];
+
+        if ($text !== '') {
+            $bubbles[] = ['message_type' => 'text', 'body' => $text];
+        }
+
+        if ($pdfUrl) {
+            $bubbles[] = ['message_type' => 'document', 'body' => '', 'attachment_url' => $pdfUrl];
         }
 
         foreach ($bubbles as $index => $bubble) {

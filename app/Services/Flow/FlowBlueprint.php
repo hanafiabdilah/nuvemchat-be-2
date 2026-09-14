@@ -38,7 +38,7 @@ class FlowBlueprint
     public const NODE_TYPES = [
         'start', 'message', 'response', 'status', 'tagging',
         'condition', 'action', 'ai_agent', 'http_request', 'interactive',
-        'payment', 'pixel', 'go_to_flow', 'lead',
+        'payment', 'invoice', 'pixel', 'go_to_flow', 'lead',
     ];
 
     /**
@@ -65,6 +65,7 @@ class FlowBlueprint
         'http_request' => ['success', 'error'],
         'response' => [ResponseNodes::BRANCH_REPLIED, ResponseNodes::BRANCH_TIMEOUT],
         'payment' => PaymentNodes::BRANCHES,
+        'invoice' => InvoiceNodes::BRANCHES,
     ];
 
     /**
@@ -264,6 +265,35 @@ class FlowBlueprint
                 'send_link' => ['nullable', 'boolean'],
                 'payer_email' => ['nullable', 'string', 'max:255'],
                 'payer_document' => ['nullable', 'string', 'max:64'],
+            ],
+            // The same leniency as payment: a half-built node saves, and at
+            // runtime one without an integration, an amount, a description or
+            // a CPF/CNPJ takes the failed branch with a note saying which.
+            'invoice' => [
+                'integration_id' => [
+                    'nullable',
+                    'integer',
+                    Rule::exists('integrations', 'id')
+                        ->where('tenant_id', self::tenantId())
+                        ->whereIn('provider', IntegrationProvider::valuesFor(IntegrationCategory::Invoice)),
+                ],
+                'amount' => ['nullable', 'string', 'max:64'],
+                'description' => ['nullable', 'string', 'max:2000'],
+                'customer_name' => ['nullable', 'string', 'max:255'],
+                'customer_document' => ['nullable', 'string', 'max:64'],
+                'customer_email' => ['nullable', 'string', 'max:255'],
+                'customer_address' => ['nullable', 'array'],
+                'customer_address.postal_code' => ['nullable', 'string', 'max:64'],
+                'customer_address.street' => ['nullable', 'string', 'max:255'],
+                'customer_address.number' => ['nullable', 'string', 'max:64'],
+                'customer_address.complement' => ['nullable', 'string', 'max:255'],
+                'customer_address.district' => ['nullable', 'string', 'max:255'],
+                'customer_address.city' => ['nullable', 'string', 'max:255'],
+                'customer_address.state' => ['nullable', 'string', 'max:64'],
+                'wait_minutes' => ['nullable', 'integer', 'min:'.InvoiceNodes::MIN_WAIT_MINUTES, 'max:'.InvoiceNodes::MAX_WAIT_MINUTES],
+                'message' => ['nullable', 'string', 'max:2000'],
+                'send_pdf' => ['nullable', 'boolean'],
+                'send_email' => ['nullable', 'boolean'],
             ],
             'pixel' => [
                 'integration_ids' => ['nullable', 'array', 'max:10'],
@@ -536,7 +566,7 @@ class FlowBlueprint
         }
 
         if ($value !== null && $value !== '') {
-            return ["Edge from node \"{$sourceKey}\" ({$type}) must not carry a condition_value — only condition, response, http_request, payment and interactive nodes branch."];
+            return ["Edge from node \"{$sourceKey}\" ({$type}) must not carry a condition_value — only condition, response, http_request, payment, invoice and interactive nodes branch."];
         }
 
         return [];
@@ -642,6 +672,11 @@ class FlowBlueprint
         $maxExpiry = PaymentNodes::MAX_EXPIRES_MINUTES;
         $pixelEvents = self::quoted(PixelEvents::EVENTS);
         $paymentVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', PaymentNodes::VARIABLES));
+        $issued = InvoiceNodes::BRANCH_ISSUED;
+        $invoiceFailed = InvoiceNodes::BRANCH_FAILED;
+        $minWait = InvoiceNodes::MIN_WAIT_MINUTES;
+        $maxWait = InvoiceNodes::MAX_WAIT_MINUTES;
+        $invoiceVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', InvoiceNodes::VARIABLES));
 
         return <<<SPEC
         # Flow file format ("{$format}", version {$version})
@@ -663,12 +698,13 @@ class FlowBlueprint
         - Exactly ONE node of type "start". Its `data` is null. It has no incoming edge.
         - Every other node must be reachable from "start" by following edges.
         - `condition_value` is null on ordinary edges. Only condition, response,
-          http_request, payment and interactive nodes branch, and their values
-          are fixed:
+          http_request, payment, invoice and interactive nodes branch, and their
+          values are fixed:
             condition     → "true" / "false"
             response      → "{$replied}" / "{$timeout}"
             http_request  → "success" / "error"
             payment       → "{$paid}" / "{$failed}"
+            invoice       → "{$issued}" / "{$invoiceFailed}"
             interactive   → the id of one of that node's own options
         - status and go_to_flow END the flow: no edge may leave them.
         - Lay the canvas out left to right: x grows by ~280 per step, y separates
@@ -826,6 +862,35 @@ class FlowBlueprint
         - TWO outputs: "{$paid}" (the gateway confirmed the money) and "{$failed}"
           (it expired unpaid or could not be created). Wire BOTH — the failed
           branch usually offers a new attempt or hands over to a person.
+
+        ### invoice — issue a nota fiscal (NFS-e) and send it to the customer
+        { "integration_id": 9, "amount": "{{payment_value}}",
+          "description": "Consultoria online — pedido {{pedido}}",
+          "customer_document": "{{cpf}}", "customer_email": "{{email}}",
+          "wait_minutes": 30, "send_pdf": true,
+          "message": "Sua nota fiscal nº {{invoice_number}} foi emitida. Segue o PDF:" }
+        - `integration_id` MUST be the id of one of the workspace's invoice
+          integrations listed in the context. If none is listed, DO NOT use this
+          node — say in `reply` that a nota fiscal platform has to be connected
+          first under Settings → Integrations.
+        - `customer_document` (CPF or CNPJ) is REQUIRED when the node runs: collect
+          it first with a response node and reference that variable here.
+          `customer_name` defaults to the contact's name and `customer_email` to
+          the contact's e-mail.
+        - `amount` and `description` are required. After a payment node, use
+          "{{payment_value}}". The fiscal service codes live on the integration,
+          never on the node.
+        - Optional `customer_address` (postal_code, street, number, complement,
+          district, city, state) — only when the person says their prefeitura
+          needs it.
+        - `wait_minutes`: {$minWait}–{$maxWait}. The prefeitura or SEFAZ authorizes
+          the invoice some time after the request; the flow waits this long.
+        - Once authorized, `message` goes out followed by the PDF (when `send_pdf`).
+          These variables are set for later nodes: {$invoiceVariables}.
+        - The customer writing while it waits does not move the flow.
+        - TWO outputs: "{$issued}" (authorized, document sent) and "{$invoiceFailed}"
+          (rejected, could not be requested, or still unanswered at the deadline).
+          Wire BOTH. Natural place: on a payment node's "{$paid}" branch.
 
         ### pixel — report a conversion to an ad or analytics account
         { "integration_ids": [7], "event": "purchase", "value": "{{payment_value}}", "currency": "BRL" }

@@ -13,6 +13,7 @@ namespace App\Enums\Integration;
 enum IntegrationCategory: string
 {
     case Payment = 'payment';
+    case Invoice = 'invoice';
     case Pixel = 'pixel';
 
     /** English, translated by the dashboard like every other label. */
@@ -20,6 +21,7 @@ enum IntegrationCategory: string
     {
         return match ($this) {
             self::Payment => 'Payments',
+            self::Invoice => 'Invoices (nota fiscal)',
             self::Pixel => 'Pixels & analytics',
         };
     }
@@ -28,7 +30,17 @@ enum IntegrationCategory: string
     {
         return match ($this) {
             self::Payment => 'Charge customers inside a flow and branch on whether they paid.',
+            self::Invoice => 'Issue a nota fiscal inside a flow and send the customer the document once it is authorized.',
             self::Pixel => 'Report conversions from your conversations to your ad and analytics accounts.',
         };
+    }
+
+    /**
+     * Whether the provider calls us back about this account — a payment that
+     * was paid, an invoice that was authorized. A pixel is fire-and-forget.
+     */
+    public function receivesWebhooks(): bool
+    {
+        return $this !== self::Pixel;
     }
 }

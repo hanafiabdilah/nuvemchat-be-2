@@ -60,24 +60,25 @@ class IntegrationResource extends JsonResource
     }
 
     /**
-     * How payments reach us for this account.
+     * How payments (or invoice authorizations) reach us for this account.
      *
-     * `account` mode is OpenPix: one URL registered on the account, which
-     * either worked or did not. `per_payment` is Mercado Pago: each charge
-     * carries the URL itself, so there is nothing to register — only the
-     * platform's own address has to be https for it to be sent at all.
+     * `account` mode is OpenPix, Asaas, Stripe and the invoice platforms: one
+     * URL registered on the account, which either worked or did not.
+     * `per_payment` is Mercado Pago: each charge carries the URL itself, so
+     * there is nothing to register — only the platform's own address has to be
+     * https for it to be sent at all.
      *
      * @param  array<string, mixed>  $meta
      * @return array<string, mixed>|null
      */
     private function webhook(Request $request, IntegrationProvider $provider, array $meta): ?array
     {
-        if ($provider->category() !== IntegrationCategory::Payment || ! $request->user()?->can('integrations.view')) {
+        if (! $provider->category()->receivesWebhooks() || ! $request->user()?->can('integrations.view')) {
             return null;
         }
 
         $url = $this->resource->webhookUrl();
-        $perPayment = $provider === IntegrationProvider::MercadoPago;
+        $perPayment = $provider->webhookMode() === 'per_request';
 
         return [
             'url' => $url,

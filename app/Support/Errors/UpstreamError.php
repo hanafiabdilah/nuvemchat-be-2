@@ -169,6 +169,11 @@ final class UpstreamError
         'api.openpix.com.br',
         'api.woovi-sandbox.com',
         'api.mercadopago.com',
+        'api.asaas.com',
+        'api-sandbox.asaas.com',
+        'api.stripe.com',
+        'api.spedy.com.br',
+        'sandbox-api.spedy.com.br',
         'google-analytics.com',
         // Vendor vocabulary.
         'oauthexception',
@@ -216,6 +221,9 @@ final class UpstreamError
             UpstreamProvider::Email => self::email($needle, $code),
             UpstreamProvider::OpenPix => self::openPix($needle, $code),
             UpstreamProvider::MercadoPago => self::mercadoPago($needle, $code),
+            UpstreamProvider::Asaas => self::asaas($needle, $code),
+            UpstreamProvider::Stripe => self::stripe($needle, $code),
+            UpstreamProvider::Spedy => self::invoicePlatform('A Spedy', $needle, $code),
             UpstreamProvider::MetaPixel => self::metaPixel($needle, $code),
             UpstreamProvider::GoogleAnalytics => self::googleAnalytics($needle, $code),
             UpstreamProvider::Unknown => null,
@@ -248,7 +256,8 @@ final class UpstreamError
                 // configuration on our side, and sending someone back to
                 // re-check a card that was fine is the worst of both.
                 UpstreamProvider::PaymentService => 'Não foi possível concluir este pagamento. Tente novamente ou use outro meio de pagamento.',
-                UpstreamProvider::OpenPix, UpstreamProvider::MercadoPago => 'A cobrança não foi aceita pelo provedor de pagamento. Revise o valor e a configuração da integração.',
+                UpstreamProvider::OpenPix, UpstreamProvider::MercadoPago, UpstreamProvider::Asaas, UpstreamProvider::Stripe => 'A cobrança não foi aceita pelo provedor de pagamento. Revise o valor e a configuração da integração.',
+                UpstreamProvider::Spedy => 'A nota fiscal não foi aceita pelo emissor. Revise os dados do cliente, o valor e a configuração fiscal da integração.',
                 UpstreamProvider::MetaPixel, UpstreamProvider::GoogleAnalytics => 'O evento não foi aceito. Revise a configuração da integração e do nó de Pixel.',
                 default => 'Não foi possível concluir esta operação. Revise os dados e tente novamente.',
             };
@@ -257,6 +266,9 @@ final class UpstreamError
         return match ($provider) {
             UpstreamProvider::OpenPix => 'Não foi possível falar com a OpenPix agora. Tente novamente em instantes.',
             UpstreamProvider::MercadoPago => 'Não foi possível falar com o Mercado Pago agora. Tente novamente em instantes.',
+            UpstreamProvider::Asaas => 'Não foi possível falar com o Asaas agora. Tente novamente em instantes.',
+            UpstreamProvider::Stripe => 'Não foi possível falar com a Stripe agora. Tente novamente em instantes.',
+            UpstreamProvider::Spedy => 'Não foi possível falar com a Spedy agora. Tente novamente em instantes.',
             UpstreamProvider::MetaPixel => 'Não foi possível enviar o evento para a Meta agora. Tente novamente em instantes.',
             UpstreamProvider::GoogleAnalytics => 'Não foi possível enviar o evento para o Google Analytics agora. Tente novamente em instantes.',
             UpstreamProvider::AiHub => 'O serviço de IA está indisponível no momento. Tente novamente em instantes.',
@@ -954,6 +966,152 @@ final class UpstreamError
                 422,
             ],
             default => self::connectedAccount('O Google Analytics', $m, $code),
+        };
+    }
+
+    /** @return array{0: string, 1: string, 2?: int}|null */
+    private static function asaas(string $m, string $code): ?array
+    {
+        return self::connectedAccount('O Asaas', $m, $code) ?? match (true) {
+            str_contains($m, 'access_token'),
+            str_contains($m, 'chave de api'),
+            $code === 'invalid_access_token' => [
+                'integration_credentials_invalid',
+                'O Asaas recusou a chave de API cadastrada. Gere uma nova em Integrações → Chaves de API e atualize a integração.',
+                422,
+            ],
+            $code === 'payer_document_required',
+            str_contains($m, 'cpfcnpj'),
+            str_contains($m, 'cpf'),
+            str_contains($m, 'cnpj') => [
+                'payment_payer_document_invalid',
+                'O Asaas recusou o CPF/CNPJ do pagador. Confira a variável usada no nó de pagamento.',
+                422,
+            ],
+            // The account's commercial data is incomplete or not approved yet —
+            // the most common reason a brand-new Asaas account refuses charges.
+            str_contains($m, 'dados comerciais'),
+            str_contains($m, 'aprovacao'),
+            str_contains($m, 'conta nao') => [
+                'payment_account_not_ready',
+                'Sua conta do Asaas ainda não pode emitir cobranças. Complete e aprove os dados comerciais no painel do Asaas.',
+                422,
+            ],
+            str_contains($m, 'pix') && str_contains($m, 'chave') => [
+                'payment_pix_key_missing',
+                'Sua conta do Asaas não tem uma chave Pix cadastrada. Cadastre uma chave Pix no Asaas e tente novamente.',
+                422,
+            ],
+            str_contains($m, 'value'),
+            str_contains($m, 'valor') => [
+                'payment_amount_invalid',
+                'O Asaas não aceitou o valor desta cobrança. Confira o valor configurado no fluxo.',
+                422,
+            ],
+            default => null,
+        };
+    }
+
+    /** @return array{0: string, 1: string, 2?: int}|null */
+    private static function stripe(string $m, string $code): ?array
+    {
+        return self::connectedAccount('A Stripe', $m, $code) ?? match (true) {
+            in_array($code, ['api_key_expired', 'invalid_api_key'], true) => [
+                'integration_credentials_invalid',
+                'A Stripe recusou a chave cadastrada. Gere uma nova em Desenvolvedores → Chaves de API e atualize a integração.',
+                422,
+            ],
+            // A restricted key without the permission this call needs.
+            $code === 'secret_key_required',
+            str_contains($m, 'does not have the required permissions'),
+            str_contains($m, 'restricted key') => [
+                'integration_permission_missing',
+                'A chave da Stripe não tem permissão para criar links de pagamento. Use a chave secreta ou dê à chave restrita acesso de escrita a Checkout Sessions e Webhook Endpoints.',
+                422,
+            ],
+            $code === 'amount_too_small',
+            str_contains($m, 'amount must') => [
+                'payment_amount_invalid',
+                'A Stripe não aceitou o valor desta cobrança. O mínimo é R$ 0,50.',
+                422,
+            ],
+            str_contains($m, 'currency'),
+            str_contains($m, 'brl') => [
+                'payment_currency_unsupported',
+                'Sua conta da Stripe não aceita cobranças em reais. Confira a moeda e o país da conta na Stripe.',
+                422,
+            ],
+            str_contains($m, 'expires_at') => [
+                'payment_expiration_invalid',
+                'A Stripe não aceitou o prazo desta cobrança. Links da Stripe duram entre 30 minutos e 24 horas.',
+                422,
+            ],
+            str_contains($m, 'url') && str_contains($m, 'invalid') => [
+                'integration_settings_invalid',
+                'A Stripe recusou a página após o pagamento configurada na integração. Use um endereço completo, começando com https://.',
+                422,
+            ],
+            default => null,
+        };
+    }
+
+    /**
+     * A nota fiscal platform — the request refused, or the prefeitura/SEFAZ
+     * rejecting the document afterwards (those arrive with status 422 from
+     * the driver). Only the rejections whose fix is obvious from their words
+     * are named; everything else says where the full reason can be read.
+     *
+     * @return array{0: string, 1: string, 2?: int}|null
+     */
+    private static function invoicePlatform(string $app, string $m, string $code): ?array
+    {
+        return self::connectedAccount($app, $m, $code) ?? match (true) {
+            str_contains($m, 'certificado'),
+            str_contains($m, 'certificate') => [
+                'invoice_certificate_problem',
+                "{$app} não conseguiu assinar a nota: o certificado digital da empresa está ausente, vencido ou inválido. Atualize o certificado no painel do emissor.",
+                422,
+            ],
+            str_contains($m, 'codigo de servico'),
+            str_contains($m, 'item da lista'),
+            str_contains($m, 'servicecode'),
+            str_contains($m, 'service code'),
+            str_contains($m, 'cnae') => [
+                'invoice_service_code_invalid',
+                'A prefeitura recusou o código de serviço da nota. Confira o código LC 116, o código municipal ou o CNAE configurados na integração.',
+                422,
+            ],
+            str_contains($m, 'tomador'),
+            str_contains($m, 'cpf'),
+            str_contains($m, 'cnpj'),
+            str_contains($m, 'federaltaxnumber') => [
+                'invoice_customer_document_invalid',
+                'A nota foi recusada pelos dados do cliente (CPF/CNPJ ou nome). Confira as variáveis usadas no nó de nota fiscal.',
+                422,
+            ],
+            str_contains($m, 'endereco'),
+            str_contains($m, 'cep'),
+            str_contains($m, 'municipio'),
+            str_contains($m, 'address') => [
+                'invoice_customer_address_required',
+                'A prefeitura exige o endereço do cliente nesta nota. Preencha o endereço no nó de nota fiscal.',
+                422,
+            ],
+            str_contains($m, 'aliquota'),
+            str_contains($m, 'iss') && str_contains($m, 'invalid') => [
+                'invoice_tax_invalid',
+                'A prefeitura recusou a tributação da nota (alíquota ou ISS). Revise a configuração fiscal da empresa no painel do emissor.',
+                422,
+            ],
+            str_contains($m, 'invoice rejected'),
+            $code === 'invoice_rejected',
+            str_starts_with($code, 'spd'),
+            $code !== '' && ctype_digit($code) => [
+                'invoice_rejected',
+                "A nota fiscal foi rejeitada pela prefeitura. O motivo completo está no painel da {$app}.",
+                422,
+            ],
+            default => null,
         };
     }
 

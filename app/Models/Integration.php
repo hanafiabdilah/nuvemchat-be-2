@@ -92,15 +92,20 @@ class Integration extends Model
         return ($this->settings ?? [])[$key] ?? $default;
     }
 
+    public function invoices()
+    {
+        return $this->hasMany(FlowInvoice::class);
+    }
+
     /**
-     * Where the provider should call us about this account's payments.
+     * Where the provider should call us about this account's payments or
+     * invoices.
      *
-     * Only payment gateways have one: a pixel is fire-and-forget and nobody
-     * ever calls back about it.
+     * A pixel has none: it is fire-and-forget and nobody ever calls back.
      */
     public function webhookUrl(): ?string
     {
-        if ($this->category() !== IntegrationCategory::Payment) {
+        if (! $this->category()->receivesWebhooks()) {
             return null;
         }
 

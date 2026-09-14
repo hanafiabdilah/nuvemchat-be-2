@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\ConnectionController;
+use App\Http\Controllers\FlowInvoiceDocumentController;
+use App\Http\Controllers\FlowPaymentDoneController;
 use App\Http\Controllers\FlowPaymentQrController;
 use App\Http\Controllers\GalleryFileController;
 use Illuminate\Http\Middleware\HandleCors;
@@ -69,6 +71,23 @@ Route::get('/gallery/{uuid}/{filename}', [GalleryFileController::class, 'show'])
 Route::get('/flow-payments/{reference}/qr.png', [FlowPaymentQrController::class, 'show'])
     ->middleware('signed')
     ->name('flow-payments.qr');
+
+/**
+ * Where a customer lands after paying a Stripe Checkout link whose integration
+ * set no page of its own. Unsigned: it says nothing but "go back to the chat".
+ */
+Route::get('/flow-payments/{reference}/done', [FlowPaymentDoneController::class, 'show'])
+    ->name('flow-payments.done');
+
+/**
+ * The nota fiscal a flow's invoice node sent, fetched from the workspace's
+ * issuing platform on request. Signed for the reason the QR is; ends in `.pdf`
+ * or `.xml` because OutboundMedia decides the file type from the last segment.
+ */
+Route::get('/flow-invoices/{reference}/{filename}', [FlowInvoiceDocumentController::class, 'show'])
+    ->where('filename', '[A-Za-z0-9._-]+\.(pdf|xml)')
+    ->middleware('signed')
+    ->name('flow-invoices.document');
 
 require __DIR__.'/settings.php';
 require __DIR__.'/webhook.php';

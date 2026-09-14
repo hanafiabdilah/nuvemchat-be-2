@@ -2,11 +2,13 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Flow\FlowInvoiceStatus;
 use App\Enums\Flow\FlowPaymentStatus;
 use App\Enums\Integration\IntegrationCategory;
 use App\Enums\Integration\IntegrationProvider;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
+use App\Http\Resources\FlowInvoiceResource;
 use App\Http\Resources\FlowPaymentResource;
 use App\Http\Resources\IntegrationResource;
 use App\Models\Integration;
@@ -148,6 +150,34 @@ class IntegrationController extends Controller
                 'paid_count' => (clone $recent)->where('status', FlowPaymentStatus::Paid)->count(),
                 'paid_cents' => (int) (clone $recent)->where('status', FlowPaymentStatus::Paid)->sum('amount_cents'),
                 'pending_count' => (clone $recent)->where('status', FlowPaymentStatus::Pending)->count(),
+                'total_count' => (clone $recent)->count(),
+            ],
+        ]);
+    }
+
+    /**
+     * The notas fiscais flows asked for through this account, newest first,
+     * with a 30-day summary — the invoice counterpart of payments().
+     */
+    public function invoices(Request $request, int $id): JsonResponse
+    {
+        $integration = $this->find($request, $id);
+
+        $invoices = $integration->invoices()
+            ->with(['contact:id,name', 'flow:id,name'])
+            ->latest('id')
+            ->limit(30)
+            ->get();
+
+        $recent = $integration->invoices()->where('created_at', '>=', now()->subDays(30));
+
+        return response()->json([
+            'data' => FlowInvoiceResource::collection($invoices),
+            'summary' => [
+                'issued_count' => (clone $recent)->where('status', FlowInvoiceStatus::Issued)->count(),
+                'issued_cents' => (int) (clone $recent)->where('status', FlowInvoiceStatus::Issued)->sum('amount_cents'),
+                'processing_count' => (clone $recent)->where('status', FlowInvoiceStatus::Processing)->count(),
+                'failed_count' => (clone $recent)->where('status', FlowInvoiceStatus::Failed)->count(),
                 'total_count' => (clone $recent)->count(),
             ],
         ]);

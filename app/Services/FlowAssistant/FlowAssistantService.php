@@ -775,7 +775,7 @@ class FlowAssistantService
         - Set `flow` to null when there is nothing to build: a question about how
           something works, a request you need clarified, or something the platform
           cannot do. Then say so in `reply`.
-        - Only use ids (tags, agents, AI agents, payment and pixel integrations,
+        - Only use ids (tags, agents, AI agents, payment, invoice and pixel integrations,
           other flows, lead stages) that appear in the context below. Never invent one. If what
           the person asked for needs a tag, an agent or an integration that does not
           exist, build the rest and say in `reply` which piece is missing and where
@@ -809,6 +809,7 @@ class FlowAssistantService
             'agents' => $context['agents'] ?? [],
             'ai_agents' => $context['ai_agents'] ?? [],
             'payment_integrations' => $context['payment_integrations'] ?? [],
+            'invoice_integrations' => $context['invoice_integrations'] ?? [],
             'pixel_integrations' => $context['pixel_integrations'] ?? [],
             'flows' => $context['flows'] ?? [],
             'lead_stages' => $context['lead_stages'] ?? [],

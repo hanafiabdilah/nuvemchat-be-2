@@ -229,6 +229,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/{id}/test', [IntegrationController::class, 'test'])->whereNumber('id')->middleware(['permission:integrations.manage', 'throttle:20,1'])->name('test');
         Route::delete('/{id}', [IntegrationController::class, 'destroy'])->whereNumber('id')->middleware('permission:integrations.manage')->name('destroy');
         Route::get('/{id}/payments', [IntegrationController::class, 'payments'])->whereNumber('id')->middleware('permission:integrations.view')->name('payments');
+        Route::get('/{id}/invoices', [IntegrationController::class, 'invoices'])->whereNumber('id')->middleware('permission:integrations.view')->name('invoices');
     });
 
     Route::middleware('feature:' . Feature::Chat->value)->group(function () {

@@ -68,6 +68,14 @@ Schedule::command('flow-payments:sync')
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('Flow payment sync failed'));
 
+// Invoice nodes: the same net for notas fiscais — confirm authorizations whose
+// webhook never arrived, release flows whose deadline passed, and keep
+// following invoices the flow stopped waiting for.
+Schedule::command('flow-invoices:sync')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('Flow invoice sync failed'));
+
 // Close conversations whose channel reply window has run out (WhatsApp Official
 // 24h, TikTok 48h): they leave an info note in the thread and move to Resolved,
 // so the Active column only holds work an agent can actually answer. Capped per

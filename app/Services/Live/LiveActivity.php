@@ -45,6 +45,13 @@ final class LiveActivity
      */
     public const FLOW_PAYMENT = 'flow_payment';
 
+    /**
+     * An Invoice node, parked until the prefeitura or SEFAZ authorizes the
+     * nota fiscal. Its own phase for the reason `flow_payment` has one: the
+     * customer owes nothing here, and nobody should step in to ask them.
+     */
+    public const FLOW_INVOICE = 'flow_invoice';
+
     /** The debounce window: waiting for the customer to stop typing. */
     public const AI_ARMED = 'ai_armed';
 
@@ -167,6 +174,23 @@ final class LiveActivity
             'currency' => 'BRL',
             'provider' => $provider,
             'timeout_at' => $seconds > 0 ? $expiresAt->getTimestamp() : null,
+        ], fn ($value) => $value !== null), $seconds > 0 ? $seconds + 5 : self::AWAITING_TTL);
+    }
+
+    public static function flowInvoice(
+        Conversation $conversation,
+        FlowNode $node,
+        int $amountCents,
+        ?string $provider,
+        ?\DateTimeInterface $waitUntil,
+    ): void {
+        $seconds = $waitUntil ? max(0, $waitUntil->getTimestamp() - now()->timestamp) : 0;
+
+        self::emit($conversation, self::FLOW_INVOICE, $node, array_filter([
+            'amount_cents' => $amountCents,
+            'currency' => 'BRL',
+            'provider' => $provider,
+            'timeout_at' => $seconds > 0 ? $waitUntil->getTimestamp() : null,
         ], fn ($value) => $value !== null), $seconds > 0 ? $seconds + 5 : self::AWAITING_TTL);
     }
 

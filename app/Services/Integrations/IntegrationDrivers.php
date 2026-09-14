@@ -4,9 +4,13 @@ namespace App\Services\Integrations;
 
 use App\Enums\Integration\IntegrationProvider;
 use App\Models\Integration;
+use App\Services\Integrations\Invoices\InvoiceIssuer;
+use App\Services\Integrations\Invoices\SpedyIssuer;
+use App\Services\Integrations\Payments\AsaasGateway;
 use App\Services\Integrations\Payments\MercadoPagoGateway;
 use App\Services\Integrations\Payments\OpenPixGateway;
 use App\Services\Integrations\Payments\PaymentGateway;
+use App\Services\Integrations\Payments\StripeGateway;
 use App\Services\Integrations\Pixels\GoogleAnalyticsDriver;
 use App\Services\Integrations\Pixels\MetaPixelDriver;
 use App\Services\Integrations\Pixels\PixelDriver;
@@ -23,6 +27,9 @@ final class IntegrationDrivers
         return match ($integration->provider) {
             IntegrationProvider::OpenPix => new OpenPixGateway($integration),
             IntegrationProvider::MercadoPago => new MercadoPagoGateway($integration),
+            IntegrationProvider::Asaas => new AsaasGateway($integration),
+            IntegrationProvider::Stripe => new StripeGateway($integration),
+            IntegrationProvider::Spedy => new SpedyIssuer($integration),
             IntegrationProvider::MetaPixel => new MetaPixelDriver($integration),
             IntegrationProvider::GoogleAnalytics => new GoogleAnalyticsDriver($integration),
         };
@@ -34,6 +41,17 @@ final class IntegrationDrivers
 
         if (! $driver instanceof PaymentGateway) {
             throw new InvalidArgumentException("Integration {$integration->id} is not a payment gateway.");
+        }
+
+        return $driver;
+    }
+
+    public static function invoice(Integration $integration): InvoiceIssuer
+    {
+        $driver = self::for($integration);
+
+        if (! $driver instanceof InvoiceIssuer) {
+            throw new InvalidArgumentException("Integration {$integration->id} is not an invoice platform.");
         }
 
         return $driver;

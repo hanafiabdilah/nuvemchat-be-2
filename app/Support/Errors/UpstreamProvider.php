@@ -63,6 +63,12 @@ enum UpstreamProvider: string
 
     case MercadoPago = 'mercadopago';
 
+    case Asaas = 'asaas';
+
+    case Stripe = 'stripe';
+
+    case Spedy = 'spedy';
+
     case MetaPixel = 'meta_pixel';
 
     case GoogleAnalytics = 'google_analytics';
@@ -110,6 +116,9 @@ enum UpstreamProvider: string
             self::Email => 'o servidor de e-mail',
             self::OpenPix => 'a OpenPix',
             self::MercadoPago => 'o Mercado Pago',
+            self::Asaas => 'o Asaas',
+            self::Stripe => 'a Stripe',
+            self::Spedy => 'a Spedy',
             self::MetaPixel => 'o Pixel da Meta',
             self::GoogleAnalytics => 'o Google Analytics',
             self::Unknown => 'o serviço externo',

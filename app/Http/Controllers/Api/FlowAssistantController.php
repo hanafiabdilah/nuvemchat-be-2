@@ -315,6 +315,7 @@ class FlowAssistantController extends Controller
             // go-to-flow node may continue in. This is the only place the model
             // can learn a valid id, and an invented one is refused on save.
             'payment_integrations' => $this->integrationContext($tenantId, IntegrationCategory::Payment),
+            'invoice_integrations' => $this->integrationContext($tenantId, IntegrationCategory::Invoice),
             'pixel_integrations' => $this->integrationContext($tenantId, IntegrationCategory::Pixel),
             'flows' => Flow::where('tenant_id', $tenantId)
                 ->whereKeyNot($flow->id)

@@ -14,6 +14,7 @@ use App\Models\Integration;
 use App\Services\Contact\ContactIdentity;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Integrations\IntegrationDrivers;
+use App\Services\Integrations\Payments\CancelsCharges;
 use App\Services\Integrations\Payments\ChargeRequest;
 use App\Support\Errors\UpstreamError;
 use Carbon\CarbonImmutable;
@@ -92,11 +93,19 @@ class FlowPaymentService
             'expires_at' => $expiresAt,
         ]);
 
+        $document = trim($interpolate((string) ($data['payer_document'] ?? '')));
+
         $refusal = match (true) {
             $integration === null => 'A integração de pagamento deste nó não existe mais. Escolha outra em Configurações → Integrações e salve o fluxo.',
             ! $integration->enabled => "A integração \"{$integration->name}\" está desativada.",
             $amountCents === null => 'O valor da cobrança não é válido'.($rawAmount !== '' ? ": \"{$rawAmount}\"." : ' (ficou vazio).'),
             ! in_array($method, $integration->provider->paymentMethods(), true) => "{$integration->provider->label()} não oferece este tipo de cobrança.",
+            // Refused here rather than at the gateway: a charge that can never
+            // be created should not cost a round-trip, and "Asaas refused the
+            // customer" is less useful than naming the variable that was empty.
+            $integration->provider->requiresPayerDocument() && InvoiceNodes::document($document) === null => $document === ''
+                ? "{$integration->provider->label()} exige o CPF/CNPJ do pagador, e ele ficou vazio. Colete-o antes com um nó de Resposta e informe a variável no nó de pagamento."
+                : "{$integration->provider->label()} exige um CPF/CNPJ válido do pagador: \"{$document}\" não é um.",
             default => null,
         };
 
@@ -108,8 +117,6 @@ class FlowPaymentService
         // gateway ever sees it — a create that times out after the gateway
         // accepted it still leaves a row the sweep can reconcile.
         $payment->save();
-
-        $document = trim($interpolate((string) ($data['payer_document'] ?? '')));
 
         $charge = new ChargeRequest(
             reference: $payment->reference,
@@ -224,6 +231,36 @@ class FlowPaymentService
 
         if ($payment->isPending()) {
             $this->settle($payment, FlowPaymentStatus::Expired, null, 'expired');
+            $this->closeAtGateway($payment->fresh());
+        }
+    }
+
+    /**
+     * Close a charge the gateway would otherwise keep payable past our
+     * deadline — see CancelsCharges. Best-effort: a refusal usually means the
+     * customer paid in the last second, which the next read-back records.
+     */
+    private function closeAtGateway(FlowPayment $payment): void
+    {
+        $integration = $payment->integration;
+
+        if ($integration === null || $payment->status !== FlowPaymentStatus::Expired) {
+            return;
+        }
+
+        $driver = IntegrationDrivers::payment($integration);
+
+        if (! $driver instanceof CancelsCharges) {
+            return;
+        }
+
+        try {
+            $driver->cancelCharge($payment);
+        } catch (\Throwable $e) {
+            Log::info('FlowPaymentService: could not close an expired charge at the gateway', [
+                'flow_payment_id' => $payment->id,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 

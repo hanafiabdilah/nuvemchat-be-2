@@ -179,7 +179,7 @@ class IntegrationService
     public function usageByIntegration(int $tenantId): array
     {
         $nodes = FlowNode::query()
-            ->whereIn('type', [NodeType::Payment->value, NodeType::Pixel->value])
+            ->whereIn('type', [NodeType::Payment->value, NodeType::Invoice->value, NodeType::Pixel->value])
             ->whereHas('flow', fn ($query) => $query->where('tenant_id', $tenantId))
             ->with('flow:id,name')
             ->get(['id', 'flow_id', 'type', 'data']);
@@ -188,9 +188,9 @@ class IntegrationService
 
         foreach ($nodes as $node) {
             $data = $node->data ?? [];
-            $ids = $node->type === NodeType::Payment
-                ? [(int) ($data['integration_id'] ?? 0)]
-                : array_map('intval', (array) ($data['integration_ids'] ?? []));
+            $ids = $node->type === NodeType::Pixel
+                ? array_map('intval', (array) ($data['integration_ids'] ?? []))
+                : [(int) ($data['integration_id'] ?? 0)];
 
             foreach ($ids as $id) {
                 if ($id > 0 && $node->flow !== null) {

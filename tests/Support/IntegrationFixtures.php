@@ -39,6 +39,9 @@ final class IntegrationFixtures
     public const CREDENTIALS = [
         'openpix' => ['app_id' => 'Q2xpZW50X0lkXzEyMzQ1Njc4OTA6Q2xpZW50X1NlY3JldA=='],
         'mercadopago' => ['access_token' => 'APP_USR-1234567890123456-091000-abcdefabcdefabcdef-123456789'],
+        'asaas' => ['api_key' => '$aact_prod_fixture0000'],
+        'stripe' => ['secret_key' => 'sk_live_FixtureOnly0'],
+        'spedy' => ['api_key' => 'spedy-test-key-0123456789abcdef'],
         'meta_pixel' => ['access_token' => 'EAABsbCS1iHgBAKZCZBtestTokenValue1234567890'],
         'google_analytics' => ['api_secret' => 'gA4sEcReT_value_123'],
     ];
@@ -46,6 +49,9 @@ final class IntegrationFixtures
     public const SETTINGS = [
         'openpix' => ['sandbox' => false],
         'mercadopago' => [],
+        'asaas' => [],
+        'stripe' => [],
+        'spedy' => ['sandbox' => false, 'federal_service_code' => '1.06'],
         'meta_pixel' => ['pixel_id' => '123456789012345'],
         'google_analytics' => ['measurement_id' => 'G-TEST12345'],
     ];

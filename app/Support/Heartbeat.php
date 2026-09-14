@@ -42,6 +42,7 @@ class Heartbeat
         'emails:fetch' => ['Email inbox sync', 900, 'IMAP polling. Without it, e-mail conversations stop arriving.'],
         'gallery:renew' => ['Gallery storage renewal', 90000, 'Charges rented library space. Silently free storage if it stops.'],
         'flow-payments:sync' => ['Flow payment sync', 180, 'Confirms Pix payments whose webhook never arrived and expires unpaid ones. Without it a flow can wait on a payment forever.'],
+        'flow-invoices:sync' => ['Flow invoice sync', 180, 'Confirms notas fiscais whose webhook never arrived and releases flows past their deadline. Without it a flow can wait on an invoice forever.'],
     ];
 
     /**

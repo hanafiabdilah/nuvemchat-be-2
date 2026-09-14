@@ -8,6 +8,7 @@ use App\Models\Broadcast;
 use App\Models\Conversation;
 use App\Models\CreditTransaction;
 use App\Models\CreditWallet;
+use App\Models\FlowInvoice;
 use App\Models\FlowPayment;
 use App\Models\GalleryAsset;
 use App\Models\GalleryStorageRental;
@@ -343,6 +344,66 @@ trait Commerce
                 'expires_at' => $at->copy()->addHour(), 'paid_at' => $status === 'paid' ? $at->copy()->addMinutes($late ? 75 : 12) : null,
                 'settled_at' => $status === 'pending' ? null : $at->copy()->addMinutes(15),
                 'meta' => $late ? ['paid_late' => true] : null, 'created_at' => $at, 'updated_at' => $at,
+            ]);
+        }
+
+        $this->seedFlowInvoices();
+    }
+
+    /**
+     * "Cobrança com nota fiscal": Asaas charges and the notas fiscais Spedy
+     * issued (or did not) for them — one row per status the list can show.
+     */
+    private function seedFlowInvoices(): void
+    {
+        $flow = $this->flows['nota'];
+        $pay = $this->nodes['nota.pay'];
+        $invoiceNode = $this->nodes['nota.invoice'];
+        $spedy = $this->integrations['spedy'];
+
+        // contact, cents, invoice status, minutes ago, number, released, failure reason, customer CPF/CNPJ (invented).
+        // Oldest first: the lists sort by id, so insertion order is the order on screen (newest on top).
+        $rows = [
+            [$this->pool['tg'][0], 14990, 'cancelled', 6200, '1031', false, null, '36925814702'],
+            [$this->pool['wa'][7], 14990, 'issued', 2600, '1039', true, null, '74185296301'],
+            [$this->pool['ig'][1], 14990, 'failed', 1500, null, false, 'A prefeitura recusou o código de serviço informado. Confira o código na integração.', '98765432100'],
+            [$this->pool['wa'][4], 29980, 'processing', 420, null, true, null, '12345678000195'],
+            [$this->pool['apiway'][0], 14990, 'issued', 190, '1045', false, null, '11144477735'],
+            [$this->pool['wa'][2], 14990, 'processing', 3, null, false, null, '52998224725'],
+        ];
+
+        foreach ($rows as $i => [$contact, $amount, $status, $minutes, $number, $released, $reason, $document]) {
+            $at = $this->ago($minutes);
+
+            $payment = $this->make(FlowPayment::class, [
+                'tenant_id' => $this->tenant->id, 'integration_id' => $this->integrations['asaas']->id, 'provider' => 'asaas',
+                'contact_id' => $contact->id, 'flow_id' => $flow->id, 'flow_node_id' => $pay->id,
+                'reference' => 'pingly-fp-' . Str::lower((string) Str::ulid()), 'provider_payment_id' => 'pay_' . Str::lower(Str::random(14)),
+                'method' => 'pix', 'amount_cents' => $amount, 'currency' => 'BRL', 'description' => 'Assessoria de corrida — ' . $contact->name,
+                'status' => 'paid', 'pix_code' => '00020126580014BR.GOV.BCB.PIX0136manual-demo-asaas-' . $i . '5204000053039865802BR5913LOJA AURORA6009SAO PAULO6304ABCD',
+                'expires_at' => $at->copy()->addMinutes(50), 'paid_at' => $at->copy()->subMinutes(1), 'settled_at' => $at->copy()->subMinutes(1),
+                'created_at' => $at->copy()->subMinutes(8), 'updated_at' => $at,
+            ]);
+
+            $issued = in_array($status, ['issued', 'cancelled'], true);
+            $meta = array_filter([
+                'released_at' => $released ? $at->copy()->addMinutes(30)->toIso8601String() : null,
+                'cancelled_at' => $status === 'cancelled' ? $at->copy()->addDay()->toIso8601String() : null,
+            ]);
+
+            $this->make(FlowInvoice::class, [
+                'tenant_id' => $this->tenant->id, 'integration_id' => $spedy->id, 'provider' => 'spedy',
+                'contact_id' => $contact->id, 'flow_id' => $flow->id, 'flow_node_id' => $invoiceNode->id, 'flow_payment_id' => $payment->id,
+                'reference' => 'pingly-nf-' . Str::lower((string) Str::ulid()),
+                'provider_invoice_id' => $status === 'failed' ? null : 'spd-' . Str::lower(Str::random(12)),
+                'amount_cents' => $amount, 'currency' => 'BRL', 'description' => 'Assessoria de corrida — plano mensal',
+                'customer_name' => $contact->name, 'customer_document' => $document, 'status' => $status,
+                'number' => $number, 'wait_until' => $at->copy()->addMinutes(30),
+                'issued_at' => $issued ? $at->copy()->addMinutes($released ? 95 : 1) : null,
+                'settled_at' => $status === 'processing' ? null : $at->copy()->addMinutes($released ? 95 : 1),
+                'last_checked_at' => $status === 'processing' ? $this->ago(1) : null,
+                'failure_reason' => $reason, 'meta' => $meta ?: null,
+                'created_at' => $at, 'updated_at' => $at,
             ]);
         }
     }
