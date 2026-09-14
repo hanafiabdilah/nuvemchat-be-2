@@ -5,20 +5,21 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * Credentials for the workspace-level public API (POST /api/v1/leads, …).
+ * Credentials for the public API (/api/v1/*).
  *
- * Not a column on `tenants` and not the per-connection `connections.api_key`:
- * a workspace key reaches every connection, so it has to be nameable ("ProxyBR",
- * "Site"), revocable one integration at a time, and never readable again after
- * it is shown — only its SHA-256 is stored. The keys are 48 random characters,
- * so a plain hash is enough; a slow hash would buy nothing against a secret
- * that cannot be guessed and would cost a bcrypt on every request.
+ * One kind of key, owned by the workspace: a request names the connection it
+ * acts on (`connection_id`, the connection's public id) rather than being
+ * scoped to one by its key. So a key has to be nameable ("ProxyBR", "Site"),
+ * revocable one integration at a time, and never readable again after it is
+ * shown — only its SHA-256 is stored. The keys are 48 random characters, so a
+ * plain hash is enough; a slow hash would buy nothing against a secret that
+ * cannot be guessed and would cost a bcrypt on every request.
  */
 return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('tenant_api_keys', function (Blueprint $table) {
+        Schema::create('api_keys', function (Blueprint $table) {
             $table->id();
             $table->foreignId('tenant_id')->constrained()->cascadeOnDelete();
             $table->string('name', 100);
@@ -38,6 +39,6 @@ return new class extends Migration
 
     public function down(): void
     {
-        Schema::dropIfExists('tenant_api_keys');
+        Schema::dropIfExists('api_keys');
     }
 };

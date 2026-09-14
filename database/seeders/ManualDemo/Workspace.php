@@ -256,7 +256,6 @@ trait Workspace
                 'color' => $color,
                 'status' => $status,
                 'credentials' => $credentials ?: null,
-                'api_key' => in_array($key, ['wa', 'apiway', 'tg', 'ig'], true) ? 'pk_' . Str::random(40) : null,
                 'created_at' => $this->now->copy()->subDays($ageDays),
                 'updated_at' => $this->now->copy()->subDays(1),
             ]);

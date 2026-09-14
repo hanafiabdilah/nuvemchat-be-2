@@ -20,7 +20,7 @@ return new class extends Migration
         Schema::create('lead_intakes', function (Blueprint $table) {
             $table->id();
             $table->foreignId('tenant_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('api_key_id')->nullable()->constrained('tenant_api_keys')->nullOnDelete();
+            $table->foreignId('api_key_id')->nullable()->constrained('api_keys')->nullOnDelete();
             $table->string('reference', 191)->nullable();
             $table->foreignId('connection_id')->nullable()->constrained()->nullOnDelete();
             $table->foreignId('contact_id')->nullable()->constrained()->nullOnDelete();

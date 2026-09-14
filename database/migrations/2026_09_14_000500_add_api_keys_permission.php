@@ -5,11 +5,11 @@ use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 
 /**
- * `api-keys.manage` — create and revoke workspace API keys.
+ * `api-keys.manage` — create and revoke API keys.
  *
- * Separate from `connections.generate-api-key`: that key sends through one
- * connection, while a workspace key opens conversations on any of them and
- * writes to the sales board. Handing out the second is a bigger decision.
+ * An API key acts for the whole workspace: it sends through any connection,
+ * opens conversations and writes to the sales board. That is a decision about
+ * the workspace, not about one connection, so it is its own permission.
  *
  * Declared in RoleAndPermissionSeeder too, but deploys only run
  * `migrate --force`, so existing owners get it here.

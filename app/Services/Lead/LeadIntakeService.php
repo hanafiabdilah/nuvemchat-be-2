@@ -15,6 +15,7 @@ use App\Events\MessageReceived;
 use App\Exceptions\ChannelCapabilityException;
 use App\Exceptions\PublicApiException;
 use App\Exceptions\UpstreamServiceException;
+use App\Models\ApiKey;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -23,7 +24,6 @@ use App\Models\LeadIntake;
 use App\Models\LeadStage;
 use App\Models\Tag;
 use App\Models\Tenant;
-use App\Models\TenantApiKey;
 use App\Models\User;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Conversation\OutboundConversationResolver;
@@ -87,7 +87,7 @@ final class LeadIntakeService
      * @param  array<string, mixed>  $data  already validated by the controller
      * @return array{status: int, body: array<string, mixed>}
      */
-    public function receive(Tenant $tenant, TenantApiKey $key, array $data): array
+    public function receive(Tenant $tenant, ApiKey $key, array $data): array
     {
         $reference = trim((string) ($data['reference'] ?? '')) ?: null;
 
@@ -192,7 +192,8 @@ final class LeadIntakeService
             ->whereIn('channel', array_map(fn (Channel $channel) => $channel->value, self::CHANNELS));
 
         if ($connectionId !== null && $connectionId !== '') {
-            $connection = (clone $whatsapp)->find((int) $connectionId);
+            // The public id (conn_…), never the numeric primary key.
+            $connection = (clone $whatsapp)->where('public_id', (string) $connectionId)->first();
 
             if (! $connection) {
                 throw ValidationException::withMessages([
@@ -228,7 +229,7 @@ final class LeadIntakeService
             'connection_required',
             extra: [
                 'connections' => $active->map(fn (Connection $c) => [
-                    'id' => $c->id,
+                    'id' => $c->public_id,
                     'name' => $c->name,
                     'channel' => $c->channel->value,
                 ])->all(),
@@ -358,7 +359,7 @@ final class LeadIntakeService
     private function process(
         LeadIntake $intake,
         Tenant $tenant,
-        TenantApiKey $key,
+        ApiKey $key,
         Connection $connection,
         string $phone,
         array $data,
@@ -423,7 +424,7 @@ final class LeadIntakeService
                 'id' => $conversation->id,
                 'created' => $resolved->wasCreated,
                 'status' => $conversation->status->value,
-                'connection_id' => $connection->id,
+                'connection_id' => $connection->public_id,
                 'assigned_to' => $conversation->user_id
                     ? ['id' => $conversation->user_id, 'name' => User::whereKey($conversation->user_id)->value('name')]
                     : null,
@@ -576,7 +577,7 @@ final class LeadIntakeService
      * It is also what makes a brand-new thread visible at all: the inbox lists
      * conversations that have at least one message.
      */
-    private function note(Conversation $conversation, Contact $contact, TenantApiKey $key, array $data): void
+    private function note(Conversation $conversation, Contact $contact, ApiKey $key, array $data): void
     {
         $name = trim((string) $data['name']);
 

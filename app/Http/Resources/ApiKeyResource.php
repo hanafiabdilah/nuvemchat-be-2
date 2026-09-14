@@ -6,10 +6,10 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 /**
- * A workspace API key as the dashboard lists it. Never the secret or its hash —
- * the plain key travels once, as `plain_key` beside this in the create response.
+ * An API key as the dashboard lists it. Never the secret or its hash — the
+ * plain key travels once, as `plain_key` beside this in the create response.
  */
-class TenantApiKeyResource extends JsonResource
+class ApiKeyResource extends JsonResource
 {
     public function toArray(Request $request): array
     {

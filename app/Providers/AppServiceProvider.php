@@ -38,13 +38,13 @@ class AppServiceProvider extends ServiceProvider
 
         $this->registerQueueHeartbeat();
 
-        // Workspace-level public API. Counted per key, not per IP: the callers
-        // are servers, and two integrations behind one NAT must not share a
-        // budget. Runs after V1\TenantApiAuth has put the key on the request.
+        // Public API. Counted per key, not per IP: the callers are servers, and
+        // two integrations behind one NAT must not share a budget. Runs after
+        // V1\ApiKeyAuth has put the key on the request.
         RateLimiter::for('public-api', function (Request $request) {
-            $key = $request->attributes->get('tenant_api_key');
+            $key = $request->attributes->get('api_key');
 
-            return Limit::perMinute(120)->by($key ? 'tenant-api-key:'.$key->id : 'ip:'.$request->ip());
+            return Limit::perMinute(120)->by($key ? 'api-key:'.$key->id : 'ip:'.$request->ip());
         });
     }
 

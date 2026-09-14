@@ -6,11 +6,11 @@ use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Models\ApiKey;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\Tenant;
-use App\Models\TenantApiKey;
 use App\Models\User;
 use App\Services\Message\MessageService;
 use Closure;
@@ -20,8 +20,8 @@ use Mockery\MockInterface;
 use Spatie\Permission\Models\Permission;
 
 /**
- * Setup for the public lead API suite. A class rather than Pest helper
- * functions, which are global and collide across test files.
+ * Setup for the public API suite. A class rather than Pest helper functions,
+ * which are global and collide across test files.
  */
 final class LeadIntakeFixtures
 {
@@ -69,7 +69,7 @@ final class LeadIntakeFixtures
 
     public static function key(User $owner, string $name = 'ProxyBR'): string
     {
-        [, $plain] = TenantApiKey::issue($owner->tenant, $name, $owner);
+        [, $plain] = ApiKey::issue($owner->tenant, $name, $owner);
 
         return $plain;
     }

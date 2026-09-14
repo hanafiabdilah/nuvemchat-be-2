@@ -8,8 +8,8 @@ use Illuminate\Http\Resources\Json\JsonResource;
 /**
  * A channel connection as seen from the Back Office.
  *
- * Deliberately omits `credentials` and `api_key` — those are tenant secrets
- * and must never reach the platform admin UI.
+ * Deliberately omits `credentials` — those are tenant secrets and must never
+ * reach the platform admin UI.
  *
  * Expects `tenant.user` eager-loaded and `conversations_count` via withCount.
  */

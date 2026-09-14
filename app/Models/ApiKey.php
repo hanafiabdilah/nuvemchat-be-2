@@ -8,20 +8,15 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Str;
 
 /**
- * A credential for the workspace-level public API.
+ * A credential for the public API (/api/v1/*), owned by a workspace.
  *
  * The plain key exists exactly once — in the response that created it. After
  * that only its hash is here, so "show me the key again" is answered by
  * creating a new one, the same way every payment gateway does it.
  */
-class TenantApiKey extends Model
+class ApiKey extends Model
 {
-    /**
-     * Distinguishes a workspace key from a connection key (64 bare hex
-     * characters) at a glance, and lets the API tell a caller who pasted the
-     * wrong one what they did instead of just "invalid".
-     */
-    public const PREFIX = 'pk_ws_';
+    public const PREFIX = 'pk_';
 
     public const MAX_ACTIVE_PER_TENANT = 10;
 
@@ -74,7 +69,7 @@ class TenantApiKey extends Model
             'tenant_id' => $tenant->id,
             'name' => $name,
             'key_hash' => self::hash($plain),
-            'hint' => substr($plain, 0, 10).'…'.substr($plain, -4),
+            'hint' => substr($plain, 0, 8).'…'.substr($plain, -4),
             'created_by' => $creator?->id,
         ]);
 

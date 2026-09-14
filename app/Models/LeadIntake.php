@@ -30,7 +30,7 @@ class LeadIntake extends Model
 
     public function apiKey(): BelongsTo
     {
-        return $this->belongsTo(TenantApiKey::class, 'api_key_id');
+        return $this->belongsTo(ApiKey::class, 'api_key_id');
     }
 
     public function lead(): BelongsTo

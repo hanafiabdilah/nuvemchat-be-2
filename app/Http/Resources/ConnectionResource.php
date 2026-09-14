@@ -42,6 +42,9 @@ class ConnectionResource extends JsonResource
 
         return [
             'id' => $this->id,
+            // What the dashboard shows as the Connection ID and what the public
+            // API takes as `connection_id` — never the numeric id above.
+            'public_id' => $this->public_id,
             'channel' => $this->channel,
             'name' => $this->name,
             'color' => $this->color,
@@ -74,7 +77,6 @@ class ConnectionResource extends JsonResource
                 'tolerance_minutes' => (int) $this->return_to_last_agent_minutes,
             ],
             'flow' => new FlowResource($this->flow),
-            'api_key' => $this->api_key,
             // 'webhook_url' => route('webhook.chat', $this->id),
             'created_at' => $this->created_at,
             // Only the list query selects this (see ConnectionController@index).

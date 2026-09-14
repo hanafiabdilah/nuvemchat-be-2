@@ -807,17 +807,6 @@ class ConnectionController extends Controller
         ], 202);
     }
 
-    public function generateApiKey(int $id)
-    {
-        $connection = Connection::where('tenant_id', request()->user()->tenant_id)->findOrFail($id);
-        $this->connectionService->generateApiKey($connection);
-
-        return response()->json([
-            'message' => 'API Key generated successfully',
-            'data' => $connection->toResource(ConnectionResource::class),
-        ], 200);
-    }
-
     public function disconnect(int $id)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);

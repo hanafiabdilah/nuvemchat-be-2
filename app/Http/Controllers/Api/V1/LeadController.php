@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Models\TenantApiKey;
+use App\Models\ApiKey;
 use App\Services\Lead\LeadIntakeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,7 +12,7 @@ use Illuminate\Validation\ValidationException;
 /**
  * POST /api/v1/leads — another system hands Pingly a prospect.
  *
- * Authenticated by a workspace key (V1\TenantApiAuth). The work is in
+ * Authenticated by the workspace's API key (V1\ApiKeyAuth). The work is in
  * LeadIntakeService; this only checks the shape of the request.
  */
 class LeadController extends Controller
@@ -31,7 +31,7 @@ class LeadController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'phone' => ['required', 'string', 'max:32'],
             'email' => ['nullable', 'email', 'max:255'],
-            'connection_id' => ['nullable', 'integer'],
+            'connection_id' => ['nullable', 'string', 'max:40'],
             'reference' => ['nullable', 'string', 'max:191'],
             'title' => ['nullable', 'string', 'max:255'],
             'value' => ['nullable', 'numeric', 'min:0', 'max:9999999999'],
@@ -49,8 +49,8 @@ class LeadController extends Controller
 
         $this->assertMetadata($data['metadata'] ?? []);
 
-        /** @var TenantApiKey $key */
-        $key = $request->attributes->get('tenant_api_key');
+        /** @var ApiKey $key */
+        $key = $request->attributes->get('api_key');
 
         $outcome = $this->intake->receive($key->tenant, $key, $data);
 

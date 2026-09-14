@@ -6,9 +6,12 @@ use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
 use App\Enums\Connection\SyncStatus;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
 
 class Connection extends Model
 {
+    public const PUBLIC_ID_PREFIX = 'conn_';
+
     protected $fillable = [
         'tenant_id',
         'flow_id',
@@ -26,7 +29,6 @@ class Connection extends Model
         'sync_error',
         'sync_remaining',
         'sync_started_at',
-        'api_key',
         'accept_message',
         'closing_message',
         'return_to_last_agent',
@@ -51,6 +53,30 @@ class Connection extends Model
         'return_to_last_agent' => 'boolean',
         'return_to_last_agent_minutes' => 'integer',
     ];
+
+    /**
+     * `public_id` is the id people and integrations see — the Connection ID in
+     * the dashboard and `connection_id` in the public API. Never the
+     * auto-increment: that one counts every workspace's connections, so it
+     * leaks how many exist and invites guessing a neighbour's. Assigned on
+     * create, which covers every path that makes a connection (the wizard,
+     * duplicate, seeders), and never mass-assignable.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (Connection $connection) {
+            $connection->public_id ??= self::newPublicId();
+        });
+    }
+
+    public static function newPublicId(): string
+    {
+        do {
+            $id = self::PUBLIC_ID_PREFIX.Str::lower(Str::random(16));
+        } while (self::where('public_id', $id)->exists());
+
+        return $id;
+    }
 
     /**
      * How long after a conversation closes a returning contact still counts as

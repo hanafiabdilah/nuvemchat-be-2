@@ -7,6 +7,7 @@ use App\Enums\Lead\LeadSource;
 use App\Enums\Lead\StageKind;
 use App\Enums\Message\MessageType;
 use App\Exceptions\ChannelCapabilityException;
+use App\Models\ApiKey;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Lead;
@@ -14,7 +15,6 @@ use App\Models\LeadIntake;
 use App\Models\LeadStage;
 use App\Models\Message;
 use App\Models\Tag;
-use App\Models\TenantApiKey;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Lead\LeadIntakeService;
 use App\Services\Lead\LeadResolver;
@@ -29,19 +29,19 @@ beforeEach(function () {
 
 /*
 |--------------------------------------------------------------------------
-| Workspace keys
+| API keys
 |--------------------------------------------------------------------------
 */
 
-it('creates a workspace key that is shown once and authenticates', function () {
+it('creates an API key that is shown once and authenticates', function () {
     $owner = F::owner();
-    F::connection($owner);
+    $connection = F::connection($owner);
 
     $created = $this->actingAs($owner)->postJson('/api/api-keys', ['name' => 'ProxyBR'])->assertCreated();
     $plain = $created->json('plain_key');
 
-    expect($plain)->toStartWith(TenantApiKey::PREFIX)
-        ->and(TenantApiKey::sole()->key_hash)->toBe(hash('sha256', $plain));
+    expect($plain)->toStartWith(ApiKey::PREFIX)
+        ->and(ApiKey::sole()->key_hash)->toBe(hash('sha256', $plain));
 
     $list = $this->actingAs($owner)->getJson('/api/api-keys')->assertOk();
 
@@ -52,12 +52,14 @@ it('creates a workspace key that is shown once and authenticates', function () {
     $this->withHeaders(['X-Api-Key' => $plain])
         ->getJson('/api/v1/connections')
         ->assertOk()
-        ->assertJsonPath('data.0.accepts_leads', true);
+        ->assertJsonPath('data.0.id', $connection->public_id)
+        ->assertJsonPath('data.0.accepts_leads', true)
+        ->assertJsonPath('data.0.sends_messages', true);
 
-    expect(TenantApiKey::sole()->last_used_at)->not->toBeNull();
+    expect(ApiKey::sole()->last_used_at)->not->toBeNull();
 });
 
-it('lets only api-keys.manage handle workspace keys', function () {
+it('lets only api-keys.manage handle API keys', function () {
     $owner = F::owner();
     $agent = F::agent($owner);
 
@@ -69,7 +71,7 @@ it('stops accepting a key the moment it is revoked', function () {
     $owner = F::owner();
     $plain = F::key($owner);
 
-    $this->actingAs($owner)->deleteJson('/api/api-keys/'.TenantApiKey::sole()->id)->assertOk();
+    $this->actingAs($owner)->deleteJson('/api/api-keys/'.ApiKey::sole()->id)->assertOk();
 
     $this->withHeaders(['X-Api-Key' => $plain])
         ->getJson('/api/v1/connections')
@@ -77,23 +79,15 @@ it('stops accepting a key the moment it is revoked', function () {
         ->assertJsonPath('code', 'api_key_invalid');
 });
 
-it('tells the caller what is wrong with the key it sent', function () {
+it('tells the caller what is wrong with the key it sent, and takes a bearer token too', function () {
     $owner = F::owner();
-    $connectionKey = str_repeat('a', 64);
-    F::connection($owner)->forceFill(['api_key' => $connectionKey])->save();
 
     $this->getJson('/api/v1/connections')->assertUnauthorized()->assertJsonPath('code', 'api_key_missing');
 
-    $this->withHeaders(['X-Api-Key' => 'pk_ws_not-a-real-key'])
+    $this->withHeaders(['X-Api-Key' => 'pk_not-a-real-key'])
         ->getJson('/api/v1/connections')
         ->assertUnauthorized()
         ->assertJsonPath('code', 'api_key_invalid');
-
-    // The likeliest mix-up on a page that lists both kinds of key.
-    $this->withHeaders(['X-Api-Key' => $connectionKey])
-        ->postJson('/api/v1/leads', [])
-        ->assertUnauthorized()
-        ->assertJsonPath('code', 'connection_key_not_accepted');
 
     $this->flushHeaders();
 
@@ -142,6 +136,7 @@ it('turns a sign-up into a card, a queued thread with the form details and a fir
         ->assertJsonPath('data.contact.created', true)
         ->assertJsonPath('data.lead.created', true)
         ->assertJsonPath('data.conversation.created', true)
+        ->assertJsonPath('data.conversation.connection_id', $connection->public_id)
         ->assertJsonPath('data.conversation.status', ConversationStatus::Pending->value)
         ->assertJsonPath('data.conversation.assigned_to', null)
         ->assertJsonPath('data.opening_message.status', 'sent');
@@ -240,7 +235,7 @@ it('requires a template to open a WhatsApp Official conversation, and sends it',
     ])->assertCreated()->assertJsonPath('data.opening_message.status', 'sent');
 });
 
-it('asks which number to use when the workspace has several, and refuses an inactive one', function () {
+it('asks which number to use when the workspace has several, by public id, and refuses an inactive one', function () {
     $owner = F::owner();
     $sales = F::connection($owner, Channel::WhatsappApiway, 'Vendas');
     F::connection($owner, Channel::WhatsappOfficial, 'Suporte');
@@ -253,15 +248,21 @@ it('asks which number to use when the workspace has several, and refuses an inac
     $this->withHeaders(['X-Api-Key' => $plain])->postJson('/api/v1/leads', $lead)
         ->assertUnprocessable()
         ->assertJsonPath('code', 'connection_required')
+        ->assertJsonPath('connections.0.id', $sales->public_id)
         ->assertJsonCount(2, 'connections');
 
-    $this->withHeaders(['X-Api-Key' => $plain])->postJson('/api/v1/leads', $lead + ['connection_id' => $paused->id])
+    $this->withHeaders(['X-Api-Key' => $plain])->postJson('/api/v1/leads', $lead + ['connection_id' => $paused->public_id])
         ->assertUnprocessable()
         ->assertJsonPath('code', 'connection_inactive');
 
-    $this->withHeaders(['X-Api-Key' => $plain])->postJson('/api/v1/leads', $lead + ['connection_id' => $sales->id])
+    // The numeric primary key is not an id the API knows.
+    $this->withHeaders(['X-Api-Key' => $plain])->postJson('/api/v1/leads', $lead + ['connection_id' => (string) $sales->id])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('connection_id');
+
+    $this->withHeaders(['X-Api-Key' => $plain])->postJson('/api/v1/leads', $lead + ['connection_id' => $sales->public_id])
         ->assertCreated()
-        ->assertJsonPath('data.conversation.connection_id', $sales->id);
+        ->assertJsonPath('data.conversation.connection_id', $sales->public_id);
 });
 
 it('finds the contact the inbox already has under the old spelling of a Brazilian mobile', function () {
@@ -350,7 +351,7 @@ it('applies known tags and reports unknown ones without failing', function () {
         'name' => 'Maria',
         'phone' => '5511987654321',
         'tags' => ['cadastro sem pagamento', 'inexistente'],
-    ])->assertCreated()->assertJsonPath('ignored_tags', null)->assertJsonPath('data.ignored_tags', ['inexistente']);
+    ])->assertCreated()->assertJsonPath('data.ignored_tags', ['inexistente']);
 
     expect(Conversation::sole()->tags->pluck('name')->all())->toBe(['Cadastro sem pagamento']);
 });
