@@ -140,7 +140,9 @@ ws.pingly.com.br {
 # One block each. Before adding one here, its DNS must already point at this
 # server (Caddy requests the certificate on reload). Then register the domain
 # in market_domains and in the Meta app — see docs/country-domains.md.
-#
-# app.pingly.id {
-#     import country_site
-# }
+
+# Indonesia — running in parallel with the platform host while the market is
+# being prepared.
+chat.pingly.id {
+    import country_site
+}
