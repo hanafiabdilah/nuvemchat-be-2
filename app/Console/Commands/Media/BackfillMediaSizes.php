@@ -3,8 +3,8 @@
 namespace App\Console\Commands\Media;
 
 use App\Models\Message;
+use App\Services\Media\MediaStorage;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
@@ -31,7 +31,7 @@ class BackfillMediaSizes extends Command
         $limit = max(1, (int) $this->option('limit'));
         $chunk = max(1, min((int) $this->option('chunk'), 1000));
 
-        $disk = Storage::disk('local');
+        $disk = MediaStorage::disk();
         $measured = 0;
         $missing = 0;
         $bytes = 0;

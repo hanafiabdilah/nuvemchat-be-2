@@ -29,6 +29,16 @@ return Application::configure(basePath: dirname(__DIR__))
                 \Illuminate\Routing\Middleware\SubstituteBindings::class,
                 \App\Http\Middleware\SanitizeUpstreamErrors::class,
             ])->group(__DIR__.'/../routes/widget.php');
+
+            // Private media behind signed links. Replaces Laravel's built-in
+            // storage.local route (serve => false on the local disk) at the same
+            // address and signature, so links cached in dashboards survive the
+            // move to object storage. Outside the web group: no session or
+            // cookies on files that Meta, the AI hub and <img> tags fetch.
+            \Illuminate\Support\Facades\Route::middleware([\App\Http\Middleware\EnsurePlatformHost::class])
+                ->get('/storage/{path}', [\App\Http\Controllers\MediaFileController::class, 'show'])
+                ->where('path', '.*')
+                ->name('media.file');
         },
     )
     // Channel authorization runs on the API stack with the Sanctum guard, so

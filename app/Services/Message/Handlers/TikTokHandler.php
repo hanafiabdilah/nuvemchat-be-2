@@ -10,12 +10,12 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\TikTok\TikTokMessagingClient;
 use App\Services\Connection\TikTok\TikTokReplyWindow;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Outbound TikTok DMs from the agent UI. The Business Messaging API only
@@ -114,7 +114,7 @@ class TikTokHandler implements MessageHandlerInterface
             ]);
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $contents);
+            MediaStorage::disk()->put($mediaPath, $contents);
 
             $message->update([
                 'attachment' => $mediaPath,

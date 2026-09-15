@@ -19,6 +19,7 @@ use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -26,7 +27,6 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
@@ -515,7 +515,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
         $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
 
-        Storage::disk('local')->put($mediaPath, Http::get($fileUrl)->body());
+        MediaStorage::disk()->put($mediaPath, Http::get($fileUrl)->body());
 
         $message->update([
             'attachment' => $mediaPath,

@@ -16,13 +16,13 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Media\MediaStorage;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Discord inbound events. There is no webhook: the discord:gateway daemon
@@ -445,7 +445,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $extension = pathinfo($filename, PATHINFO_EXTENSION) ?: 'bin';
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $response->body());
+            MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([
                 'attachment' => $mediaPath,

@@ -3,8 +3,8 @@
 namespace App\Services\Instagram;
 
 use App\Exceptions\InstagramApiException;
+use App\Services\Media\MediaStorage;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
@@ -85,12 +85,15 @@ class InstagramMediaPreparer
      */
     private function storeVideo(UploadedFile $file, int $tenantId): array
     {
-        $path = $file->store($this->directory($tenantId), 'public');
+        // Published, not outbound: the URL is stored on the post item and read
+        // by the publisher when a scheduled post goes out — possibly days later,
+        // long after a presigned address would have died.
+        $path = $file->store($this->directory($tenantId), MediaStorage::publishedDiskName());
 
         return [
             'media_type' => 'video',
             'path' => $path,
-            'url' => Storage::disk('public')->url($path),
+            'url' => MediaStorage::publishedUrl($path),
         ];
     }
 
@@ -104,12 +107,14 @@ class InstagramMediaPreparer
             try {
                 $path = $this->directory($tenantId) . '/' . Str::uuid() . '.jpg';
 
-                Storage::disk('public')->put($path, $this->encodeWithinLimit($canvas));
+                // Published for the same reason as video: a scheduled post reads
+                // this URL when it publishes.
+                MediaStorage::published()->put($path, $this->encodeWithinLimit($canvas));
 
                 return [
                     'media_type' => 'image',
                     'path' => $path,
-                    'url' => Storage::disk('public')->url($path),
+                    'url' => MediaStorage::publishedUrl($path),
                 ];
             } finally {
                 if ($canvas !== $source) {

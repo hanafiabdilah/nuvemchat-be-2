@@ -16,12 +16,12 @@ use App\Models\Message;
 use App\Services\Connection\TikTok\TikTokMessagingClient;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Media\MediaStorage;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Handles TikTok Business Messaging webhook events. The payload is the raw
@@ -337,7 +337,7 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $extension = $this->getExtensionFromContentType($response->header('Content-Type'));
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
 
-            Storage::disk('local')->put($mediaPath, $response->body());
+            MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([
                 'attachment' => $mediaPath,

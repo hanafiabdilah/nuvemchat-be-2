@@ -6,10 +6,10 @@ use App\Enums\Conversation\Type;
 use App\Enums\Message\AttachmentStatus;
 use App\Models\Message;
 use App\Services\Media\MediaRetention;
+use App\Services\Media\MediaStorage;
 use App\Support\Heartbeat;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Deletes message media once it is past its retention window.
@@ -116,7 +116,7 @@ class PurgeExpiredMedia extends Command
             ->whereHas('conversation', fn ($q) => $q->where('type', $type))
             ->orderBy('id')
             ->limit($limit)
-            ->get(['id', 'attachment', 'attachment_status', 'meta']);
+            ->get(['id', 'attachment', 'attachment_size', 'attachment_status', 'meta']);
 
         $purgedIds = [];
         $files = 0;
@@ -124,7 +124,8 @@ class PurgeExpiredMedia extends Command
 
         foreach ($messages as $message) {
             foreach (MediaRetention::localPathsFor($message) as $path) {
-                $size = $this->deleteFile($path, $dryRun);
+                $knownSize = $path === $message->attachment ? $message->attachment_size : null;
+                $size = $this->deleteFile($path, $dryRun, $knownSize);
 
                 if ($size === null) {
                     continue;
@@ -212,34 +213,49 @@ class PurgeExpiredMedia extends Command
      */
     private function purgeOrphanWidgetUploads(int $limit, bool $dryRun): array
     {
-        $disk = Storage::disk('local');
-
-        if (! $disk->exists('widget-uploads')) {
-            return ['files' => 0, 'bytes' => 0];
-        }
+        $disk = MediaStorage::disk();
 
         $ttlHours = max(1, (int) config('media.widget_upload_ttl_hours', 24));
         $cutoff = now()->subHours($ttlHours)->getTimestamp();
 
-        $stale = collect($disk->allFiles('widget-uploads'))
-            ->filter(fn (string $path) => rescue(fn () => $disk->lastModified($path), 0, false) < $cutoff)
-            ->take($limit)
-            ->values();
+        // One listing that already carries each file's age and size, instead of
+        // a lastModified() per file: on object storage every one of those is a
+        // round trip to the bucket. A folder that does not exist lists nothing.
+        $stale = [];
 
-        if ($stale->isEmpty()) {
+        foreach ($disk->listContents('widget-uploads', true) as $item) {
+            if (! $item->isFile()) {
+                continue;
+            }
+
+            $modified = $item->lastModified()
+                ?? (int) rescue(fn () => $disk->lastModified($item->path()), 0, false);
+
+            if ($modified >= $cutoff) {
+                continue;
+            }
+
+            $stale[$item->path()] = $item->fileSize();
+
+            if (count($stale) >= $limit) {
+                break;
+            }
+        }
+
+        if ($stale === []) {
             return ['files' => 0, 'bytes' => 0];
         }
 
         // An upload that did become a message is covered by the retention
         // sweep above, on that message's own clock.
-        $referenced = Message::whereIn('attachment', $stale->all())->pluck('attachment')->all();
-        $orphans = $stale->diff($referenced);
+        $referenced = Message::whereIn('attachment', array_keys($stale))->pluck('attachment')->all();
+        $orphans = array_diff(array_keys($stale), $referenced);
 
         $files = 0;
         $bytes = 0;
 
         foreach ($orphans as $path) {
-            $size = $this->deleteFile($path, $dryRun);
+            $size = $this->deleteFile($path, $dryRun, $stale[$path]);
 
             if ($size === null) {
                 continue;
@@ -249,7 +265,8 @@ class PurgeExpiredMedia extends Command
             $bytes += $size;
         }
 
-        if (! $dryRun) {
+        // Empty folders are a local-disk thing; a bucket has none to tidy.
+        if (! $dryRun && MediaStorage::isLocalDisk(MediaStorage::diskName())) {
             foreach ($disk->directories('widget-uploads') as $directory) {
                 if ($disk->allFiles($directory) === []) {
                     $disk->deleteDirectory($directory);
@@ -268,9 +285,21 @@ class PurgeExpiredMedia extends Command
     }
 
     /** Size of the file that was (or would be) deleted, or null if it was already gone. */
-    private function deleteFile(string $path, bool $dryRun): ?int
+    private function deleteFile(string $path, bool $dryRun, ?int $knownSize = null): ?int
     {
-        $disk = Storage::disk('local');
+        $disk = MediaStorage::disk();
+
+        // On object storage exists() and size() are each a round trip to the
+        // bucket, for up to a thousand files a pass. The size is already known
+        // (recorded on the message, or carried by the listing) and deleting a
+        // key that is already gone is not an error there, so both checks go.
+        if (! MediaStorage::isLocalDisk(MediaStorage::diskName())) {
+            if (! $dryRun) {
+                $disk->delete($path);
+            }
+
+            return $knownSize ?? 0;
+        }
 
         if (! $disk->exists($path)) {
             return null;

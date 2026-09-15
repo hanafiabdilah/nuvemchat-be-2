@@ -16,11 +16,11 @@ use App\Models\Conversation;
 use App\Models\LiveChatSession;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Media\MediaStorage;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
@@ -137,12 +137,12 @@ class WidgetController extends Controller
             $ext,
         );
 
-        Storage::disk('local')->put($path, file_get_contents($file->getRealPath()));
+        MediaStorage::disk()->put($path, file_get_contents($file->getRealPath()));
 
         $expiresAt = Carbon::now()->addHours(6);
 
         return response()->json([
-            'url' => Storage::disk('local')->temporaryUrl($path, $expiresAt),
+            'url' => MediaStorage::signedUrl($path, $expiresAt),
             'message_type' => $messageType->value,
             'filename' => $file->getClientOriginalName(),
             'mime_type' => $file->getClientMimeType(),
@@ -185,8 +185,8 @@ class WidgetController extends Controller
             $messageType = $this->inferMessageTypeFromPath($attachmentPath);
             $meta = [
                 'filename' => basename($attachmentPath),
-                'mime_type' => Storage::disk('local')->mimeType($attachmentPath) ?: null,
-                'size' => Storage::disk('local')->size($attachmentPath),
+                'mime_type' => MediaStorage::disk()->mimeType($attachmentPath) ?: null,
+                'size' => MediaStorage::disk()->size($attachmentPath),
             ];
         }
 
@@ -307,7 +307,7 @@ class WidgetController extends Controller
 
         $storagePath = ltrim(substr($urlPath, $pos), '/');
 
-        if (!Storage::disk('local')->exists($storagePath)) return null;
+        if (!MediaStorage::disk()->exists($storagePath)) return null;
 
         return $storagePath;
     }
@@ -323,7 +323,7 @@ class WidgetController extends Controller
 
     private function inferMessageTypeFromPath(string $path): MessageType
     {
-        $mime = Storage::disk('local')->mimeType($path) ?: '';
+        $mime = MediaStorage::disk()->mimeType($path) ?: '';
         return $this->inferMessageTypeFromMime($mime, pathinfo($path, PATHINFO_EXTENSION));
     }
 

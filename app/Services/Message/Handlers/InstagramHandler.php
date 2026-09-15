@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
@@ -17,7 +18,6 @@ use Exception;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
 {
@@ -173,10 +173,10 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             $tempFileName = 'temp_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
             $tempPublicPath = 'images/' . $tempFileName;
 
-            Storage::disk('public')->put($tempPublicPath, $imageContent);
+            MediaStorage::outbound()->put($tempPublicPath, $imageContent);
 
             // Generate public URL
-            $imageUrl = url('storage/' . $tempPublicPath);
+            $imageUrl = MediaStorage::outboundUrl($tempPublicPath);
 
             Log::info('InstagramHandler: Sending image via URL', [
                 'url' => $imageUrl,
@@ -226,20 +226,20 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             ]);
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, $imageContent);
+            MediaStorage::disk()->put($mediaPath, $imageContent);
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
 
             // Delete temporary public file
-            // Storage::disk('public')->delete($tempPublicPath);
+            // MediaStorage::outbound()->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
             // Clean up temporary file if exists
-            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
-                Storage::disk('public')->delete($tempPublicPath);
+            if ($tempPublicPath && MediaStorage::outbound()->exists($tempPublicPath)) {
+                MediaStorage::outbound()->delete($tempPublicPath);
             }
 
             Log::error('InstagramHandler: Failed to send image', [
@@ -369,28 +369,28 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             $tempFileName = 'temp_' . uniqid() . '.' . $extension;
             $tempPublicPath = 'audios/' . $tempFileName;
 
-            $saved = Storage::disk('public')->put($tempPublicPath, $audioContent);
+            $saved = MediaStorage::outbound()->put($tempPublicPath, $audioContent);
 
-            if (!$saved || !Storage::disk('public')->exists($tempPublicPath)) {
+            if (!$saved || !MediaStorage::outbound()->exists($tempPublicPath)) {
                 throw new Exception('Failed to save audio file to public storage');
             }
 
             // Verify file was saved correctly
-            $savedSize = Storage::disk('public')->size($tempPublicPath);
+            $savedSize = MediaStorage::outbound()->size($tempPublicPath);
             if ($savedSize === 0) {
-                Storage::disk('public')->delete($tempPublicPath);
+                MediaStorage::outbound()->delete($tempPublicPath);
                 throw new Exception('Saved audio file is empty');
             }
 
             // Generate public URL
-            $audioUrl = url('storage/' . $tempPublicPath);
+            $audioUrl = MediaStorage::outboundUrl($tempPublicPath);
 
             Log::info('InstagramHandler: Sending audio via URL', [
                 'url' => $audioUrl,
                 'format' => $extension,
                 'size' => strlen($audioContent),
                 'saved_size' => $savedSize,
-                'full_path' => Storage::disk('public')->path($tempPublicPath),
+                'path' => $tempPublicPath,
                 'conversation_id' => $conversation->id,
             ]);
 
@@ -439,7 +439,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
 
             // Store the converted audio content permanently
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $audioContent);
+            MediaStorage::disk()->put($mediaPath, $audioContent);
 
             $message->update([
                 'attachment' => $mediaPath,
@@ -451,13 +451,13 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             }
 
             // Delete temporary public file
-            // Storage::disk('public')->delete($tempPublicPath);
+            // MediaStorage::outbound()->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
             // Clean up temporary files if exist
-            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
-                Storage::disk('public')->delete($tempPublicPath);
+            if ($tempPublicPath && MediaStorage::outbound()->exists($tempPublicPath)) {
+                MediaStorage::outbound()->delete($tempPublicPath);
             }
 
             if ($convertedFilePath && file_exists($convertedFilePath)) {
@@ -507,10 +507,10 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             $tempFileName = 'temp_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
             $tempPublicPath = 'videos/' . $tempFileName;
 
-            Storage::disk('public')->put($tempPublicPath, $videoContent);
+            MediaStorage::outbound()->put($tempPublicPath, $videoContent);
 
             // Generate public URL
-            $videoUrl = url('storage/' . $tempPublicPath);
+            $videoUrl = MediaStorage::outboundUrl($tempPublicPath);
 
             Log::info('InstagramHandler: Sending video via URL', [
                 'url' => $videoUrl,
@@ -560,20 +560,20 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             ]);
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, $videoContent);
+            MediaStorage::disk()->put($mediaPath, $videoContent);
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
 
             // Delete temporary public file
-            // Storage::disk('public')->delete($tempPublicPath);
+            // MediaStorage::outbound()->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
             // Clean up temporary file if exists
-            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
-                Storage::disk('public')->delete($tempPublicPath);
+            if ($tempPublicPath && MediaStorage::outbound()->exists($tempPublicPath)) {
+                MediaStorage::outbound()->delete($tempPublicPath);
             }
 
             Log::error('InstagramHandler: Failed to send video', [
@@ -625,10 +625,10 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             $tempFileName = 'temp_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
             $tempPublicPath = 'documents/' . $tempFileName;
 
-            Storage::disk('public')->put($tempPublicPath, $documentContent);
+            MediaStorage::outbound()->put($tempPublicPath, $documentContent);
 
             // Generate public URL
-            $documentUrl = url('storage/' . $tempPublicPath);
+            $documentUrl = MediaStorage::outboundUrl($tempPublicPath);
 
             // Get original filename
             $filename = $data['document']->getClientOriginalName();
@@ -682,20 +682,20 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             ]);
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, $documentContent);
+            MediaStorage::disk()->put($mediaPath, $documentContent);
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
 
             // Delete temporary public file
-            // Storage::disk('public')->delete($tempPublicPath);
+            // MediaStorage::outbound()->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
             // Clean up temporary file if exists
-            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
-                Storage::disk('public')->delete($tempPublicPath);
+            if ($tempPublicPath && MediaStorage::outbound()->exists($tempPublicPath)) {
+                MediaStorage::outbound()->delete($tempPublicPath);
             }
 
             Log::error('InstagramHandler: Failed to send document', [

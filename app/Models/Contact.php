@@ -4,8 +4,8 @@ namespace App\Models;
 
 use App\Enums\Connection\Channel;
 use App\Events\ContactCreated;
+use App\Services\Media\MediaStorage;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\Storage;
 
 class Contact extends Model
 {
@@ -129,7 +129,7 @@ class Contact extends Model
     public function getPhotoProfileUrlAttribute(): ?string
     {
         return $this->photo_profile
-            ? Storage::disk('local')->temporaryUrl($this->photo_profile, now()->addMonths(6))
+            ? MediaStorage::signedUrl($this->photo_profile, now()->addMonths(6))
             : null;
     }
 }

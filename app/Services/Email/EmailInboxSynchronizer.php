@@ -14,10 +14,10 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Media\MediaStorage;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
@@ -536,7 +536,7 @@ class EmailInboxSynchronizer
         }
 
         $path = 'media/'.$message->id.'_'.uniqid().'_body.html';
-        Storage::disk('local')->put($path, $html);
+        MediaStorage::disk()->put($path, $html);
 
         $meta['email']['html_path'] = $path;
         $message->update(['meta' => $meta]);
@@ -587,7 +587,7 @@ class EmailInboxSynchronizer
             $path .= '.'.strtolower($extension);
         }
 
-        Storage::disk('local')->put($path, $attachment->content);
+        MediaStorage::disk()->put($path, $attachment->content);
 
         return $path;
     }

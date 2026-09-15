@@ -27,6 +27,7 @@ const PLATFORM_ONLY_PREFIXES = [
     'gallery/',
     'flow-payments/',
     'flow-invoices/',
+    'storage/',
 ];
 
 function registerCountryDomain(): void

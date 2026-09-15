@@ -9,6 +9,7 @@ use App\Enums\Message\SenderType;
 use App\Events\MessageReceived;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
@@ -18,7 +19,6 @@ use Exception;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
 {
@@ -323,7 +323,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
 
             // Store the original image content (not base64)
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, $imageContent);
+            MediaStorage::disk()->put($mediaPath, $imageContent);
 
             $message->update([
                 'attachment' => $mediaPath,
@@ -462,7 +462,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
 
             // Store the converted audio content
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $audioContent);
+            MediaStorage::disk()->put($mediaPath, $audioContent);
 
             $message->update([
                 'attachment' => $mediaPath,
@@ -525,10 +525,10 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             $tempFileName = 'temp_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
             $tempPublicPath = 'videos/' . $tempFileName;
 
-            Storage::disk('public')->put($tempPublicPath, $videoContent);
+            MediaStorage::outbound()->put($tempPublicPath, $videoContent);
 
             // Generate public URL
-            $videoUrl = url('storage/' . $tempPublicPath);
+            $videoUrl = MediaStorage::outboundUrl($tempPublicPath);
 
             Log::info('WhatsappApiwayHandler: Sending video via URL', [
                 'url' => $videoUrl,
@@ -572,20 +572,20 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
 
             // Store the original video content permanently
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, $videoContent);
+            MediaStorage::disk()->put($mediaPath, $videoContent);
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
 
             // Delete temporary public file
-            // Storage::disk('public')->delete($tempPublicPath);
+            // MediaStorage::outbound()->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
             // Clean up temporary file if exists
-            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
-                Storage::disk('public')->delete($tempPublicPath);
+            if ($tempPublicPath && MediaStorage::outbound()->exists($tempPublicPath)) {
+                MediaStorage::outbound()->delete($tempPublicPath);
             }
 
             Log::error('WhatsappApiwayHandler: Failed to send video message', [
@@ -647,10 +647,10 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             $tempFileName = 'temp_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
             $tempPublicPath = 'documents/' . $tempFileName;
 
-            Storage::disk('public')->put($tempPublicPath, $documentContent);
+            MediaStorage::outbound()->put($tempPublicPath, $documentContent);
 
             // Generate public URL
-            $documentUrl = url('storage/' . $tempPublicPath);
+            $documentUrl = MediaStorage::outboundUrl($tempPublicPath);
 
             // Get original filename and extension
             $filename = $data['document']->getClientOriginalName();
@@ -702,20 +702,20 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
 
             // Store the original document content permanently
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, $documentContent);
+            MediaStorage::disk()->put($mediaPath, $documentContent);
 
             $message->update([
                 'attachment' => $mediaPath,
             ]);
 
             // Delete temporary public file
-            // Storage::disk('public')->delete($tempPublicPath);
+            // MediaStorage::outbound()->delete($tempPublicPath);
 
             return $message;
         } catch (\Throwable $th) {
             // Clean up temporary file if exists
-            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
-                Storage::disk('public')->delete($tempPublicPath);
+            if ($tempPublicPath && MediaStorage::outbound()->exists($tempPublicPath)) {
+                MediaStorage::outbound()->delete($tempPublicPath);
             }
 
             Log::error('WhatsappApiwayHandler: Failed to send document message', [

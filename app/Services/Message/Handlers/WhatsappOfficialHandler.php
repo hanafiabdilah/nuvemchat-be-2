@@ -10,6 +10,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\AudioNormalizer;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
@@ -20,7 +21,6 @@ use Exception;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
 {
@@ -733,7 +733,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
             );
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $content);
+            MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update(['attachment' => $mediaPath]);
 

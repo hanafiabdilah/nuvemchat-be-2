@@ -18,6 +18,7 @@ use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -25,7 +26,6 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
@@ -774,7 +774,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
             // Save media file
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $response->body());
+            MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([
                 'attachment' => $mediaPath,

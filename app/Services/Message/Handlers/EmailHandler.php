@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\EmailSmtpTransportFactory;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\MessageHandlerInterface;
 use Carbon\Carbon;
@@ -17,7 +18,6 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
@@ -468,7 +468,7 @@ class EmailHandler implements MessageHandlerInterface, MarksMessagesAsRead
             $path .= '.' . strtolower($extension);
         }
 
-        Storage::disk('local')->put($path, file_get_contents($file->getRealPath()));
+        MediaStorage::disk()->put($path, file_get_contents($file->getRealPath()));
 
         return $path;
     }

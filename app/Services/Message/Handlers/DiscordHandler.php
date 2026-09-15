@@ -6,6 +6,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
@@ -13,7 +14,6 @@ use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Outbound Discord sends via the REST API (Bot token). The conversation's
@@ -257,7 +257,7 @@ class DiscordHandler implements MessageHandlerInterface, SendsTypingIndicator
 
             $extension = pathinfo($filename, PATHINFO_EXTENSION) ?: 'bin';
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $content);
+            MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update([
                 'attachment' => $mediaPath,

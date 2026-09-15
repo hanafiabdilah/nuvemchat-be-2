@@ -17,6 +17,7 @@ use App\Models\MessageReaction;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\MessageService;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -25,7 +26,6 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
@@ -624,7 +624,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
 
             // Save media file
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $mediaResponse->body());
+            MediaStorage::disk()->put($mediaPath, $mediaResponse->body());
 
             $message->update([
                 'attachment' => $mediaPath,

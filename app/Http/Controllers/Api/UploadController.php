@@ -3,10 +3,16 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\Media\MediaStorage;
 use Illuminate\Http\Request;
 
 class UploadController extends Controller
 {
+    /**
+     * Media for flows, carousel cards and campaigns. The returned URL is written
+     * into those and sent again for months, so it lives on the published disk,
+     * whose addresses never expire.
+     */
     public function store(Request $request)
     {
         $request->validate([
@@ -14,10 +20,10 @@ class UploadController extends Controller
         ]);
 
         $file = $request->file('file');
-        $path = $file->store('uploads', 'public');
+        $path = $file->store('uploads', MediaStorage::publishedDiskName());
 
         return response()->json([
-            'url' => asset('storage/' . $path),
+            'url' => MediaStorage::publishedUrl($path),
             'path' => $path,
             'filename' => $file->getClientOriginalName(),
             'size' => $file->getSize(),

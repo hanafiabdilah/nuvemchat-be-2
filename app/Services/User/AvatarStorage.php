@@ -3,9 +3,9 @@
 namespace App\Services\User;
 
 use App\Models\User;
+use App\Services\Media\MediaStorage;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -118,7 +118,7 @@ class AvatarStorage
 
     private function disk(): \Illuminate\Contracts\Filesystem\Filesystem
     {
-        return Storage::disk('local');
+        return MediaStorage::disk();
     }
 
     private function delete(?string $path): void

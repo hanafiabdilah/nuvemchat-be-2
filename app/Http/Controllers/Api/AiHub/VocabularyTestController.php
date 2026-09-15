@@ -16,12 +16,12 @@ use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiVocabulary;
 use App\Services\AiAgentHub\AiVoiceReply;
+use App\Services\Media\MediaStorage;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 /**
@@ -107,13 +107,13 @@ class VocabularyTestController extends Controller
         // Stored only for as long as the run takes: the hub fetches the file
         // itself, by the same kind of signed link a stored voice note travels
         // as, and nothing about a test recording is worth keeping afterwards.
-        $path = $file->storeAs('vocabulary-tests/' . $tenant->id, Str::uuid() . '.' . $extension, 'local');
+        $path = $file->storeAs('vocabulary-tests/' . $tenant->id, Str::uuid() . '.' . $extension, MediaStorage::diskName());
 
         try {
             $attachments = [[
                 'type' => 'audio',
                 'mimeType' => AiAttachments::audioMimeFor($extension),
-                'url' => Storage::disk('local')->temporaryUrl($path, now()->addMinutes(15)),
+                'url' => MediaStorage::signedUrl($path, now()->addMinutes(15)),
                 'name' => 'teste-vocabulario.' . $extension,
             ]];
 
@@ -130,7 +130,7 @@ class VocabularyTestController extends Controller
         } catch (AiRunQuotaExceededException|CreditExhaustedException|UpstreamServiceException $e) {
             return $this->refusal($e);
         } finally {
-            Storage::disk('local')->delete($path);
+            MediaStorage::disk()->delete($path);
         }
 
         $item = (array) data_get($run->metadata, 'inputAudio.items.0', []);

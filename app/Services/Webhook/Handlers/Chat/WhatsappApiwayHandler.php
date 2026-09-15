@@ -21,6 +21,7 @@ use App\Services\Conversation\CallLog;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -28,7 +29,6 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Inbound webhook handler for the WhatsApp API Way channel.
@@ -1207,7 +1207,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             }
 
             $path = 'media/'.$message->id.'_'.uniqid().'.'.$this->extensionFromMime($mimetype);
-            Storage::disk('local')->put($path, $plain);
+            MediaStorage::disk()->put($path, $plain);
             $message->update(['attachment' => $path]);
 
             Log::info('WhatsappApiwayHandler: media downloaded', ['message_id' => $message->id, 'path' => $path]);

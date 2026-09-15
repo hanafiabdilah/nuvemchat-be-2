@@ -33,7 +33,11 @@ return [
         'local' => [
             'driver' => 'local',
             'root' => storage_path('app/private'),
-            'serve' => true,
+            // Off on purpose: private media is served by our own route at the
+            // same /storage/{path} address (MediaFileController), which works
+            // for whichever disk holds the bytes. Laravel's would only ever
+            // look here, and two routes on one URI is a coin toss.
+            'serve' => false,
             'throw' => false,
             'report' => false,
         ],
@@ -56,6 +60,45 @@ return [
             'url' => env('AWS_URL'),
             'endpoint' => env('AWS_ENDPOINT'),
             'use_path_style_endpoint' => env('AWS_USE_PATH_STYLE_ENDPOINT', false),
+            'throw' => false,
+            'report' => false,
+        ],
+
+        /*
+        | Media on object storage (Vultr, S3-compatible): two disks over one
+        | bucket, kept apart by prefix. `media` (private/) is only ever reached
+        | through presigned URLs handed out by the signed media route; objects
+        | under `media_public` (public/) are world-readable, because their URLs
+        | are stored in flows, campaigns and scheduled posts and sent for months.
+        | Selected through MEDIA_DISK / MEDIA_OUTBOUND_DISK / MEDIA_PUBLISHED_DISK
+        | (config/media.php) — see docs/media-object-storage.md.
+        */
+
+        'media' => [
+            'driver' => 's3',
+            'key' => env('MEDIA_S3_KEY'),
+            'secret' => env('MEDIA_S3_SECRET'),
+            'region' => env('MEDIA_S3_REGION', 'us-east-1'),
+            'bucket' => env('MEDIA_S3_BUCKET'),
+            'endpoint' => env('MEDIA_S3_ENDPOINT'),
+            'use_path_style_endpoint' => true,
+            'root' => 'private',
+            'visibility' => 'private',
+            'throw' => false,
+            'report' => false,
+        ],
+
+        'media_public' => [
+            'driver' => 's3',
+            'key' => env('MEDIA_S3_KEY'),
+            'secret' => env('MEDIA_S3_SECRET'),
+            'region' => env('MEDIA_S3_REGION', 'us-east-1'),
+            'bucket' => env('MEDIA_S3_BUCKET'),
+            'endpoint' => env('MEDIA_S3_ENDPOINT'),
+            'url' => env('MEDIA_S3_PUBLIC_URL'),
+            'use_path_style_endpoint' => true,
+            'root' => 'public',
+            'visibility' => 'public',
             'throw' => false,
             'report' => false,
         ],

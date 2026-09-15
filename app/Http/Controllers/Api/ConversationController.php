@@ -32,6 +32,7 @@ use App\Services\Conversation\ConversationResolver;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Gallery\GalleryMediaResolver;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
 use Carbon\Carbon;
@@ -40,7 +41,6 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -594,12 +594,12 @@ class ConversationController extends Controller
         $message = $conversation->messages()->findOrFail($message_id);
         $path = $message->meta['email']['html_path'] ?? null;
 
-        if (! $path || ! Storage::disk('local')->exists($path)) {
+        if (! $path || ! MediaStorage::disk()->exists($path)) {
             return response()->json(['message' => 'This message has no HTML body'], 404);
         }
 
         return response()->json([
-            'html' => Storage::disk('local')->get($path),
+            'html' => MediaStorage::disk()->get($path),
         ]);
     }
 

@@ -11,10 +11,10 @@ use App\Jobs\PublishInstagramPost;
 use App\Models\InstagramPost;
 use App\Services\Instagram\InstagramGraphClientFactory;
 use App\Services\Instagram\InstagramMediaPreparer;
+use App\Services\Media\MediaStorage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -402,7 +402,7 @@ class InstagramPostController extends Controller
             ->get()
             ->each(function ($item) {
                 if ($item->path) {
-                    Storage::disk('public')->delete($item->path);
+                    MediaStorage::published()->delete($item->path);
                 }
             });
 
@@ -424,7 +424,7 @@ class InstagramPostController extends Controller
     {
         $post->items->each(function ($item) {
             if ($item->path) {
-                Storage::disk('public')->delete($item->path);
+                MediaStorage::published()->delete($item->path);
             }
         });
     }

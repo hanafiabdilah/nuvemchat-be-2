@@ -7,9 +7,9 @@ use App\Events\ConversationUpdated;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
+use App\Services\Media\MediaStorage;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 /**
@@ -130,7 +130,7 @@ class ContactPhotoSyncer
             ?: $this->extensionFromMimeType($response->header('Content-Type'));
 
         $path = 'profile_photos/' . $contact->id . '_' . uniqid() . '.' . $extension;
-        Storage::disk('local')->put($path, $body);
+        MediaStorage::disk()->put($path, $body);
 
         $contact->forceFill([
             'photo_profile' => $path,
@@ -200,15 +200,20 @@ class ContactPhotoSyncer
         ])->save();
     }
 
+    /**
+     * Compared by checksum, never by downloading the stored picture: on object
+     * storage that is the ETag from a single HEAD (the MD5 of the file for a
+     * single-part upload, which a profile photo always is), on the local disk
+     * an md5 of the file. Unchanged photos are the common case, so a download
+     * here would be paid on almost every TTL pass.
+     */
     private function isSameImage(string $storedPath, string $body): bool
     {
-        $disk = Storage::disk('local');
-
-        if (! $disk->exists($storedPath)) {
+        try {
+            return MediaStorage::disk()->checksum($storedPath) === md5($body);
+        } catch (Throwable) {
             return false;
         }
-
-        return md5($disk->get($storedPath)) === md5($body);
     }
 
     private function deleteFile(?string $path): void
@@ -218,7 +223,7 @@ class ContactPhotoSyncer
         }
 
         try {
-            Storage::disk('local')->delete($path);
+            MediaStorage::disk()->delete($path);
         } catch (Throwable $e) {
             Log::warning('ContactPhotoSyncer: could not delete the previous photo', [
                 'path' => $path,

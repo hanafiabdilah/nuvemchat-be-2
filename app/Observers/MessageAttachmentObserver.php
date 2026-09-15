@@ -3,9 +3,10 @@
 namespace App\Observers;
 
 use App\Models\Message;
+use App\Services\Media\MediaStorage;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use League\Flysystem\UnableToRetrieveMetadata;
 
 /**
  * Keeps `messages.attachment_size` in step with `messages.attachment`.
@@ -72,9 +73,13 @@ class MessageAttachmentObserver
         }
 
         try {
-            $disk = Storage::disk('local');
-
-            return $disk->exists($path) ? $disk->size($path) : null;
+            // One call, not exists() then size(): on object storage each is a
+            // round trip to the bucket, and this runs on every message that
+            // carries a file.
+            return MediaStorage::disk()->size($path);
+        } catch (UnableToRetrieveMetadata) {
+            // Already purged, or never written: nothing of ours to measure.
+            return null;
         } catch (\Throwable $e) {
             // Never let accounting break a message write.
             Log::warning('MessageAttachmentObserver: could not measure attachment', [

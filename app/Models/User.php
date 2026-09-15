@@ -3,10 +3,10 @@
 namespace App\Models;
 
 // use Illuminate\Contracts\Auth\MustVerifyEmail;
+use App\Services\Media\MediaStorage;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Illuminate\Support\Facades\Storage;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 use Laravel\Sanctum\HasApiTokens;
 use Spatie\Permission\Traits\HasRoles;
@@ -82,7 +82,7 @@ class User extends Authenticatable
             return null;
         }
 
-        return Storage::disk('local')->temporaryUrl(
+        return MediaStorage::signedUrl(
             $this->avatar_path,
             now()->startOfMonth()->addMonths(7),
         );

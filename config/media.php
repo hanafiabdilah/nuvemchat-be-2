@@ -4,6 +4,41 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Where media lives
+    |--------------------------------------------------------------------------
+    |
+    | Three roles, each a disk name from config/filesystems.php, all reached
+    | only through App\Services\Media\MediaStorage:
+    |
+    | - disk: private media behind signed links (attachments, avatars, contact
+    |   photos, widget uploads, e-mail).
+    | - outbound_disk: short-lived copies a channel fetches while we send.
+    | - published_disk: files whose URL is stored in flows and campaigns and
+    |   sent for months — that URL must never expire.
+    |
+    | The defaults are where everything has always been. Moving to object
+    | storage is changing these, not editing channels.
+    |
+    */
+
+    'disk' => env('MEDIA_DISK', 'local'),
+
+    'outbound_disk' => env('MEDIA_OUTBOUND_DISK', 'public'),
+
+    'published_disk' => env('MEDIA_PUBLISHED_DISK', 'public'),
+
+    /*
+    | Set only while media is being moved to a new disk (the old one, e.g.
+    | "local"): a signed link to a file that has not been copied yet is still
+    | served from here. Costs one existence check per request on the new disk,
+    | so it is removed once `media:migrate --dry-run` reports nothing missing.
+    | See docs/media-object-storage.md.
+    */
+
+    'legacy_disk' => env('MEDIA_LEGACY_DISK'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Media retention
     |--------------------------------------------------------------------------
     |

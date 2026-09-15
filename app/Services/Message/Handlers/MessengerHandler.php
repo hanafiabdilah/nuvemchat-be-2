@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
@@ -17,7 +18,6 @@ use Exception;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * Outbound Messenger sends via the Page Send API. Same URL-attachment model as
@@ -175,9 +175,9 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
             $extension = $data[$fileKey]->getClientOriginalExtension();
             $tempPublicPath = $fbType . 's/temp_' . uniqid() . '.' . $extension;
 
-            Storage::disk('public')->put($tempPublicPath, $content);
+            MediaStorage::outbound()->put($tempPublicPath, $content);
 
-            $publicUrl = url('storage/' . $tempPublicPath);
+            $publicUrl = MediaStorage::outboundUrl($tempPublicPath);
 
             $extraMeta = $fileKey === 'document'
                 ? ['filename' => $data[$fileKey]->getClientOriginalName()]
@@ -187,7 +187,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
 
             // Keep the original bytes privately for the dashboard preview.
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
-            Storage::disk('local')->put($mediaPath, $content);
+            MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update([
                 'attachment' => $mediaPath,
@@ -195,8 +195,8 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
 
             return $message;
         } catch (\Throwable $th) {
-            if ($tempPublicPath && Storage::disk('public')->exists($tempPublicPath)) {
-                Storage::disk('public')->delete($tempPublicPath);
+            if ($tempPublicPath && MediaStorage::outbound()->exists($tempPublicPath)) {
+                MediaStorage::outbound()->delete($tempPublicPath);
             }
 
             Log::error("MessengerHandler: Failed to send {$fbType}", [

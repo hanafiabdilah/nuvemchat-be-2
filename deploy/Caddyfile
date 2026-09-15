@@ -114,11 +114,26 @@ chat.pingly.com.br {
         import laravel
     }
 
-    # Unsigned public-disk files (uploads, outbound media Meta fetches while
-    # sending) are plain static files.
+    # Unsigned public files: uploads stored in flows and campaigns, Instagram
+    # post media, copies Meta fetches while sending. Served from the local
+    # public disk while the file is still there; otherwise from the bucket's
+    # public prefix, where they live since media moved to object storage
+    # (docs/media-object-storage.md). Addresses stored before the move keep
+    # working either way.
     handle_path /storage* {
         root * /var/www/html/storage/app/public
-        file_server
+
+        @local_file file
+        handle @local_file {
+            file_server
+        }
+
+        handle {
+            rewrite * /pingly-media/public{path}
+            reverse_proxy https://ewr1.vultrobjects.com {
+                header_up Host ewr1.vultrobjects.com
+            }
+        }
     }
 
     handle_path /webmin* {

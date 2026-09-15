@@ -220,10 +220,9 @@ test('the signed url expires on the day the file is deleted', function () {
     $deadline = MediaRetention::deadlineFor($message);
 
     expect($deadline->timestamp)->toBe($message->created_at->copy()->addDays(30)->timestamp)
-        // Storage::fake signs URLs as ?expiration=<unix>; production uses
-        // ?expires=<unix> via the signed storage route. Either way the number
-        // is the purge date.
-        ->and($payload['attachment_url'])->toContain('expiration='.$deadline->timestamp);
+        // The signed media route puts the purge date in ?expires=<unix>, which
+        // is what the dashboard reads to tell a dead link from a live one.
+        ->and($payload['attachment_url'])->toContain('expires='.$deadline->timestamp);
 });
 
 test('a message past its window resolves to no url even before the sweep runs', function () {

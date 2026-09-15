@@ -6,7 +6,6 @@ use App\Enums\Conversation\Type;
 use App\Models\Conversation;
 use App\Models\Message;
 use Carbon\CarbonImmutable;
-use Illuminate\Support\Facades\Storage;
 
 /**
  * One clock for a message's media: when the file gets deleted, and how long
@@ -120,7 +119,7 @@ class MediaRetention
             return null;
         }
 
-        return Storage::disk('local')->temporaryUrl(
+        return MediaStorage::signedUrl(
             $attachment,
             self::urlExpiresAt($owner, $conversation),
         );

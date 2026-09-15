@@ -7,13 +7,13 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Telegram\Bot\Api;
 
 class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
@@ -214,7 +214,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
             ]);
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['image']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, file_get_contents($data['image']->getRealPath()));
+            MediaStorage::disk()->put($mediaPath, file_get_contents($data['image']->getRealPath()));
 
             $message->update([
                 'attachment' => $mediaPath,
@@ -289,7 +289,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
             ]);
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['audio']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, file_get_contents($data['audio']->getRealPath()));
+            MediaStorage::disk()->put($mediaPath, file_get_contents($data['audio']->getRealPath()));
 
             $message->update([
                 'attachment' => $mediaPath,
@@ -366,7 +366,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
             ]);
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['video']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, file_get_contents($data['video']->getRealPath()));
+            MediaStorage::disk()->put($mediaPath, file_get_contents($data['video']->getRealPath()));
 
             $message->update([
                 'attachment' => $mediaPath,
@@ -446,7 +446,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
             ]);
 
             $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $data['document']->getClientOriginalExtension();
-            Storage::disk('local')->put($mediaPath, file_get_contents($data['document']->getRealPath()));
+            MediaStorage::disk()->put($mediaPath, file_get_contents($data['document']->getRealPath()));
 
             $message->update([
                 'attachment' => $mediaPath,
