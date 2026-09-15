@@ -4,6 +4,7 @@ namespace Database\Seeders\ManualDemo;
 
 use App\Models\ConversationNote;
 use App\Models\FlowState;
+use App\Services\Flow\WaitResponseNodes;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -318,13 +319,17 @@ trait Inbox
             'message_type' => 'interactive',
             'meta' => ['changes' => [['value' => ['messages' => [['interactive' => ['type' => 'button_reply', 'button_reply' => ['id' => 'btn_comprar', 'title' => 'Quero comprar']]]]]]]],
         ]);
-        $this->sent($pedro, $this->ago(15), 'Ótimo! Qual é o seu e-mail para enviarmos as ofertas?', ['sent_by_flow_id' => $inicial?->id]);
+        $question = $this->sent($pedro, $this->ago(15), 'Ótimo! Qual é o seu e-mail para enviarmos as ofertas?', ['sent_by_flow_id' => $inicial?->id]);
 
-        if ($inicial && isset($this->nodes['inicial.response'])) {
+        if ($inicial && isset($this->nodes['inicial.email'])) {
+            $wait = $this->nodes['inicial.email'];
+
+            // Parked on the Wait for reply node that asked for the e-mail. The
+            // watermark is the question: the newest message when it began waiting.
             $this->make(FlowState::class, [
                 'conversation_id' => $pedro->id, 'flow_id' => $inicial->id,
-                'current_node_id' => $this->nodes['inicial.response']->id,
-                'state_data' => ['_response_sent_' . $this->nodes['inicial.response']->id => true, 'contact_name' => 'Pedro Henrique Costa'],
+                'current_node_id' => $wait->id,
+                'state_data' => [WaitResponseNodes::parkedKey($wait->id) => $question->id, 'contact_name' => 'Pedro Henrique Costa'],
                 'status' => 'running', 'created_at' => $this->ago(18), 'updated_at' => $this->ago(15),
             ]);
         }

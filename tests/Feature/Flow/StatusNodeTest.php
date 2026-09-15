@@ -52,7 +52,7 @@ function statusNodeFixture(string $value = 'resolved'): array
     ]);
     $after = $flow->nodes()->create([
         'type' => NodeType::Message,
-        'data' => ['body' => 'Should never be sent.', 'message_type' => 'text', 'wait_for_reply' => false],
+        'data' => ['body' => 'Should never be sent.', 'message_type' => 'text'],
         'position_x' => 200,
         'position_y' => 0,
     ]);

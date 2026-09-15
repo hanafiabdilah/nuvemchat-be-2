@@ -7,6 +7,7 @@ enum NodeType: string
     case Start = 'start';
     case Message = 'message';
     case Response = 'response';
+    case WaitResponse = 'wait_response';
     case Tagging = 'tagging';
     case Condition = 'condition';
     case Status = 'status';
@@ -28,8 +29,9 @@ enum NodeType: string
                 'message_type' => 'text', // text, image, audio, video, document
                 'attachment' => null, // for non-text messages
                 'delay' => 0, // delay in seconds before sending the message
-                'wait_for_reply' => true, // true = wait for user reply before moving to next node, false = move immediately
+                // Never waits: pausing for the customer is the WaitResponse node's job.
             ],
+            // Asks, waits indefinitely for a valid answer, stores it. One output.
             self::Response => [
                 'body' => '',
                 'message_type' => 'text', // text, image, audio, video, document
@@ -37,6 +39,18 @@ enum NodeType: string
                 'variable_key' => '',
                 'validation' => null, // e.g. "any", "number", "email", "phone"
                 "error_message" => '', // message to show if validation fails
+            ],
+            // Parks the flow until the customer writes. Two outputs: `replied`
+            // and `timeout` (only when there is a limit). See
+            // App\Services\Flow\WaitResponseNodes.
+            self::WaitResponse => [
+                'message' => '', // optional, sent before waiting; supports {{variable}}
+                'variable_key' => '', // where the reply is stored; empty = not stored
+                'timeout_seconds' => 0, // 0 = wait indefinitely
+                'timeout_unit' => 'minutes', // display only: seconds | minutes | hours | days
+                'buffer_seconds' => 0, // 0 = the first message is the reply; otherwise wait for the customer to stop typing
+                'validation' => 'any', // any | number | email | phone
+                'error_message' => '', // sent when the reply fails validation
             ],
             // Closes the conversation. Holds a status value rather than a bare
             // flag because the column it writes is `conversations.status` — but

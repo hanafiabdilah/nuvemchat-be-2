@@ -7,7 +7,7 @@ use App\Models\FlowNode;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Flow\MessageNodes;
-use App\Services\Flow\ResponseNodes;
+use App\Services\Flow\WaitResponseNodes;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
@@ -51,7 +51,6 @@ test('a message node saves its list of bubbles', function () {
 
     $this->actingAs($user, 'sanctum')
         ->postJson("/api/flows/{$flow->id}/save", messageSavePayload($flow, 'message', [
-            'wait_for_reply' => false,
             'messages' => [
                 ['message_type' => 'text', 'body' => 'Oi!', 'delay' => 0],
                 ['message_type' => 'text', 'body' => 'Tudo bem?', 'delay' => 4],
@@ -74,7 +73,6 @@ test('a message node saves while its first bubble is still empty', function () {
 
     $this->actingAs($user, 'sanctum')
         ->postJson("/api/flows/{$flow->id}/save", messageSavePayload($flow, 'message', [
-            'wait_for_reply' => true,
             'messages' => [['message_type' => 'text', 'body' => '']],
         ]))
         ->assertOk();
@@ -88,13 +86,23 @@ test('a message node refuses more bubbles than one node may hold', function () {
 
     $this->actingAs($user, 'sanctum')
         ->postJson("/api/flows/{$flow->id}/save", messageSavePayload($flow, 'message', [
-            'wait_for_reply' => false,
             'messages' => $tooMany,
         ]))
         ->assertStatus(422);
 });
 
-test('a response node saves its no-reply limit and both branch edges', function () {
+test('a wait-for-reply node saves with nothing set — the plain pause', function () {
+    $user = messageSaveUser();
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Pause']);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/save", messageSavePayload($flow, 'wait_response', WaitResponseNodes::defaults()))
+        ->assertOk();
+
+    expect(FlowNode::where('flow_id', $flow->id)->where('type', NodeType::WaitResponse)->exists())->toBeTrue();
+});
+
+test('a wait-for-reply node saves its limit, buffer and both branch edges', function () {
     $user = messageSaveUser();
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Ask']);
     $start = $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
@@ -103,14 +111,16 @@ test('a response node saves its no-reply limit and both branch edges', function 
         'nodes' => [
             ['id' => (string) $start->id, 'type' => 'start', 'data' => null, 'position_x' => 0, 'position_y' => 0],
             [
-                'id' => 'node-ask',
-                'type' => 'response',
+                'id' => 'node-wait',
+                'type' => 'wait_response',
                 'data' => [
-                    'body' => 'Qual é o seu nome?',
-                    'message_type' => 'text',
-                    'variable_key' => 'nome',
-                    'validation' => 'any',
-                    'timeout_seconds' => 300,
+                    'message' => 'Qual é o seu e-mail?',
+                    'variable_key' => 'email',
+                    'timeout_seconds' => 3 * 86400,
+                    'timeout_unit' => 'days',
+                    'buffer_seconds' => 20,
+                    'validation' => 'email',
+                    'error_message' => 'Não consegui ler esse e-mail.',
                 ],
                 'position_x' => 200,
                 'position_y' => 0,
@@ -119,9 +129,9 @@ test('a response node saves its no-reply limit and both branch edges', function 
             ['id' => 'node-quiet', 'type' => 'message', 'data' => ['messages' => [['message_type' => 'text', 'body' => 'Ainda está aí?']]], 'position_x' => 400, 'position_y' => 200],
         ],
         'edges' => [
-            ['source_node_id' => (string) $start->id, 'target_node_id' => 'node-ask', 'condition_value' => null],
-            ['source_node_id' => 'node-ask', 'target_node_id' => 'node-ok', 'condition_value' => ResponseNodes::BRANCH_REPLIED],
-            ['source_node_id' => 'node-ask', 'target_node_id' => 'node-quiet', 'condition_value' => ResponseNodes::BRANCH_TIMEOUT],
+            ['source_node_id' => (string) $start->id, 'target_node_id' => 'node-wait', 'condition_value' => null],
+            ['source_node_id' => 'node-wait', 'target_node_id' => 'node-ok', 'condition_value' => WaitResponseNodes::BRANCH_REPLIED],
+            ['source_node_id' => 'node-wait', 'target_node_id' => 'node-quiet', 'condition_value' => WaitResponseNodes::BRANCH_TIMEOUT],
         ],
     ];
 
@@ -129,23 +139,32 @@ test('a response node saves its no-reply limit and both branch edges', function 
         ->postJson("/api/flows/{$flow->id}/save", $payload)
         ->assertOk();
 
-    $ask = FlowNode::where('flow_id', $flow->id)->where('type', NodeType::Response)->first();
+    $wait = FlowNode::where('flow_id', $flow->id)->where('type', NodeType::WaitResponse)->first();
 
-    expect(ResponseNodes::timeoutSeconds($ask->data))->toBe(300)
-        ->and(FlowEdge::where('source_node_id', $ask->id)->pluck('condition_value')->sort()->values()->all())
-        ->toBe([ResponseNodes::BRANCH_REPLIED, ResponseNodes::BRANCH_TIMEOUT]);
+    expect(WaitResponseNodes::timeoutSeconds($wait->data))->toBe(3 * 86400)
+        ->and(WaitResponseNodes::bufferSeconds($wait->data))->toBe(20)
+        ->and(FlowEdge::where('source_node_id', $wait->id)->pluck('condition_value')->sort()->values()->all())
+        ->toBe([WaitResponseNodes::BRANCH_REPLIED, WaitResponseNodes::BRANCH_TIMEOUT]);
 });
 
-test('a response node refuses a limit past a day', function () {
+test('a wait-for-reply node refuses a limit past 31 days', function () {
     $user = messageSaveUser();
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Ask']);
 
     $this->actingAs($user, 'sanctum')
-        ->postJson("/api/flows/{$flow->id}/save", messageSavePayload($flow, 'response', [
-            'body' => 'Qual é o seu nome?',
-            'message_type' => 'text',
-            'variable_key' => 'nome',
-            'timeout_seconds' => ResponseNodes::MAX_TIMEOUT_SECONDS + 1,
+        ->postJson("/api/flows/{$flow->id}/save", messageSavePayload($flow, 'wait_response', [
+            'timeout_seconds' => WaitResponseNodes::MAX_TIMEOUT_SECONDS + 1,
+        ]))
+        ->assertStatus(422);
+});
+
+test('a wait-for-reply node refuses a buffer longer than typing', function () {
+    $user = messageSaveUser();
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Ask']);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/save", messageSavePayload($flow, 'wait_response', [
+            'buffer_seconds' => WaitResponseNodes::MAX_BUFFER_SECONDS + 1,
         ]))
         ->assertStatus(422);
 });

@@ -50,13 +50,13 @@ function interactiveFlowFixture(): array
     ]);
     $yesNode = $flow->nodes()->create([
         'type' => NodeType::Message,
-        'data' => ['body' => 'Great!', 'message_type' => 'text', 'wait_for_reply' => false],
+        'data' => ['body' => 'Great!', 'message_type' => 'text'],
         'position_x' => 200,
         'position_y' => 0,
     ]);
     $noNode = $flow->nodes()->create([
         'type' => NodeType::Message,
-        'data' => ['body' => 'No worries.', 'message_type' => 'text', 'wait_for_reply' => false],
+        'data' => ['body' => 'No worries.', 'message_type' => 'text'],
         'position_x' => 200,
         'position_y' => 100,
     ]);

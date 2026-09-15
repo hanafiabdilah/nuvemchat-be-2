@@ -59,7 +59,7 @@ function incompleteAiPayload(Flow $flow, array $aiData): array
             [
                 'id' => 'node-msg',
                 'type' => 'message',
-                'data' => ['wait_for_reply' => false, 'messages' => [['message_type' => 'text', 'body' => 'Até logo!']]],
+                'data' => ['messages' => [['message_type' => 'text', 'body' => 'Até logo!']]],
                 'position_x' => 560,
                 'position_y' => 0,
             ],

@@ -232,39 +232,39 @@ trait Automation
 
         $this->buildFlow('inicial', 'Atendimento inicial', [
             ['start', 'start', null, 0, 260],
-            ['welcome', 'message', ['label' => 'Boas-vindas', 'wait_for_reply' => false, 'messages' => [
+            ['welcome', 'message', ['label' => 'Boas-vindas', 'messages' => [
                 $text('Olá, {{contact.name}}! 👋 Que bom ter você aqui.'), $text('Sou a assistente virtual da Loja Aurora.', 2)]], 260, 220],
             ['menu', 'interactive', ['label' => 'Menu principal', 'interactive_type' => 'button', 'header' => 'Loja Aurora',
                 'body' => 'Como podemos ajudar hoje?', 'footer' => 'Atendimento 24h', 'buttons' => [
                     ['id' => 'btn_comprar', 'title' => 'Quero comprar'], ['id' => 'btn_suporte', 'title' => 'Preciso de suporte'],
                     ['id' => 'btn_atendente', 'title' => 'Falar com atendente']]], 600, 190],
-            ['response', 'response', ['label' => 'Pergunta: e-mail', 'body' => 'Ótimo! Qual é o seu e-mail para enviarmos as ofertas?',
-                'message_type' => 'text', 'variable_key' => 'email', 'validation' => 'email',
-                'error_message' => 'Não consegui ler esse e-mail. Pode repetir?', 'timeout_seconds' => 3600], 980, -160],
+            ['email', 'wait_response', ['label' => 'Aguarda o e-mail', 'message' => 'Ótimo! Qual é o seu e-mail para enviarmos as ofertas?',
+                'variable_key' => 'email', 'timeout_seconds' => 3600, 'timeout_unit' => 'hours', 'buffer_seconds' => 0, 'validation' => 'email',
+                'error_message' => 'Não consegui ler esse e-mail. Pode repetir?'], 980, -160],
             ['tag', 'tagging', ['action' => 'add', 'target' => 'conversation', 'tags' => [$this->tags['orcamento']->id]], 1340, -240],
             ['lead', 'lead', ['pipeline_id' => $this->pipeline?->id, 'stage_id' => $this->stage('Qualificação'), 'only_forward' => true,
                 'title' => 'Interesse via WhatsApp', 'value' => '', 'owner_id' => $this->users['carlos']->id], 1680, -240],
             ['pixel', 'pixel', ['integration_ids' => [$this->integrations['pixel']->id], 'event' => 'lead', 'value' => '', 'currency' => 'BRL', 'parameters' => []], 2020, -240],
-            ['later', 'message', ['wait_for_reply' => false, 'messages' => [$text('Sem problemas! Quando quiser, é só chamar 😉')]], 1340, 40],
+            ['later', 'message', ['messages' => [$text('Sem problemas! Quando quiser, é só chamar 😉')]], 1340, 40],
             ['hours', 'condition', ['label' => 'Dentro do horário?', 'field' => 'service_hours.is_open', 'operator' => 'equals', 'value' => 'true'], 980, 300],
             ['ai', 'ai_agent', ['ai_hub_agent_id' => $this->ai['sofia']->id,
                 'welcoming_message' => 'Oi! Sou a Sofia, assistente da Loja Aurora. Me conta o que aconteceu? 🙂',
                 'answer_first_message' => true, 'service_hours_behavior' => 'handoff_in_hours', 'response_delay_seconds' => 8,
                 'response_audio' => ['mode' => 'dynamic']], 1340, 380],
-            ['closed', 'message', ['wait_for_reply' => false, 'messages' => [$text('Estamos fora do horário de atendimento agora 🌙. Deixe sua mensagem que respondemos assim que abrirmos!')]], 1340, 720],
+            ['closed', 'message', ['messages' => [$text('Estamos fora do horário de atendimento agora 🌙. Deixe sua mensagem que respondemos assim que abrirmos!')]], 1340, 720],
             ['end', 'status', ['value' => 'resolved'], 1700, 560],
             ['note', 'action', ['type' => 'internal_note', 'parameters' => ['note' => 'Cliente pediu atendente pelo menu inicial.']], 980, 980],
             ['human', 'action', ['type' => 'transfer_human', 'parameters' => []], 1340, 1000],
         ], [
-            ['start', 'welcome', null], ['welcome', 'menu', null], ['menu', 'response', 'btn_comprar'], ['menu', 'hours', 'btn_suporte'],
-            ['menu', 'note', 'btn_atendente'], ['response', 'tag', 'replied'], ['response', 'later', 'timeout'], ['tag', 'lead', null],
+            ['start', 'welcome', null], ['welcome', 'menu', null], ['menu', 'email', 'btn_comprar'], ['menu', 'hours', 'btn_suporte'],
+            ['menu', 'note', 'btn_atendente'], ['email', 'tag', 'replied'], ['email', 'later', 'timeout'], ['tag', 'lead', null],
             ['lead', 'pixel', null], ['later', 'end', null], ['hours', 'ai', 'true'], ['hours', 'closed', 'false'], ['closed', 'end', null], ['note', 'human', null],
         ], 70);
 
         $this->buildFlow('pix', 'Cobrança Pix', [
             ['start', 'start', null, 0, 200],
             ['cpf', 'response', ['label' => 'Pergunta: CPF', 'body' => 'Para emitir o Pix, qual é o seu CPF?', 'message_type' => 'text',
-                'variable_key' => 'cpf', 'validation' => 'number', 'error_message' => 'Digite só os números do CPF, por favor.', 'timeout_seconds' => 0], 280, 160],
+                'variable_key' => 'cpf', 'validation' => 'number', 'error_message' => 'Digite só os números do CPF, por favor.'], 280, 160],
             ['pay', 'payment', ['integration_id' => $this->integrations['openpix']->id, 'method' => 'pix', 'amount' => '49,90',
                 'description' => 'Pedido {{contact.name}}', 'expires_in_minutes' => 60,
                 'message' => 'Para finalizar, pague {{payment_amount}} com os dados abaixo:', 'send_qr_code' => true,
@@ -272,14 +272,14 @@ trait Automation
             ['pixel', 'pixel', ['integration_ids' => [$this->integrations['pixel']->id, $this->integrations['ga4']->id], 'event' => 'purchase',
                 'value' => '{{payment_value}}', 'currency' => 'BRL', 'parameters' => []], 980, 40],
             ['won', 'lead', ['pipeline_id' => $this->pipeline?->id, 'stage_id' => $this->stage('Cliente'), 'only_forward' => true, 'title' => '', 'value' => '{{payment_value}}', 'owner_id' => null], 1300, 40],
-            ['expired', 'message', ['wait_for_reply' => false, 'messages' => [$text('O Pix expirou, mas posso gerar outro! Um atendente vai te ajudar.')]], 980, 380],
+            ['expired', 'message', ['messages' => [$text('O Pix expirou, mas posso gerar outro! Um atendente vai te ajudar.')]], 980, 380],
             ['human', 'action', ['type' => 'transfer_human', 'parameters' => []], 1300, 400],
-        ], [['start', 'cpf', null], ['cpf', 'pay', 'replied'], ['pay', 'pixel', 'paid'], ['pay', 'expired', 'failed'], ['pixel', 'won', null], ['expired', 'human', null]], 40);
+        ], [['start', 'cpf', null], ['cpf', 'pay', null], ['pay', 'pixel', 'paid'], ['pay', 'expired', 'failed'], ['pixel', 'won', null], ['expired', 'human', null]], 40);
 
         $this->buildFlow('fora', 'Fora do horário', [
             ['start', 'start', null, 0, 160],
             ['hours', 'condition', ['field' => 'service_hours.is_open', 'operator' => 'equals', 'value' => 'false'], 280, 120],
-            ['msg', 'message', ['wait_for_reply' => false, 'messages' => [$text('Olá! Nosso horário é de segunda a sexta, das 9h às 18h. Deixe sua mensagem que retornamos 💙')]], 620, 60],
+            ['msg', 'message', ['messages' => [$text('Olá! Nosso horário é de segunda a sexta, das 9h às 18h. Deixe sua mensagem que retornamos 💙')]], 620, 60],
             ['end', 'status', ['value' => 'resolved'], 960, 80],
         ], [['start', 'hours', null], ['hours', 'msg', 'true'], ['msg', 'end', null]], 55);
 
@@ -288,14 +288,15 @@ trait Automation
             ['ask', 'interactive', ['interactive_type' => 'button', 'body' => 'Como foi o seu atendimento hoje?', 'footer' => 'Leva 5 segundos',
                 'buttons' => [['id' => 'nota_otimo', 'title' => 'Ótimo 😍'], ['id' => 'nota_bom', 'title' => 'Bom 🙂'], ['id' => 'nota_ruim', 'title' => 'Ruim 😕']]], 280, 160],
             ['tag', 'tagging', ['action' => 'add', 'target' => 'contact', 'tags' => [$this->tags['recorrente']->id]], 660, 20],
-            ['thanks', 'message', ['wait_for_reply' => false, 'messages' => [$text('Obrigada pela avaliação! 💙')]], 660, 200],
+            ['thanks', 'message', ['messages' => [$text('Obrigada pela avaliação! 💙')]], 660, 200],
             ['goto', 'go_to_flow', ['flow_id' => $this->flows['suporte']->id, 'carry_variables' => true], 660, 380],
         ], [['start', 'ask', null], ['ask', 'tag', 'nota_otimo'], ['ask', 'thanks', 'nota_bom'], ['ask', 'goto', 'nota_ruim']], 30);
 
         $this->buildFlow('api', 'Qualificação de leads (API)', [
             ['start', 'start', null, 0, 200],
-            ['cnpj', 'response', ['label' => 'Pergunta: CNPJ', 'body' => 'Para liberar a tabela de atacado, qual é o CNPJ da sua loja?', 'message_type' => 'text',
-                'variable_key' => 'cnpj', 'validation' => 'number', 'error_message' => 'Envie só os números do CNPJ.', 'timeout_seconds' => 1800], 280, 160],
+            ['cnpj', 'wait_response', ['label' => 'Aguarda o CNPJ', 'message' => 'Para liberar a tabela de atacado, qual é o CNPJ da sua loja?',
+                'variable_key' => 'cnpj', 'timeout_seconds' => 1800, 'timeout_unit' => 'minutes', 'buffer_seconds' => 0, 'validation' => 'number',
+                'error_message' => 'Envie só os números do CNPJ.'], 280, 160],
             ['http', 'http_request', ['label' => 'Consulta CNPJ (HTTP)', 'method' => 'POST', 'url' => 'https://api.lojaaurora.example/v1/leads/consulta',
                 'headers' => [['key' => 'Authorization', 'value' => 'Bearer {{token_api}}'], ['key' => 'Content-Type', 'value' => 'application/json']],
                 'body' => '{"cnpj":"{{cnpj}}","origem":"whatsapp"}', 'timeout' => 15,
@@ -307,7 +308,7 @@ trait Automation
 
         $this->buildFlow('suporte', 'Suporte técnico', [
             ['start', 'start', null, 0, 160],
-            ['msg', 'message', ['wait_for_reply' => false, 'messages' => [$text('Você está falando com o suporte técnico da Loja Aurora 🔧')]], 280, 120],
+            ['msg', 'message', ['messages' => [$text('Você está falando com o suporte técnico da Loja Aurora 🔧')]], 280, 120],
             ['ai', 'ai_agent', ['ai_hub_agent_id' => $this->ai['suporte']->id, 'welcoming_message' => 'Oi! Conte para mim qual é o problema e eu te ajudo.',
                 'answer_first_message' => true, 'service_hours_behavior' => 'always_ai', 'response_delay_seconds' => 8, 'response_audio' => ['mode' => 'text_only']], 620, 100],
         ], [['start', 'msg', null], ['msg', 'ai', null]], 50);
@@ -319,7 +320,7 @@ trait Automation
         $this->buildFlow('nota', 'Cobrança com nota fiscal', [
             ['start', 'start', null, 0, 200],
             ['cpf', 'response', ['label' => 'Pergunta: CPF/CNPJ', 'body' => 'Para emitir a cobrança e a nota fiscal, qual é o seu CPF ou CNPJ?', 'message_type' => 'text',
-                'variable_key' => 'cpf', 'validation' => 'number', 'error_message' => 'Digite só os números do CPF ou do CNPJ, por favor.', 'timeout_seconds' => 0], 280, 160],
+                'variable_key' => 'cpf', 'validation' => 'number', 'error_message' => 'Digite só os números do CPF ou do CNPJ, por favor.'], 280, 160],
             ['pay', 'payment', ['integration_id' => $this->integrations['asaas']->id, 'method' => 'pix', 'amount' => '149,90',
                 'description' => 'Assessoria de corrida — {{contact.name}}', 'expires_in_minutes' => 60,
                 'message' => 'Sua vaga na assessoria está reservada! Pague {{payment_amount}} com o Pix abaixo:', 'send_qr_code' => true,
@@ -328,12 +329,12 @@ trait Automation
                 'description' => 'Assessoria de corrida — plano mensal', 'customer_name' => '', 'customer_document' => '{{cpf}}',
                 'customer_email' => '', 'customer_address' => [], 'wait_minutes' => 30,
                 'message' => 'Pagamento confirmado! Sua nota fiscal nº {{invoice_number}} foi emitida. Segue o PDF:', 'send_pdf' => true, 'send_email' => true], 980, 40],
-            ['thanks', 'message', ['wait_for_reply' => false, 'messages' => [$text('Obrigada por treinar com a Aurora! Qualquer dúvida, é só chamar 💙')]], 1340, -20],
+            ['thanks', 'message', ['messages' => [$text('Obrigada por treinar com a Aurora! Qualquer dúvida, é só chamar 💙')]], 1340, -20],
             ['note', 'action', ['type' => 'internal_note', 'parameters' => ['note' => 'Pagamento recebido, mas a nota fiscal não foi emitida: {{invoice_error}}']], 1340, 300],
             ['human', 'action', ['type' => 'transfer_human', 'parameters' => []], 1700, 360],
-            ['expired', 'message', ['wait_for_reply' => false, 'messages' => [$text('O Pix expirou, mas posso gerar outro! Um atendente vai te ajudar.')]], 1000, 480],
+            ['expired', 'message', ['messages' => [$text('O Pix expirou, mas posso gerar outro! Um atendente vai te ajudar.')]], 1000, 480],
         ], [
-            ['start', 'cpf', null], ['cpf', 'pay', 'replied'], ['pay', 'invoice', 'paid'], ['pay', 'expired', 'failed'],
+            ['start', 'cpf', null], ['cpf', 'pay', null], ['pay', 'invoice', 'paid'], ['pay', 'expired', 'failed'],
             ['invoice', 'thanks', 'issued'], ['invoice', 'note', 'failed'], ['note', 'human', null], ['expired', 'human', null],
         ], 12);
 

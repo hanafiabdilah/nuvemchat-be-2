@@ -9,17 +9,17 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * ⚠️ Kept only for jobs queued before the Wait for reply node replaced the
- * Response node's no-reply limit.
+ * The end of a Wait for reply node's burst window.
  *
- * Those limits were at most 24 hours, and the migration turned every Response
- * node that had one into a Wait for reply node with the same id, moving its
- * timer token to the new key. A job already on the queue still names this
- * class, though — deleting it would fail every one of them on unserialize and
- * lose the branch the author wired. So it survives to hand the same arguments
- * to the new timeout. Safe to delete a day after that deploy.
+ * Every message the customer sends while the window is open writes a new token
+ * and queues another of these, so the window slides rather than stacks: only
+ * the job holding the newest token finds it still in the flow state, and that
+ * one reads everything that arrived as a single reply. The rest step aside.
+ *
+ * A single attempt for the reason the timeout job has one: a retry after the
+ * reply was handled would handle it again.
  */
-class RunFlowResponseTimeout implements ShouldQueue
+class RunFlowWaitResponseBuffer implements ShouldQueue
 {
     use Queueable;
 
@@ -33,7 +33,7 @@ class RunFlowResponseTimeout implements ShouldQueue
 
     public function handle(): void
     {
-        (new FlowExecutor)->runWaitResponseTimeout(
+        (new FlowExecutor)->runWaitResponseBuffer(
             $this->flowStateId,
             $this->nodeId,
             $this->token,
@@ -42,7 +42,7 @@ class RunFlowResponseTimeout implements ShouldQueue
 
     public function failed(?Throwable $exception): void
     {
-        Log::error('RunFlowResponseTimeout: timeout branch never ran', [
+        Log::error('RunFlowWaitResponseBuffer: the buffered reply was never handled', [
             'flow_state_id' => $this->flowStateId,
             'node_id' => $this->nodeId,
             'error' => $exception?->getMessage(),

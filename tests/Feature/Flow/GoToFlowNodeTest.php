@@ -51,9 +51,12 @@ test('continues in the other flow from its start node, with the answers collecte
 
     $state = FlowState::where('conversation_id', $conversation->id)->sole();
 
+    // The same state moved into "Suporte" and finished on its last message —
+    // finished, not left running there to send that message again on the
+    // customer's next one.
     expect(Fx::sentTexts($conversation))->toBe(['Qual é o seu nome?', 'Oi Ana, aqui é o suporte.'])
         ->and($state->flow_id)->toBe($support->id)
-        ->and($state->status)->toBe(FlowStateStatus::Running);
+        ->and($state->status)->toBe(FlowStateStatus::Completed);
 
     $note = Fx::notes($conversation, FlowLinkNodes::INFO_JUMPED)->sole();
     expect($note->meta['info']['params']['flow'])->toBe('Suporte');

@@ -184,7 +184,7 @@ trait History
         ]);
 
         $state = mt_rand(1, 10);
-        $node = $flowKey === 'suporte' ? $this->nodes['suporte.ai'] : ($state <= 7 ? $this->nodes['inicial.end'] : $this->nodes['inicial.response']);
+        $node = $flowKey === 'suporte' ? $this->nodes['suporte.ai'] : ($state <= 7 ? $this->nodes['inicial.end'] : $this->nodes['inicial.email']);
         $this->make(FlowState::class, [
             'conversation_id' => $conversation->id, 'flow_id' => $flow->id, 'current_node_id' => $node->id,
             'state_data' => [], 'status' => $state <= 7 ? 'completed' : ($state <= 9 ? 'stopped' : 'failed'),

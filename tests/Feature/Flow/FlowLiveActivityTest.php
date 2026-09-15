@@ -56,7 +56,6 @@ function liveActivityFixture(array $responseData = []): array
     $message = $flow->nodes()->create([
         'type' => NodeType::Message,
         'data' => [
-            'wait_for_reply' => false,
             'messages' => [
                 ['body' => 'Olá!', 'message_type' => 'text', 'delay' => 0],
                 ['body' => 'Um momento…', 'message_type' => 'text', 'delay' => 5],
@@ -66,12 +65,10 @@ function liveActivityFixture(array $responseData = []): array
         'position_y' => 0,
     ]);
     $response = $flow->nodes()->create([
-        'type' => NodeType::Response,
+        'type' => NodeType::WaitResponse,
         'data' => array_merge([
-            'body' => 'Qual é o seu CPF?',
-            'message_type' => 'text',
+            'message' => 'Qual é o seu CPF?',
             'variable_key' => 'cpf',
-            'validation' => 'any',
         ], $responseData),
         'position_x' => 300,
         'position_y' => 0,
@@ -166,7 +163,7 @@ it('names the pause between message bubbles, with when it ends', function () {
     expect($delay['detail']['resume_at'])->toBeGreaterThanOrEqual(now()->timestamp);
 });
 
-it('announces a response node as waiting, with its deadline and variable', function () {
+it('announces a wait-for-reply node as waiting, with its deadline and variable', function () {
     $fixture = liveActivityFixture(['timeout_seconds' => 120]);
 
     (new FlowExecutor)->startFlow($fixture['conversation']);
@@ -182,7 +179,7 @@ it('announces a response node as waiting, with its deadline and variable', funct
     $awaiting = collect(activityPayloads())->firstWhere('phase', LiveActivity::FLOW_AWAITING);
 
     expect($awaiting)->not->toBeNull();
-    expect($awaiting['node']['type'])->toBe('response');
+    expect($awaiting['node']['type'])->toBe('wait_response');
     expect($awaiting['detail']['variable_key'])->toBe('cpf');
     expect($awaiting['detail']['timeout_at'])->toBeGreaterThan(now()->timestamp);
     // The ttl has to outlive the deadline it is showing, or the countdown

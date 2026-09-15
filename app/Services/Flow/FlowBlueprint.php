@@ -36,14 +36,14 @@ class FlowBlueprint
 {
     /** Allowed node types. The frontend palette must stay in sync. */
     public const NODE_TYPES = [
-        'start', 'message', 'response', 'status', 'tagging',
+        'start', 'message', 'response', 'wait_response', 'status', 'tagging',
         'condition', 'action', 'ai_agent', 'http_request', 'interactive',
         'payment', 'invoice', 'pixel', 'go_to_flow', 'lead',
     ];
 
     /**
      * Edge branch values: the fixed pair per branching node — condition
-     * (true/false), http_request (success/error), response (replied/timeout) —
+     * (true/false), http_request (success/error), wait_response (replied/timeout) —
      * plus an interactive node's option ids, which are authored per node and so
      * can only be pattern-checked.
      */
@@ -63,7 +63,7 @@ class FlowBlueprint
     public const FIXED_BRANCHES = [
         'condition' => ['true', 'false'],
         'http_request' => ['success', 'error'],
-        'response' => [ResponseNodes::BRANCH_REPLIED, ResponseNodes::BRANCH_TIMEOUT],
+        'wait_response' => WaitResponseNodes::BRANCHES,
         'payment' => PaymentNodes::BRANCHES,
         'invoice' => InvoiceNodes::BRANCHES,
     ];
@@ -101,7 +101,6 @@ class FlowBlueprint
                 'message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
                 'attachment_url' => ['nullable', 'string'],
                 'delay' => ['nullable', 'integer', 'min:0', 'max:' . MessageNodes::MAX_DELAY_SECONDS],
-                'wait_for_reply' => ['nullable', 'boolean'],
                 'messages' => ['nullable', 'array', 'max:' . MessageNodes::MAX_ITEMS],
                 'messages.*.body' => ['nullable', 'string'],
                 'messages.*.message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
@@ -113,11 +112,20 @@ class FlowBlueprint
                 'message_type' => ['required', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
                 'attachment_url' => ['nullable', 'string'],
                 'variable_key' => ['required', 'string'],
-                'validation' => ['nullable', 'string', Rule::in(['any', 'number', 'email', 'phone'])],
+                'validation' => ['nullable', 'string', Rule::in(WaitResponseNodes::VALIDATIONS)],
                 'error_message' => ['nullable', 'string'],
-                // 0 (or absent) = wait forever, which is what this node did
-                // before it grew a second output.
-                'timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:' . ResponseNodes::MAX_TIMEOUT_SECONDS],
+            ],
+            // Every field optional: with nothing set the node is the plain pause
+            // the Message node's old switch was. `timeout_unit` is how the
+            // builder shows the limit; the engine only reads the seconds.
+            'wait_response' => [
+                'message' => ['nullable', 'string', 'max:' . WaitResponseNodes::MAX_MESSAGE_LENGTH],
+                'variable_key' => ['nullable', 'string', 'max:255'],
+                'timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:' . WaitResponseNodes::MAX_TIMEOUT_SECONDS],
+                'timeout_unit' => ['nullable', 'string', Rule::in(array_keys(WaitResponseNodes::TIMEOUT_UNITS))],
+                'buffer_seconds' => ['nullable', 'integer', 'min:0', 'max:' . WaitResponseNodes::MAX_BUFFER_SECONDS],
+                'validation' => ['nullable', 'string', Rule::in(WaitResponseNodes::VALIDATIONS)],
+                'error_message' => ['nullable', 'string', 'max:' . WaitResponseNodes::MAX_MESSAGE_LENGTH],
             ],
             // Resolved is the only status a flow may set; the reasoning is on
             // NodeType::data and FlowExecutor::executeStatusNode. Strict rather
@@ -519,14 +527,6 @@ class FlowBlueprint
         if (isset(self::FIXED_BRANCHES[$type])) {
             $allowed = self::FIXED_BRANCHES[$type];
 
-            // A response node's edges saved before it grew a second output
-            // carry no branch value; they mean "replied", which is the output
-            // they always were. Reading that as an error would condemn every
-            // flow written before the timeout branch existed.
-            if ($value === null && $type === 'response') {
-                return [];
-            }
-
             if (! in_array($value, $allowed, true)) {
                 $shown = $value === null ? 'null' : "\"{$value}\"";
                 $list = '"' . implode('", "', $allowed) . '"';
@@ -566,7 +566,7 @@ class FlowBlueprint
         }
 
         if ($value !== null && $value !== '') {
-            return ["Edge from node \"{$sourceKey}\" ({$type}) must not carry a condition_value — only condition, response, http_request, payment, invoice and interactive nodes branch."];
+            return ["Edge from node \"{$sourceKey}\" ({$type}) must not carry a condition_value — only condition, wait_response, http_request, payment, invoice and interactive nodes branch."];
         }
 
         return [];
@@ -654,15 +654,18 @@ class FlowBlueprint
         $messageTypes = self::quoted(MessageNodes::MESSAGE_TYPES);
         $maxItems = MessageNodes::MAX_ITEMS;
         $maxDelay = MessageNodes::MAX_DELAY_SECONDS;
-        $maxTimeout = ResponseNodes::MAX_TIMEOUT_SECONDS;
+        $maxWaitSeconds = WaitResponseNodes::MAX_TIMEOUT_SECONDS;
+        $maxWaitDays = intdiv(WaitResponseNodes::MAX_TIMEOUT_SECONDS, 86400);
+        $maxBuffer = WaitResponseNodes::MAX_BUFFER_SECONDS;
+        $waitUnits = self::quoted(array_keys(WaitResponseNodes::TIMEOUT_UNITS));
         $actionTypes = self::quoted(ActionNodes::TYPES);
         $unavailable = self::quoted(ActionNodes::UNAVAILABLE_MODES);
         $interactiveTypes = self::quoted(InteractiveNodes::TYPES);
         $carouselMin = InteractiveNodes::CAROUSEL_MIN_CARDS;
         $carouselMax = InteractiveNodes::CAROUSEL_MAX_CARDS;
         $resolved = ConversationStatus::Resolved->value;
-        $replied = ResponseNodes::BRANCH_REPLIED;
-        $timeout = ResponseNodes::BRANCH_TIMEOUT;
+        $replied = WaitResponseNodes::BRANCH_REPLIED;
+        $timeout = WaitResponseNodes::BRANCH_TIMEOUT;
         $format = self::EXPORT_FORMAT;
         $version = self::EXPORT_VERSION;
         $paid = PaymentNodes::BRANCH_PAID;
@@ -697,11 +700,11 @@ class FlowBlueprint
 
         - Exactly ONE node of type "start". Its `data` is null. It has no incoming edge.
         - Every other node must be reachable from "start" by following edges.
-        - `condition_value` is null on ordinary edges. Only condition, response,
+        - `condition_value` is null on ordinary edges. Only condition, wait_response,
           http_request, payment, invoice and interactive nodes branch, and their
           values are fixed:
             condition     → "true" / "false"
-            response      → "{$replied}" / "{$timeout}"
+            wait_response → "{$replied}" / "{$timeout}"
             http_request  → "success" / "error"
             payment       → "{$paid}" / "{$failed}"
             invoice       → "{$issued}" / "{$invoiceFailed}"
@@ -723,7 +726,6 @@ class FlowBlueprint
 
         ### message — send one or more bubbles, then move on
         {
-          "wait_for_reply": false,
           "messages": [ { "message_type": "text", "body": "Olá!", "delay": 0 } ]
         }
         - `messages`: up to {$maxItems} bubbles, sent in order. `delay` is the pause in
@@ -731,32 +733,56 @@ class FlowBlueprint
         - `message_type`: one of {$messageTypes}. Anything but "text" needs
           `attachment_url` (a public URL) — never invent one; use "text" unless the
           user supplied a URL.
-        - `wait_for_reply`: false in almost every case. Use the response node when
-          you need an answer; this flag is a legacy pause with no branch and no
-          variable, so a flow that needs an answer should not use it.
+        - Never waits: the next node runs right after the last bubble. To stop until
+          the customer writes, follow it with a wait_response node.
         - One output.
 
-        ### response — ask a question and store the answer
+        ### response — ask a question and store a valid answer
         {
           "body": "Qual é o seu nome?",
           "message_type": "text",
           "variable_key": "nome",
           "validation": "any",
-          "error_message": "Não entendi, pode repetir?",
-          "timeout_seconds": 0
+          "error_message": "Não entendi, pode repetir?"
         }
         - `body`, `message_type` and `variable_key` are REQUIRED.
         - `variable_key`: letters, digits, underscore and dash only. Referenced
           later as {{nome}} — a bare key, never dotted.
         - `validation`: "any" | "number" | "email" | "phone".
-        - `timeout_seconds`: 0 (or absent) waits forever. Up to {$maxTimeout}.
+        - Waits for a valid answer with no deadline. When the flow must give up
+          after a while, send the question with a message node and follow it with
+          a wait_response node that has `timeout_seconds` instead.
+        - One output.
+
+        ### wait_response — pause until the customer writes
+        {
+          "message": "Me conta o número do seu pedido, por favor.",
+          "variable_key": "pedido",
+          "timeout_seconds": 3600,
+          "timeout_unit": "hours",
+          "buffer_seconds": 0,
+          "validation": "any",
+          "error_message": ""
+        }
+        - Every field is optional. With none set it waits for the next message and
+          moves on through "{$replied}".
+        - `message`: text sent before waiting (accepts variables). Empty sends nothing.
+        - `variable_key`: where the reply is stored, referenced later as {{pedido}}.
+          Same format as the response node's key. Empty stores nothing.
+        - `timeout_seconds`: 0 waits indefinitely; up to {$maxWaitSeconds}
+          ({$maxWaitDays} days). `timeout_unit` ({$waitUnits}) is only how the
+          builder shows it — use the largest unit that divides the value exactly.
+        - `buffer_seconds`: 0–{$maxBuffer}. Above 0 the node waits until the customer
+          has been quiet that long, then stores everything they sent as one reply.
+        - `validation`: "any" | "number" | "email" | "phone". A reply that does not
+          fit gets `error_message` (when set) and the node keeps waiting.
         - TWO outputs: "{$replied}" and "{$timeout}". Only wire "{$timeout}" when
           `timeout_seconds` is greater than 0.
 
         ### condition — branch on a value
         { "field": "variable.nome", "operator": "equals", "value": "sim" }
-        - `field`: "variable.{key}" for anything a response or http_request node
-          stored, or "contact.name" / "contact.phone" / "contact.email" /
+        - `field`: "variable.{key}" for anything a response, wait_response or
+          http_request node stored, or "contact.name" / "contact.phone" / "contact.email" /
           "conversation.status" / "service_hours.is_open".
         - `operator`: equals, not_equals, contains, not_contains, greater_than,
           less_than, is_empty, is_not_empty.

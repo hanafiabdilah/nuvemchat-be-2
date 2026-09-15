@@ -31,7 +31,11 @@ final class LiveActivity
     /** Between the bubbles of a Message node, waiting out an authored pause. */
     public const FLOW_DELAY = 'flow_delay';
 
-    /** A Response or Interactive node, parked until the customer answers. */
+    /**
+     * A Response, Wait for reply or Interactive node, parked until the customer
+     * answers — or, with `detail.buffering`, a Wait for reply node collecting a
+     * burst of messages before it reads them as one reply.
+     */
     public const FLOW_AWAITING = 'flow_awaiting';
 
     /** An HTTP Request node with a call in flight. */
@@ -84,8 +88,8 @@ final class LiveActivity
     ];
 
     /**
-     * A wait with no deadline of its own. Long, because a Response node with no
-     * timeout really can sit here for an afternoon, but not unbounded — the
+     * A wait with no deadline of its own. Long, because a Wait for reply node
+     * with no limit really can sit here for an afternoon, but not unbounded — the
      * cold-load path (deriveRestingActivity on the client) reconstructs this
      * one from flow state, so expiring it costs nothing on a page that reloads.
      */

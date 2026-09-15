@@ -9,17 +9,18 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * ⚠️ Kept only for jobs queued before the Wait for reply node replaced the
- * Response node's no-reply limit.
+ * The moment a Wait for reply node stops waiting.
  *
- * Those limits were at most 24 hours, and the migration turned every Response
- * node that had one into a Wait for reply node with the same id, moving its
- * timer token to the new key. A job already on the queue still names this
- * class, though — deleting it would fail every one of them on unserialize and
- * lose the branch the author wired. So it survives to hand the same arguments
- * to the new timeout. Safe to delete a day after that deploy.
+ * Armed when the node parks, disarmed the moment the customer writes. If this
+ * job still finds its own token in the flow state, nobody answered — and the
+ * flow takes the node's `timeout` branch instead of sitting on a wait that was
+ * never going to end.
+ *
+ * A single attempt on purpose: the token is what makes this safe to run at all,
+ * and a retry after the branch has already been taken would move a flow that
+ * has moved on.
  */
-class RunFlowResponseTimeout implements ShouldQueue
+class RunFlowWaitResponseTimeout implements ShouldQueue
 {
     use Queueable;
 
@@ -42,7 +43,7 @@ class RunFlowResponseTimeout implements ShouldQueue
 
     public function failed(?Throwable $exception): void
     {
-        Log::error('RunFlowResponseTimeout: timeout branch never ran', [
+        Log::error('RunFlowWaitResponseTimeout: timeout branch never ran', [
             'flow_state_id' => $this->flowStateId,
             'node_id' => $this->nodeId,
             'error' => $exception?->getMessage(),

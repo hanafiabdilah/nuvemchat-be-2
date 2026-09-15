@@ -10,6 +10,7 @@ use App\Models\Flow;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
 use App\Services\Flow\FlowBlueprint;
+use App\Services\Flow\LegacyWaitUpgrade;
 use App\Services\Flow\InteractiveNodes;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -322,8 +323,12 @@ class FlowController extends Controller
             'version.max' => 'This flow export was created by a newer version and cannot be imported.',
         ]);
 
-        $nodes = $validated['flow']['nodes'];
-        $edges = $validated['flow']['edges'];
+        // A file exported before the Wait for reply node carries the two older
+        // ways of waiting. Rewritten the way the migration rewrote stored
+        // flows, so an old export imports as the flow it was.
+        $upgraded = LegacyWaitUpgrade::upgrade($validated['flow']['nodes'], $validated['flow']['edges']);
+        $nodes = $upgraded['nodes'];
+        $edges = $upgraded['edges'];
 
         // Per-type data validation — same rules as saving a flow.
         $this->validateNodesData($nodes);

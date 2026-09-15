@@ -66,13 +66,13 @@ function carouselFlowFixture(string $buttonType = 'quick_reply'): array
     ]);
     $firstNode = $flow->nodes()->create([
         'type' => NodeType::Message,
-        'data' => ['body' => 'Card one it is.', 'message_type' => 'text', 'wait_for_reply' => false],
+        'data' => ['body' => 'Card one it is.', 'message_type' => 'text'],
         'position_x' => 200,
         'position_y' => 0,
     ]);
     $secondNode = $flow->nodes()->create([
         'type' => NodeType::Message,
-        'data' => ['body' => 'Card two it is.', 'message_type' => 'text', 'wait_for_reply' => false],
+        'data' => ['body' => 'Card two it is.', 'message_type' => 'text'],
         'position_x' => 200,
         'position_y' => 100,
     ]);

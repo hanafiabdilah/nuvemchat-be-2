@@ -24,7 +24,8 @@ use App\Models\FlowInvoice;
 use App\Enums\Flow\FlowInvoiceStatus;
 use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunFlowMessageNode;
-use App\Jobs\RunFlowResponseTimeout;
+use App\Jobs\RunFlowWaitResponseBuffer;
+use App\Jobs\RunFlowWaitResponseTimeout;
 use App\Jobs\SendPixelEvent;
 use App\Models\AiHubAgent;
 use App\Models\AiHubRun;
@@ -224,6 +225,10 @@ class FlowExecutor
                 $this->executeResponseNode($flowState, $node);
                 break;
 
+            case NodeType::WaitResponse:
+                $this->executeWaitResponseNode($flowState, $node);
+                break;
+
             case NodeType::Condition:
                 $this->executeConditionNode($flowState, $node);
                 break;
@@ -381,15 +386,20 @@ class FlowExecutor
     /**
      * Every bubble is out — hand the flow to whatever comes next.
      *
-     * `wait_for_reply` is about the node as a whole, not any one bubble: the
-     * flow parks on the following node and the customer's next message wakes it.
+     * A Message node never waits: pausing for the customer is the Wait for
+     * reply node's job. With nothing wired after it the flow is finished here,
+     * and marked so — left running on this node, the customer's next message
+     * would send the whole sequence again.
      */
     protected function finishMessageNode(FlowState $flowState, FlowNode $node): void
     {
-        $waitForReply = (($node->data ?? [])['wait_for_reply'] ?? true) !== false;
+        if (!$node->outgoingEdges()->exists()) {
+            Log::info('FlowExecutor: Flow completed after its last message', [
+                'flow_state_id' => $flowState->id,
+                'node_id' => $node->id,
+            ]);
 
-        if ($waitForReply) {
-            $this->moveToNextNodeWithoutExecute($flowState, $node);
+            $this->endFlowHere($flowState, FlowStateStatus::Completed);
             return;
         }
 
@@ -561,16 +571,14 @@ class FlowExecutor
                 $stateData["_response_sent_{$node->id}"] = true;
                 $flowState->update(['state_data' => $stateData]);
 
-                // Start the clock on the silence, if the author set one.
-                $this->armResponseTimeout($flowState, $node);
-
                 // The one phase that can last an afternoon, so it is also the
                 // one worth naming precisely: the panel shows which variable
-                // the flow is holding out for, and how long is left on it.
+                // the flow is holding out for. No deadline — a limit belongs
+                // to the Wait for reply node.
                 LiveActivity::flowAwaiting(
                     $conversation,
                     $node,
-                    ResponseNodes::timeoutSeconds($data ?? []),
+                    0,
                     ['variable_key' => $data['variable_key'] ?? null],
                 );
 
@@ -1661,63 +1669,6 @@ class FlowExecutor
     }
 
     /**
-     * Move to the next node WITHOUT executing it (wait for user interaction)
-     */
-    protected function moveToNextNodeWithoutExecute(FlowState $flowState, FlowNode $currentNode): void
-    {
-        // Find the next node via edge
-        $edge = $currentNode->outgoingEdges()->first();
-
-        if (!$edge) {
-            // No next node, flow ends
-            $flowState->update([
-                'status' => FlowStateStatus::Completed,
-                'completed_at' => now(),
-            ]);
-
-            Log::info('FlowExecutor: Flow completed (no next node, flow state preserved)', [
-                'flow_state_id' => $flowState->id,
-                'current_node_id' => $currentNode->id,
-                'status' => 'completed',
-            ]);
-
-            // Don't delete flow state - preserve context data for completed flows
-            return;
-        }
-
-        // Load the next node
-        $nextNode = FlowNode::find($edge->target_node_id);
-
-        if (!$nextNode) {
-            $flowState->update([
-                'status' => FlowStateStatus::Failed,
-                'completed_at' => now(),
-            ]);
-
-            Log::error('FlowExecutor: Next node not found (flow state preserved)', [
-                'edge_id' => $edge->id,
-                'target_node_id' => $edge->target_node_id,
-                'flow_state_id' => $flowState->id,
-                'status' => 'failed',
-            ]);
-
-            // Don't delete flow state - preserve context data even on error
-            return;
-        }
-
-        // Update flow state to the next node WITHOUT executing
-        $flowState->update([
-            'current_node_id' => $nextNode->id,
-        ]);
-
-        Log::info('FlowExecutor: Moved to next node, waiting for user interaction', [
-            'flow_state_id' => $flowState->id,
-            'next_node_id' => $nextNode->id,
-            'next_node_type' => $nextNode->type->value,
-        ]);
-    }
-
-    /**
      * Stop a flow for a conversation (called when admin accepts)
      * Note: Flow state is preserved for context data
      */
@@ -2115,6 +2066,19 @@ class FlowExecutor
             return;
         }
 
+        // Wait for reply: a node the flow reached without running (a
+        // conversation moved here by the migration, say) runs first; a parked
+        // one takes this message as the reply, or into its burst window.
+        if ($currentNode->type === NodeType::WaitResponse) {
+            if (!array_key_exists(WaitResponseNodes::parkedKey($currentNode->id), $flowState->state_data ?? [])) {
+                $this->executeWaitResponseNode($flowState, $currentNode);
+                return;
+            }
+
+            $this->receiveWaitResponseInput($flowState, $currentNode, $userInput);
+            return;
+        }
+
         // A payment node waits for the gateway, not for the customer. Writing
         // "já paguei" does not move it — the webhook, the expiry job or the
         // sweep does, through resumeFromPayment(). Re-running the node here
@@ -2209,10 +2173,7 @@ class FlowExecutor
                 ]);
             }
 
-            // Stay on current Response node - don't move. The customer did
-            // answer, though — they answered wrongly — so the silence clock
-            // starts over rather than running out on someone who is still here.
-            $this->armResponseTimeout($flowState, $node);
+            // Stay on current Response node - don't move.
             return;
         }
 
@@ -2229,135 +2190,351 @@ class FlowExecutor
             ]);
         }
 
-        // Clear the response sent flag since we're moving to next node.
-        // Disarming the timeout matters as much: the job is already queued and
-        // would otherwise wake up to take the no-reply branch of a question
-        // that has been answered.
-        unset($stateData["_response_sent_{$node->id}"], $stateData[$this->responseTimeoutKey($node->id)]);
+        // Clear the response sent flag since we're moving to next node
+        unset($stateData["_response_sent_{$node->id}"]);
 
         $flowState->update([
             'state_data' => $stateData,
         ]);
 
         // Move to next node and execute it
-        $this->moveToNextNodeAfterReply($flowState, $node);
+        $this->moveToNextNode($flowState, $node);
     }
 
     /**
-     * Arm (or re-arm) a Response node's no-reply timer.
+     * Execute a Wait for reply node — send its message, if it has one, and park.
+     *
+     * Nothing moves the flow on from here but the customer (resumeFlow), the
+     * node's own limit (runWaitResponseTimeout) or a burst window closing
+     * (runWaitResponseBuffer).
+     */
+    protected function executeWaitResponseNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+        $text = WaitResponseNodes::message($data);
+
+        if (trim($text) !== '') {
+            try {
+                $message = $this->sendByMessageType($conversation, ['message_type' => 'text', 'body' => $text], $flowState);
+            } catch (\Throwable $th) {
+                $message = null;
+
+                Log::error('FlowExecutor: Error sending the wait-for-reply message', [
+                    'node_id' => $node->id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
+
+            if (!$message) {
+                // Not parked, the way a Response node whose question failed is
+                // not: the customer never saw what they are meant to answer, so
+                // their next message runs this node again instead of being
+                // taken as the answer to it.
+                Log::error('FlowExecutor: Failed to send the wait-for-reply message', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $conversation->id,
+                ]);
+                return;
+            }
+
+            broadcast(new MessageReceived($message));
+        }
+
+        $this->parkWaitResponse($flowState, $node);
+    }
+
+    /**
+     * Start (or restart) waiting on this node.
+     *
+     * The watermark is the newest message in the conversation right now. It is
+     * what keeps the message that *led* here — the customer's "oi" that started
+     * the flow — from being read back as the reply, and after a failed format
+     * check it is what lets the next attempt be read on its own.
+     */
+    protected function parkWaitResponse(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[WaitResponseNodes::parkedKey($node->id)] = (int) Message::where('conversation_id', $conversation->id)->max('id');
+        unset($stateData[WaitResponseNodes::bufferKey($node->id)]);
+        $flowState->update(['state_data' => $stateData]);
+
+        $this->armWaitResponseTimeout($flowState, $node);
+
+        // The one phase that can last days, so it names what the flow is
+        // holding out for and, when there is a limit, how long is left on it.
+        LiveActivity::flowAwaiting(
+            $conversation,
+            $node,
+            WaitResponseNodes::timeoutSeconds($data),
+            ['variable_key' => WaitResponseNodes::variableKey($data)],
+        );
+
+        Log::info('FlowExecutor: Waiting for the customer to reply', [
+            'node_id' => $node->id,
+            'conversation_id' => $conversation->id,
+        ]);
+    }
+
+    /**
+     * The customer wrote while the node was parked.
+     *
+     * With no buffer the message is the reply. With one it opens — or pushes
+     * back — a window, and the reply is everything that arrived by the time the
+     * window closes: the AI node's debounce, for the AI node's reason. People do
+     * not write one message per thought.
+     */
+    protected function receiveWaitResponseInput(FlowState $flowState, FlowNode $node, string $userInput): void
+    {
+        $data = $node->data ?? [];
+        $stateData = $flowState->state_data ?? [];
+
+        // The customer is here, so the silence the clock was timing never
+        // happened. Dropping the token is enough: the queued job finds none and
+        // steps aside.
+        unset($stateData[WaitResponseNodes::timeoutKey($node->id)]);
+
+        $seconds = WaitResponseNodes::bufferSeconds($data);
+
+        if ($seconds <= 0) {
+            $flowState->update(['state_data' => $stateData]);
+            $this->handleWaitResponseInput($flowState, $node, $userInput);
+            return;
+        }
+
+        $token = (string) Str::uuid();
+        $stateData[WaitResponseNodes::bufferKey($node->id)] = $token;
+        $flowState->update(['state_data' => $stateData]);
+
+        RunFlowWaitResponseBuffer::dispatch($flowState->id, $node->id, $token)
+            ->delay(now()->addSeconds($seconds));
+
+        LiveActivity::flowAwaiting($flowState->conversation, $node, $seconds, [
+            'variable_key' => WaitResponseNodes::variableKey($data),
+            'buffering' => true,
+        ]);
+    }
+
+    /**
+     * The burst window closed — read everything the customer sent as one reply.
+     *
+     * Called by RunFlowWaitResponseBuffer. A job whose token was replaced by a
+     * later message steps aside; only the newest one reads.
+     */
+    public function runWaitResponseBuffer(int $flowStateId, int $nodeId, string $token): void
+    {
+        $flowState = FlowState::find($flowStateId);
+
+        if (!$flowState || ($flowState->state_data[WaitResponseNodes::bufferKey($nodeId)] ?? null) !== $token) {
+            return;
+        }
+
+        $node = $this->parkedWaitResponseNode($flowState, $nodeId);
+
+        if (!$node) {
+            return;
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        $watermark = (int) ($stateData[WaitResponseNodes::parkedKey($nodeId)] ?? 0);
+        unset($stateData[WaitResponseNodes::bufferKey($nodeId)]);
+        $flowState->update(['state_data' => $stateData]);
+
+        $reply = Message::query()
+            ->where('conversation_id', $flowState->conversation_id)
+            ->where('id', '>', $watermark)
+            ->where('sender_type', SenderType::Incoming)
+            ->where('message_type', '!=', MessageType::Info)
+            ->orderBy('id')
+            ->pluck('body')
+            ->map(fn ($body) => trim((string) $body))
+            ->filter(fn (string $body) => $body !== '')
+            ->implode("\n");
+
+        $this->handleWaitResponseInput($flowState, $node, $reply);
+    }
+
+    /**
+     * A complete reply: check its format, store it, take `replied`.
+     */
+    protected function handleWaitResponseInput(FlowState $flowState, FlowNode $node, string $reply): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+        $reply = trim($reply);
+        $validation = WaitResponseNodes::validation($data);
+
+        if ($validation !== null && !$this->validateInput($reply, $validation)) {
+            Log::info('FlowExecutor: Wait-for-reply answer failed validation', [
+                'node_id' => $node->id,
+                'validation' => $validation,
+            ]);
+
+            $error = trim($this->interpolateVariables((string) ($data['error_message'] ?? ''), $flowState));
+
+            if ($error !== '') {
+                try {
+                    $message = $this->messageService->sendMessage($conversation, ['message' => $error]);
+
+                    if ($message) {
+                        $message->update(['sent_by_flow_id' => $flowState->flow_id]);
+                        broadcast(new MessageReceived($message));
+                    }
+                } catch (\Throwable $th) {
+                    Log::error('FlowExecutor: Failed to send the wait-for-reply error message', [
+                        'node_id' => $node->id,
+                        'error' => $th->getMessage(),
+                    ]);
+                }
+            }
+
+            // Still here, still answering — wrongly. Wait again from now: the
+            // next attempt is read on its own and the clock starts over.
+            $this->parkWaitResponse($flowState, $node);
+            return;
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        $variableKey = WaitResponseNodes::variableKey($data);
+
+        if ($variableKey !== null) {
+            $stateData[$variableKey] = $reply;
+        }
+
+        unset(
+            $stateData[WaitResponseNodes::parkedKey($node->id)],
+            $stateData[WaitResponseNodes::timeoutKey($node->id)],
+            $stateData[WaitResponseNodes::bufferKey($node->id)],
+        );
+
+        $flowState->update(['state_data' => $stateData]);
+
+        // Edges written with no value by an importer or by hand still mean the
+        // node's ordinary way out.
+        $edge = $node->outgoingEdges()->where('condition_value', WaitResponseNodes::BRANCH_REPLIED)->first()
+            ?? $node->outgoingEdges()->whereNull('condition_value')->first();
+
+        if (!$edge) {
+            // Left running here, the next message would be read as another
+            // reply to a wait that already ended.
+            Log::info('FlowExecutor: Flow completed after the customer replied', [
+                'node_id' => $node->id,
+                'flow_state_id' => $flowState->id,
+            ]);
+
+            $this->endFlowHere($flowState, FlowStateStatus::Completed);
+            return;
+        }
+
+        $this->followEdge($flowState, $edge, ['branch' => WaitResponseNodes::BRANCH_REPLIED]);
+    }
+
+    /**
+     * Arm (or re-arm) the node's limit, or clear a stale one when it has none.
      *
      * A fresh token each time, so a job queued for an earlier arming finds a
      * stranger's token and steps aside — the same debounce the AI turn uses,
      * and for the same reason: the queue holds jobs the flow has moved past.
      */
-    protected function armResponseTimeout(FlowState $flowState, FlowNode $node): void
+    protected function armWaitResponseTimeout(FlowState $flowState, FlowNode $node): void
     {
-        $seconds = ResponseNodes::timeoutSeconds($node->data ?? []);
+        $seconds = WaitResponseNodes::timeoutSeconds($node->data ?? []);
+        $stateData = $flowState->state_data ?? [];
+        $key = WaitResponseNodes::timeoutKey($node->id);
 
         if ($seconds <= 0) {
+            if (array_key_exists($key, $stateData)) {
+                unset($stateData[$key]);
+                $flowState->update(['state_data' => $stateData]);
+            }
             return;
         }
 
         $token = (string) Str::uuid();
-        $stateData = $flowState->state_data ?? [];
-        $stateData[$this->responseTimeoutKey($node->id)] = $token;
+        $stateData[$key] = $token;
         $flowState->update(['state_data' => $stateData]);
 
-        RunFlowResponseTimeout::dispatch($flowState->id, $node->id, $token)
+        RunFlowWaitResponseTimeout::dispatch($flowState->id, $node->id, $token)
             ->delay(now()->addSeconds($seconds));
-
-        Log::info('FlowExecutor: Response timeout armed', [
-            'node_id' => $node->id,
-            'conversation_id' => $flowState->conversation_id,
-            'timeout_seconds' => $seconds,
-        ]);
-    }
-
-    protected function responseTimeoutKey(int $nodeId): string
-    {
-        return "_response_timeout_{$nodeId}";
     }
 
     /**
-     * Nobody answered in time — take the Response node's `timeout` branch.
-     *
-     * Called by RunFlowResponseTimeout. An unwired timeout branch is not a
-     * failure: the node goes on waiting exactly as it did before, which is why
-     * the edge is looked up before any state is touched.
+     * The node, when the flow is still parked on it in a conversation the flow
+     * may still speak in — or null for a job the conversation has moved past.
      */
-    public function runResponseTimeout(int $flowStateId, int $nodeId, string $token): void
+    protected function parkedWaitResponseNode(FlowState $flowState, int $nodeId): ?FlowNode
     {
-        $flowState = FlowState::find($flowStateId);
-
-        if (!$flowState || ($flowState->state_data[$this->responseTimeoutKey($nodeId)] ?? null) !== $token) {
-            return;
-        }
-
         if ($flowState->status !== FlowStateStatus::Running || $flowState->current_node_id !== $nodeId) {
-            return;
+            return null;
         }
 
         $node = FlowNode::find($nodeId);
 
-        if (!$node || $node->type !== NodeType::Response) {
-            return;
+        if (!$node || $node->type !== NodeType::WaitResponse) {
+            return null;
         }
 
         $conversation = $flowState->conversation;
 
         if (!$conversation || !in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
-            // An agent took the conversation while the clock ran. Whatever the
-            // author wanted to happen after silence, it was not this.
+            // An agent took the conversation while the node waited. Whatever the
+            // author wanted to happen next, it was not this.
+            return null;
+        }
+
+        return $node;
+    }
+
+    /**
+     * Nobody answered in time — take the Wait for reply node's `timeout` branch.
+     *
+     * Called by RunFlowWaitResponseTimeout. An unwired timeout branch is not a
+     * failure: the node goes on waiting, which is why the edge is looked up
+     * before any state is touched.
+     */
+    public function runWaitResponseTimeout(int $flowStateId, int $nodeId, string $token): void
+    {
+        $flowState = FlowState::find($flowStateId);
+
+        if (!$flowState || ($flowState->state_data[WaitResponseNodes::timeoutKey($nodeId)] ?? null) !== $token) {
+            return;
+        }
+
+        $node = $this->parkedWaitResponseNode($flowState, $nodeId);
+
+        if (!$node) {
             return;
         }
 
         $edge = $node->outgoingEdges()
-            ->where('condition_value', ResponseNodes::BRANCH_TIMEOUT)
+            ->where('condition_value', WaitResponseNodes::BRANCH_TIMEOUT)
             ->first();
 
         if (!$edge) {
-            Log::info('FlowExecutor: Response timeout fired with no branch wired, still waiting', [
+            Log::info('FlowExecutor: Wait-for-reply limit ran out with no branch wired, still waiting', [
                 'node_id' => $node->id,
-                'conversation_id' => $conversation->id,
+                'conversation_id' => $flowState->conversation_id,
             ]);
             return;
         }
 
         $stateData = $flowState->state_data ?? [];
-        unset($stateData["_response_sent_{$node->id}"], $stateData[$this->responseTimeoutKey($node->id)]);
+        unset(
+            $stateData[WaitResponseNodes::parkedKey($nodeId)],
+            $stateData[WaitResponseNodes::timeoutKey($nodeId)],
+            $stateData[WaitResponseNodes::bufferKey($nodeId)],
+        );
         $flowState->update(['state_data' => $stateData]);
 
-        Log::info('FlowExecutor: Response timed out, taking the no-reply branch', [
+        Log::info('FlowExecutor: No reply in time, taking the timeout branch', [
             'node_id' => $node->id,
-            'conversation_id' => $conversation->id,
+            'conversation_id' => $flowState->conversation_id,
         ]);
 
-        $this->followEdge($flowState, $edge, ['branch' => ResponseNodes::BRANCH_TIMEOUT]);
-    }
-
-    /**
-     * Move on after the customer answered a Response node.
-     *
-     * Prefers the node's `replied` handle. Flows saved before the node grew a
-     * second output wrote their one edge with no branch value at all, so that
-     * is the fallback — an old flow keeps running without being re-wired.
-     */
-    protected function moveToNextNodeAfterReply(FlowState $flowState, FlowNode $node): void
-    {
-        $edge = $node->outgoingEdges()
-            ->where('condition_value', ResponseNodes::BRANCH_REPLIED)
-            ->first()
-            ?? $node->outgoingEdges()->whereNull('condition_value')->first();
-
-        if (!$edge) {
-            Log::info('FlowExecutor: No edge after response, flow path ends (flow state preserved)', [
-                'node_id' => $node->id,
-                'flow_state_id' => $flowState->id,
-            ]);
-            return;
-        }
-
-        $this->followEdge($flowState, $edge, ['branch' => ResponseNodes::BRANCH_REPLIED]);
+        $this->followEdge($flowState, $edge, ['branch' => WaitResponseNodes::BRANCH_TIMEOUT]);
     }
 
     /**

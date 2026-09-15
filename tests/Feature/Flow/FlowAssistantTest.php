@@ -128,7 +128,6 @@ function validBlueprint(): array
         'nodes' => [
             ['key' => '1', 'type' => 'start', 'data' => null, 'position_x' => 0, 'position_y' => 0],
             ['key' => '2', 'type' => 'message', 'data' => [
-                'wait_for_reply' => false,
                 'messages' => [['message_type' => 'text', 'body' => 'Olá!', 'delay' => 0]],
             ], 'position_x' => 280, 'position_y' => 0],
             ['key' => '3', 'type' => 'status', 'data' => ['value' => 'resolved'], 'position_x' => 560, 'position_y' => 0],

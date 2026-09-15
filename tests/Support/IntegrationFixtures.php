@@ -131,7 +131,6 @@ final class IntegrationFixtures
         return self::node($flow, NodeType::Message, [
             'body' => $body,
             'message_type' => 'text',
-            'wait_for_reply' => false,
         ], $x, $y);
     }
 

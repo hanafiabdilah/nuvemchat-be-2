@@ -93,7 +93,6 @@ function sentBodies(Conversation $conversation): array
 
 it('sends every bubble of a multi-message node, in order', function () {
     $fixture = messageSequenceFixture([
-        'wait_for_reply' => false,
         'messages' => [
             ['message_type' => 'text', 'body' => 'Oi!'],
             ['message_type' => 'text', 'body' => 'Tudo bem?'],
@@ -110,7 +109,6 @@ it('still sends a node saved in the old single-message shape', function () {
     $fixture = messageSequenceFixture([
         'body' => 'Bem-vindo!',
         'message_type' => 'text',
-        'wait_for_reply' => false,
     ]);
 
     (new FlowExecutor)->startFlow($fixture['conversation']);
@@ -120,7 +118,6 @@ it('still sends a node saved in the old single-message shape', function () {
 
 it('skips bubbles with nothing in them rather than sending blanks', function () {
     $fixture = messageSequenceFixture([
-        'wait_for_reply' => false,
         'messages' => [
             ['message_type' => 'text', 'body' => 'Oi!'],
             ['message_type' => 'text', 'body' => '   '],
@@ -137,7 +134,6 @@ it('runs a node with no pauses inline, without touching the queue', function () 
     Queue::fake();
 
     $fixture = messageSequenceFixture([
-        'wait_for_reply' => false,
         'messages' => [
             ['message_type' => 'text', 'body' => 'Oi!', 'delay' => 0],
             ['message_type' => 'text', 'body' => 'Tudo bem?', 'delay' => 0],
@@ -154,7 +150,6 @@ it('hands a paused sequence to the queue instead of sleeping in the request', fu
     Queue::fake();
 
     $fixture = messageSequenceFixture([
-        'wait_for_reply' => false,
         'messages' => [
             ['message_type' => 'text', 'body' => 'Oi!', 'delay' => 0],
             ['message_type' => 'text', 'body' => 'Tudo bem?', 'delay' => 5],
@@ -173,7 +168,6 @@ it('completes a paused sequence in order once the queue runs it', function () {
     // The sync driver ignores the delay and runs each link as it is dispatched,
     // which is exactly the chain walking itself forward.
     $fixture = messageSequenceFixture([
-        'wait_for_reply' => false,
         'messages' => [
             ['message_type' => 'text', 'body' => 'Oi!', 'delay' => 2],
             ['message_type' => 'text', 'body' => 'Tudo bem?', 'delay' => 3],
@@ -195,7 +189,6 @@ it('does not restart a sequence that is already in flight', function () {
     Queue::fake();
 
     $fixture = messageSequenceFixture([
-        'wait_for_reply' => false,
         'messages' => [
             ['message_type' => 'text', 'body' => 'Oi!', 'delay' => 4],
             ['message_type' => 'text', 'body' => 'Tudo bem?', 'delay' => 4],
