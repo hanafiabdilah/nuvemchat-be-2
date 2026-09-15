@@ -118,6 +118,15 @@ class LeadPipelineController extends Controller
 
         $stage->delete();
 
+        // The "answered → stage" rule pointed here: switch it off rather than
+        // leave it aimed at nothing, so the dialog shows the truth.
+        $tenant = $request->user()->tenant;
+        $settings = $tenant->lead_settings ?? [];
+
+        if ((int) ($settings['attended_stage_id'] ?? 0) === $stage->id) {
+            $tenant->forceFill(['lead_settings' => array_merge($settings, ['attended_stage_id' => null])])->save();
+        }
+
         return response()->json(['message' => 'Etapa removida.']);
     }
 

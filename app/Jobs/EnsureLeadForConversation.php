@@ -6,6 +6,7 @@ use App\Enums\Billing\Feature;
 use App\Events\LeadUpdated;
 use App\Models\Conversation;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Lead\LeadAttendance;
 use App\Services\Lead\LeadResolver;
 use App\Services\Lead\LeadSettings;
 use App\Services\Lead\TemperatureScorer;
@@ -35,6 +36,7 @@ class EnsureLeadForConversation implements ShouldQueue
         LeadResolver $resolver,
         TemperatureScorer $scorer,
         SubscriptionGate $gate,
+        LeadAttendance $attendance,
     ): void {
         $conversation = Conversation::with(['contact', 'connection'])->find($this->conversationId);
 
@@ -68,6 +70,10 @@ class EnsureLeadForConversation implements ShouldQueue
         if (! $lead) {
             return;
         }
+
+        // An agent can answer a brand-new thread before this job gets to it,
+        // and the reply hook found no card to move then.
+        $attendance->advanceIfAttended($lead, $conversation);
 
         $scorer->apply($lead);
 

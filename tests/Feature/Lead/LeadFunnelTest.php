@@ -272,9 +272,9 @@ test('the board returns every column, including the empty ones', function () {
         ->getJson('/api/leads/board')
         ->assertOk();
 
-    // Six columns even though only one holds a card: a board that hides its
+    // Seven columns even though only one holds a card: a board that hides its
     // empty stages gives an agent nowhere to drag to.
-    expect($response->json('columns'))->toHaveCount(6);
+    expect($response->json('columns'))->toHaveCount(7);
     expect($response->json('columns.0.total'))->toBe(1);
     expect($response->json('columns.1.total'))->toBe(0);
 });

@@ -19,6 +19,7 @@ use App\Models\Message;
 use App\Models\User;
 use App\Services\Conversation\ConversationResolver;
 use App\Services\Conversation\OutboundConversationResolver;
+use App\Services\Lead\LeadAttendance;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
@@ -133,7 +134,9 @@ class BroadcastSender
             throw $th;
         }
 
-        $message?->update(['sent_by_user_id' => $broadcast->created_by]);
+        // A campaign reaching a list is not someone answering the contact, so
+        // the card stays in the first column (see LeadAttendance).
+        LeadAttendance::withoutAdvancing(fn () => $message?->update(['sent_by_user_id' => $broadcast->created_by]));
 
         $this->settleConversation($broadcast, $conversation);
 

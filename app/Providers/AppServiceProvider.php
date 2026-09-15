@@ -6,6 +6,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Observers\ConversationObserver;
 use App\Observers\MessageAttachmentObserver;
+use App\Observers\MessageLeadObserver;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\WebklexEmailInboxClientFactory;
 use App\Support\Heartbeat;
@@ -35,6 +36,7 @@ class AppServiceProvider extends ServiceProvider
         // Register observers
         Conversation::observe(ConversationObserver::class);
         Message::observe(MessageAttachmentObserver::class);
+        Message::observe(MessageLeadObserver::class);
 
         $this->registerQueueHeartbeat();
 

@@ -29,8 +29,8 @@ beforeEach(function () {
 });
 
 /**
- * The default funnel, by stage name: Novo contato, Qualificação, Proposta,
- * Negociação, Cliente (won), Perdido (lost).
+ * The default funnel, by stage name: Novo contato, Atendidos, Qualificação,
+ * Proposta, Negociação, Cliente (won), Perdido (lost).
  *
  * @return array<string, LeadStage>
  */

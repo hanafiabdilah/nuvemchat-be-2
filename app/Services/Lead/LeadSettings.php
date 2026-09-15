@@ -40,6 +40,15 @@ final class LeadSettings
          * clearing out someone who asked a price once and never wrote again.
          */
         public readonly bool $autoCloseEngaged,
+        /**
+         * The stage a card moves to the first time someone from the team
+         * answers the contact (see LeadAttendance). Null switches it off.
+         *
+         * A stage id rather than a name: tenants rename columns freely, and a
+         * rule keyed on "Atendidos" would silently stop working the day
+         * someone calls it "Em atendimento".
+         */
+        public readonly ?int $attendedStageId = null,
     ) {}
 
     public static function for(Tenant $tenant): self
@@ -57,6 +66,7 @@ final class LeadSettings
             autoCloseEnabled: (bool) ($raw['auto_close_enabled'] ?? true),
             autoCloseDays: self::clampDays((int) ($raw['auto_close_days'] ?? self::DEFAULT_AUTO_CLOSE_DAYS)),
             autoCloseEngaged: (bool) ($raw['auto_close_engaged'] ?? false),
+            attendedStageId: (int) ($raw['attended_stage_id'] ?? 0) > 0 ? (int) $raw['attended_stage_id'] : null,
         );
     }
 
@@ -68,6 +78,7 @@ final class LeadSettings
             'auto_close_enabled' => $this->autoCloseEnabled,
             'auto_close_days' => $this->autoCloseDays,
             'auto_close_engaged' => $this->autoCloseEngaged,
+            'attended_stage_id' => $this->attendedStageId,
         ];
     }
 

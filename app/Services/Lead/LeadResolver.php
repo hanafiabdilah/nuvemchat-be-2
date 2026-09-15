@@ -2,6 +2,7 @@
 
 namespace App\Services\Lead;
 
+use App\Enums\Connection\Channel;
 use App\Enums\Lead\LeadSource;
 use App\Enums\Lead\LeadStatus;
 use App\Models\Contact;
@@ -39,6 +40,13 @@ class LeadResolver
         // Groups are never leads. Nobody sells to a group chat, and the group
         // contact exists only so the inbox has something to render.
         if (! $contact || $contact->is_group) {
+            return null;
+        }
+
+        // Nor is a mailbox. The e-mail channel is a shared inbox that mostly
+        // receives notifications, invoices and newsletters, and every sender
+        // became a card in "Novo contato" that nobody would ever sell to.
+        if ($conversation->getRelationValue('connection')?->channel === Channel::Email) {
             return null;
         }
 
