@@ -1,0 +1,146 @@
+# Pingly — reverse proxy for every domain the platform answers on.
+#
+# Versioned here and applied with `./deploy.sh caddy` (monorepo root), which
+# validates it inside the caddy container, backs up the live file, copies this
+# one over it in place and reloads. Do not edit /opt/pingly/Caddyfile on the
+# server: the next `./deploy.sh caddy` overwrites it, and `sed -i` replaces the
+# inode, so the container keeps reading the old file while reload says success.
+#
+# Two kinds of site:
+#
+#   chat.pingly.com.br — the platform host (PLATFORM_URL). Everything: the
+#     dashboard and its API, the Back Office, and every address handed to a
+#     system outside the platform — webhooks, OAuth callbacks, the widget API,
+#     signed links, media.
+#
+#   Country domains (`import country_site`) — the dashboard and its API only.
+#     Platform-only paths answer 404 before reaching PHP; Laravel's
+#     EnsurePlatformHost answers the same 404 if one ever slips through. The
+#     backend never hands those paths out on a country domain, so nothing
+#     legitimate is lost. Adding a country: docs/country-domains.md.
+
+
+# ── Snippets ─────────────────────────────────────────────────────────────────
+
+# Laravel's front controller.
+(laravel) {
+    root * /var/www/html/public
+    php_fastcgi app:9000
+}
+
+# A built single-page app served from {args[0]}.
+#
+# Hashed assets are cached for a year ONLY when the file exists; index.html
+# always revalidates so a deploy is picked up at once. A missing asset is a
+# no-store 404, never index.html: HTML cached as "immutable" under a .js URL
+# poisons that browser for a year ("Expected a JavaScript module… MIME type
+# text/html"). Only non-asset routes fall back to index.html.
+(spa) {
+    root * {args[0]}
+
+    @assets {
+        path /assets/*
+        file
+    }
+    header @assets Cache-Control "public, max-age=31536000, immutable"
+
+    @html not path /assets/*
+    header @html Cache-Control "no-cache"
+
+    @missing_asset {
+        path /assets/*
+        not file
+    }
+    header @missing_asset Cache-Control "no-store"
+
+    @spa {
+        not path /assets/*
+        not file
+    }
+    rewrite @spa /index.html
+
+    file_server
+}
+
+# A country domain: the tenant dashboard and its API, nothing else.
+(country_site) {
+    encode gzip
+
+    # Platform-only, and kept that way: webhooks and OAuth callbacks are
+    # registered on the platform host, signed links are signed for it, media is
+    # linked to it, and the Back Office is operated from it. /oauth/result is
+    # deliberately absent — it is a dashboard route.
+    @platform_only path /webmin /webmin/* /api/admin /api/admin/* /webhook /webhook/* /widget-api /widget-api/* /oauth/instagram/* /oauth/facebook/* /oauth/tiktok/* /instagram/deletion-status /broadcasting /broadcasting/* /storage /storage/* /gallery/* /flow-payments/* /flow-invoices/*
+    handle @platform_only {
+        header Cache-Control "no-store"
+        respond 404
+    }
+
+    @backend path /api /api/* /up
+    handle @backend {
+        import laravel
+    }
+
+    handle {
+        import spa /srv/web/client
+    }
+}
+
+
+# ── Platform host ────────────────────────────────────────────────────────────
+
+chat.pingly.com.br {
+    encode gzip
+
+    # Laravel routes outside the SPA. A path missing here falls through to the
+    # SPA and answers index.html with a 200 — how every webhook once failed
+    # silently, and how the TikTok OAuth callback did until Sep 2026. A new
+    # top-level Laravel web route needs its prefix added here.
+    @backend path /api /api/* /gallery/* /flow-payments/* /flow-invoices/* /webhook /webhook/* /widget-api /widget-api/* /oauth/instagram/* /oauth/facebook/* /oauth/tiktok/* /instagram/deletion-status /broadcasting /broadcasting/* /up
+    handle @backend {
+        import laravel
+        file_server
+    }
+
+    # Signed private media (profile photos, message media) lives in
+    # storage/app/private and is served by Laravel's "storage.local" route so
+    # the signature is checked and the file streamed from the private disk.
+    # Recognised by its ?signature= query.
+    @signed_media {
+        path /storage/*
+        expression {http.request.uri.query.signature} != ""
+    }
+    handle @signed_media {
+        import laravel
+    }
+
+    # Unsigned public-disk files (uploads, outbound media Meta fetches while
+    # sending) are plain static files.
+    handle_path /storage* {
+        root * /var/www/html/storage/app/public
+        file_server
+    }
+
+    handle_path /webmin* {
+        import spa /srv/web/admin
+    }
+
+    handle {
+        import spa /srv/web/client
+    }
+}
+
+ws.pingly.com.br {
+    reverse_proxy reverb:8080
+}
+
+
+# ── Country domains ──────────────────────────────────────────────────────────
+#
+# One block each. Before adding one here, its DNS must already point at this
+# server (Caddy requests the certificate on reload). Then register the domain
+# in market_domains and in the Meta app — see docs/country-domains.md.
+#
+# app.pingly.id {
+#     import country_site
+# }

@@ -22,7 +22,10 @@ return Application::configure(basePath: dirname(__DIR__))
             // Widget routes are called cross-origin from third-party sites.
             // No sessions, no cookies, no CSRF — just thin HTTP + CORS (handled
             // globally via config/cors.php).
+            // Platform-only: the widget is built against the platform domain,
+            // so a country domain answers 404 (EnsurePlatformHost).
             \Illuminate\Support\Facades\Route::middleware([
+                \App\Http\Middleware\EnsurePlatformHost::class,
                 \Illuminate\Routing\Middleware\SubstituteBindings::class,
                 \App\Http\Middleware\SanitizeUpstreamErrors::class,
             ])->group(__DIR__.'/../routes/widget.php');
@@ -70,7 +73,17 @@ return Application::configure(basePath: dirname(__DIR__))
             'feature' => \App\Http\Middleware\EnsureFeatureEnabled::class,
             'whatsapp.verified' => \App\Http\Middleware\EnsureWhatsAppVerified::class,
             'messaging.window' => \App\Http\Middleware\EnsureMessagingWindowIsOpen::class,
+            'platform.only' => \App\Http\Middleware\EnsurePlatformHost::class,
         ]);
+
+        // The country-domain guard must run before authentication. Laravel
+        // reorders middleware by its priority list, and without an entry there
+        // auth:sanctum is moved ahead of it — a Back Office route probed through
+        // a country domain would answer 401, confirming it exists, instead of 404.
+        $middleware->prependToPriorityList(
+            \Illuminate\Contracts\Auth\Middleware\AuthenticatesRequests::class,
+            \App\Http\Middleware\EnsurePlatformHost::class,
+        );
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Meta's refusals used to be passed through verbatim, on the grounds

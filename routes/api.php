@@ -710,7 +710,9 @@ Route::prefix('/v1')->middleware([ApiKeyAuth::class, 'throttle:public-api'])->gr
 | Login is public; everything else requires a Sanctum token belonging to a
 | `super-admin` user with no tenant scope (see EnsureUserIsSuperAdmin).
 */
-Route::prefix('admin')->group(function () {
+// Platform-only: the Back Office lives on the platform domain; a country domain
+// answers 404 here (EnsurePlatformHost), before authentication is even tried.
+Route::prefix('admin')->middleware('platform.only')->group(function () {
     Route::post('/auth/login', [AdminAuthController::class, 'login']);
 
     Route::middleware(['auth:sanctum', 'super-admin'])->group(function () {
