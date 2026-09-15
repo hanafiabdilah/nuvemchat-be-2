@@ -88,6 +88,7 @@ use App\Http\Controllers\Api\StatisticsController;
 use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\PublicBootstrapController;
 use App\Http\Controllers\Api\ApiKeyController;
 use App\Http\Controllers\Api\WebhookController;
 use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
@@ -98,6 +99,9 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
 Route::post('/auth/register', [AuthController::class, 'register']);
+
+// Public: which market this domain sells in, for pages shown before sign-in.
+Route::get('/public/bootstrap', [PublicBootstrapController::class, 'show'])->middleware('throttle:60,1');
 
 // Public: tenant app exchanges a one-time Back Office code for a session.
 Route::post('/impersonate/redeem', [ImpersonationController::class, 'redeem']);

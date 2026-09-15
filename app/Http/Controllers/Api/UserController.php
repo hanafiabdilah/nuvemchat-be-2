@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\MarketResource;
 use App\Http\Resources\UserResource;
 use App\Models\Connection;
 use App\Services\Billing\SubscriptionGate;
@@ -21,6 +22,10 @@ class UserController extends Controller
         $data = $user->toResource(UserResource::class)->resolve($request);
 
         if ($tenant !== null) {
+            // The country this workspace sells in. Fixed for good, so money can
+            // be formatted and defaults chosen without asking again.
+            $data['market'] = MarketResource::make($tenant->market)->resolve($request);
+
             $gate = app(SubscriptionGate::class);
             $data['entitlements'] = $gate->entitlements($tenant);
 
