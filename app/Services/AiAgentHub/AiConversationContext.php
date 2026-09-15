@@ -66,7 +66,7 @@ class AiConversationContext
      * $input is the turn's own messages — sent separately, as the thing to
      * answer, so they are left out here. Customer messages newer than the
      * input belong to the next turn and are left out too; outgoing ones are
-     * not (the welcome goes out before the turn it precedes runs).
+     * not (a person, or a welcome sent up front, can write after the input).
      *
      * Null when there is nothing worth saying: the agent's own replies are in
      * the hub already, and a thread that is only the customer's greeting and
@@ -156,6 +156,26 @@ CONTEXT;
         }
 
         return "{$context}\n\nThe customer's new message — reply to this:\n{$text}";
+    }
+
+    /**
+     * The turn's input, told that the node's welcome goes out immediately
+     * before this reply.
+     *
+     * The welcome is held back for the AI's first answer and sent in the bubble
+     * right above it. A model that does not know that greets and introduces
+     * itself as well, and two openings stacked on top of each other read as a
+     * bot that is not listening to itself.
+     */
+    public static function precededByWelcome(string $welcome, string $input): string
+    {
+        $welcome = trim($welcome);
+
+        if ($welcome === '') {
+            return $input;
+        }
+
+        return "[Your welcome message is sent to the customer immediately before this reply: \"{$welcome}\". Do not greet the customer or introduce yourself again.]\n\n{$input}";
     }
 
     protected static function body(Message $message): string

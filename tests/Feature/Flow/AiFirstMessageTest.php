@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
@@ -10,6 +11,7 @@ use App\Models\Message;
 use App\Services\AiAgentHub\AiFirstMessage;
 use App\Services\Flow\FlowExecutor;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\Support\AiAgentFixtures;
 
@@ -50,6 +52,17 @@ function welcomesSent(Conversation $conversation): int
         ->where('sender_type', SenderType::Outgoing)
         ->where('body', 'Oi! Como posso ajudar?')
         ->count();
+}
+
+/** What reached the customer, in order. Info notes share the side but are never sent. */
+function sentToCustomer(Conversation $conversation): array
+{
+    return $conversation->messages()
+        ->where('sender_type', SenderType::Outgoing)
+        ->where('message_type', '!=', MessageType::Info)
+        ->orderBy('id')
+        ->pluck('body')
+        ->all();
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +127,7 @@ test('a message with something in it is not read as a greeting', function (strin
 // What the node does with it
 // ---------------------------------------------------------------------------
 
-test('a bare greeting gets the welcome and nothing else', function () {
+test('a bare greeting gets the welcome right away, and nothing else', function () {
     AiAgentFixtures::fakeChannelsAndHub();
     Queue::fake([RunAiAgentTurn::class]);
 
@@ -137,7 +150,8 @@ test('an opening that carries a question gets the welcome and an answer', functi
     [$conversation, $node] = AiAgentFixtures::flow();
     $opening = firstMessage($conversation, 'Bom dia, meu pedido não chegou');
 
-    expect(welcomesSent($conversation))->toBe(1);
+    // Held for the answer: nothing reaches the customer while the turn waits.
+    expect(welcomesSent($conversation))->toBe(0);
 
     $armed = firstTurnArmed();
     expect($armed)->toHaveCount(1);
@@ -150,19 +164,42 @@ test('an opening that carries a question gets the welcome and an answer', functi
 
     $runs = AiAgentFixtures::hubRuns();
     expect($runs)->toHaveCount(1)
-        ->and($runs[0]['message']['content'])->toBe('Bom dia, meu pedido não chegou');
+        ->and($runs[0]['message']['content'])->toEndWith('Bom dia, meu pedido não chegou')
+        // Told the welcome sits right above its reply, so it does not greet twice.
+        ->and($runs[0]['message']['content'])->toContain('Oi! Como posso ajudar?');
 
-    expect($conversation->messages()
-        ->where('sender_type', SenderType::Outgoing)
-        ->where('body', 'Vou verificar o seu pedido.')
-        ->count())->toBe(1);
+    expect(welcomesSent($conversation))->toBe(1)
+        ->and($conversation->messages()
+            ->where('sender_type', SenderType::Outgoing)
+            ->where('body', 'Vou verificar o seu pedido.')
+            ->count())->toBe(1);
 
     $state->refresh();
-    expect($state->state_data["_ai_last_processed_message_id_{$node->id}"])->toBe($opening->id);
+    expect($state->state_data["_ai_last_processed_message_id_{$node->id}"])->toBe($opening->id)
+        ->and($state->state_data)->not->toHaveKey("_ai_welcome_held_{$node->id}");
 });
 
-test('the welcome goes out before the AI answer', function () {
+test('the welcome waits for the AI answer and goes out right before it', function () {
     AiAgentFixtures::fakeChannelsAndHub('Vou verificar o seu pedido.');
+    Queue::fake([RunAiAgentTurn::class]);
+
+    [$conversation] = AiAgentFixtures::flow();
+    firstMessage($conversation, 'meu pedido não chegou');
+
+    // A welcome on its own, followed by seconds of silence, is what left the
+    // customer unsure whether their question had been read.
+    expect(sentToCustomer($conversation))->toBe([]);
+
+    firstTurnArmed()[0]->handle();
+
+    expect(sentToCustomer($conversation))->toBe(['Oi! Como posso ajudar?', 'Vou verificar o seu pedido.']);
+});
+
+test('a held welcome still reaches the customer when the AI cannot answer', function () {
+    Http::fake([
+        'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.OUT' . uniqid()]]]),
+        'api-ia.ipbr.pro/*' => Http::response(['message' => 'boom'], 500),
+    ]);
     Queue::fake([RunAiAgentTurn::class]);
 
     [$conversation] = AiAgentFixtures::flow();
@@ -170,15 +207,51 @@ test('the welcome goes out before the AI answer', function () {
 
     firstTurnArmed()[0]->handle();
 
-    // Info notes share the Outgoing side but are never sent anywhere.
-    $outgoing = $conversation->messages()
-        ->where('sender_type', SenderType::Outgoing)
-        ->where('message_type', '!=', MessageType::Info)
-        ->orderBy('id')
-        ->pluck('body')
-        ->all();
+    // The customer is never left with nothing: the greeting still goes out
+    // ahead of whatever the handoff does next.
+    expect(welcomesSent($conversation))->toBe(1);
+});
 
-    expect($outgoing)->toBe(['Oi! Como posso ajudar?', 'Vou verificar o seu pedido.']);
+test('a person who takes the conversation before the answer means no welcome', function () {
+    AiAgentFixtures::fakeChannelsAndHub('Vou verificar o seu pedido.');
+    Queue::fake([RunAiAgentTurn::class]);
+
+    [$conversation] = AiAgentFixtures::flow();
+    firstMessage($conversation, 'meu pedido não chegou');
+
+    $conversation->update(['status' => ConversationStatus::Active]);
+
+    firstTurnArmed()[0]->handle();
+
+    // Their accept message is the greeting now; a bot's would talk over it.
+    expect(welcomesSent($conversation))->toBe(0)
+        ->and(AiAgentFixtures::hubRuns())->toBeEmpty();
+});
+
+test('the held welcome is sent once, not again on the next turn', function () {
+    AiAgentFixtures::fakeChannelsAndHub('Vou verificar o seu pedido.');
+    Queue::fake([RunAiAgentTurn::class]);
+
+    [$conversation] = AiAgentFixtures::flow();
+    firstMessage($conversation, 'meu pedido não chegou');
+    firstTurnArmed()[0]->handle();
+
+    $conversation->messages()->create([
+        'external_id' => 'wamid.' . uniqid(),
+        'sender_type' => SenderType::Incoming,
+        'message_type' => MessageType::Text,
+        'body' => 'é o pedido 123',
+        'sent_at' => now(),
+    ]);
+
+    (new FlowExecutor)->resumeFlow($conversation->fresh(), 'é o pedido 123');
+    firstTurnArmed()[1]->handle();
+
+    $runs = AiAgentFixtures::hubRuns();
+
+    expect(welcomesSent($conversation))->toBe(1)
+        ->and($runs)->toHaveCount(2)
+        ->and($runs[1]['message']['content'])->not->toContain('Your welcome message');
 });
 
 test('a greeting followed by the question is one opening, answered once', function () {
@@ -199,14 +272,15 @@ test('a greeting followed by the question is one opening, answered once', functi
 
     $question = firstMessage($conversation, 'meu pedido não chegou');
 
-    expect(welcomesSent($conversation))->toBe(1)
+    expect(welcomesSent($conversation))->toBe(0)
         ->and(firstTurnArmed())->toHaveCount(1);
 
     firstTurnArmed()[0]->handle();
 
     $runs = AiAgentFixtures::hubRuns();
     expect($runs)->toHaveCount(1)
-        ->and($runs[0]['message']['content'])->toBe("oi\nmeu pedido não chegou");
+        ->and($runs[0]['message']['content'])->toEndWith("oi\nmeu pedido não chegou")
+        ->and(welcomesSent($conversation))->toBe(1);
 
     $state = FlowState::where('conversation_id', $conversation->id)->first();
     expect($state->state_data["_ai_last_processed_message_id_{$node->id}"])->toBe($question->id);
@@ -219,7 +293,8 @@ test('a screenshot opens the conversation with something to answer', function ()
     [$conversation] = AiAgentFixtures::flow();
     firstMessage($conversation, null, MessageType::Image, 'messages/erro.png');
 
-    expect(welcomesSent($conversation))->toBe(1)
+    // Answered, so the welcome waits for that answer.
+    expect(welcomesSent($conversation))->toBe(0)
         ->and(firstTurnArmed())->toHaveCount(1);
 });
 

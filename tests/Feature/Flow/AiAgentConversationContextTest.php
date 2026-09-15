@@ -77,7 +77,10 @@ test('the agent is told what the flow said before it was reached', function () {
         ->toContain('Automated message: Halo, dengan Hana AI disini. Ada yang bisa di bantu?')
         ->toContain('Customer: lampu mati')
         ->toContain('Automated message: Mohon maaf, server Cipayung sedang mengalami mati listrik.')
-        ->toContain('You (welcome message): Oi! Como posso ajudar?')
+        // The welcome is held for this answer and sent right above it, so the
+        // agent learns it from the note ahead of the input, not the transcript.
+        ->toContain('Your welcome message is sent to the customer immediately before this reply: "Oi! Como posso ajudar?"')
+        ->not->toContain('You (welcome message)')
         ->toEndWith("The customer's new message — reply to this:\nberapa lama lagi normal?");
 
     // In the order it was said, and the customer's question only once — as

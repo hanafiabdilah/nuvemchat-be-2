@@ -2540,13 +2540,20 @@ class FlowExecutor
     /**
      * Execute an AIAgent node.
      *
-     * The first turn always sends the configured `welcoming_message`. Whether
-     * the AI also runs on that first turn depends on what the customer opened
-     * with, and AiFirstMessage is what decides: a bare "Halo" gets the welcome
-     * and nothing else, because a model handed a greeting and no context
+     * The first turn always greets with the configured `welcoming_message`.
+     * Whether the AI also runs on that first turn depends on what the customer
+     * opened with, and AiFirstMessage is what decides: a bare "Halo" gets the
+     * welcome and nothing else, because a model handed a greeting and no context
      * answers it awkwardly — but somebody who opens with their actual problem
      * gets both, because making them repeat themselves is the platform asking
-     * for something it was already given. Every later turn goes to the AI.
+     * for something it was already given.
+     *
+     * In that second case the welcome is held back and sent immediately before
+     * the AI's answer (handleAIAgentInput). Sent up front, it landed on its own
+     * and was followed by the grouping window plus the model's seconds of
+     * silence — and a customer reading "Oi! Como posso ajudar?" right under the
+     * question they had just asked could not tell whether anybody had read it.
+     * Every later turn goes to the AI.
      *
      * If no fresh incoming message exists, the node simply waits — the
      * next user reply will be routed here via resumeFlow().
@@ -2683,19 +2690,20 @@ class FlowExecutor
             ]);
 
             // The entry watermark when the AI is about to answer: leaving these
-            // messages unprocessed is exactly what puts them in the turn.
+            // messages unprocessed is exactly what puts them in the turn. The
+            // welcome itself then waits for that answer (see the docblock).
             $this->sendAIAgentWelcome(
                 $flowState,
                 $node,
                 $welcomingMessage,
-                $answerNow ? $lastProcessedId : $newestPendingId
+                $answerNow ? $lastProcessedId : $newestPendingId,
+                holdForAnswer: $answerNow,
             );
 
             if ($answerNow) {
-                // Armed rather than run, so the welcome goes out first and the
-                // customer still gets the grouping window they would get on
-                // any other turn — the opening burst is the one most likely to
-                // still be arriving.
+                // Armed rather than run, so the customer still gets the
+                // grouping window they would get on any other turn — the
+                // opening burst is the one most likely to still be arriving.
                 $this->scheduleAIAgentTurn($flowState, $node);
             }
 
@@ -2916,11 +2924,23 @@ class FlowExecutor
         // would eventually do it, but minutes later.
         LiveActivity::aiThinking($flowState->conversation, $node);
 
+        $input = AiConversationContext::compose($context, $text);
+
+        // A welcome held back for this answer goes out right before it, and the
+        // agent is told so: two greetings in two adjacent bubbles read as a bot
+        // that is not listening to itself.
+        if (! empty($stateData[$this->aiHeldWelcomeKey($node->id)])) {
+            $input = AiConversationContext::precededByWelcome(
+                $this->interpolateVariables((string) (($node->data ?? [])['welcoming_message'] ?? ''), $flowState),
+                $input
+            );
+        }
+
         try {
             $this->handleAIAgentInput(
                 $flowState,
                 $node,
-                AiConversationContext::compose($context, $text),
+                $input,
                 (int) $messages->last()->id,
                 $entries,
                 $spokenTo,
@@ -3118,18 +3138,58 @@ class FlowExecutor
     }
 
     /**
-     * Send the configured welcoming message and advance the turn counter.
+     * Send the configured welcoming message — or hold it for the AI's first
+     * answer — and advance the turn counter.
      *
      * $watermark is the id of the last message the welcome is taken to have
      * answered — pass the entry watermark when the AI is about to answer the
      * opening itself, which leaves it unprocessed and therefore inside the
      * turn that follows. Its absence is what tells a later turn that no
      * welcome has happened at all.
+     *
+     * $holdForAnswer leaves the message unsent and marks it held: the turn that
+     * answers the opening sends it immediately before the reply.
      */
-    protected function sendAIAgentWelcome(FlowState $flowState, FlowNode $node, string $welcomingMessage, int $watermark): void
+    protected function sendAIAgentWelcome(FlowState $flowState, FlowNode $node, string $welcomingMessage, int $watermark, bool $holdForAnswer = false): void
+    {
+        if (! $holdForAnswer) {
+            $this->deliverAIAgentWelcome($flowState, $node, $welcomingMessage);
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData["_ai_turns_{$node->id}"] = ($stateData["_ai_turns_{$node->id}"] ?? 0) + 1;
+        $stateData["_ai_last_processed_message_id_{$node->id}"] = $watermark;
+
+        if ($holdForAnswer) {
+            $stateData[$this->aiHeldWelcomeKey($node->id)] = true;
+        }
+
+        $flowState->update(['state_data' => $stateData]);
+
+        Log::info($holdForAnswer
+            ? 'FlowExecutor: AIAgent welcoming message held for the first answer'
+            : 'FlowExecutor: AIAgent welcoming message sent', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'answered_messages_up_to' => $watermark,
+        ]);
+    }
+
+    /** Where a welcome held back for the first answer is marked. */
+    protected function aiHeldWelcomeKey(int $nodeId): string
+    {
+        return "_ai_welcome_held_{$nodeId}";
+    }
+
+    /** The welcoming message itself, stamped as the agent's own opening. */
+    protected function deliverAIAgentWelcome(FlowState $flowState, FlowNode $node, string $welcomingMessage): void
     {
         $conversation = $flowState->conversation;
-        $welcomingMessage = $this->interpolateVariables($welcomingMessage, $flowState);
+        $welcomingMessage = trim($this->interpolateVariables($welcomingMessage, $flowState));
+
+        if ($welcomingMessage === '') {
+            return;
+        }
 
         try {
             $message = $this->messageService->sendMessage($conversation, [
@@ -3154,17 +3214,6 @@ class FlowExecutor
                 'error' => $th->getMessage(),
             ]);
         }
-
-        $stateData = $flowState->state_data ?? [];
-        $stateData["_ai_turns_{$node->id}"] = ($stateData["_ai_turns_{$node->id}"] ?? 0) + 1;
-        $stateData["_ai_last_processed_message_id_{$node->id}"] = $watermark;
-        $flowState->update(['state_data' => $stateData]);
-
-        Log::info('FlowExecutor: AIAgent welcoming message sent', [
-            'node_id' => $node->id,
-            'conversation_id' => $conversation->id,
-            'answered_messages_up_to' => $watermark,
-        ]);
     }
 
     /**
@@ -3202,6 +3251,31 @@ class FlowExecutor
         $reasonKey = "_ai_handoff_reason_{$node->id}";
         $lastProcessedKey = "_ai_last_processed_message_id_{$node->id}";
 
+        // A welcome held back for this answer (executeAIAgentNode). Taken off
+        // the state copy here, so that every write below persists it as gone:
+        // one restored from a stale copy greets the customer a second time on
+        // the next turn.
+        $heldWelcomeKey = $this->aiHeldWelcomeKey($node->id);
+        $welcomeHeld = ! empty($stateData[$heldWelcomeKey]);
+        unset($stateData[$heldWelcomeKey]);
+
+        // Sent right before whatever the customer receives next — the answer,
+        // or a handoff when the AI could not give one. Never over a person who
+        // took the conversation: their accept message is the greeting now.
+        $sendHeldWelcome = function () use (&$welcomeHeld, $flowState, $node, $data, $conversation): void {
+            if (! $welcomeHeld) {
+                return;
+            }
+
+            $welcomeHeld = false;
+
+            if (! $this->stillWithTheFlow($conversation)) {
+                return;
+            }
+
+            $this->deliverAIAgentWelcome($flowState, $node, (string) ($data['welcoming_message'] ?? ''));
+        };
+
         if ($sourceMessageId !== null) {
             $stateData[$lastProcessedKey] = $sourceMessageId;
 
@@ -3216,6 +3290,8 @@ class FlowExecutor
             // next turn — held in memory only, the watermark would still read as
             // unanswered and the same messages would be assembled a second time.
             $flowState->update(['state_data' => $stateData]);
+        } elseif ($welcomeHeld) {
+            $flowState->update(['state_data' => $stateData]);
         }
 
         $turns = $stateData[$turnsKey] ?? 0;
@@ -3229,6 +3305,7 @@ class FlowExecutor
 
             $stateData[$reasonKey] = 'max_turns_exceeded';
             $flowState->update(['state_data' => $stateData]);
+            $sendHeldWelcome();
             $this->routeHandoff($flowState, $node, 'max_turns_exceeded', false);
             return;
         }
@@ -3244,6 +3321,7 @@ class FlowExecutor
 
             $stateData[$reasonKey] = 'agent_missing';
             $flowState->update(['state_data' => $stateData]);
+            $sendHeldWelcome();
             $this->routeHandoff($flowState, $node, 'agent_missing', false);
             return;
         }
@@ -3304,6 +3382,7 @@ class FlowExecutor
             $replyText = $run->output_message;
 
             if (!empty($replyText)) {
+                $sendHeldWelcome();
                 $this->deliverAiReply($flowState, $node, $conversation, $agent, $run, $replyText, $decision);
             } else {
                 // Nothing to send, and staying on the node means the customer
@@ -3319,6 +3398,7 @@ class FlowExecutor
 
                 $stateData[$reasonKey] = 'error';
                 $flowState->update(['state_data' => $stateData]);
+                $sendHeldWelcome();
                 $this->routeHandoff($flowState, $node, 'error', false);
 
                 return;
@@ -3368,6 +3448,7 @@ class FlowExecutor
 
             $stateData[$reasonKey] = 'ai_quota_exceeded';
             $flowState->update(['state_data' => $stateData]);
+            $sendHeldWelcome();
             $this->routeHandoff($flowState, $node, 'ai_quota_exceeded', false);
         } catch (CreditExhaustedException $th) {
             // Its own reason for the same reason the quota has one: "the plan's
@@ -3382,6 +3463,7 @@ class FlowExecutor
 
             $stateData[$reasonKey] = 'credit_exhausted';
             $flowState->update(['state_data' => $stateData]);
+            $sendHeldWelcome();
             $this->routeHandoff($flowState, $node, 'credit_exhausted', false);
         } catch (\Throwable $th) {
             Log::error('FlowExecutor: Error running AIAgent, handing off to human', [
@@ -3392,6 +3474,7 @@ class FlowExecutor
 
             $stateData[$reasonKey] = 'error';
             $flowState->update(['state_data' => $stateData]);
+            $sendHeldWelcome();
             $this->routeHandoff($flowState, $node, 'error', false);
         }
     }
