@@ -2,8 +2,11 @@
 
 namespace App\Models;
 
+use App\Services\Market\MarketResolver;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
+use LogicException;
 
 class Tenant extends Model
 {
@@ -23,6 +26,40 @@ class Tenant extends Model
         'entitlement_overrides' => 'array',
         'audio_dictionary' => 'array',
     ];
+
+    /**
+     * A workspace's market is decided once, when it is created, and never
+     * again: its balance, invoices and ledger are amounts in that market's
+     * currency, and moving it would relabel the money rather than convert it.
+     *
+     * Filled here rather than in the signup controller because workspaces are
+     * created in more places than signup — seeders, tests, the next onboarding
+     * path — and a workspace's country must not depend on someone remembering.
+     * Deliberately not in $fillable: the domain decides, never a request body.
+     *
+     * Enforced in save() rather than in model events: Event::fake() silences
+     * model events (39 test files use it) and saveQuietly() skips them in
+     * production code, and neither may produce a workspace without a country
+     * or one that moves between countries. A query-builder mass update still
+     * bypasses this; nothing should issue one.
+     */
+    public function save(array $options = []): bool
+    {
+        if (! $this->exists) {
+            $this->market_code ??= MarketResolver::codeForRequest();
+        } elseif ($this->isDirty('market_code')) {
+            throw new LogicException(
+                "Workspace {$this->id} belongs to market {$this->getOriginal('market_code')}; a workspace never changes market."
+            );
+        }
+
+        return parent::save($options);
+    }
+
+    public function market(): BelongsTo
+    {
+        return $this->belongsTo(Market::class, 'market_code', 'code');
+    }
 
     /**
      * Whether this workspace can be charged at all.
