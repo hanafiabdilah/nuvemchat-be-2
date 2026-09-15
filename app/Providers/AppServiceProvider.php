@@ -10,6 +10,7 @@ use App\Observers\MessageLeadObserver;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\WebklexEmailInboxClientFactory;
 use App\Support\Heartbeat;
+use App\Support\PlatformUrl;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Queue\Events\JobProcessed;
@@ -33,6 +34,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Webhooks, OAuth callbacks and signed links always carry the platform
+        // domain, never the country domain a request happened to arrive on.
+        PlatformUrl::apply($this->app['url']);
+
         // Register observers
         Conversation::observe(ConversationObserver::class);
         Message::observe(MessageAttachmentObserver::class);

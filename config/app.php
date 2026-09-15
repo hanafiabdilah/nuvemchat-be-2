@@ -56,6 +56,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Platform URL
+    |--------------------------------------------------------------------------
+    |
+    | The address given to systems outside the platform: channel webhooks,
+    | OAuth callbacks, payment notifications and signed links. Every country
+    | domain is served from the same install, and without this Laravel would
+    | build those addresses from whichever domain a request arrived on. Scheme
+    | and host only (e.g. https://chat.pingly.com.br). Empty = follow the
+    | request, as before. See App\Support\PlatformUrl.
+    |
+    */
+
+    'platform_url' => env('PLATFORM_URL'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Frontend URL
     |--------------------------------------------------------------------------
     | This URL is used to specify the URL of the frontend application, which

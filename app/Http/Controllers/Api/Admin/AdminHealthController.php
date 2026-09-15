@@ -14,6 +14,7 @@ use App\Models\Connection;
 use App\Models\SystemHeartbeat;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Support\Heartbeat;
+use App\Support\PlatformUrl;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -45,6 +46,7 @@ class AdminHealthController extends Controller
                 $this->apiwayUndelivered(),
                 $this->emailSync(),
                 $this->brokenConnections(),
+                $this->platformUrl(),
             ],
         );
 
@@ -333,6 +335,64 @@ class AdminHealthController extends Controller
             $broken > 0 ? 'warn' : 'ok',
             (string) $broken,
             'Connections that hold credentials but are not active — usually a revoked token. The customer sees an inbox that has gone quiet.',
+        );
+    }
+
+    /**
+     * The address webhooks and OAuth callbacks are registered on.
+     *
+     * Unset is ok, not warn: with one domain the request host *is* the
+     * platform host, and a check that stays yellow until a country launches
+     * teaches operators to ignore this page. What is worth a warning is a value
+     * that isn't doing what it looks like it does.
+     */
+    private function platformUrl(): array
+    {
+        if (! PlatformUrl::isConfigured()) {
+            return $this->check(
+                'platform:url',
+                'Platform',
+                'Platform address',
+                'ok',
+                'Not set',
+                'PLATFORM_URL is empty, so webhook and OAuth addresses follow whichever domain a request arrived on. Harmless with a single domain; set it before a second domain goes live.',
+            );
+        }
+
+        $host = PlatformUrl::host();
+
+        if ($host === null) {
+            return $this->check(
+                'platform:url',
+                'Platform',
+                'Platform address',
+                'warn',
+                'Invalid',
+                'PLATFORM_URL must be a scheme and host only, such as https://chat.pingly.com.br. While it is unusable, addresses follow the request domain.',
+            );
+        }
+
+        $appHost = (string) parse_url((string) config('app.url'), PHP_URL_HOST);
+
+        if (strcasecmp($host, $appHost) !== 0) {
+            return $this->check(
+                'platform:url',
+                'Platform',
+                'Platform address',
+                'warn',
+                $host,
+                "APP_URL points at {$appHost}. Public file links and a few integrations still read APP_URL, so the platform hands out two different addresses.",
+                ['app_host' => $appHost],
+            );
+        }
+
+        return $this->check(
+            'platform:url',
+            'Platform',
+            'Platform address',
+            'ok',
+            $host,
+            'Webhooks, OAuth callbacks and signed links are issued on this address, whichever domain the request came from.',
         );
     }
 
