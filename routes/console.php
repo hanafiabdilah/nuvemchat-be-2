@@ -234,3 +234,10 @@ Schedule::command('leads:close-stale')
     ->timezone('America/Sao_Paulo')
     ->withoutOverlapping(30)
     ->onFailure(fn () => logger()->error('Stale lead sweep failed'));
+
+// Webhook delivery logs carry full lead payloads; keep a month for debugging.
+Schedule::command('webhooks:prune')
+    ->dailyAt('04:10')
+    ->timezone('America/Sao_Paulo')
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->error('Webhook delivery prune failed'));

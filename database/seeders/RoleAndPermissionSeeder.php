@@ -34,6 +34,9 @@ class RoleAndPermissionSeeder extends Seeder
             // API keys for the public API (/v1/*).
             'api-keys.manage',
 
+            // Outbound webhooks (lead events sent to the workspace's systems).
+            'webhooks.manage',
+
             // Tags
             'tags.create',
             'tags.update',

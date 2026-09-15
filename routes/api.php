@@ -88,6 +88,7 @@ use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\ApiKeyController;
+use App\Http\Controllers\Api\WebhookController;
 use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
 use App\Http\Controllers\Api\V1\LeadController as V1LeadController;
 use App\Http\Controllers\Api\V1\SendMessageController;
@@ -242,6 +243,17 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/', [ApiKeyController::class, 'index'])->name('index');
         Route::post('/', [ApiKeyController::class, 'store'])->name('store');
         Route::delete('/{id}', [ApiKeyController::class, 'destroy'])->whereNumber('id')->name('destroy');
+    });
+
+    // Outbound webhooks (lead events → the workspace's own systems).
+    Route::prefix('webhooks')->name('webhooks.')->middleware('permission:webhooks.manage')->group(function () {
+        Route::get('/', [WebhookController::class, 'index'])->name('index');
+        Route::post('/', [WebhookController::class, 'store'])->name('store');
+        Route::put('/{id}', [WebhookController::class, 'update'])->whereNumber('id')->name('update');
+        Route::delete('/{id}', [WebhookController::class, 'destroy'])->whereNumber('id')->name('destroy');
+        Route::post('/{id}/rotate-secret', [WebhookController::class, 'rotateSecret'])->whereNumber('id')->name('rotate-secret');
+        Route::post('/{id}/test', [WebhookController::class, 'test'])->whereNumber('id')->middleware('throttle:20,1')->name('test');
+        Route::get('/{id}/deliveries', [WebhookController::class, 'deliveries'])->whereNumber('id')->name('deliveries');
     });
 
     Route::middleware('feature:' . Feature::Chat->value)->group(function () {
@@ -673,6 +685,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
 Route::prefix('/v1')->middleware([ApiKeyAuth::class, 'throttle:public-api'])->group(function () {
     Route::post('send-message', [SendMessageController::class, 'handle']);
     Route::post('leads', [V1LeadController::class, 'store']);
+    Route::post('leads/close', [V1LeadController::class, 'close']);
     Route::get('connections', [V1ConnectionController::class, 'index']);
 });
 

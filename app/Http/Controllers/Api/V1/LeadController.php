@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\ApiKey;
+use App\Services\Lead\LeadCloseService;
 use App\Services\Lead\LeadIntakeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -55,6 +56,34 @@ class LeadController extends Controller
         $outcome = $this->intake->receive($key->tenant, $key, $data);
 
         return response()->json(['data' => $outcome['body']], $outcome['status']);
+    }
+
+    /** POST /api/v1/leads/close — won or lost, by the reference the lead was sent with. */
+    public function close(Request $request, LeadCloseService $closer): JsonResponse
+    {
+        $data = $request->validate([
+            'reference' => ['required', 'string', 'max:191'],
+            'status' => ['required', 'in:won,lost'],
+            'value' => ['nullable', 'numeric', 'min:0', 'max:9999999999'],
+            'lost_reason' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        /** @var ApiKey $key */
+        $key = $request->attributes->get('api_key');
+
+        ['lead' => $lead, 'changed' => $changed, 'reference' => $reference] = $closer->close($key->tenant, $data);
+
+        return response()->json(['data' => [
+            'id' => $lead->id,
+            'reference' => $reference,
+            'status' => $lead->status->value,
+            'value' => $lead->value !== null ? (float) $lead->value : null,
+            'currency' => $lead->currency,
+            'lost_reason' => $lead->lost_reason,
+            'stage' => $lead->stage ? ['id' => $lead->stage->id, 'name' => $lead->stage->name] : null,
+            'closed_at' => $lead->closed_at?->utc()->toIso8601ZuluString(),
+            'changed' => $changed,
+        ]]);
     }
 
     /**

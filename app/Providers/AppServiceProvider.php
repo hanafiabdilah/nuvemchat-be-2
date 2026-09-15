@@ -38,6 +38,9 @@ class AppServiceProvider extends ServiceProvider
         Message::observe(MessageAttachmentObserver::class);
         Message::observe(MessageLeadObserver::class);
 
+        // lead.assigned / lead.stage_changed / lead.won / lead.lost webhooks.
+        \App\Services\Webhooks\LeadWebhooks::register();
+
         $this->registerQueueHeartbeat();
 
         // Public API. Counted per key, not per IP: the callers are servers, and

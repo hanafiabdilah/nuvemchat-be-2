@@ -30,7 +30,9 @@ final class LeadIntakeFixtures
         $user = User::factory()->create(['whatsapp_verified_at' => now()]);
         $tenant = Tenant::create(['user_id' => $user->id]);
         $user->forceFill(['tenant_id' => $tenant->id])->save();
-        $user->givePermissionTo(Permission::findOrCreate('api-keys.manage', 'web'));
+        foreach (['api-keys.manage', 'webhooks.manage'] as $permission) {
+            $user->givePermissionTo(Permission::findOrCreate($permission, 'web'));
+        }
 
         return $user->fresh();
     }
