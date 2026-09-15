@@ -988,6 +988,89 @@ class AiAgentHubTenantService
     }
 
     /**
+     * One run with no conversation behind it: the audio vocabulary's test
+     * bench, where someone records a voice note or types a sentence and wants
+     * to see (or hear) what the workspace's word list does to it.
+     *
+     * Same gates and same bookkeeping as runAgent — the quota, the prepaid
+     * balance, an `ai_hub_runs` row, the wallet debit on a rented key — because
+     * it is a real run on a real provider, and a test bench that ran AI for
+     * free would be the one path nobody could see or bill.
+     *
+     * What it deliberately does not share is the text-only retry. That retry
+     * exists so a customer is never left unanswered; here the person pressing
+     * the button is asking exactly whether the audio part works, and quietly
+     * answering without it would report success on the thing that failed.
+     *
+     * @param  array<int, array<string, mixed>>  $attachments  built by the caller, one audio entry for a listening test
+     * @param  array<string, mixed>  $inputAudio  from AiTranscription::options()
+     * @param  array<string, mixed>  $responseAudio  from AiVoiceReply::options()
+     */
+    public function runAudioTest(
+        AiHubAgent $agent,
+        string $userMessage,
+        array $attachments = [],
+        array $inputAudio = [],
+        array $responseAudio = []
+    ): AiHubRun {
+        $tenant = $agent->aiHubTenant;
+
+        $this->assertWithinRunQuota($agent);
+        $this->assertCanSpendCredit($agent);
+
+        // A fresh hub conversation per test: nothing said to the bench may
+        // leak into the agent's memory of anything else, or into the next test.
+        $externalId = 'vocabulary-test-' . bin2hex(random_bytes(8));
+        $metadata = ['purpose' => 'vocabulary_test'];
+
+        $payload = array_filter([
+            'agentExternalId' => $agent->external_id,
+            'responseMode' => 'sync',
+            'conversation' => [
+                'externalId' => $externalId,
+                // No channel behind a test. 'whatsapp' is the value every
+                // working run in this deployment already sends, and the hub
+                // rejects a whole run over one unrecognised field — see the
+                // same note in FlowAssistantService::runTurn().
+                'channel' => 'whatsapp',
+                'contactExternalId' => $externalId,
+                'contactName' => 'Teste de vocabulário',
+            ],
+            'message' => array_filter([
+                'role' => 'USER',
+                'content' => $userMessage,
+                'attachments' => $attachments ?: null,
+            ], fn ($value) => $value !== null),
+            'inputAudio' => $inputAudio ?: null,
+            'responseAudio' => $responseAudio ?: null,
+            'metadata' => $metadata,
+        ], fn ($value) => $value !== null);
+
+        $context = [
+            'ai_hub_tenant_id' => $tenant?->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'purpose' => 'vocabulary_test',
+        ];
+
+        $data = $this->postRun($tenant, $payload, $context);
+
+        if (self::runFailed($data)) {
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                self::runError($data),
+                upstreamCode: 'run_failed',
+                context: $context,
+            );
+        }
+
+        $run = $this->persistRun($agent, null, $userMessage, $data, null, null, $metadata);
+
+        $this->chargeRentedRun($agent, $run);
+
+        return $run;
+    }
+
+    /**
      * Bill a completed run to the prepaid wallet, when it ran on a key the
      * platform rents out.
      *
@@ -1186,7 +1269,7 @@ class AiAgentHubTenantService
      */
     protected function persistRun(
         AiHubAgent $agent,
-        Conversation $conversation,
+        ?Conversation $conversation,
         string $userMessage,
         array $data,
         ?int $flowStateId,
@@ -1220,9 +1303,11 @@ class AiAgentHubTenantService
             : null;
 
         return AiHubRun::create([
-            'tenant_id' => $conversation->contact->tenant_id,
+            // A test-bench run has no conversation; the agent's workspace is
+            // the same answer, reached the other way round.
+            'tenant_id' => $conversation?->contact?->tenant_id ?? $agent->aiHubTenant?->tenant_id,
             'ai_hub_agent_id' => $agent->id,
-            'conversation_id' => $conversation->id,
+            'conversation_id' => $conversation?->id,
             'flow_state_id' => $flowStateId,
             'flow_node_id' => $flowNodeId,
             'message_id' => null,

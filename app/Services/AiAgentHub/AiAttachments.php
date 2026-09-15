@@ -240,6 +240,23 @@ class AiAttachments
         return (bool) config('ai.audio.enabled', true);
     }
 
+    /**
+     * The containers a transcription model accepts, for anything that takes
+     * an upload rather than a stored message — the vocabulary test bench.
+     *
+     * @return array<int, string>
+     */
+    public static function audioExtensions(): array
+    {
+        return array_keys(self::AUDIO_MIME);
+    }
+
+    /** The MIME the payload declares for one of those containers, or null. */
+    public static function audioMimeFor(string $extension): ?string
+    {
+        return self::AUDIO_MIME[strtolower($extension)] ?? null;
+    }
+
     /** A file that exists, is ours to serve, and has not been purged. */
     private static function hasUsableFile(Message $message): bool
     {

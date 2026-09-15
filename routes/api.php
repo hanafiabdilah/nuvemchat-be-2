@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\AiHub\AgentSkillController as AiHubAgentSkillContro
 use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentTrainingExampleController;
 use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
 use App\Http\Controllers\Api\AiHub\VocabularyController as AiHubVocabularyController;
+use App\Http\Controllers\Api\AiHub\VocabularyTestController as AiHubVocabularyTestController;
 use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
 use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
 use App\Http\Controllers\Api\AiHub\TokenRentalController as AiHubTokenRentalController;
@@ -594,6 +595,14 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // App\Services\AiAgentHub\AiVocabulary.
         Route::get('/vocabulary', [AiHubVocabularyController::class, 'show'])->middleware('permission:ai-agents.view');
         Route::put('/vocabulary', [AiHubVocabularyController::class, 'update'])->middleware('permission:ai-agents.update');
+
+        // Try the list out — saved or not — without sending a voice note to a
+        // real number first. Each test is a real agent run (counted, billed),
+        // so it takes the edit permission and a throttle.
+        Route::post('/vocabulary/test/listen', [AiHubVocabularyTestController::class, 'listen'])
+            ->middleware(['permission:ai-agents.update', 'throttle:20,1']);
+        Route::post('/vocabulary/test/speak', [AiHubVocabularyTestController::class, 'speak'])
+            ->middleware(['permission:ai-agents.update', 'throttle:20,1']);
 
         Route::get('/provider-credentials', [AiHubProviderCredentialController::class, 'index'])->middleware('permission:ai-agents.view');
         Route::post('/provider-credentials', [AiHubProviderCredentialController::class, 'store'])->middleware('permission:ai-agents.create');
