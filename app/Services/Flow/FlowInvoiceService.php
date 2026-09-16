@@ -17,6 +17,7 @@ use App\Services\Conversation\SystemMessage;
 use App\Services\Integrations\IntegrationDrivers;
 use App\Services\Integrations\Invoices\InvoiceRequest;
 use App\Services\Integrations\Invoices\InvoiceResult;
+use App\Services\Money\MarketMoney;
 use App\Support\Errors\UpstreamError;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
@@ -84,7 +85,8 @@ class FlowInvoiceService
             'flow_payment_id' => $this->paymentFor($flowState)?->id,
             'reference' => 'pingly-nf-'.Str::lower((string) Str::ulid()),
             'amount_cents' => $amountCents ?? 0,
-            'currency' => 'BRL',
+            // The workspace's own money — see FlowPaymentService.
+            'currency' => $connection->tenant?->currency() ?? MarketMoney::baseCurrency(),
             'description' => $description !== '' ? $description : null,
             'customer_name' => $name !== '' ? Str::limit($name, 255, '') : null,
             'customer_document' => $document ?? ($rawDocument !== '' ? Str::limit($rawDocument, 20, '') : null),

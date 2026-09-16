@@ -7,6 +7,7 @@ use App\Models\Setting;
 use App\Services\AiTokens\KnownModelPrices;
 use App\Services\Money\ExchangeRates;
 use App\Services\Money\MarketMoney;
+use App\Support\Money;
 
 /**
  * What the balance costs to fill and what spending it buys — every commercial
@@ -48,6 +49,16 @@ class CreditPricing
     public const KEY_MIN_TOPUP_CENTS = 'ai_credits.min_topup_cents';
 
     public const KEY_LOW_BALANCE_CENTS = 'ai_credits.low_balance_cents';
+
+    /**
+     * The one-tap top-up amounts, in the platform's home currency.
+     *
+     * Deliberately a constant and not a setting: they are a convenience over a
+     * field that already accepts any amount, and every number here is converted
+     * per market anyway, so an admin who wants different amounts is really
+     * asking for a different currency — which the conversion already gives.
+     */
+    private const TOPUP_PRESETS_CENTS = [2000, 5000, 10000, 20000];
 
     /**
      * The "typical reply" the price list is illustrated with: a page of context
@@ -99,6 +110,40 @@ class CreditPricing
             max(1, (int) self::number(self::KEY_MIN_TOPUP_CENTS, 'min_topup_cents', 1000)),
             $currency,
         ));
+    }
+
+    /**
+     * The amounts offered as one-tap buttons on the top-up screen.
+     *
+     * Converted like every other published figure, then rounded up to the
+     * market's own step — `inCurrency()` only converts, and an offer reading
+     * "Rp 64.837" is arithmetic showing through a button. These lived in the
+     * browser as a hard-coded list of reais until Sep 2026, which is how an
+     * Indonesian workspace came to be offered IDR 20 instead of IDR 20.000.
+     *
+     * Presets below the enforced minimum are dropped rather than clamped: a
+     * button that exists only to be refused is worse than one fewer button,
+     * and clamping would print two buttons with the same amount on them.
+     *
+     * @param  int  $stepCents  The market's rounding step; 1 to not round.
+     * @return list<int>
+     */
+    public static function topupPresetsCents(?string $currency = null, int $stepCents = 1): array
+    {
+        $min = self::minTopupCents($currency);
+        $presets = [];
+
+        foreach (self::TOPUP_PRESETS_CENTS as $base) {
+            $cents = Money::roundUpTo(self::inCurrency($base, $currency), max(1, $stepCents));
+
+            if ($cents >= $min && ! in_array($cents, $presets, true)) {
+                $presets[] = $cents;
+            }
+        }
+
+        // A currency coarse enough to round every preset away still needs
+        // something to press.
+        return $presets ?: [$min];
     }
 
     /** Balance under which the workspace is warned it is about to lose its AI. */

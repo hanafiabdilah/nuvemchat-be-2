@@ -62,6 +62,13 @@ class CreditController extends Controller
                 'usd_rate' => ExchangeRates::perUsd($currency),
                 'fallback_run_cents' => CreditPricing::fallbackRunCents($currency),
                 'min_topup_cents' => CreditPricing::minTopupCents($currency),
+                // The buttons, priced here rather than in the browser — the
+                // rounding step is the market's, and the browser has no idea
+                // what it is.
+                'topup_presets_cents' => CreditPricing::topupPresetsCents(
+                    $currency,
+                    $tenant->market?->roundingCents() ?? 1,
+                ),
                 'low_balance_cents' => CreditPricing::lowBalanceCents($currency),
             ],
             // What each model costs, in the currency the balance is held in.

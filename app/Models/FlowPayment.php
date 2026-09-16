@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Flow\FlowPaymentStatus;
 use App\Enums\Integration\IntegrationProvider;
+use App\Support\Money;
 use App\Support\PixQrCode;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\URL;
@@ -108,9 +109,12 @@ class FlowPayment extends Model
      */
     public function formattedAmount(): string
     {
-        $symbol = $this->currency === 'BRL' ? 'R$' : $this->currency;
-
-        return $symbol.' '.number_format($this->amount_cents / 100, 2, ',', '.');
+        // ⚠️ Through Money, not hand-rolled. The old version wrote the symbol
+        // itself and always used two decimals, so a rupiah charge reached the
+        // customer as "IDR 149.000,00" — the wrong symbol and a precision the
+        // currency does not have. How a currency is written is one table, and
+        // this is the message a customer is asked to pay from.
+        return Money::format($this->amount_cents, $this->currency);
     }
 
     /**

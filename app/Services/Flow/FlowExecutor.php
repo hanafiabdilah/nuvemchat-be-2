@@ -5,6 +5,7 @@ namespace App\Services\Flow;
 use App\Enums\Billing\Feature;
 use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status as ConversationStatus;
+use App\Enums\Flow\FlowInvoiceStatus;
 use App\Enums\Flow\FlowPaymentStatus;
 use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
@@ -16,12 +17,10 @@ use App\Events\ConversationHandoff;
 use App\Events\ConversationUpdated;
 use App\Events\LeadUpdated;
 use App\Events\MessageReceived;
-use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
+use App\Exceptions\Billing\CreditExhaustedException;
 use App\Jobs\ExpireFlowPayment;
 use App\Jobs\ReleaseFlowInvoice;
-use App\Models\FlowInvoice;
-use App\Enums\Flow\FlowInvoiceStatus;
 use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowWaitResponseBuffer;
@@ -34,6 +33,7 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Flow;
 use App\Models\FlowEdge;
+use App\Models\FlowInvoice;
 use App\Models\FlowNode;
 use App\Models\FlowPayment;
 use App\Models\FlowState;
@@ -115,8 +115,8 @@ class FlowExecutor
 
     public function __construct()
     {
-        $this->messageService = new MessageService();
-        $this->aiAgentHubService = new AiAgentHubTenantService();
+        $this->messageService = new MessageService;
+        $this->aiAgentHubService = new AiAgentHubTenantService;
     }
 
     /**
@@ -131,7 +131,7 @@ class FlowExecutor
 
         $connection = $conversation->connection;
 
-        if (!$connection->flow_id) {
+        if (! $connection->flow_id) {
             return;
         }
 
@@ -141,6 +141,7 @@ class FlowExecutor
                 'conversation_id' => $conversation->id,
                 'status' => $conversation->status->value,
             ]);
+
             return;
         }
 
@@ -158,10 +159,11 @@ class FlowExecutor
             ->where('type', NodeType::Start)
             ->first();
 
-        if (!$startNode) {
+        if (! $startNode) {
             Log::warning('FlowExecutor: No start node found', [
                 'flow_id' => $connection->flow_id,
             ]);
+
             return;
         }
 
@@ -186,7 +188,7 @@ class FlowExecutor
         // Check if conversation is still flow-eligible (Pending or AI-handling) before executing
         $conversation = $flowState->conversation->fresh();
 
-        if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+        if (! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             Log::info('FlowExecutor: Flow stopped, conversation is no longer flow-eligible (flow state preserved)', [
                 'conversation_id' => $conversation->id,
                 'status' => $conversation->status->value,
@@ -309,6 +311,7 @@ class FlowExecutor
             ]);
 
             $this->finishMessageNode($flowState, $node);
+
             return;
         }
 
@@ -320,15 +323,17 @@ class FlowExecutor
                     'node_id' => $node->id,
                     'conversation_id' => $conversation->id,
                 ]);
+
                 return;
             }
 
-            if (!MessageNodes::hasDelay($items)) {
+            if (! MessageNodes::hasDelay($items)) {
                 foreach ($items as $index => $item) {
                     $this->sendMessageItem($flowState, $node, $item, $index);
                 }
 
                 $this->finishMessageNode($flowState, $node);
+
                 return;
             }
 
@@ -357,12 +362,13 @@ class FlowExecutor
         try {
             $message = $this->sendByMessageType($conversation, $item, $flowState);
 
-            if (!$message) {
+            if (! $message) {
                 Log::error('FlowExecutor: Failed to send message', [
                     'node_id' => $node->id,
                     'index' => $index,
                     'conversation_id' => $conversation->id,
                 ]);
+
                 return;
             }
 
@@ -393,13 +399,14 @@ class FlowExecutor
      */
     protected function finishMessageNode(FlowState $flowState, FlowNode $node): void
     {
-        if (!$node->outgoingEdges()->exists()) {
+        if (! $node->outgoingEdges()->exists()) {
             Log::info('FlowExecutor: Flow completed after its last message', [
                 'flow_state_id' => $flowState->id,
                 'node_id' => $node->id,
             ]);
 
             $this->endFlowHere($flowState, FlowStateStatus::Completed);
+
             return;
         }
 
@@ -452,7 +459,7 @@ class FlowExecutor
     {
         $flowState = FlowState::find($flowStateId);
 
-        if (!$flowState || $this->messageChainToken($flowState, $nodeId) !== $token) {
+        if (! $flowState || $this->messageChainToken($flowState, $nodeId) !== $token) {
             return;
         }
 
@@ -466,10 +473,11 @@ class FlowExecutor
             && $conversation
             && in_array($conversation->status, ConversationStatus::flowEligible(), true);
 
-        if (!$stillOurs) {
+        if (! $stillOurs) {
             // Ours to clear: nobody else holds this token, and leaving it set
             // would block the node if the flow ever came back round to it.
             $this->clearMessageChain($flowState, $nodeId);
+
             return;
         }
 
@@ -479,6 +487,7 @@ class FlowExecutor
         if ($item === null) {
             $this->clearMessageChain($flowState, $nodeId);
             $this->finishMessageNode($flowState, $node);
+
             return;
         }
 
@@ -489,6 +498,7 @@ class FlowExecutor
         if ($next === null) {
             $this->clearMessageChain($flowState, $nodeId);
             $this->finishMessageNode($flowState, $node);
+
             return;
         }
 
@@ -513,7 +523,7 @@ class FlowExecutor
     {
         $chain = $flowState->state_data[$this->messageChainKey($nodeId)] ?? null;
 
-        if (!is_array($chain)) {
+        if (! is_array($chain)) {
             return null;
         }
 
@@ -535,7 +545,7 @@ class FlowExecutor
     {
         $stateData = $flowState->state_data ?? [];
 
-        if (!array_key_exists($this->messageChainKey($nodeId), $stateData)) {
+        if (! array_key_exists($this->messageChainKey($nodeId), $stateData)) {
             return;
         }
 
@@ -614,7 +624,7 @@ class FlowExecutor
         $data = $this->interpolateInteractiveData($node->data ?? [], $flowState);
         $options = InteractiveNodes::options($data);
 
-        if (!InteractiveNodes::isSendable($data)) {
+        if (! InteractiveNodes::isSendable($data)) {
             Log::warning('FlowExecutor: Interactive node is incomplete, skipping', [
                 'node_id' => $node->id,
                 'conversation_id' => $conversation->id,
@@ -624,6 +634,7 @@ class FlowExecutor
             // Nothing to ask, so nothing to branch on: fall through the first
             // edge rather than stranding the conversation on a silent node.
             $this->moveToNextNode($flowState, $node);
+
             return;
         }
 
@@ -634,11 +645,12 @@ class FlowExecutor
                 ? $this->messageService->sendInteractive($conversation, InteractiveNodes::sendPayload($data))
                 : $this->sendInteractiveAsPlainText($conversation, $data, $options);
 
-            if (!$message) {
+            if (! $message) {
                 Log::error('FlowExecutor: Failed to send interactive message', [
                     'node_id' => $node->id,
                     'conversation_id' => $conversation->id,
                 ]);
+
                 return;
             }
 
@@ -650,11 +662,12 @@ class FlowExecutor
                 'message_id' => $message->id,
                 'conversation_id' => $conversation->id,
                 'options' => count($options),
-                'as_plain_text' => !$isWhatsappOfficial,
+                'as_plain_text' => ! $isWhatsappOfficial,
             ]);
 
-            if (!InteractiveNodes::awaitsReply($data)) {
+            if (! InteractiveNodes::awaitsReply($data)) {
                 $this->moveToNextNode($flowState, $node);
+
                 return;
             }
 
@@ -702,6 +715,7 @@ class FlowExecutor
                 'reply_id' => $replyId,
                 'input' => mb_substr($userInput, 0, 50),
             ]);
+
             return;
         }
 
@@ -758,10 +772,10 @@ class FlowExecutor
         // its caption, then wherever its button would have taken the customer.
         if ($isCarousel) {
             foreach (InteractiveNodes::cards($data) as $card) {
-                $lines[] = '— ' . ($card['body'] !== '' ? $card['body'] : $card['header_url']);
+                $lines[] = '— '.($card['body'] !== '' ? $card['body'] : $card['header_url']);
 
                 if (($card['button_url'] ?? '') !== '') {
-                    $lines[] = '  ' . $card['button_label'] . ': ' . $card['button_url'];
+                    $lines[] = '  '.$card['button_label'].': '.$card['button_url'];
                 }
             }
 
@@ -771,10 +785,10 @@ class FlowExecutor
         }
 
         foreach ($options as $i => $option) {
-            $lines[] = ($i + 1) . '. ' . $option['title'];
+            $lines[] = ($i + 1).'. '.$option['title'];
         }
 
-        if (!$isCarousel && $footer = trim((string) ($data['footer'] ?? ''))) {
+        if (! $isCarousel && $footer = trim((string) ($data['footer'] ?? ''))) {
             $lines[] = $footer;
         }
 
@@ -857,6 +871,7 @@ class FlowExecutor
                     'node_id' => $node->id,
                 ]);
                 $this->moveToNextNode($flowState, $node);
+
                 return;
             }
 
@@ -1230,6 +1245,7 @@ class FlowExecutor
                 'node_id' => $node->id,
             ]);
             $this->moveToNextNodeByBranch($flowState, $node, 'error');
+
             return;
         }
 
@@ -1354,7 +1370,7 @@ class FlowExecutor
      */
     protected function interpolateVariables(string $template, FlowState $flowState): string
     {
-        if ($template === '' || !str_contains($template, '{{')) {
+        if ($template === '' || ! str_contains($template, '{{')) {
             return $template;
         }
 
@@ -1377,7 +1393,7 @@ class FlowExecutor
      */
     protected function resolveTemplateToken(FlowState $flowState, string $key)
     {
-        if (!str_contains($key, '.')) {
+        if (! str_contains($key, '.')) {
             return $flowState->state_data[$key] ?? null;
         }
 
@@ -1395,12 +1411,13 @@ class FlowExecutor
             ->where('condition_value', $branch)
             ->first();
 
-        if (!$edge) {
+        if (! $edge) {
             Log::info('FlowExecutor: No edge for branch, flow path ends (flow state preserved)', [
                 'node_id' => $currentNode->id,
                 'branch' => $branch,
                 'flow_state_id' => $flowState->id,
             ]);
+
             return;
         }
 
@@ -1420,7 +1437,7 @@ class FlowExecutor
     {
         $nextNode = FlowNode::find($edge->target_node_id);
 
-        if (!$nextNode) {
+        if (! $nextNode) {
             $flowState->update([
                 'status' => FlowStateStatus::Failed,
                 'completed_at' => now(),
@@ -1432,6 +1449,7 @@ class FlowExecutor
                 'flow_state_id' => $flowState->id,
                 'status' => 'failed',
             ]);
+
             return;
         }
 
@@ -1503,15 +1521,15 @@ class FlowExecutor
         ]);
 
         // Evaluate based on operator
-        return match($operator) {
+        return match ($operator) {
             'equals' => $actualValue == $expectedValue,
             'not_equals' => $actualValue != $expectedValue,
             'contains' => is_string($actualValue) && str_contains($actualValue, $expectedValue),
-            'not_contains' => is_string($actualValue) && !str_contains($actualValue, $expectedValue),
+            'not_contains' => is_string($actualValue) && ! str_contains($actualValue, $expectedValue),
             'greater_than' => is_numeric($actualValue) && is_numeric($expectedValue) && $actualValue > $expectedValue,
             'less_than' => is_numeric($actualValue) && is_numeric($expectedValue) && $actualValue < $expectedValue,
             'is_empty' => empty($actualValue),
-            'is_not_empty' => !empty($actualValue),
+            'is_not_empty' => ! empty($actualValue),
             default => false,
         };
     }
@@ -1531,7 +1549,7 @@ class FlowExecutor
         $source = $parts[0]; // 'variable', 'contact', 'conversation', 'service_hours'
         $key = $parts[1];
 
-        return match($source) {
+        return match ($source) {
             // Use the full remainder (collapsing legacy repeated "variable."
             // prefixes) so "variable.x" and "variable.variable.x" both read
             // state_data['x'].
@@ -1561,7 +1579,7 @@ class FlowExecutor
      */
     protected function contactField(?Contact $contact, string $key)
     {
-        if (!$contact) {
+        if (! $contact) {
             return null;
         }
 
@@ -1590,11 +1608,11 @@ class FlowExecutor
      */
     protected function validateInput(string $input, ?string $validationType): bool
     {
-        if (!$validationType || $validationType === 'any') {
+        if (! $validationType || $validationType === 'any') {
             return true; // Accept any input
         }
 
-        return match($validationType) {
+        return match ($validationType) {
             'number' => is_numeric($input),
             'email' => filter_var($input, FILTER_VALIDATE_EMAIL) !== false,
             'phone' => $this->validatePhoneNumber($input),
@@ -1627,7 +1645,7 @@ class FlowExecutor
             ->where('condition_value', $conditionValue)
             ->first();
 
-        if (!$edge) {
+        if (! $edge) {
             // No edge found for this condition result
             $flowState->update([
                 'status' => FlowStateStatus::Failed,
@@ -1639,12 +1657,12 @@ class FlowExecutor
                 'condition_result' => $conditionValue,
                 'flow_state_id' => $flowState->id,
             ]);
+
             return;
         }
 
         $this->followEdge($flowState, $edge, ['condition_result' => $conditionValue]);
     }
-
 
     /**
      * Move to the next node in the flow and execute it
@@ -1654,7 +1672,7 @@ class FlowExecutor
         // Find the next node via edge
         $edge = $currentNode->outgoingEdges()->first();
 
-        if (!$edge) {
+        if (! $edge) {
             // No next node, flow ends
             Log::info('FlowExecutor: Flow completed (no next node, flow state preserved)', [
                 'flow_state_id' => $flowState->id,
@@ -1731,9 +1749,9 @@ class FlowExecutor
      * node; for an AI-initiated request the AI keeps handling and sends the away
      * message.
      *
-     * @param bool $aiCanContinue true only for the hub's intentional handoff
-     *        request. Failure paths (no agent / error / max turns) cannot stay
-     *        with the AI and always fall through to the next node.
+     * @param  bool  $aiCanContinue  true only for the hub's intentional handoff
+     *                               request. Failure paths (no agent / error / max turns) cannot stay
+     *                               with the AI and always fall through to the next node.
      */
     protected function routeHandoff(FlowState $flowState, FlowNode $node, string $reason, bool $aiCanContinue): void
     {
@@ -1741,6 +1759,7 @@ class FlowExecutor
             // AI is done with this node; release it from the AI tab before advancing.
             $this->releaseAiHandling($flowState->conversation);
             $this->moveToNextNode($flowState, $node);
+
             return;
         }
 
@@ -1748,12 +1767,14 @@ class FlowExecutor
 
         if (BusinessHours::isOpen($connection)) {
             $this->transferToHuman($flowState, $reason);
+
             return;
         }
 
         // Outside service hours: no human available.
         if ($aiCanContinue) {
             $this->sendAwayMessageOnce($flowState, $connection);
+
             return; // stay on this AIAgent node, keep handling with the AI
         }
 
@@ -1957,7 +1978,7 @@ class FlowExecutor
         }
 
         // Only resume flow for flow-eligible conversations (Pending queue or active AI turn)
-        if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+        if (! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             Log::info('FlowExecutor: Cannot resume flow, conversation is not flow-eligible', [
                 'conversation_id' => $conversation->id,
                 'status' => $conversation->status->value,
@@ -1965,6 +1986,7 @@ class FlowExecutor
 
             // Stop any active flow
             $this->stopFlow($conversation);
+
             return;
         }
 
@@ -1974,7 +1996,7 @@ class FlowExecutor
         // is going to answer them. A conversation still shown as AI-handling
         // there — its flow was deleted, or the node it sat on — goes back to
         // the queue, where a person will see it. No-op for everything else.
-        if (!$flowState) {
+        if (! $flowState) {
             $this->releaseAiHandling($conversation);
 
             return; // No active flow
@@ -1996,7 +2018,7 @@ class FlowExecutor
         // The customer wrote, so whatever chain of go-to-flow jumps led here
         // was a conversation, not a loop. The counter only guards jumps made
         // with nobody on the other end.
-        if (!empty(($flowState->state_data ?? [])[FlowLinkNodes::JUMPS_KEY])) {
+        if (! empty(($flowState->state_data ?? [])[FlowLinkNodes::JUMPS_KEY])) {
             $stateData = $flowState->state_data;
             $stateData[FlowLinkNodes::JUMPS_KEY] = 0;
             $flowState->update(['state_data' => $stateData]);
@@ -2004,7 +2026,7 @@ class FlowExecutor
 
         $currentNode = $flowState->currentNode;
 
-        if (!$currentNode) {
+        if (! $currentNode) {
             Log::error('FlowExecutor: Current node not found (flow state preserved)', [
                 'flow_state_id' => $flowState->id,
             ]);
@@ -2035,6 +2057,7 @@ class FlowExecutor
         // made a customer typing in bursts get one reply per burst.
         if ($currentNode->type === NodeType::AIAgent) {
             $this->scheduleAIAgentTurn($flowState, $currentNode);
+
             return;
         }
 
@@ -2050,7 +2073,7 @@ class FlowExecutor
             $stateData = $flowState->state_data ?? [];
             $promptSentFlag = "_response_sent_{$currentNode->id}";
 
-            if (!isset($stateData[$promptSentFlag])) {
+            if (! isset($stateData[$promptSentFlag])) {
                 // Prompt hasn't been sent yet - execute Response node first (send prompt)
                 Log::info('FlowExecutor: Response node reached but prompt not sent yet, executing Response node', [
                     'node_id' => $currentNode->id,
@@ -2058,11 +2081,13 @@ class FlowExecutor
                 ]);
 
                 $this->executeResponseNode($flowState, $currentNode);
+
                 return;
             }
 
             // Prompt already sent - handle user input
             $this->handleResponseNodeInput($flowState, $currentNode, $userInput);
+
             return;
         }
 
@@ -2070,12 +2095,14 @@ class FlowExecutor
         // conversation moved here by the migration, say) runs first; a parked
         // one takes this message as the reply, or into its burst window.
         if ($currentNode->type === NodeType::WaitResponse) {
-            if (!array_key_exists(WaitResponseNodes::parkedKey($currentNode->id), $flowState->state_data ?? [])) {
+            if (! array_key_exists(WaitResponseNodes::parkedKey($currentNode->id), $flowState->state_data ?? [])) {
                 $this->executeWaitResponseNode($flowState, $currentNode);
+
                 return;
             }
 
             $this->receiveWaitResponseInput($flowState, $currentNode, $userInput);
+
             return;
         }
 
@@ -2088,6 +2115,7 @@ class FlowExecutor
                 'conversation_id' => $conversation->id,
                 'node_id' => $currentNode->id,
             ]);
+
             return;
         }
 
@@ -2098,6 +2126,7 @@ class FlowExecutor
                 'conversation_id' => $conversation->id,
                 'node_id' => $currentNode->id,
             ]);
+
             return;
         }
 
@@ -2106,12 +2135,14 @@ class FlowExecutor
         if ($currentNode->type === NodeType::Interactive) {
             $stateData = $flowState->state_data ?? [];
 
-            if (!isset($stateData["_interactive_sent_{$currentNode->id}"])) {
+            if (! isset($stateData["_interactive_sent_{$currentNode->id}"])) {
                 $this->executeInteractiveNode($flowState, $currentNode);
+
                 return;
             }
 
             $this->handleInteractiveNodeInput($flowState, $currentNode, $userInput);
+
             return;
         }
 
@@ -2148,7 +2179,7 @@ class FlowExecutor
         // Validate input
         $isValid = $this->validateInput($userInput, $validationType);
 
-        if (!$isValid) {
+        if (! $isValid) {
             // Send error message and ask again (don't move to next node)
             Log::warning('FlowExecutor: Response validation failed', [
                 'node_id' => $node->id,
@@ -2226,7 +2257,7 @@ class FlowExecutor
                 ]);
             }
 
-            if (!$message) {
+            if (! $message) {
                 // Not parked, the way a Response node whose question failed is
                 // not: the customer never saw what they are meant to answer, so
                 // their next message runs this node again instead of being
@@ -2235,6 +2266,7 @@ class FlowExecutor
                     'node_id' => $node->id,
                     'conversation_id' => $conversation->id,
                 ]);
+
                 return;
             }
 
@@ -2302,6 +2334,7 @@ class FlowExecutor
         if ($seconds <= 0) {
             $flowState->update(['state_data' => $stateData]);
             $this->handleWaitResponseInput($flowState, $node, $userInput);
+
             return;
         }
 
@@ -2328,13 +2361,13 @@ class FlowExecutor
     {
         $flowState = FlowState::find($flowStateId);
 
-        if (!$flowState || ($flowState->state_data[WaitResponseNodes::bufferKey($nodeId)] ?? null) !== $token) {
+        if (! $flowState || ($flowState->state_data[WaitResponseNodes::bufferKey($nodeId)] ?? null) !== $token) {
             return;
         }
 
         $node = $this->parkedWaitResponseNode($flowState, $nodeId);
 
-        if (!$node) {
+        if (! $node) {
             return;
         }
 
@@ -2367,7 +2400,7 @@ class FlowExecutor
         $reply = trim($reply);
         $validation = WaitResponseNodes::validation($data);
 
-        if ($validation !== null && !$this->validateInput($reply, $validation)) {
+        if ($validation !== null && ! $this->validateInput($reply, $validation)) {
             Log::info('FlowExecutor: Wait-for-reply answer failed validation', [
                 'node_id' => $node->id,
                 'validation' => $validation,
@@ -2394,6 +2427,7 @@ class FlowExecutor
             // Still here, still answering — wrongly. Wait again from now: the
             // next attempt is read on its own and the clock starts over.
             $this->parkWaitResponse($flowState, $node);
+
             return;
         }
 
@@ -2417,7 +2451,7 @@ class FlowExecutor
         $edge = $node->outgoingEdges()->where('condition_value', WaitResponseNodes::BRANCH_REPLIED)->first()
             ?? $node->outgoingEdges()->whereNull('condition_value')->first();
 
-        if (!$edge) {
+        if (! $edge) {
             // Left running here, the next message would be read as another
             // reply to a wait that already ended.
             Log::info('FlowExecutor: Flow completed after the customer replied', [
@@ -2426,6 +2460,7 @@ class FlowExecutor
             ]);
 
             $this->endFlowHere($flowState, FlowStateStatus::Completed);
+
             return;
         }
 
@@ -2450,6 +2485,7 @@ class FlowExecutor
                 unset($stateData[$key]);
                 $flowState->update(['state_data' => $stateData]);
             }
+
             return;
         }
 
@@ -2473,13 +2509,13 @@ class FlowExecutor
 
         $node = FlowNode::find($nodeId);
 
-        if (!$node || $node->type !== NodeType::WaitResponse) {
+        if (! $node || $node->type !== NodeType::WaitResponse) {
             return null;
         }
 
         $conversation = $flowState->conversation;
 
-        if (!$conversation || !in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+        if (! $conversation || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             // An agent took the conversation while the node waited. Whatever the
             // author wanted to happen next, it was not this.
             return null;
@@ -2499,13 +2535,13 @@ class FlowExecutor
     {
         $flowState = FlowState::find($flowStateId);
 
-        if (!$flowState || ($flowState->state_data[WaitResponseNodes::timeoutKey($nodeId)] ?? null) !== $token) {
+        if (! $flowState || ($flowState->state_data[WaitResponseNodes::timeoutKey($nodeId)] ?? null) !== $token) {
             return;
         }
 
         $node = $this->parkedWaitResponseNode($flowState, $nodeId);
 
-        if (!$node) {
+        if (! $node) {
             return;
         }
 
@@ -2513,11 +2549,12 @@ class FlowExecutor
             ->where('condition_value', WaitResponseNodes::BRANCH_TIMEOUT)
             ->first();
 
-        if (!$edge) {
+        if (! $edge) {
             Log::info('FlowExecutor: Wait-for-reply limit ran out with no branch wired, still waiting', [
                 'node_id' => $node->id,
                 'conversation_id' => $flowState->conversation_id,
             ]);
+
             return;
         }
 
@@ -2571,6 +2608,7 @@ class FlowExecutor
                 'conversation_id' => $flowState->conversation_id,
             ]);
             $this->transferToHuman($flowState, 'service_hours');
+
             return;
         }
 
@@ -2593,6 +2631,7 @@ class FlowExecutor
             $flowState->update(['state_data' => $stateData]);
 
             $this->routeHandoff($flowState, $node, 'agent_missing', false);
+
             return;
         }
 
@@ -2603,7 +2642,7 @@ class FlowExecutor
         $turnsKey = "_ai_turns_{$node->id}";
         $lastProcessedKey = "_ai_last_processed_message_id_{$node->id}";
 
-        if (!isset($stateData[$turnsKey])) {
+        if (! isset($stateData[$turnsKey])) {
             $stateData[$turnsKey] = 0;
             $flowState->update(['state_data' => $stateData]);
         }
@@ -2646,6 +2685,7 @@ class FlowExecutor
                 'conversation_id' => $flowState->conversation_id,
                 'turns' => $stateData[$turnsKey],
             ]);
+
             return;
         }
 
@@ -2672,6 +2712,7 @@ class FlowExecutor
                 $flowState->update(['state_data' => $stateData]);
 
                 $this->scheduleAIAgentTurn($flowState, $node);
+
                 return;
             }
 
@@ -2765,7 +2806,7 @@ class FlowExecutor
     {
         $flowState = FlowState::find($flowStateId);
 
-        if (!$flowState || $flowState->status !== FlowStateStatus::Running) {
+        if (! $flowState || $flowState->status !== FlowStateStatus::Running) {
             return true;
         }
 
@@ -2776,20 +2817,20 @@ class FlowExecutor
 
         $node = $flowState->currentNode;
 
-        if (!$node || $node->id !== $nodeId || $node->type !== NodeType::AIAgent) {
+        if (! $node || $node->id !== $nodeId || $node->type !== NodeType::AIAgent) {
             return true;
         }
 
         $conversation = $flowState->conversation;
 
         // Between the arming and now, an agent may have taken the conversation.
-        if (!$conversation || !in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+        if (! $conversation || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             return true;
         }
 
         $lock = Cache::lock($this->aiTurnLockKey($conversation->id), self::AI_TURN_LOCK_SECONDS);
 
-        if (!$lock->get()) {
+        if (! $lock->get()) {
             return false;
         }
 
@@ -3067,25 +3108,25 @@ class FlowExecutor
     {
         $conversation = $message->conversation;
 
-        if (!$conversation
+        if (! $conversation
             || $conversation->isGroup()
             || $message->sender_type !== SenderType::Incoming) {
             return;
         }
 
-        if (!in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+        if (! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             return;
         }
 
         $flowState = FlowState::where('conversation_id', $conversation->id)->first();
 
-        if (!$flowState || $flowState->status !== FlowStateStatus::Running) {
+        if (! $flowState || $flowState->status !== FlowStateStatus::Running) {
             return;
         }
 
         $node = $flowState->currentNode;
 
-        if (!$node || $node->type !== NodeType::AIAgent) {
+        if (! $node || $node->type !== NodeType::AIAgent) {
             return;
         }
 
@@ -3169,10 +3210,10 @@ class FlowExecutor
         Log::info($holdForAnswer
             ? 'FlowExecutor: AIAgent welcoming message held for the first answer'
             : 'FlowExecutor: AIAgent welcoming message sent', [
-            'node_id' => $node->id,
-            'conversation_id' => $flowState->conversation_id,
-            'answered_messages_up_to' => $watermark,
-        ]);
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+                'answered_messages_up_to' => $watermark,
+            ]);
     }
 
     /** Where a welcome held back for the first answer is marked. */
@@ -3307,13 +3348,14 @@ class FlowExecutor
             $flowState->update(['state_data' => $stateData]);
             $sendHeldWelcome();
             $this->routeHandoff($flowState, $node, 'max_turns_exceeded', false);
+
             return;
         }
 
         $agentId = $data['ai_hub_agent_id'] ?? null;
         $agent = $agentId ? AiHubAgent::find($agentId) : null;
 
-        if (!$agent) {
+        if (! $agent) {
             Log::error('FlowExecutor: AIAgent node has no valid agent, handing off', [
                 'node_id' => $node->id,
                 'ai_hub_agent_id' => $agentId,
@@ -3323,6 +3365,7 @@ class FlowExecutor
             $flowState->update(['state_data' => $stateData]);
             $sendHeldWelcome();
             $this->routeHandoff($flowState, $node, 'agent_missing', false);
+
             return;
         }
 
@@ -3381,7 +3424,7 @@ class FlowExecutor
 
             $replyText = $run->output_message;
 
-            if (!empty($replyText)) {
+            if (! empty($replyText)) {
                 $sendHeldWelcome();
                 $this->deliverAiReply($flowState, $node, $conversation, $agent, $run, $replyText, $decision);
             } else {
@@ -3422,6 +3465,7 @@ class FlowExecutor
                 ]);
 
                 $this->routeHandoff($flowState, $node, $reason, true);
+
                 return;
             }
 
@@ -3737,6 +3781,7 @@ class FlowExecutor
             $flowState->conversation,
             $node,
             $payment->amount_cents,
+            $payment->currency,
             $payment->provider?->value,
             $payment->expires_at,
         );
@@ -3763,11 +3808,12 @@ class FlowExecutor
         $nodeId = (int) $payment->flow_node_id;
         $flowState = $payment->flow_state_id ? FlowState::find($payment->flow_state_id) : null;
 
-        if (!$flowState || $nodeId <= 0 || $flowState->status !== FlowStateStatus::Running || (int) $flowState->current_node_id !== $nodeId) {
+        if (! $flowState || $nodeId <= 0 || $flowState->status !== FlowStateStatus::Running || (int) $flowState->current_node_id !== $nodeId) {
             Log::info('FlowExecutor: Payment settled, but the flow is no longer waiting on it', [
                 'flow_payment_id' => $payment->id,
                 'flow_state_id' => $payment->flow_state_id,
             ]);
+
             return;
         }
 
@@ -3780,8 +3826,8 @@ class FlowExecutor
         $conversation = $flowState->conversation;
         $node = FlowNode::find($nodeId);
 
-        if (!$conversation || !$node || $node->type !== NodeType::Payment
-            || !in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+        if (! $conversation || ! $node || $node->type !== NodeType::Payment
+            || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             return;
         }
 
@@ -3850,7 +3896,7 @@ class FlowExecutor
 
         $linkSent = PaymentNodes::sendsLink($data) && $payment->payment_url;
 
-        if ($linkSent && !str_contains($text, '{{payment_link}}')) {
+        if ($linkSent && ! str_contains($text, '{{payment_link}}')) {
             $text = trim($text."\n\n".$payment->payment_url);
         }
 
@@ -3872,7 +3918,7 @@ class FlowExecutor
             // delivering it switched off, the code goes out anyway.
             $delivered = $qrUrl || $copyPaste || $linkSent || str_contains($text, '{{payment_pix_code}}');
 
-            if ($copyPaste || !$delivered) {
+            if ($copyPaste || ! $delivered) {
                 $bubbles[] = ['message_type' => 'text', 'body' => $payment->pix_code];
             }
         }
@@ -3957,6 +4003,7 @@ class FlowExecutor
             $flowState->conversation,
             $node,
             $invoice->amount_cents,
+            $invoice->currency,
             $invoice->provider?->value,
             $invoice->wait_until,
         );
@@ -3981,11 +4028,12 @@ class FlowExecutor
         $nodeId = (int) $invoice->flow_node_id;
         $flowState = $invoice->flow_state_id ? FlowState::find($invoice->flow_state_id) : null;
 
-        if (!$flowState || $nodeId <= 0 || $flowState->status !== FlowStateStatus::Running || (int) $flowState->current_node_id !== $nodeId) {
+        if (! $flowState || $nodeId <= 0 || $flowState->status !== FlowStateStatus::Running || (int) $flowState->current_node_id !== $nodeId) {
             Log::info('FlowExecutor: Invoice settled, but the flow is no longer waiting on it', [
                 'flow_invoice_id' => $invoice->id,
                 'flow_state_id' => $invoice->flow_state_id,
             ]);
+
             return;
         }
 
@@ -3998,12 +4046,12 @@ class FlowExecutor
         $conversation = $flowState->conversation;
         $node = FlowNode::find($nodeId);
 
-        if (!$conversation || !$node || $node->type !== NodeType::Invoice
-            || !in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+        if (! $conversation || ! $node || $node->type !== NodeType::Invoice
+            || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             return;
         }
 
-        $issued = !$released && $invoice->status === FlowInvoiceStatus::Issued;
+        $issued = ! $released && $invoice->status === FlowInvoiceStatus::Issued;
 
         $stateData = $flowState->state_data ?? [];
         unset($stateData[$key]);
@@ -4099,7 +4147,7 @@ class FlowExecutor
         $data = $node->data ?? [];
 
         try {
-            if (!PixelNodes::isConfigured($data)) {
+            if (! PixelNodes::isConfigured($data)) {
                 Log::info('FlowExecutor: Pixel node has nothing to send, skipping', [
                     'node_id' => $node->id,
                 ]);
@@ -4179,7 +4227,7 @@ class FlowExecutor
         $conversation = $flowState->conversation;
         $tenant = $conversation->connection?->tenant;
 
-        if (!$tenant) {
+        if (! $tenant) {
             return;
         }
 
@@ -4187,11 +4235,12 @@ class FlowExecutor
         // the queue, the routes and the flow can never disagree about who has
         // a funnel. A plan without the CRM feature should not quietly fill a
         // board it cannot open.
-        if (config('services.billing.enforce') && !app(SubscriptionGate::class)->feature($tenant, Feature::Crm->value)) {
+        if (config('services.billing.enforce') && ! app(SubscriptionGate::class)->feature($tenant, Feature::Crm->value)) {
             Log::info('FlowExecutor: Lead node skipped, the plan has no CRM', [
                 'node_id' => $node->id,
                 'tenant_id' => $tenant->id,
             ]);
+
             return;
         }
 
@@ -4199,11 +4248,12 @@ class FlowExecutor
         // group chat, and the resolver says so.
         $lead = app(LeadResolver::class)->attach($conversation);
 
-        if (!$lead) {
+        if (! $lead) {
             Log::info('FlowExecutor: Lead node skipped, this conversation cannot hold a lead', [
                 'node_id' => $node->id,
                 'conversation_id' => $conversation->id,
             ]);
+
             return;
         }
 
@@ -4242,7 +4292,7 @@ class FlowExecutor
                 ->first();
             $current = $lead->stage;
 
-            if (!$stage) {
+            if (! $stage) {
                 Log::warning('FlowExecutor: Lead node points at a stage that no longer exists', [
                     'node_id' => $node->id,
                     'stage_id' => $stageId,
@@ -4332,6 +4382,7 @@ class FlowExecutor
                 'conversation_id' => $conversation->id,
             ]);
             $this->endFlowHere($flowState, FlowStateStatus::Completed);
+
             return;
         }
 
@@ -4340,13 +4391,14 @@ class FlowExecutor
             ? FlowNode::where('flow_id', $target->id)->where('type', NodeType::Start)->first()
             : null;
 
-        if (!$target || !$start) {
+        if (! $target || ! $start) {
             SystemMessage::info(
                 $conversation,
                 'The flow tried to continue in another flow that no longer exists.',
                 FlowLinkNodes::INFO_TARGET_MISSING,
             );
             $this->endFlowHere($flowState, FlowStateStatus::Failed);
+
             return;
         }
 
@@ -4366,6 +4418,7 @@ class FlowExecutor
                 'conversation_id' => $conversation->id,
                 'trail' => $stateData[FlowLinkNodes::TRAIL_KEY] ?? [],
             ]);
+
             return;
         }
 
@@ -4450,10 +4503,11 @@ class FlowExecutor
             if ($message && $flowState) {
                 $message->update(['sent_by_flow_id' => $flowState->flow_id]);
             }
+
             return $message;
         };
 
-        if ($messageType === 'text' || !$attachmentUrl) {
+        if ($messageType === 'text' || ! $attachmentUrl) {
             return $send($this->messageService->sendMessage($conversation, [
                 'message' => $body,
             ]));

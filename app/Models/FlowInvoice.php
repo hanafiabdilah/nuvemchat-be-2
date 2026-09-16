@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Enums\Flow\FlowInvoiceStatus;
 use App\Enums\Integration\IntegrationProvider;
+use App\Support\Money;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\Str;
@@ -112,9 +113,9 @@ class FlowInvoice extends Model
     /** "R$ 49,90" — the form the customer reads, through {{invoice_amount}}. */
     public function formattedAmount(): string
     {
-        $symbol = $this->currency === 'BRL' ? 'R$' : $this->currency;
-
-        return $symbol.' '.number_format($this->amount_cents / 100, 2, ',', '.');
+        // See FlowPayment::formattedAmount() — one table decides how a currency
+        // is written, and this string goes into a message the customer reads.
+        return Money::format($this->amount_cents, $this->currency);
     }
 
     /**

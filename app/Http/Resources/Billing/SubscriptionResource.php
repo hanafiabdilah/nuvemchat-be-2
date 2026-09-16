@@ -31,6 +31,11 @@ class SubscriptionResource extends JsonResource
             'payment_method' => $this->payment_method,
             'billing_cycle' => $this->billing_cycle,
             'price_cents' => $this->price_cents,
+            // Snapshotted with the price when the workspace subscribed. Sent
+            // because the dashboard used to fall back to the *plan's* currency,
+            // which is the platform's home one — so a country whose plan was
+            // priced separately still read its own subscription in reais.
+            'currency' => $this->currency,
             'is_usable' => $this->isUsable(),
             'quotas' => $entitlements['quotas'],
             'features' => $entitlements['features'],

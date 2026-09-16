@@ -102,7 +102,7 @@ final class LiveActivity
 
     /**
      * @param  int  $seconds  the pause before the next bubble
-     * @param  int  $index    zero-based position of the bubble being waited for
+     * @param  int  $index  zero-based position of the bubble being waited for
      */
     public static function flowDelay(
         Conversation $conversation,
@@ -168,6 +168,7 @@ final class LiveActivity
         Conversation $conversation,
         FlowNode $node,
         int $amountCents,
+        ?string $currency,
         ?string $provider,
         ?\DateTimeInterface $expiresAt,
     ): void {
@@ -175,7 +176,7 @@ final class LiveActivity
 
         self::emit($conversation, self::FLOW_PAYMENT, $node, array_filter([
             'amount_cents' => $amountCents,
-            'currency' => 'BRL',
+            'currency' => $currency,
             'provider' => $provider,
             'timeout_at' => $seconds > 0 ? $expiresAt->getTimestamp() : null,
         ], fn ($value) => $value !== null), $seconds > 0 ? $seconds + 5 : self::AWAITING_TTL);
@@ -185,6 +186,7 @@ final class LiveActivity
         Conversation $conversation,
         FlowNode $node,
         int $amountCents,
+        ?string $currency,
         ?string $provider,
         ?\DateTimeInterface $waitUntil,
     ): void {
@@ -192,7 +194,7 @@ final class LiveActivity
 
         self::emit($conversation, self::FLOW_INVOICE, $node, array_filter([
             'amount_cents' => $amountCents,
-            'currency' => 'BRL',
+            'currency' => $currency,
             'provider' => $provider,
             'timeout_at' => $seconds > 0 ? $waitUntil->getTimestamp() : null,
         ], fn ($value) => $value !== null), $seconds > 0 ? $seconds + 5 : self::AWAITING_TTL);

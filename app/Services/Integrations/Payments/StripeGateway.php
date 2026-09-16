@@ -31,7 +31,7 @@ use Illuminate\Support\Str;
  * clamped into that window, and the session is expired at the deadline
  * (CancelsCharges) so the link stops working when the flow stops waiting.
  */
-class StripeGateway implements PaymentGateway, ManagesWebhooks, CancelsCharges
+class StripeGateway implements CancelsCharges, ManagesWebhooks, PaymentGateway
 {
     use CallsProvider;
 
@@ -133,7 +133,13 @@ class StripeGateway implements PaymentGateway, ManagesWebhooks, CancelsCharges
             ],
             'expires_at' => $expiresAt->getTimestamp(),
             'success_url' => $this->successUrl($charge),
-            'locale' => 'pt-BR',
+            // ⚠️ 'auto', not a language of ours. The person on this page is the
+            // tenant's customer, not the tenant — they may be anywhere, and
+            // neither the platform's language nor the workspace's country tells
+            // us what they read. Stripe picks it from their own browser, which
+            // is the only side that actually knows. It used to be pinned to
+            // pt-BR, so an Indonesian shop's buyers got a Portuguese checkout.
+            'locale' => 'auto',
             'customer_email' => $charge->payerEmail && filter_var($charge->payerEmail, FILTER_VALIDATE_EMAIL) ? $charge->payerEmail : null,
         ], fn ($value) => $value !== null);
 

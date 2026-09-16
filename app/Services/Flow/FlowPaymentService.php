@@ -16,6 +16,7 @@ use App\Services\Conversation\SystemMessage;
 use App\Services\Integrations\IntegrationDrivers;
 use App\Services\Integrations\Payments\CancelsCharges;
 use App\Services\Integrations\Payments\ChargeRequest;
+use App\Services\Money\MarketMoney;
 use App\Support\Errors\UpstreamError;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -87,7 +88,11 @@ class FlowPaymentService
             'reference' => 'pingly-fp-'.Str::lower((string) Str::ulid()),
             'method' => $method,
             'amount_cents' => $amountCents ?? 0,
-            'currency' => 'BRL',
+            // The workspace's own money. Hard-coded reais held while every
+            // gateway on this surface was Brazilian; Stripe is not, so a shop
+            // outside Brazil was charging its customers in a currency neither
+            // of them uses.
+            'currency' => $connection->tenant?->currency() ?? MarketMoney::baseCurrency(),
             'description' => $description !== '' ? $description : null,
             'status' => FlowPaymentStatus::Pending,
             'expires_at' => $expiresAt,
@@ -122,7 +127,11 @@ class FlowPaymentService
             reference: $payment->reference,
             method: $method,
             amountCents: $amountCents,
-            currency: 'BRL',
+            // ⚠️ The row above, saved a few lines up — not a literal. This is
+            // what the customer is actually charged in; the column is only the
+            // record of it. Hard-coded reais here meant a shop outside Brazil
+            // billed its customers in a currency neither of them uses.
+            currency: $payment->currency,
             description: $description !== '' ? $description : 'Pagamento',
             expiresAt: $expiresAt,
             payerName: ContactIdentity::name($contact),

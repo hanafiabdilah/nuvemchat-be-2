@@ -17,6 +17,10 @@ class ApiwaySubscriptionResource extends JsonResource
             'quantity' => $this->quantity,
             'unit_price_cents' => $this->unit_price_cents,
             'total_price_cents' => $this->total_price_cents,
+            // Snapshotted on the row when it was bought. Without it the two
+            // amounts above are bare numbers, and every screen printing them
+            // was guessing reais.
+            'currency' => $this->currency,
             'location_code' => $this->location_code,
             'expires_at' => $this->expires_at,
             // API Way instances are paid from the prepaid balance and renewed

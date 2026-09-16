@@ -620,6 +620,11 @@ class BillingService
                 'payment_method' => PaymentMethod::Manual,
                 'billing_cycle' => $plan?->billing_cycle?->value,
                 'price_cents' => 0,
+                // ⚠️ The workspace's own money, not the column default. A comped
+                // subscription is still denominated in something, and leaving it
+                // to default('BRL') is why an Indonesian workspace granted a plan
+                // by an admin read "R$" on its own billing page.
+                'currency' => $tenant->currency(),
                 'quotas_snapshot' => $plan?->quotas,
                 'features_snapshot' => $plan?->features,
                 'current_period_start' => now(),

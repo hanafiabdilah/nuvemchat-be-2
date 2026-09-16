@@ -191,7 +191,14 @@ class BillingController extends Controller
 
     public function subscription(Request $request)
     {
-        $subscription = $this->tenant($request)->currentSubscription?->loadMissing('plan');
+        $tenant = $this->tenant($request);
+        $subscription = $tenant->currentSubscription?->loadMissing('plan');
+
+        // The nested plan carries the platform's home price until it is told
+        // otherwise — the catalog above already does this, and a workspace that
+        // reached "Your plan" from a manual grant was reading R$ off a plan row
+        // while its own subscription was in rupiah. In-memory only.
+        $subscription?->plan?->applyMarketPrice($tenant->market_code);
 
         return response()->json([
             'data' => $subscription ? (new SubscriptionResource($subscription))->withUsage() : null,
