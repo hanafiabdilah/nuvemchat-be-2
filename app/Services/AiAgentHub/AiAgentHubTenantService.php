@@ -260,6 +260,8 @@ class AiAgentHubTenantService
             $tenant
         );
 
+        $payload = $this->withHandoffMirror($payload);
+
         $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/agents", $payload);
 
@@ -304,6 +306,53 @@ class AiAgentHubTenantService
     }
 
     /**
+     * Turning the keyword handoff off has to say so twice, because the hub
+     * reads two different switches.
+     *
+     * `handoffRules.humanRequested: false` only disables the *keyword* rule.
+     * The hub's automatic detector — `trigger: humanRequested`,
+     * `matchedBy: automatic` — keeps running until one of
+     * `autoDetectHumanRequest` / `autoDetectHandoff` / `automaticHandoff` is
+     * false (ProxyBR read this in the hub's own `src/ai/handoff.ts`, Sep 2026).
+     * So a workspace that switched the rule off in Pingly still had the AI
+     * handing conversations to people, and the panel showed no reason why.
+     *
+     * It has to live here rather than being fixed once on the hub, because
+     * Pingly owns `handoffRules`: every create, edit and repush writes the
+     * object whole, so anything set directly on the hub is gone at the next
+     * sync. Mirroring — rather than exposing a fourth toggle — is deliberate:
+     * "the keyword rule is off" and "the automatic detector is off" are not two
+     * decisions anybody wants to make separately, and a UI that let them
+     * disagree would only produce the state this exists to prevent.
+     *
+     * Known, accepted side effect: false also stops the hub noticing the AI's
+     * own phrases ("vou transferir"). That is what the workspace asked for by
+     * turning the rule off. When the hub honours `humanRequested` on its own,
+     * this key becomes a no-op rather than something to unwind.
+     *
+     * Absent `handoffRules` is left absent: a PATCH that does not touch the
+     * rules must not start writing them.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function withHandoffMirror(array $payload): array
+    {
+        $rules = $payload['handoffRules'] ?? null;
+
+        if (! is_array($rules) || ! array_key_exists('humanRequested', $rules)) {
+            return $payload;
+        }
+
+        // Assigned, never defaulted: the dashboard sends back the rules it
+        // loaded, so a stale `autoDetectHumanRequest` rides along with a
+        // freshly switched-on `humanRequested` and would keep the detector off.
+        $payload['handoffRules']['autoDetectHumanRequest'] = (bool) $rules['humanRequested'];
+
+        return $payload;
+    }
+
+    /**
      * Update an agent on the hub and sync the local record.
      * Assumes the hub exposes PATCH /agents/{id}.
      *
@@ -317,6 +366,8 @@ class AiAgentHubTenantService
         if (isset($payload['externalId'])) {
             $payload['externalId'] = $this->buildExternalId($payload['externalId'], $tenant);
         }
+
+        $payload = $this->withHandoffMirror($payload);
 
         $response = $this->healingAgentCall(
             $agent,
@@ -1566,6 +1617,8 @@ class AiAgentHubTenantService
             'metadata' => $agent->metadata,
             'providerCredentialId' => $agent->providerCredential?->hub_provider_credential_id,
         ], fn ($v) => $v !== null);
+
+        $payload = $this->withHandoffMirror($payload);
 
         $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/agents", $payload);

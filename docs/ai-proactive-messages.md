@@ -171,6 +171,85 @@ berhenti dihormati.
 
 ---
 
+## 2b. Handoff: `autoDetectHumanRequest` mengikuti `humanRequested`
+
+### Kenapa
+
+Mematikan handoff kata kunci di Pingly (`handoffRules.humanRequested: false`)
+**tidak** menghentikan AI menyerahkan percakapan ke manusia. Hub punya **dua**
+saklar: yang itu hanya mematikan aturan kata kunci, sedangkan detektor
+otomatisnya (`trigger: humanRequested`, `matchedBy: automatic`) baru mati kalau
+salah satu dari `autoDetectHumanRequest` / `autoDetectHandoff` /
+`automaticHandoff` bernilai `false`. ProxyBR membacanya langsung di sumber hub
+produksi (`src/ai/handoff.ts`, Sep 2026).
+
+Akibatnya di produksi: workspace yang sudah mematikan aturan itu tetap
+kehilangan percakapan ke antrean manusia, dan **tak ada satu pun layar yang
+menjelaskan kenapa**.
+
+### Kenapa perbaikannya di sini, bukan di hub
+
+`handoffRules` **milik Pingly**: tiap create, edit, dan repush menulis objek itu
+utuh, jadi apa pun yang diatur langsung di hub hilang di sinkronisasi
+berikutnya. Satu-satunya tempat yang bisa membuatnya bertahan adalah kita.
+
+`AiAgentHubTenantService::withHandoffMirror()` menyalin nilainya sebelum tiap
+panggilan agent ke hub — `createAgent`, `updateAgent`, `repushAgent` (dan lewat
+`createAgent`, fork trained agent juga).
+
+⚠️ **Bukan toggle keempat di UI**, sengaja: "aturan kata kunci mati" dan
+"detektor otomatis mati" bukan dua keputusan yang ingin diambil terpisah
+siapa pun, dan UI yang membiarkan keduanya berbeda hanya akan menghasilkan
+keadaan yang mekanisme ini ada untuk mencegahnya.
+
+⚠️ **Di-assign, bukan di-default.** Dashboard mengirim balik `handoff_rules`
+yang ia muat, jadi `autoDetectHumanRequest` lama ikut menumpang bersama
+`humanRequested` yang baru dinyalakan — kalau hanya diisi saat kosong,
+detektornya tetap mati untuk workspace yang baru saja menyalakannya.
+
+⚠️ `handoffRules` yang **tak ada** dibiarkan tak ada: PATCH yang tak menyentuh
+aturan tak boleh mulai menulisnya.
+
+Efek samping yang diterima: `false` juga mematikan deteksi kalimat AI sendiri
+("vou transferir"). Itu memang yang diminta workspace saat mematikan aturannya.
+Begitu hub menghormati `humanRequested` sendiri, kunci ini jadi tak berefek —
+bukan sesuatu yang harus dibongkar.
+
+### ⚠️ Deploy saja tidak mengubah apa pun
+
+`handoffRules` hanya terkirim saat sebuah agent ditulis. Agent yang sudah ada di
+hub mempertahankan keadaannya — yaitu keadaan yang sedang menyerahkan percakapan.
+
+```bash
+php artisan ai-hub:sync-handoff-rules --dry-run     # lihat dulu
+php artisan ai-hub:sync-handoff-rules               # semua
+php artisan ai-hub:sync-handoff-rules --tenant=3    # satu workspace
+php artisan ai-hub:sync-handoff-rules --agent=Pingly_1_Laravel_agente-…
+```
+
+Idempoten (mengirim ulang aturan yang memang sudah dipilih workspace itu);
+agent tanpa aturan tersimpan dilewati, bukan diberi aturan karangan.
+
+### ⚠️ Terkait: transkrip konteks ada di `message.content`
+
+Detektor hub membaca **3 pesan USER terakhir**, dan `AiConversationContext`
+menaruh transkrip berlabel (`Automated message`, `Human agent (Nama)`) di dalam
+`message.content`. Jadi teks flow/atendente yang menyebut "atendente" bisa
+memicu handoff sampai dua giliran berikutnya — kelas kegagalan yang sama dengan
+insiden welcome 53/53, yang sudah diperbaiki lewat `WELCOME_PLACEHOLDER`.
+
+Baris `Automated message` **sengaja tetap dikutip utuh**: isinya justru alasan
+blok itu ada. Yang menutup risikonya untuk sebuah workspace adalah mirror di
+atas (detektor mati sama sekali). Perbaikan umumnya ada di hub: field
+`conversation.context` yang masuk prompt tapi **tidak** masuk deteksi — sudah
+diminta ke hub; begitu ada, pindahkan bloknya ke sana.
+
+Catatan ukuran: Pingly melipat rajada pelanggan jadi **satu** pesan USER (maks
+`AI_MAX_INPUT_MESSAGES`), jadi jendela 3-pesan hub itu 3 *giliran*, bukan 3 pesan
+pelanggan.
+
+Tes: `tests/Feature/AiHub/AiHandoffRulesTest.php`.
+
 ## 3. Dampak ke perilaku yang sudah ada
 
 **Hitungan turn (`AI_MAX_TURNS = 20`) tidak tersentuh** — counter hanya naik di
