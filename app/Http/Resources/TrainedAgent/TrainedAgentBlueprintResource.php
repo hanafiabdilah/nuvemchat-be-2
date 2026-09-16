@@ -24,6 +24,8 @@ class TrainedAgentBlueprintResource extends JsonResource
             'tagline' => $this->tagline,
             'description' => $this->description,
             'icon' => $this->icon,
+            // Who this agent is offered to. Null = every country.
+            'locale' => $this->locale,
             'model' => $this->model,
             'system_prompt' => $this->system_prompt,
             'temperature' => $this->temperature,

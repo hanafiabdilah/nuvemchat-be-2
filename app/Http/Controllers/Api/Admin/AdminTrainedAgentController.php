@@ -45,6 +45,13 @@ class AdminTrainedAgentController extends Controller
                     ->get(['code', 'name', 'currency']),
                 // Which of them the blueprint row's own `price_cents` belongs to.
                 'default_market' => MarketResolver::defaultCode(),
+                // The languages an agent can be written in — the same list a
+                // market may default to, because that is what the catalog
+                // joins against. Served here rather than listed in the Back
+                // Office so adding a language stays one change.
+                'locales' => collect(config('markets.locales', []))
+                    ->map(fn (string $label, string $code) => ['code' => $code, 'label' => $label])
+                    ->values(),
             ],
         ]);
     }
@@ -335,6 +342,10 @@ class AdminTrainedAgentController extends Controller
             'tagline' => ['nullable', 'string', 'max:200'],
             'description' => ['nullable', 'string'],
             'icon' => ['nullable', 'string', 'max:60'],
+            // Who is offered this agent. Must be a language a market can
+            // actually default to, because that is what it gets joined against;
+            // null means the material is not tied to one and everybody sees it.
+            'locale' => ['nullable', Rule::in(array_keys(config('markets.locales')))],
 
             'model' => ['required', 'string', 'max:100'],
             'system_prompt' => ['required', 'string'],

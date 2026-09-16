@@ -69,10 +69,16 @@ class TrainedAgentService
     public function catalog(?Tenant $tenant = null)
     {
         $market = $tenant?->market_code;
+        // The language this workspace's country reads. An agent written in
+        // another one is not a cheaper option — it is a bot that will answer
+        // customers in a language the business does not speak, bought and
+        // forked before anyone could tell.
+        $locale = $tenant?->market?->default_locale;
 
         return TrainedAgentBlueprint::query()
             ->available()
             ->soldIn($market)
+            ->writtenIn($locale)
             ->with(['category', 'marketPrices'])
             ->orderBy('sort_order')
             ->orderBy('name')

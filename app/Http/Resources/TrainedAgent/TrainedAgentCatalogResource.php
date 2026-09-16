@@ -30,6 +30,11 @@ class TrainedAgentCatalogResource extends JsonResource
             'tagline' => $this->tagline,
             'description' => $this->description,
             'icon' => $this->icon,
+            // The language its prompt and knowledge are written in. A workspace
+            // only ever sees agents it can read, but saying so lets the card
+            // carry the fact rather than leaving a buyer to infer it from the
+            // tagline.
+            'locale' => $this->locale,
             'model' => $this->model,
             'category' => $this->whenLoaded('category', fn () => [
                 'id' => $this->category->id,

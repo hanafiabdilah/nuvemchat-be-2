@@ -28,6 +28,10 @@ class TrainedAgentBlueprint extends Model
         'tagline',
         'description',
         'icon',
+        // Which language this agent is written in, and so who is offered it.
+        // Distinct from profile['language'], which tells the *model* how to
+        // reply — see the migration that added this column.
+        'locale',
         'model',
         'system_prompt',
         'temperature',
@@ -72,6 +76,30 @@ class TrainedAgentBlueprint extends Model
     public function scopeAvailable(Builder $query): Builder
     {
         return $query->where('is_active', true)->where('is_public', true);
+    }
+
+    /**
+     * Blueprints somebody reading `$locale` can actually use.
+     *
+     * A null `locale` on the row means the material is not tied to a language,
+     * so it is offered everywhere. A null `$locale` argument means the caller
+     * does not know who is asking — the Back Office listing every blueprint,
+     * for instance — and narrowing there would hide rows from their own editor.
+     *
+     * Grouped into one nested where on purpose: without the closure the `orWhere`
+     * would escape the surrounding `available()` and `soldIn()` conditions and
+     * put every language-neutral blueprint back in the list, including the ones
+     * that are unpublished or not sold in that country.
+     */
+    public function scopeWrittenIn(Builder $query, ?string $locale): Builder
+    {
+        if ($locale === null) {
+            return $query;
+        }
+
+        return $query->where(
+            fn (Builder $inner) => $inner->whereNull('locale')->orWhere('locale', $locale),
+        );
     }
 
     public function isFree(): bool
