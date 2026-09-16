@@ -137,4 +137,37 @@ return [
         ['code' => 'TAX_ID', 'min' => 5, 'max' => 20],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Billing rails that exist per country
+    |--------------------------------------------------------------------------
+    |
+    | Which ways the *platform* can be paid in a country. This is geography, not
+    | commerce: Pix is a Brazilian instant-payment rail operated by the Banco
+    | Central, and no amount of gateway configuration makes it exist in Jakarta.
+    |
+    | ⚠️ Do not confuse this with `market_prices.{card,pix}_enabled`. Those are a
+    | decision — "this plan takes Pix here" — and a decision is only meaningful
+    | where the rail exists. Until Sep 2026 nothing held the fact, so the Back
+    | Office drew a Pix checkbox for every country and the Fase 3 backfill copied
+    | `pix_enabled = true` onto every market price row, Indonesia included.
+    |
+    | Kept in config rather than a `markets` column on purpose: an admin toggling
+    | "Indonesia has Pix" would be recording something untrue, and the only thing
+    | it could buy them is a charge that fails in front of a customer. Countries
+    | genuinely gaining a rail is a release-sized event, not a form field.
+    |
+    | A country with no entry falls back to `default_billing_methods`: cards,
+    | which cross borders. Naming a local rail we have not verified would be the
+    | same mistake in the other direction.
+    |
+    */
+
+    'billing_methods' => [
+        'BR' => ['card', 'pix'],
+        'ID' => ['card'],
+    ],
+
+    'default_billing_methods' => ['card'],
+
 ];

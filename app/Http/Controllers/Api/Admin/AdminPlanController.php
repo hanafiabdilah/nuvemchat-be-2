@@ -9,6 +9,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\Billing\PlanResource;
 use App\Models\Market;
 use App\Models\Plan;
+use App\Services\Market\MarketBillingMethods;
 use App\Services\Market\MarketResolver;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -53,7 +54,17 @@ class AdminPlanController extends Controller
                 // also require the permission that opens a country.
                 'markets' => Market::query()
                     ->orderBy('name')
-                    ->get(['code', 'name', 'currency']),
+                    ->get(['code', 'name', 'currency'])
+                    ->map(fn (Market $market) => [
+                        'code' => $market->code,
+                        'name' => $market->name,
+                        'currency' => $market->currency,
+                        // Which rails reach this country, so the editor draws a
+                        // Pix tick only where Pix exists. Without it the form
+                        // offered one for every country — Pix is Brazilian, and
+                        // a checkbox that cannot work is worse than no checkbox.
+                        'billing_methods' => MarketBillingMethods::forMarket($market->code),
+                    ]),
                 // Which of them the plan row's own `price_cents` belongs to.
                 'default_market' => MarketResolver::defaultCode(),
             ],
@@ -123,16 +134,34 @@ class AdminPlanController extends Controller
         // Either shape: a bare amount (what the editor sent before payment
         // methods moved per country) or the whole row. The trait accepts both,
         // so an older client keeps working and simply leaves the methods alone.
-        return array_map(
-            fn ($value) => is_array($value)
-                ? [
-                    'amount_cents' => (int) ($value['amount_cents'] ?? 0),
-                    ...(array_key_exists('card_enabled', $value) ? ['card_enabled' => (bool) $value['card_enabled']] : []),
-                    ...(array_key_exists('pix_enabled', $value) ? ['pix_enabled' => (bool) $value['pix_enabled']] : []),
-                ]
-                : (int) $value,
-            $prices,
-        );
+        //
+        // ⚠️ A foreach rather than array_map because the market code is the key,
+        // and the key is what decides which rails a tick may name at all.
+        $clean = [];
+
+        foreach ($prices as $code => $value) {
+            if (! is_array($value)) {
+                $clean[$code] = (int) $value;
+
+                continue;
+            }
+
+            $row = ['amount_cents' => (int) ($value['amount_cents'] ?? 0)];
+
+            // Clamped, not merely validated: "Pix in Indonesia" is not a
+            // decision an admin is allowed to record (see MarketBillingMethods),
+            // and storing it would write back the very lie the read-side
+            // accessor on MarketPrice exists to undo.
+            foreach (['card_enabled' => 'card', 'pix_enabled' => 'pix'] as $flag => $method) {
+                if (array_key_exists($flag, $value)) {
+                    $row[$flag] = (bool) $value[$flag] && MarketBillingMethods::has((string) $code, $method);
+                }
+            }
+
+            $clean[$code] = $row;
+        }
+
+        return $clean;
     }
 
     private function validatePlan(Request $request, ?Plan $plan = null): array

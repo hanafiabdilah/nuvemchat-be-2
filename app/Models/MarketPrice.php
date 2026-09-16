@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Services\Market\MarketBillingMethods;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphTo;
@@ -32,6 +34,39 @@ class MarketPrice extends Model
         'card_enabled' => 'boolean',
         'pix_enabled' => 'boolean',
     ];
+
+    /**
+     * The stored decision, narrowed by the rails this country actually has.
+     *
+     * ⚠️ Read-side on purpose, and this is the whole point of putting it here:
+     * the Fase 3 backfill copied the old plan-wide `pix_enabled = true` onto
+     * every market price row, Indonesia included, so the data already lies. An
+     * accessor corrects every reader at once — BillingService::subscribe(),
+     * which reads this property directly, and HasMarketPrices::applyMarketPrice(),
+     * which copies it onto the plan — without a migration rewriting live rows.
+     *
+     * Patching those two call sites instead is how this rule comes back as a
+     * bug in the third reader somebody adds.
+     *
+     * Accessors take precedence over the `$casts` entry below, which is kept
+     * because it still governs writes.
+     */
+    protected function pixEnabled(): Attribute
+    {
+        return Attribute::make(
+            get: fn ($value, array $attributes) => (bool) $value
+                && MarketBillingMethods::has($attributes['market_code'] ?? null, 'pix'),
+        );
+    }
+
+    /** Same rule as Pix. Cards cross borders, so this narrows almost nothing. */
+    protected function cardEnabled(): Attribute
+    {
+        return Attribute::make(
+            get: fn ($value, array $attributes) => (bool) $value
+                && MarketBillingMethods::has($attributes['market_code'] ?? null, 'card'),
+        );
+    }
 
     public function priceable(): MorphTo
     {
