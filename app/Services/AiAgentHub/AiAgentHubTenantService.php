@@ -883,6 +883,36 @@ class AiAgentHubTenantService
             ], fn ($value) => $value !== null),
         ];
 
+        // The customer's identity in fields an agent can act on, rather than
+        // left to be inferred from `contactExternalId` — see AiContactContext
+        // for why inferring it can authorise the wrong person, and
+        // `config('ai.contact_context')` for why this is switchable.
+        // The fallback is false on purpose: a missing key must not be the thing
+        // that starts sending fields the hub may reject.
+        if ((bool) config('ai.contact_context.enabled', false)) {
+            $payload['conversation'] = array_merge(
+                $payload['conversation'],
+                AiContactContext::for($conversation)
+            );
+        }
+
+        // Permission to write back into this thread later, when something
+        // outside the chat (a portal login, a payment) means the agent has
+        // something to say and the customer has not written again.
+        //
+        // Minted only for the conversation's own turn: a caller that passed its
+        // own hub key is running against synthetic state — an AI-suggest draft,
+        // the vocabulary bench — and a draft must not hand out the ability to
+        // send. The node id is what the reference is scoped to, so a run
+        // without one cannot be scoped at all.
+        if ($conversationExternalId === null && $flowNodeId !== null && AiCallbackRef::enabled()) {
+            $payload['conversation']['callbackRef'] = AiCallbackRef::mint(
+                $conversation->id,
+                $flowNodeId,
+                $agent->id,
+            );
+        }
+
         // A voice note is not input until somebody turns it into words, and the
         // hub only does that when asked. Without this block the file travels
         // and is ignored. Built by the caller (AiTranscription), which is where

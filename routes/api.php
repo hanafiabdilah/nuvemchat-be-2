@@ -92,6 +92,7 @@ use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
+use App\Http\Controllers\Api\V1\ConversationMessageController as V1ConversationMessageController;
 use App\Http\Controllers\Api\V1\LeadController as V1LeadController;
 use App\Http\Controllers\Api\V1\SendMessageController;
 use App\Http\Controllers\Api\WebhookController;
@@ -718,6 +719,12 @@ Route::prefix('/v1')->middleware([ApiKeyAuth::class, 'throttle:public-api'])->gr
     Route::post('leads', [V1LeadController::class, 'store']);
     Route::post('leads/close', [V1LeadController::class, 'close']);
     Route::get('connections', [V1ConnectionController::class, 'index']);
+
+    // The AI Hub answering in a conversation it is already serving. Named by
+    // the signed reference minted inside the run, never by a conversation id —
+    // see AiCallbackRef. A per-conversation ceiling applies on top of the
+    // per-key throttle above.
+    Route::post('conversations/messages', [V1ConversationMessageController::class, 'store']);
 });
 
 /*

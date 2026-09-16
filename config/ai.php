@@ -301,4 +301,100 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Who the customer is, in the run payload
+    |--------------------------------------------------------------------------
+    |
+    | Adds `contactPhone`, `phoneSource` and `contactDisplayName` to the run's
+    | `conversation` object (AiContactContext). An agent that has to decide
+    | whether the person writing is the person on the account needs the number
+    | stated, not inferred from `contactExternalId` — which is a phone on
+    | WhatsApp and a platform id everywhere else, with nothing in the payload to
+    | tell them apart.
+    |
+    | This is a kill switch, and it exists because of a specific failure. The
+    | hub validates its run DTO strictly: one unknown field rejects the entire
+    | run with a 400. That happened in August 2026 with `inputAudio` — the
+    | manual described it, the hub deployment had not shipped, and every voice
+    | note failed. What saved it was the retry that drops the optional halves of
+    | the request, and that retry will NOT drop this field.
+    |
+    | Nor should it. If it did, the symptom would not be an error: the agent
+    | would find nobody verified and send every customer to the portal forever,
+    | which is a failure that looks like working software. So the field is all
+    | or nothing, and turning it off is a deploy-free way back.
+    |
+    | ⚠️ Which is why it defaults to OFF, unlike every other switch in this
+    | file. Shipping it on would mean a deploy that reaches production before
+    | the hub does takes every AI run on the platform down with it — for a
+    | feature one partner asked for. Turn it on once the hub confirms it
+    | accepts the keys; that is a one-line change with no deploy behind it.
+    |
+    */
+
+    'contact_context' => [
+
+        'enabled' => (bool) env('AI_RUN_CONTACT_CONTEXT', false),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Proactive messages (the hub writing back into a conversation)
+    |--------------------------------------------------------------------------
+    |
+    | An agent sometimes has to speak after something happened somewhere else:
+    | the customer followed a link, logged into the partner's portal, and the
+    | conversation should carry on without them having to write "and now?".
+    | Nothing in a chat platform pushes that — the customer's message is what
+    | normally starts a turn — so the hub is given a way to ask.
+    |
+    | `enabled` controls both halves: minting the signed reference inside each
+    | run (AiCallbackRef) and accepting it at POST /api/v1/conversations/messages.
+    | Off means no reference is issued and any reference already in flight
+    | stops being honoured, which is the switch to reach for if the capability
+    | is ever being misused.
+    |
+    | ⚠️ Off by default for the same reason as `contact_context` above, which is
+    | easy to miss: the reference is minted as another key inside the run's
+    | `conversation` object, so it carries exactly the same risk of a hub that
+    | has not shipped support rejecting every run on the platform. On together
+    | with that one, after the hub confirms.
+    |
+    */
+
+    'proactive' => [
+
+        'enabled' => (bool) env('AI_PROACTIVE_MESSAGES_ENABLED', false),
+
+        /*
+        | How long a minted reference stays usable. Aligned with WhatsApp
+        | Official's 24h session window, which already caps free-form sending;
+        | clamped to 1..72h in AiCallbackRef regardless of what is set here.
+        */
+
+        'ref_ttl_hours' => (int) env('AI_PROACTIVE_REF_TTL_HOURS', 24),
+
+        /*
+        | Ceiling per conversation per hour.
+        |
+        | Not paperwork: the text is written by a model, triggered by an event in
+        | somebody else's system. A loop in that system, or a retry storm, turns
+        | into a run of unsolicited WhatsApp messages — which is a ban risk for
+        | the workspace's number and a spam complaint that lands on the
+        | platform's reputation too. Verification hand-backs need one or two.
+        */
+
+        'max_per_conversation_per_hour' => (int) env('AI_PROACTIVE_MAX_PER_CONVERSATION_PER_HOUR', 6),
+
+        /*
+        | Longest text accepted. WhatsApp's own body limit; every other channel
+        | this can reach allows at least as much.
+        */
+
+        'max_length' => (int) env('AI_PROACTIVE_MAX_LENGTH', 4096),
+
+    ],
+
 ];

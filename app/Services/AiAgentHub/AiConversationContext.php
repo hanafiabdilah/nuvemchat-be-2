@@ -116,7 +116,16 @@ class AiConversationContext
 
         foreach ($messages as $message) {
             // Written by the hub, so already in its history.
-            if (data_get($message->meta, 'ai_hub_run_id') !== null) {
+            //
+            // A proactive message (AiProactiveMessageService) has no run behind
+            // it on our side and so carries no run id — it needs its own flag,
+            // and it is not cosmetic. Handing the hub back its own sentence is
+            // the smaller half; the larger is that anything landing in
+            // `message.content` is read by the hub's handoff detector, so a
+            // proactive message mentioning an "atendente" would hand the
+            // conversation to a human on the next turn.
+            if (data_get($message->meta, 'ai_hub_run_id') !== null
+                || data_get($message->meta, 'ai_hub_proactive') !== null) {
                 continue;
             }
 
