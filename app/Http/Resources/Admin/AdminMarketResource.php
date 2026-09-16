@@ -4,6 +4,7 @@ namespace App\Http\Resources\Admin;
 
 use App\Models\MarketDomain;
 use App\Services\Market\MarketCapabilities;
+use App\Services\Market\MarketDocuments;
 use App\Services\Market\MarketResolver;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -39,6 +40,12 @@ class AdminMarketResource extends JsonResource
             // picture, and only one of them is a decision somebody made.
             'capabilities' => MarketCapabilities::forMarket($this->code),
             'capability_defaults' => MarketCapabilities::defaultsFor($this->code),
+            // What a payer here is asked for. Empty is a real answer — this
+            // country asks for nothing — so the shipped list travels beside it,
+            // or the screen cannot tell "nobody decided" from "decided: none".
+            'documents' => MarketDocuments::forMarket($this->code),
+            'document_defaults' => MarketDocuments::defaultsFor($this->code),
+            'documents_customised' => $this->documents !== null,
             'is_default' => $isDefault,
             'tenants_count' => $tenants,
             'currency_locked' => $tenants > 0,

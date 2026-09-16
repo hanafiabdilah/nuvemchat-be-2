@@ -72,4 +72,24 @@ final class MarketMoney
     {
         return self::forTenant($cents, $tenant) ?? $cents;
     }
+
+    /**
+     * Whether a platform price can be expressed in this workspace's money at all.
+     *
+     * ⚠️ Ask this before selling anything priced centrally. Without a rate for
+     * the market's currency, `orBase()` hands the base number straight back — so
+     * an instance quoted at R$ 39,90 reaches an Indonesian customer as
+     * "Rp 39,90", and the charge is forty rupiah. A missing rate is an admin who
+     * has not filled in Markets → Exchange rates yet, and the honest answer to
+     * every price until then is "not sold here", never a number.
+     */
+    public static function quotableFor(?Tenant $tenant): bool
+    {
+        if ($tenant === null) {
+            return true;
+        }
+
+        // A round base amount is enough to know whether the pair converts.
+        return self::forMarket(100, $tenant->market) !== null;
+    }
 }

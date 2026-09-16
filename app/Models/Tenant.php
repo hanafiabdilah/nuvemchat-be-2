@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Market\MarketDocuments;
 use App\Services\Market\MarketResolver;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -89,6 +90,14 @@ class Tenant extends Model
      */
     public function hasBillingIdentity(): bool
     {
+        // A country whose rails ask for no document has nothing to be missing.
+        // Without this, a market configured that way would show "incomplete"
+        // forever and its checkout would never unlock — the Brazilian rule
+        // applied to somewhere it does not exist.
+        if (! MarketDocuments::required($this->market_code)) {
+            return true;
+        }
+
         return filled($this->billing_document_number) && filled($this->billing_document_type);
     }
 

@@ -9,6 +9,7 @@ use App\Models\AuditLog;
 use App\Models\Market;
 use App\Models\MarketDomain;
 use App\Services\Market\MarketCapabilities;
+use App\Services\Market\MarketDocuments;
 use App\Services\Market\MarketResolver;
 use App\Services\Money\ExchangeRates;
 use App\Support\Market\CountryCatalog;
@@ -134,7 +135,7 @@ class AdminMarketController extends Controller
             'code.unique' => 'This country already has a market.',
         ]);
 
-        $validated = $this->withSanitizedCapabilities($validated);
+        $validated = $this->withSanitizedInput($validated);
 
         $market = Market::create([
             ...$validated,
@@ -172,7 +173,7 @@ class AdminMarketController extends Controller
             ]);
         }
 
-        $market->fill($this->withSanitizedCapabilities($validated));
+        $market->fill($this->withSanitizedInput($validated));
         $changes = $market->getDirty();
         $before = array_intersect_key($market->getRawOriginal(), $changes);
         $market->save();
@@ -397,21 +398,38 @@ class AdminMarketController extends Controller
             // so this map is a list of deviations, not a full inventory.
             'capabilities' => ['sometimes', 'array'],
             'capabilities.*' => ['boolean'],
+            // What a payer is asked for here. An empty array is a decision —
+            // this country asks for nothing — and null hands the question back
+            // to config/markets.php. The code is capped at 8 characters because
+            // `tenants.billing_document_type` is, and a truncated code would
+            // never match its own rule again.
+            'documents' => ['sometimes', 'nullable', 'array', 'max:6'],
+            'documents.*.code' => ['required', 'string', 'max:8'],
+            'documents.*.min' => ['required', 'integer', 'min:1', 'max:32'],
+            'documents.*.max' => ['required', 'integer', 'min:1', 'max:32'],
             'default_locale' => ['required', 'string', Rule::in(array_keys(config('markets.locales', [])))],
             'default_timezone' => ['required', 'string', 'timezone:all'],
         ];
     }
 
     /**
-     * Keep only capability keys that exist, as booleans.
+     * Normalise the two free-shaped blocks before they reach the column.
      *
      * @param  array<string, mixed>  $validated
      * @return array<string, mixed>
      */
-    private function withSanitizedCapabilities(array $validated): array
+    private function withSanitizedInput(array $validated): array
     {
         if (array_key_exists('capabilities', $validated)) {
             $validated['capabilities'] = MarketCapabilities::sanitize((array) $validated['capabilities']);
+        }
+
+        if (array_key_exists('documents', $validated)) {
+            // null stays null: it is how a market goes back to the shipped
+            // shapes, which is a different answer from "asks for none".
+            $validated['documents'] = $validated['documents'] === null
+                ? null
+                : MarketDocuments::sanitize((array) $validated['documents']);
         }
 
         return $validated;

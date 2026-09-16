@@ -27,10 +27,18 @@ class MissingBillingIdentityException extends UserFacingException
      */
     public const CODE = 'billing_identity_required';
 
-    public function __construct()
+    /**
+     * @param  list<string>  $codes  the documents this country accepts, named in
+     *                               the sentence — "CPF ou CNPJ" is not what an
+     *                               Indonesian customer has, and a remedy that
+     *                               names the wrong document is not a remedy.
+     */
+    public function __construct(array $codes = [])
     {
+        $named = $codes === [] ? 'o documento fiscal' : implode(' ou ', $codes);
+
         parent::__construct(
-            'Informe o CPF ou CNPJ da empresa antes de continuar. '
+            "Informe {$named} da empresa antes de continuar. "
             .'Você pode preenchê-lo em Configurações → Empresa.',
             422,
             self::CODE,

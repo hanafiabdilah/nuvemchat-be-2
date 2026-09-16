@@ -171,6 +171,15 @@ class VirtualNumberService
             ]);
         }
 
+        // API Way prices in the platform's money. With no rate for this market,
+        // the converted price is the base number unchanged — a number that would
+        // be charged as forty rupiah instead of forty reais.
+        if (! MarketMoney::quotableFor($tenant)) {
+            throw ValidationException::withMessages([
+                'app' => 'Numbers are not priced in your currency yet. Please contact support.',
+            ]);
+        }
+
         $catalog = $this->catalog();
         $this->assertInCatalog($catalog, $ddd, $app);
 

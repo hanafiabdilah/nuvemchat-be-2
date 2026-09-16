@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Apiway;
 
 use App\Exceptions\ApiwayPartnerException;
 use App\Http\Controllers\Controller;
+use App\Models\Tenant;
 use App\Services\Connection\Apiway\ApiwayPartnerClient;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditService;
@@ -40,11 +41,44 @@ class ApiwayCatalogController extends Controller
             ], 502);
         }
 
+        $tenant = $request->user()->tenant;
+
+        if (! MarketMoney::quotableFor($tenant)) {
+            return response()->json([
+                'message' => 'Instances are not priced in your currency yet.',
+                'code' => 'price_unavailable_in_market',
+            ], 503);
+        }
+
+        // ProxyBR publishes the ladder in the platform's own money. The modal
+        // prints those tiers beside a balance in the workspace's currency, so
+        // leaving them unconverted shows an Indonesian customer a Brazilian
+        // number under a rupiah label — worse than showing nothing. The quote
+        // was already converted; the catalog it sits next to was not.
+        foreach (($catalog['tiers'] ?? []) as $index => $tier) {
+            if (isset($tier['unit_price_monthly']) && is_numeric($tier['unit_price_monthly'])) {
+                $catalog['tiers'][$index]['unit_price_monthly'] = $this->inTenantMoney($tier['unit_price_monthly'], $tenant);
+            }
+        }
+
+        foreach (($catalog['locations'] ?? []) as $index => $location) {
+            if (isset($location['surcharge']) && is_numeric($location['surcharge'])) {
+                $catalog['locations'][$index]['surcharge'] = $this->inTenantMoney($location['surcharge'], $tenant);
+            }
+        }
+
         return response()->json([
             'data' => array_merge($catalog, [
-                'usage' => $this->apiway->usageSummary($request->user()->tenant),
+                'usage' => $this->apiway->usageSummary($tenant),
+                'currency' => app(CreditService::class)->currencyFor($tenant),
             ]),
         ]);
+    }
+
+    /** Whole currency units in, whole units out, at the market's rate and rounding. */
+    private function inTenantMoney(mixed $value, Tenant $tenant): float
+    {
+        return MarketMoney::orBase((int) round(((float) $value) * 100), $tenant) / 100;
     }
 
     /**
@@ -77,6 +111,13 @@ class ApiwayCatalogController extends Controller
         // converted here and the currency travels with them — a price beside a
         // balance in another currency is a sum the customer cannot check.
         $tenant = $request->user()->tenant;
+
+        if (! MarketMoney::quotableFor($tenant)) {
+            return response()->json([
+                'message' => 'Instances are not priced in your currency yet.',
+                'code' => 'price_unavailable_in_market',
+            ], 503);
+        }
 
         foreach (['unit_price', 'total_price'] as $key) {
             if (isset($quote[$key]) && is_numeric($quote[$key])) {

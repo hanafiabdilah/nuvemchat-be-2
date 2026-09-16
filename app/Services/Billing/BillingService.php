@@ -20,6 +20,7 @@ use App\Models\TrainedAgentHire;
 use App\Services\Billing\PaymentService\PaymentServiceClient;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditService;
+use App\Services\Market\MarketDocuments;
 use App\Services\TrainedAgent\TrainedAgentService;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
@@ -876,7 +877,7 @@ class BillingService
     protected function assertBillable(?Tenant $tenant): void
     {
         if (! $tenant?->hasBillingIdentity()) {
-            throw new MissingBillingIdentityException;
+            throw new MissingBillingIdentityException(MarketDocuments::codes($tenant?->market_code));
         }
     }
 

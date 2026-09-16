@@ -132,6 +132,68 @@ it('still offers CPF and CNPJ in Brazil', function () {
     ])->assertOk()->assertJsonPath('data.is_complete', true);
 });
 
+it('lets an admin say this country asks for no document at all', function () {
+    $market = documentsMarket('ID', 'IDR', 'Indonesia');
+
+    // An empty list is a decision, not a gap — and the only way to express it,
+    // because config can only say "nobody wrote this country down yet".
+    $market->documents = [];
+    $market->save();
+
+    expect(MarketDocuments::required('ID'))->toBeFalse()
+        ->and(MarketDocuments::codes('ID'))->toBe([])
+        // Nothing is asked for, so nothing about it can be wrong.
+        ->and(MarketDocuments::problem('ID', 'ANYTHING', '1'))->toBeNull();
+
+    $owner = documentsOwner('ID');
+
+    // And the workspace is billable without one: otherwise the checkout would
+    // wait forever on a field its country never shows.
+    expect($owner->tenant->hasBillingIdentity())->toBeTrue();
+
+    Sanctum::actingAs($owner);
+
+    $this->putJson('/api/billing/profile', ['billing_name' => 'PT Toko Aurora'])
+        ->assertOk()
+        ->assertJsonPath('data.is_complete', true)
+        ->assertJsonPath('data.document_required', false);
+});
+
+it('uses the list an admin typed instead of the shipped one', function () {
+    $market = documentsMarket('ID', 'IDR', 'Indonesia');
+    $market->documents = [['code' => 'VAT', 'min' => 9, 'max' => 9]];
+    $market->save();
+
+    expect(MarketDocuments::codes('ID'))->toBe(['VAT']);
+
+    Sanctum::actingAs(documentsOwner('ID'));
+
+    // The shipped default is no longer accepted here — the admin replaced it.
+    $this->putJson('/api/billing/profile', [
+        'billing_name' => 'PT Toko Aurora',
+        'billing_document_type' => 'NPWP',
+        'billing_document_number' => '091234567890123',
+    ])->assertStatus(422)->assertJsonStructure(['errors' => ['billing_document_type']]);
+
+    $this->putJson('/api/billing/profile', [
+        'billing_name' => 'PT Toko Aurora',
+        'billing_document_type' => 'VAT',
+        'billing_document_number' => '12.345.678-9',
+    ])->assertOk()->assertJsonPath('data.is_complete', true);
+});
+
+it('goes back to the shipped shapes when the admin decision is cleared', function () {
+    $market = documentsMarket('ID', 'IDR', 'Indonesia');
+    $market->documents = [];
+    $market->save();
+
+    $market->documents = null;
+    $market->save();
+
+    expect(MarketDocuments::codes('ID'))->toEqualCanonicalizing(['NPWP', 'NIK'])
+        ->and(MarketDocuments::required('ID'))->toBeTrue();
+});
+
 it('falls back to a generic tax id in a market nobody has configured', function () {
     // Opening a market must not wait on somebody adding a row to config, and the
     // acquirer validates the number properly anyway.

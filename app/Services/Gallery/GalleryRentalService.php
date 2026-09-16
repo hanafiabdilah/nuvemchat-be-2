@@ -113,6 +113,16 @@ class GalleryRentalService
             ]);
         }
 
+        // The gigabyte is priced once, centrally, and converted per market. With
+        // no rate for this one the conversion hands back the base number wearing
+        // the wrong currency sign — so there is no price to charge, only a wrong
+        // one. Shrinking and cancelling stay open: they cost nothing.
+        if ($growing && ! MarketMoney::quotableFor($tenant)) {
+            throw ValidationException::withMessages([
+                'gb' => 'Storage is not priced in your currency yet. Please contact support.',
+            ]);
+        }
+
         if ($rental === null) {
             return $gb === 0 ? null : $this->start($tenant, $gb);
         }

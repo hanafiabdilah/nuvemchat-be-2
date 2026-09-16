@@ -120,37 +120,49 @@ class BillingController extends Controller
         $tenant = $this->tenant($request);
         $market = $tenant->market_code;
 
+        $needsDocument = MarketDocuments::required($market);
+
         $validated = $request->validate([
             'billing_name' => ['required', 'string', 'max:191'],
             // Whatever this country's rails ask for — CPF/CNPJ in Brazil,
-            // NPWP/NIK in Indonesia. Hard-coding the Brazilian pair did not read
-            // as a Brazilian assumption; it read as an Indonesian workspace
-            // unable to save a billing profile, and so unable to pay at all.
-            'billing_document_type' => ['required', Rule::in(MarketDocuments::codes($market))],
-            // Length only, and punctuation stripped below. The check digits are
-            // the acquirer's business — rejecting a valid edge case ourselves
-            // would be worse than passing it on.
-            'billing_document_number' => ['required', 'string', 'max:32'],
+            // NPWP/NIK in Indonesia, nothing at all where an admin said so.
+            // Hard-coding the Brazilian pair did not read as a Brazilian
+            // assumption; it read as an Indonesian workspace unable to save a
+            // billing profile, and so unable to pay at all.
+            //
+            // ⚠️ The rules disappear rather than relax when no document is
+            // asked for: `Rule::in([])` matches nothing, so leaving them in
+            // place would make such a market impossible to save.
+            ...($needsDocument ? [
+                'billing_document_type' => ['required', Rule::in(MarketDocuments::codes($market))],
+                // Length only, and punctuation stripped below. The check digits
+                // are the acquirer's business — rejecting a valid edge case
+                // ourselves would be worse than passing it on.
+                'billing_document_number' => ['required', 'string', 'max:32'],
+            ] : []),
         ]);
 
-        $problem = MarketDocuments::problem(
-            $market,
-            $validated['billing_document_type'],
-            $validated['billing_document_number'],
-        );
+        if ($needsDocument) {
+            $problem = MarketDocuments::problem(
+                $market,
+                $validated['billing_document_type'],
+                $validated['billing_document_number'],
+            );
 
-        if ($problem !== null) {
-            return response()->json([
-                'message' => $problem,
-                'errors' => ['billing_document_number' => [$problem]],
-            ], 422);
+            if ($problem !== null) {
+                return response()->json([
+                    'message' => $problem,
+                    'errors' => ['billing_document_number' => [$problem]],
+                ], 422);
+            }
         }
 
-        $digits = preg_replace('/\D/', '', $validated['billing_document_number']);
         $tenant->update([
             'billing_name' => $validated['billing_name'],
-            'billing_document_type' => $validated['billing_document_type'],
-            'billing_document_number' => $digits,
+            'billing_document_type' => $needsDocument ? $validated['billing_document_type'] : null,
+            'billing_document_number' => $needsDocument
+                ? preg_replace('/\D/', '', $validated['billing_document_number'])
+                : null,
         ]);
 
         return response()->json(['data' => $this->profilePayload($tenant->fresh())]);
@@ -398,8 +410,12 @@ class BillingController extends Controller
             'billing_document_hint' => $number === '' ? null : '•••'.substr($number, -4),
             'is_complete' => $tenant->hasBillingIdentity(),
             // What this country accepts, so the form offers those and not a
-            // list of Brazilian documents its customer does not hold.
+            // list of Brazilian documents its customer does not hold. Empty
+            // means this country asks for none — the form then has one field,
+            // and the flag says so outright rather than leaving the dashboard
+            // to infer it from an empty array.
             'document_types' => MarketDocuments::forMarket($tenant->market_code),
+            'document_required' => MarketDocuments::required($tenant->market_code),
         ];
     }
 

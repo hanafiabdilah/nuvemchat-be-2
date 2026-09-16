@@ -213,6 +213,15 @@ class ApiwayService
                 'instances' => 'API Way instances are not available in your country.',
             ]);
         }
+
+        // ProxyBR quotes in the platform's money, so without a rate for this
+        // country there is no price to charge — only the base number wearing the
+        // wrong currency sign. Refusing is the only answer that is not a lie.
+        if (! MarketMoney::quotableFor($tenant)) {
+            throw ValidationException::withMessages([
+                'instances' => 'Instances are not priced in your currency yet. Please contact support.',
+            ]);
+        }
     }
 
     /**
