@@ -1,0 +1,970 @@
+{
+  "AD": {
+    "currency": "EUR",
+    "calling_code": "376"
+  },
+  "AE": {
+    "currency": "AED",
+    "calling_code": "971"
+  },
+  "AF": {
+    "currency": "AFN",
+    "calling_code": "93"
+  },
+  "AG": {
+    "currency": "XCD",
+    "calling_code": "1"
+  },
+  "AI": {
+    "currency": "XCD",
+    "calling_code": "1"
+  },
+  "AL": {
+    "currency": "ALL",
+    "calling_code": "355"
+  },
+  "AM": {
+    "currency": "AMD",
+    "calling_code": "374"
+  },
+  "AO": {
+    "currency": "AOA",
+    "calling_code": "244"
+  },
+  "AR": {
+    "currency": "ARS",
+    "calling_code": "54"
+  },
+  "AS": {
+    "currency": "USD",
+    "calling_code": "1"
+  },
+  "AT": {
+    "currency": "EUR",
+    "calling_code": "43"
+  },
+  "AU": {
+    "currency": "AUD",
+    "calling_code": "61"
+  },
+  "AW": {
+    "currency": "AWG",
+    "calling_code": "297"
+  },
+  "AX": {
+    "currency": "EUR",
+    "calling_code": "358"
+  },
+  "AZ": {
+    "currency": "AZN",
+    "calling_code": "994"
+  },
+  "BA": {
+    "currency": "BAM",
+    "calling_code": "387"
+  },
+  "BB": {
+    "currency": "BBD",
+    "calling_code": "1"
+  },
+  "BD": {
+    "currency": "BDT",
+    "calling_code": "880"
+  },
+  "BE": {
+    "currency": "EUR",
+    "calling_code": "32"
+  },
+  "BF": {
+    "currency": "XOF",
+    "calling_code": "226"
+  },
+  "BG": {
+    "currency": "BGN",
+    "calling_code": "359"
+  },
+  "BH": {
+    "currency": "BHD",
+    "calling_code": "973"
+  },
+  "BI": {
+    "currency": "BIF",
+    "calling_code": "257"
+  },
+  "BJ": {
+    "currency": "XOF",
+    "calling_code": "229"
+  },
+  "BL": {
+    "currency": "EUR",
+    "calling_code": "590"
+  },
+  "BM": {
+    "currency": "BMD",
+    "calling_code": "1"
+  },
+  "BN": {
+    "currency": "BND",
+    "calling_code": "673"
+  },
+  "BO": {
+    "currency": "BOB",
+    "calling_code": "591"
+  },
+  "BQ": {
+    "currency": "USD",
+    "calling_code": "599"
+  },
+  "BR": {
+    "currency": "BRL",
+    "calling_code": "55"
+  },
+  "BS": {
+    "currency": "BSD",
+    "calling_code": "1"
+  },
+  "BT": {
+    "currency": "BTN",
+    "calling_code": "975"
+  },
+  "BW": {
+    "currency": "BWP",
+    "calling_code": "267"
+  },
+  "BY": {
+    "currency": "BYN",
+    "calling_code": "375"
+  },
+  "BZ": {
+    "currency": "BZD",
+    "calling_code": "501"
+  },
+  "CA": {
+    "currency": "CAD",
+    "calling_code": "1"
+  },
+  "CC": {
+    "currency": "AUD",
+    "calling_code": "61"
+  },
+  "CD": {
+    "currency": "CDF",
+    "calling_code": "243"
+  },
+  "CF": {
+    "currency": "XAF",
+    "calling_code": "236"
+  },
+  "CG": {
+    "currency": "XAF",
+    "calling_code": "242"
+  },
+  "CH": {
+    "currency": "CHF",
+    "calling_code": "41"
+  },
+  "CI": {
+    "currency": "XOF",
+    "calling_code": "225"
+  },
+  "CK": {
+    "currency": "NZD",
+    "calling_code": "682"
+  },
+  "CL": {
+    "currency": "CLP",
+    "calling_code": "56"
+  },
+  "CM": {
+    "currency": "XAF",
+    "calling_code": "237"
+  },
+  "CN": {
+    "currency": "CNY",
+    "calling_code": "86"
+  },
+  "CO": {
+    "currency": "COP",
+    "calling_code": "57"
+  },
+  "CR": {
+    "currency": "CRC",
+    "calling_code": "506"
+  },
+  "CU": {
+    "currency": "CUP",
+    "calling_code": "53"
+  },
+  "CV": {
+    "currency": "CVE",
+    "calling_code": "238"
+  },
+  "CW": {
+    "currency": "XCG",
+    "calling_code": "599"
+  },
+  "CX": {
+    "currency": "AUD",
+    "calling_code": "61"
+  },
+  "CY": {
+    "currency": "EUR",
+    "calling_code": "357"
+  },
+  "CZ": {
+    "currency": "CZK",
+    "calling_code": "420"
+  },
+  "DE": {
+    "currency": "EUR",
+    "calling_code": "49"
+  },
+  "DJ": {
+    "currency": "DJF",
+    "calling_code": "253"
+  },
+  "DK": {
+    "currency": "DKK",
+    "calling_code": "45"
+  },
+  "DM": {
+    "currency": "XCD",
+    "calling_code": "1"
+  },
+  "DO": {
+    "currency": "DOP",
+    "calling_code": "1"
+  },
+  "DZ": {
+    "currency": "DZD",
+    "calling_code": "213"
+  },
+  "EC": {
+    "currency": "USD",
+    "calling_code": "593"
+  },
+  "EE": {
+    "currency": "EUR",
+    "calling_code": "372"
+  },
+  "EG": {
+    "currency": "EGP",
+    "calling_code": "20"
+  },
+  "EH": {
+    "currency": "MAD",
+    "calling_code": "212"
+  },
+  "ER": {
+    "currency": "ERN",
+    "calling_code": "291"
+  },
+  "ES": {
+    "currency": "EUR",
+    "calling_code": "34"
+  },
+  "ET": {
+    "currency": "ETB",
+    "calling_code": "251"
+  },
+  "FI": {
+    "currency": "EUR",
+    "calling_code": "358"
+  },
+  "FJ": {
+    "currency": "FJD",
+    "calling_code": "679"
+  },
+  "FK": {
+    "currency": "FKP",
+    "calling_code": "500"
+  },
+  "FM": {
+    "currency": "USD",
+    "calling_code": "691"
+  },
+  "FO": {
+    "currency": "DKK",
+    "calling_code": "298"
+  },
+  "FR": {
+    "currency": "EUR",
+    "calling_code": "33"
+  },
+  "GA": {
+    "currency": "XAF",
+    "calling_code": "241"
+  },
+  "GB": {
+    "currency": "GBP",
+    "calling_code": "44"
+  },
+  "GD": {
+    "currency": "XCD",
+    "calling_code": "1"
+  },
+  "GE": {
+    "currency": "GEL",
+    "calling_code": "995"
+  },
+  "GF": {
+    "currency": "EUR",
+    "calling_code": "594"
+  },
+  "GG": {
+    "currency": "GBP",
+    "calling_code": "44"
+  },
+  "GH": {
+    "currency": "GHS",
+    "calling_code": "233"
+  },
+  "GI": {
+    "currency": "GIP",
+    "calling_code": "350"
+  },
+  "GL": {
+    "currency": "DKK",
+    "calling_code": "299"
+  },
+  "GM": {
+    "currency": "GMD",
+    "calling_code": "220"
+  },
+  "GN": {
+    "currency": "GNF",
+    "calling_code": "224"
+  },
+  "GP": {
+    "currency": "EUR",
+    "calling_code": "590"
+  },
+  "GQ": {
+    "currency": "XAF",
+    "calling_code": "240"
+  },
+  "GR": {
+    "currency": "EUR",
+    "calling_code": "30"
+  },
+  "GT": {
+    "currency": "GTQ",
+    "calling_code": "502"
+  },
+  "GU": {
+    "currency": "USD",
+    "calling_code": "1"
+  },
+  "GW": {
+    "currency": "XOF",
+    "calling_code": "245"
+  },
+  "GY": {
+    "currency": "GYD",
+    "calling_code": "592"
+  },
+  "HK": {
+    "currency": "HKD",
+    "calling_code": "852"
+  },
+  "HN": {
+    "currency": "HNL",
+    "calling_code": "504"
+  },
+  "HR": {
+    "currency": "EUR",
+    "calling_code": "385"
+  },
+  "HT": {
+    "currency": "HTG",
+    "calling_code": "509"
+  },
+  "HU": {
+    "currency": "HUF",
+    "calling_code": "36"
+  },
+  "ID": {
+    "currency": "IDR",
+    "calling_code": "62"
+  },
+  "IE": {
+    "currency": "EUR",
+    "calling_code": "353"
+  },
+  "IL": {
+    "currency": "ILS",
+    "calling_code": "972"
+  },
+  "IM": {
+    "currency": "GBP",
+    "calling_code": "44"
+  },
+  "IN": {
+    "currency": "INR",
+    "calling_code": "91"
+  },
+  "IO": {
+    "currency": "USD",
+    "calling_code": "246"
+  },
+  "IQ": {
+    "currency": "IQD",
+    "calling_code": "964"
+  },
+  "IR": {
+    "currency": "IRR",
+    "calling_code": "98"
+  },
+  "IS": {
+    "currency": "ISK",
+    "calling_code": "354"
+  },
+  "IT": {
+    "currency": "EUR",
+    "calling_code": "39"
+  },
+  "JE": {
+    "currency": "GBP",
+    "calling_code": "44"
+  },
+  "JM": {
+    "currency": "JMD",
+    "calling_code": "1"
+  },
+  "JO": {
+    "currency": "JOD",
+    "calling_code": "962"
+  },
+  "JP": {
+    "currency": "JPY",
+    "calling_code": "81"
+  },
+  "KE": {
+    "currency": "KES",
+    "calling_code": "254"
+  },
+  "KG": {
+    "currency": "KGS",
+    "calling_code": "996"
+  },
+  "KH": {
+    "currency": "KHR",
+    "calling_code": "855"
+  },
+  "KI": {
+    "currency": "AUD",
+    "calling_code": "686"
+  },
+  "KM": {
+    "currency": "KMF",
+    "calling_code": "269"
+  },
+  "KN": {
+    "currency": "XCD",
+    "calling_code": "1"
+  },
+  "KP": {
+    "currency": "KPW",
+    "calling_code": "850"
+  },
+  "KR": {
+    "currency": "KRW",
+    "calling_code": "82"
+  },
+  "KW": {
+    "currency": "KWD",
+    "calling_code": "965"
+  },
+  "KY": {
+    "currency": "KYD",
+    "calling_code": "1"
+  },
+  "KZ": {
+    "currency": "KZT",
+    "calling_code": "7"
+  },
+  "LA": {
+    "currency": "LAK",
+    "calling_code": "856"
+  },
+  "LB": {
+    "currency": "LBP",
+    "calling_code": "961"
+  },
+  "LC": {
+    "currency": "XCD",
+    "calling_code": "1"
+  },
+  "LI": {
+    "currency": "CHF",
+    "calling_code": "423"
+  },
+  "LK": {
+    "currency": "LKR",
+    "calling_code": "94"
+  },
+  "LR": {
+    "currency": "LRD",
+    "calling_code": "231"
+  },
+  "LS": {
+    "currency": "ZAR",
+    "calling_code": "266"
+  },
+  "LT": {
+    "currency": "EUR",
+    "calling_code": "370"
+  },
+  "LU": {
+    "currency": "EUR",
+    "calling_code": "352"
+  },
+  "LV": {
+    "currency": "EUR",
+    "calling_code": "371"
+  },
+  "LY": {
+    "currency": "LYD",
+    "calling_code": "218"
+  },
+  "MA": {
+    "currency": "MAD",
+    "calling_code": "212"
+  },
+  "MC": {
+    "currency": "EUR",
+    "calling_code": "377"
+  },
+  "MD": {
+    "currency": "MDL",
+    "calling_code": "373"
+  },
+  "ME": {
+    "currency": "EUR",
+    "calling_code": "382"
+  },
+  "MF": {
+    "currency": "EUR",
+    "calling_code": "590"
+  },
+  "MG": {
+    "currency": "MGA",
+    "calling_code": "261"
+  },
+  "MH": {
+    "currency": "USD",
+    "calling_code": "692"
+  },
+  "MK": {
+    "currency": "MKD",
+    "calling_code": "389"
+  },
+  "ML": {
+    "currency": "XOF",
+    "calling_code": "223"
+  },
+  "MM": {
+    "currency": "MMK",
+    "calling_code": "95"
+  },
+  "MN": {
+    "currency": "MNT",
+    "calling_code": "976"
+  },
+  "MO": {
+    "currency": "MOP",
+    "calling_code": "853"
+  },
+  "MP": {
+    "currency": "USD",
+    "calling_code": "1"
+  },
+  "MQ": {
+    "currency": "EUR",
+    "calling_code": "596"
+  },
+  "MR": {
+    "currency": "MRU",
+    "calling_code": "222"
+  },
+  "MS": {
+    "currency": "XCD",
+    "calling_code": "1"
+  },
+  "MT": {
+    "currency": "EUR",
+    "calling_code": "356"
+  },
+  "MU": {
+    "currency": "MUR",
+    "calling_code": "230"
+  },
+  "MV": {
+    "currency": "MVR",
+    "calling_code": "960"
+  },
+  "MW": {
+    "currency": "MWK",
+    "calling_code": "265"
+  },
+  "MX": {
+    "currency": "MXN",
+    "calling_code": "52"
+  },
+  "MY": {
+    "currency": "MYR",
+    "calling_code": "60"
+  },
+  "MZ": {
+    "currency": "MZN",
+    "calling_code": "258"
+  },
+  "NA": {
+    "currency": "NAD",
+    "calling_code": "264"
+  },
+  "NC": {
+    "currency": "XPF",
+    "calling_code": "687"
+  },
+  "NE": {
+    "currency": "XOF",
+    "calling_code": "227"
+  },
+  "NF": {
+    "currency": "AUD",
+    "calling_code": "672"
+  },
+  "NG": {
+    "currency": "NGN",
+    "calling_code": "234"
+  },
+  "NI": {
+    "currency": "NIO",
+    "calling_code": "505"
+  },
+  "NL": {
+    "currency": "EUR",
+    "calling_code": "31"
+  },
+  "NO": {
+    "currency": "NOK",
+    "calling_code": "47"
+  },
+  "NP": {
+    "currency": "NPR",
+    "calling_code": "977"
+  },
+  "NR": {
+    "currency": "AUD",
+    "calling_code": "674"
+  },
+  "NU": {
+    "currency": "NZD",
+    "calling_code": "683"
+  },
+  "NZ": {
+    "currency": "NZD",
+    "calling_code": "64"
+  },
+  "OM": {
+    "currency": "OMR",
+    "calling_code": "968"
+  },
+  "PA": {
+    "currency": "PAB",
+    "calling_code": "507"
+  },
+  "PE": {
+    "currency": "PEN",
+    "calling_code": "51"
+  },
+  "PF": {
+    "currency": "XPF",
+    "calling_code": "689"
+  },
+  "PG": {
+    "currency": "PGK",
+    "calling_code": "675"
+  },
+  "PH": {
+    "currency": "PHP",
+    "calling_code": "63"
+  },
+  "PK": {
+    "currency": "PKR",
+    "calling_code": "92"
+  },
+  "PL": {
+    "currency": "PLN",
+    "calling_code": "48"
+  },
+  "PM": {
+    "currency": "EUR",
+    "calling_code": "508"
+  },
+  "PR": {
+    "currency": "USD",
+    "calling_code": "1"
+  },
+  "PS": {
+    "currency": "ILS",
+    "calling_code": "970"
+  },
+  "PT": {
+    "currency": "EUR",
+    "calling_code": "351"
+  },
+  "PW": {
+    "currency": "USD",
+    "calling_code": "680"
+  },
+  "PY": {
+    "currency": "PYG",
+    "calling_code": "595"
+  },
+  "QA": {
+    "currency": "QAR",
+    "calling_code": "974"
+  },
+  "RE": {
+    "currency": "EUR",
+    "calling_code": "262"
+  },
+  "RO": {
+    "currency": "RON",
+    "calling_code": "40"
+  },
+  "RS": {
+    "currency": "RSD",
+    "calling_code": "381"
+  },
+  "RU": {
+    "currency": "RUB",
+    "calling_code": "7"
+  },
+  "RW": {
+    "currency": "RWF",
+    "calling_code": "250"
+  },
+  "SA": {
+    "currency": "SAR",
+    "calling_code": "966"
+  },
+  "SB": {
+    "currency": "SBD",
+    "calling_code": "677"
+  },
+  "SC": {
+    "currency": "SCR",
+    "calling_code": "248"
+  },
+  "SD": {
+    "currency": "SDG",
+    "calling_code": "249"
+  },
+  "SE": {
+    "currency": "SEK",
+    "calling_code": "46"
+  },
+  "SG": {
+    "currency": "SGD",
+    "calling_code": "65"
+  },
+  "SH": {
+    "currency": "SHP",
+    "calling_code": "290"
+  },
+  "SI": {
+    "currency": "EUR",
+    "calling_code": "386"
+  },
+  "SJ": {
+    "currency": "NOK",
+    "calling_code": "47"
+  },
+  "SK": {
+    "currency": "EUR",
+    "calling_code": "421"
+  },
+  "SL": {
+    "currency": "SLE",
+    "calling_code": "232"
+  },
+  "SM": {
+    "currency": "EUR",
+    "calling_code": "378"
+  },
+  "SN": {
+    "currency": "XOF",
+    "calling_code": "221"
+  },
+  "SO": {
+    "currency": "SOS",
+    "calling_code": "252"
+  },
+  "SR": {
+    "currency": "SRD",
+    "calling_code": "597"
+  },
+  "SS": {
+    "currency": "SSP",
+    "calling_code": "211"
+  },
+  "ST": {
+    "currency": "STN",
+    "calling_code": "239"
+  },
+  "SV": {
+    "currency": "USD",
+    "calling_code": "503"
+  },
+  "SX": {
+    "currency": "XCG",
+    "calling_code": "1"
+  },
+  "SY": {
+    "currency": "SYP",
+    "calling_code": "963"
+  },
+  "SZ": {
+    "currency": "SZL",
+    "calling_code": "268"
+  },
+  "TC": {
+    "currency": "USD",
+    "calling_code": "1"
+  },
+  "TD": {
+    "currency": "XAF",
+    "calling_code": "235"
+  },
+  "TG": {
+    "currency": "XOF",
+    "calling_code": "228"
+  },
+  "TH": {
+    "currency": "THB",
+    "calling_code": "66"
+  },
+  "TJ": {
+    "currency": "TJS",
+    "calling_code": "992"
+  },
+  "TK": {
+    "currency": "NZD",
+    "calling_code": "690"
+  },
+  "TL": {
+    "currency": "USD",
+    "calling_code": "670"
+  },
+  "TM": {
+    "currency": "TMT",
+    "calling_code": "993"
+  },
+  "TN": {
+    "currency": "TND",
+    "calling_code": "216"
+  },
+  "TO": {
+    "currency": "TOP",
+    "calling_code": "676"
+  },
+  "TR": {
+    "currency": "TRY",
+    "calling_code": "90"
+  },
+  "TT": {
+    "currency": "TTD",
+    "calling_code": "1"
+  },
+  "TV": {
+    "currency": "AUD",
+    "calling_code": "688"
+  },
+  "TW": {
+    "currency": "TWD",
+    "calling_code": "886"
+  },
+  "TZ": {
+    "currency": "TZS",
+    "calling_code": "255"
+  },
+  "UA": {
+    "currency": "UAH",
+    "calling_code": "380"
+  },
+  "UG": {
+    "currency": "UGX",
+    "calling_code": "256"
+  },
+  "US": {
+    "currency": "USD",
+    "calling_code": "1"
+  },
+  "UY": {
+    "currency": "UYU",
+    "calling_code": "598"
+  },
+  "UZ": {
+    "currency": "UZS",
+    "calling_code": "998"
+  },
+  "VA": {
+    "currency": "EUR",
+    "calling_code": "39"
+  },
+  "VC": {
+    "currency": "XCD",
+    "calling_code": "1"
+  },
+  "VE": {
+    "currency": "VES",
+    "calling_code": "58"
+  },
+  "VG": {
+    "currency": "USD",
+    "calling_code": "1"
+  },
+  "VI": {
+    "currency": "USD",
+    "calling_code": "1"
+  },
+  "VN": {
+    "currency": "VND",
+    "calling_code": "84"
+  },
+  "VU": {
+    "currency": "VUV",
+    "calling_code": "678"
+  },
+  "WF": {
+    "currency": "XPF",
+    "calling_code": "681"
+  },
+  "WS": {
+    "currency": "WST",
+    "calling_code": "685"
+  },
+  "YE": {
+    "currency": "YER",
+    "calling_code": "967"
+  },
+  "YT": {
+    "currency": "EUR",
+    "calling_code": "262"
+  },
+  "ZA": {
+    "currency": "ZAR",
+    "calling_code": "27"
+  },
+  "ZM": {
+    "currency": "ZMW",
+    "calling_code": "260"
+  },
+  "ZW": {
+    "currency": "ZWG",
+    "calling_code": "263"
+  }
+}

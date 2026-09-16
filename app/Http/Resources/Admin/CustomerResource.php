@@ -18,6 +18,7 @@ class CustomerResource extends JsonResource
     {
         return [
             'id' => $this->id,
+            'market_code' => $this->market_code,
             'owner' => $this->whenLoaded('user', fn () => [
                 'id' => $this->user?->id,
                 'name' => $this->user?->name,

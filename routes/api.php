@@ -1,99 +1,100 @@
 <?php
 
 use App\Enums\Billing\Feature;
-use App\Http\Controllers\Api\AgentController;
-use App\Http\Controllers\Api\AiSuggestController;
-use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
-use App\Http\Controllers\Api\AiHub\AgentKnowledgeController as AiHubAgentKnowledgeController;
-use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileController;
-use App\Http\Controllers\Api\AiHub\AgentSkillController as AiHubAgentSkillController;
-use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentTrainingExampleController;
-use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
-use App\Http\Controllers\Api\AiHub\VocabularyController as AiHubVocabularyController;
-use App\Http\Controllers\Api\AiHub\VocabularyTestController as AiHubVocabularyTestController;
-use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
-use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
-use App\Http\Controllers\Api\AiHub\TokenRentalController as AiHubTokenRentalController;
-use App\Http\Controllers\Api\Credits\CreditController;
-use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
-use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
-use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
-use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
-use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
-use App\Http\Controllers\Api\Numbers\VirtualNumberController;
-use App\Http\Controllers\Api\Gallery\GalleryAssetController;
-use App\Http\Controllers\Api\Gallery\GalleryStorageController;
-use App\Http\Controllers\Api\IntegrationController;
 use App\Http\Controllers\Api\Admin\AccountController as AdminAccountController;
-use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
-use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
-use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
-use App\Http\Controllers\Api\Admin\AdminCreditController;
 use App\Http\Controllers\Api\Admin\AdminAiModelController;
 use App\Http\Controllers\Api\Admin\AdminAiTokenPoolController;
 use App\Http\Controllers\Api\Admin\AdminAiUsageController;
 use App\Http\Controllers\Api\Admin\AdminApiwayController;
 use App\Http\Controllers\Api\Admin\AdminBroadcastController;
+use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AdminConversationOverviewController;
+use App\Http\Controllers\Api\Admin\AdminCreditController;
 use App\Http\Controllers\Api\Admin\AdminEntitlementController;
+use App\Http\Controllers\Api\Admin\AdminFlowAssistantController;
 use App\Http\Controllers\Api\Admin\AdminHealthController;
 use App\Http\Controllers\Api\Admin\AdminInvoiceController;
 use App\Http\Controllers\Api\Admin\AdminLiveController;
+use App\Http\Controllers\Api\Admin\AdminMarketController;
 use App\Http\Controllers\Api\Admin\AdminNumbersController;
 use App\Http\Controllers\Api\Admin\AdminPaymentServiceController;
-use App\Http\Controllers\Api\Admin\AdminReportController;
-use App\Http\Controllers\Api\Admin\AdminStorageController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
+use App\Http\Controllers\Api\Admin\AdminReportController;
+use App\Http\Controllers\Api\Admin\AdminSettingsController;
+use App\Http\Controllers\Api\Admin\AdminStorageController;
 use App\Http\Controllers\Api\Admin\AdminSubscriptionController;
 use App\Http\Controllers\Api\Admin\AdminTrainedAgentController;
-use App\Http\Controllers\Api\Admin\AdminFlowAssistantController;
-use App\Http\Controllers\Api\Admin\AdminSettingsController;
+use App\Http\Controllers\Api\Admin\AuditLogController as AdminAuditLogController;
 use App\Http\Controllers\Api\Admin\AuthController as AdminAuthController;
 use App\Http\Controllers\Api\Admin\ConnectionController as AdminConnectionController;
 use App\Http\Controllers\Api\Admin\CustomerController as AdminCustomerController;
+use App\Http\Controllers\Api\Admin\LogViewerController as AdminLogViewerController;
+use App\Http\Controllers\Api\Admin\OtpController as AdminOtpController;
 use App\Http\Controllers\Api\Admin\PermissionController as AdminPermissionController;
 use App\Http\Controllers\Api\Admin\RoleController as AdminRoleController;
 use App\Http\Controllers\Api\Admin\StatisticsController as AdminStatisticsController;
 use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\Admin\WhatsappLogController as AdminWhatsappLogController;
-use App\Http\Controllers\Api\Admin\OtpController as AdminOtpController;
+use App\Http\Controllers\Api\AgentController;
+use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
+use App\Http\Controllers\Api\AiHub\AgentKnowledgeController as AiHubAgentKnowledgeController;
+use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileController;
+use App\Http\Controllers\Api\AiHub\AgentSkillController as AiHubAgentSkillController;
+use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentTrainingExampleController;
+use App\Http\Controllers\Api\AiHub\ModelController as AiHubModelController;
+use App\Http\Controllers\Api\AiHub\ProviderCredentialController as AiHubProviderCredentialController;
+use App\Http\Controllers\Api\AiHub\ProvisionController as AiHubProvisionController;
+use App\Http\Controllers\Api\AiHub\TokenRentalController as AiHubTokenRentalController;
+use App\Http\Controllers\Api\AiHub\VocabularyController as AiHubVocabularyController;
+use App\Http\Controllers\Api\AiHub\VocabularyTestController as AiHubVocabularyTestController;
+use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
+use App\Http\Controllers\Api\AiSuggestController;
+use App\Http\Controllers\Api\ApiKeyController;
+use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
+use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
+use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
 use App\Http\Controllers\Api\AuthController;
-use App\Http\Controllers\Api\BroadcastController;
-use App\Http\Controllers\Api\OtpController;
-use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\Billing\BillingController;
+use App\Http\Controllers\Api\BroadcastController;
 use App\Http\Controllers\Api\ConnectionController;
+use App\Http\Controllers\Api\ContactController;
+use App\Http\Controllers\Api\ConversationController;
+use App\Http\Controllers\Api\ConversationNoteController;
+use App\Http\Controllers\Api\Credits\CreditController;
+use App\Http\Controllers\Api\FlowAssistantController;
+use App\Http\Controllers\Api\FlowController;
+use App\Http\Controllers\Api\Gallery\GalleryAssetController;
+use App\Http\Controllers\Api\Gallery\GalleryStorageController;
+use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\ImpersonationController;
 use App\Http\Controllers\Api\Instagram\InstagramAccountController;
 use App\Http\Controllers\Api\Instagram\InstagramCommentController;
 use App\Http\Controllers\Api\Instagram\InstagramPostController;
-use App\Http\Controllers\Api\ContactController;
-use App\Http\Controllers\Api\ConversationController;
-use App\Http\Controllers\Api\ConversationNoteController;
-use App\Http\Controllers\Api\FlowAssistantController;
-use App\Http\Controllers\Api\FlowController;
-use App\Http\Controllers\Api\GroupController;
+use App\Http\Controllers\Api\IntegrationController;
 use App\Http\Controllers\Api\LeadController;
-use App\Http\Controllers\Api\LiveController;
 use App\Http\Controllers\Api\LeadPipelineController;
 use App\Http\Controllers\Api\LeadSettingsController;
+use App\Http\Controllers\Api\LiveController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\MessageTemplateController;
+use App\Http\Controllers\Api\Numbers\VirtualNumberController;
+use App\Http\Controllers\Api\OtpController;
+use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\PermissionController;
+use App\Http\Controllers\Api\PublicBootstrapController;
 use App\Http\Controllers\Api\QuickMessageController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\StarredMessageController;
 use App\Http\Controllers\Api\StatisticsController;
 use App\Http\Controllers\Api\TagController;
+use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
-use App\Http\Controllers\Api\PublicBootstrapController;
-use App\Http\Controllers\Api\ApiKeyController;
-use App\Http\Controllers\Api\WebhookController;
 use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
 use App\Http\Controllers\Api\V1\LeadController as V1LeadController;
 use App\Http\Controllers\Api\V1\SendMessageController;
+use App\Http\Controllers\Api\WebhookController;
 use App\Http\Middleware\V1\ApiKeyAuth;
 use Illuminate\Support\Facades\Route;
 
@@ -123,7 +124,7 @@ Route::middleware('auth:sanctum')->prefix('auth/otp')->group(function () {
     Route::post('/verify', [OtpController::class, 'verify']);
 });
 
-Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])->group(function(){
+Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])->group(function () {
     Route::post('/uploads', [UploadController::class, 'store']);
 
     Route::get('/user', [UserController::class, 'index']);
@@ -261,7 +262,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/{id}/deliveries', [WebhookController::class, 'deliveries'])->whereNumber('id')->name('deliveries');
     });
 
-    Route::middleware('feature:' . Feature::Chat->value)->group(function () {
+    Route::middleware('feature:'.Feature::Chat->value)->group(function () {
         Route::get('/messages', [MessageController::class, 'index']);
         // Message search runs here rather than over the client's own cache —
         // see MessageController::search(). Throttled because it is wired to a
@@ -925,6 +926,27 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::get('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'show']);
             Route::post('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'assign']);
             Route::delete('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'cancel']);
+        });
+
+        // Markets — the countries the platform sells in and the domains each is
+        // reached on. What a domain means lives here; the DNS and Caddy block
+        // that bring requests to it do not (docs/country-domains.md).
+        Route::middleware('permission:bo.markets.manage')->group(function () {
+            Route::get('/markets', [AdminMarketController::class, 'index']);
+            Route::get('/markets/meta', [AdminMarketController::class, 'meta']);
+            Route::post('/markets', [AdminMarketController::class, 'store']);
+            Route::put('/markets/{market}', [AdminMarketController::class, 'update']);
+            Route::delete('/markets/{market}', [AdminMarketController::class, 'destroy']);
+            Route::post('/markets/{market}/domains', [AdminMarketController::class, 'storeDomain']);
+
+            // Scoped: a domain id only resolves inside its own market.
+            Route::scopeBindings()->group(function () {
+                Route::put('/markets/{market}/domains/{domain}/primary', [AdminMarketController::class, 'makePrimary']);
+                // Calls out to the domain over the public internet.
+                Route::post('/markets/{market}/domains/{domain}/check', [AdminMarketController::class, 'checkDomain'])
+                    ->middleware('throttle:30,1');
+                Route::delete('/markets/{market}/domains/{domain}', [AdminMarketController::class, 'destroyDomain']);
+            });
         });
 
         // Trained agent catalog — categories, blueprints, and who took what.

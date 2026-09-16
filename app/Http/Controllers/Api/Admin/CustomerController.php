@@ -37,6 +37,8 @@ class CustomerController extends Controller
                         ->when($digits !== '', fn ($q2) => $q2->orWhere('whatsapp_number', 'like', "%{$digits}%"));
                 });
             })
+            // The Markets page links its workspace count here.
+            ->when($request->filled('market'), fn ($query) => $query->where('market_code', strtoupper((string) $request->query('market'))))
             ->orderBy('id', $sort === 'oldest' ? 'asc' : 'desc')
             ->paginate($perPage)
             ->withQueryString();

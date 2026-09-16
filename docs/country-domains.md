@@ -19,16 +19,9 @@ Laravel's `EnsurePlatformHost` answers the same if one slips through.
   BO → Health → "Endereço da plataforma" is green. Without it, a webhook
   registered from a country dashboard points at the country domain, where
   `/webhook` is blocked.
-- The market exists (`markets` row). Until the Back Office Markets module
-  exists, create it with tinker:
-
-  ```php
-  App\Models\Market::create([
-      'code' => 'ID', 'name' => 'Indonesia', 'currency' => 'IDR',
-      'default_locale' => 'id', 'default_timezone' => 'Asia/Jakarta',
-      'phone_country' => '62', 'status' => 'draft',
-  ]);
-  ```
+- The market exists: **BO → Markets → Open a market**. Pick the country; its
+  currency, calling code and timezones are filled in. The currency can't be
+  changed once the first workspace joins, so check it before anyone signs up.
 
 ## Adding a country domain
 
@@ -48,23 +41,24 @@ DNS resolves to the server.
    Commit, push, then from the monorepo root: `./deploy.sh caddy`. It validates
    inside the container before touching the live file, keeps a backup
    (`Caddyfile.bak-deploy-*`), reloads, and checks `/up`.
-3. **Market domain** — register the domain so signups there join the market and
-   the 404 guard knows it is a country domain:
+3. **Market domain** — BO → Markets → the market → *Add domain*. From then on
+   signups there join the market and the 404 guard treats it as a country
+   domain. The first domain becomes the market's primary. The platform address
+   and a domain another market holds are refused.
 
-   ```php
-   App\Models\MarketDomain::create([
-       'market_code' => 'ID', 'domain' => 'app.pingly.id', 'is_primary' => true,
-   ]);
-   ```
-
-   Use the model, not the query builder: saving the model flushes the cached
-   domain map. With the query builder, call
-   `App\Services\Market\MarketResolver::flush()` afterwards.
+   (Outside the Back Office, use the `MarketDomain` model, never the query
+   builder: saving the model flushes the cached domain map. With the query
+   builder, call `App\Services\Market\MarketResolver::flush()` afterwards.)
 4. **Meta app** — add the domain to *App Domains* and to *Allowed Domains for
    the JavaScript SDK*. WhatsApp Embedded Signup runs `FB.login` on the page the
    customer is on, and Meta refuses it on an unlisted domain.
 
 ## Checking it
+
+BO → Markets → the market → *Check* next to the domain asks it
+`/api/public/bootstrap` over the public internet and names the missing step:
+unreachable (DNS or the Caddy block), an HTTP error (the API isn't served), or
+answering as another market. The same by hand:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' https://app.pingly.id/                        # 200
@@ -76,7 +70,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://chat.pingly.com.br/webhook/face
 
 ## Removing a country domain
 
-Remove the Caddy block and deploy it, delete the `market_domains` row, and
+Remove the Caddy block and deploy it, remove the domain in BO → Markets, and
 remove the domain from the Meta app. Workspaces in that market are untouched —
 they keep their market and can still use the platform host.
 

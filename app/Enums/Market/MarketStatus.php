@@ -5,10 +5,10 @@ namespace App\Enums\Market;
 /**
  * Where a market is in its life.
  *
- * Only recorded for now. Gating signups on it (invitation codes during a soft
- * launch, no new workspaces while paused) belongs to the market module that
- * lets an admin open a country; until then there is exactly one market and it
- * is active.
+ * Recorded, set in the Back Office, and deliberately not enforced: signups are
+ * not gated on it (decided when chat.pingly.id went live in parallel — nobody
+ * signs up on a domain that isn't promoted). It says where a country is in its
+ * launch; anything that should act on it has to be added on purpose.
  */
 enum MarketStatus: string
 {

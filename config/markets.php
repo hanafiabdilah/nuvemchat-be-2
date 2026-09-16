@@ -16,4 +16,21 @@ return [
 
     'default' => env('DEFAULT_MARKET', 'BR'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Languages a market can default to
+    |--------------------------------------------------------------------------
+    |
+    | The dashboard's translations, by i18next code. Must follow
+    | nuvemchat-fe-2/src/i18n/languages.ts: a market defaulting to a language
+    | the dashboard has no translation file for shows its customers English.
+    |
+    */
+
+    'locales' => [
+        'pt_BR' => 'Português (Brasil)',
+        'en' => 'English',
+        'id' => 'Bahasa Indonesia',
+    ],
+
 ];

@@ -64,6 +64,10 @@ class PlatformRbacSeeder extends Seeder
         // Granting a feature outside the plan bypasses billing; kept apart from
         // bo.subscriptions.manage so it can be handed out separately.
         'bo.entitlements.manage',
+        // The countries the platform sells in and the domains each is reached
+        // on. A market's currency is what its workspaces are billed in for
+        // good, so this is not folded into bo.settings.manage.
+        'bo.markets.manage',
     ];
 
     public function run(): void
