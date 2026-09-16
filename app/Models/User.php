@@ -27,6 +27,9 @@ class User extends Authenticatable
         'password',
         'whatsapp_number',
         'whatsapp_verified_at',
+        // Null means "read the dashboard in whatever my workspace's country
+        // speaks"; a value here is this person saying otherwise.
+        'locale',
         'ui_preferences',
         'notification_preferences',
     ];
@@ -59,6 +62,27 @@ class User extends Authenticatable
             'notification_preferences' => 'array',
             'last_seen_at' => 'datetime',
         ];
+    }
+
+    /**
+     * The language to write to this person in.
+     *
+     * Their own choice when they made one; otherwise whatever their workspace's
+     * country speaks. The column being null is not missing data — it is the
+     * statement "follow my country", which is what almost every account wants
+     * and what lets a market's default reach everyone who never opened
+     * Settings.
+     *
+     * ⚠️ Named localeCode() and not locale(): `locale` is also the column, and
+     * Eloquent resolves a missing attribute by looking for a method of the same
+     * name and demanding it return a relation — so a method named after a
+     * column throws on a model whose attribute was never loaded. Same trap as
+     * Tenant::displayTimezone().
+     */
+    public function localeCode(): string
+    {
+        return $this->locale
+            ?: ($this->tenant?->market?->default_locale ?: config('markets.default_locale'));
     }
 
     /**

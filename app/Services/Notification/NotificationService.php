@@ -4,6 +4,7 @@ namespace App\Services\Notification;
 
 use App\Enums\Notification\NotificationType;
 use App\Jobs\SendWhatsappMessageJob;
+use App\Models\User;
 use App\Services\Otp\OtpService;
 use Illuminate\Support\Facades\Log;
 
@@ -57,7 +58,12 @@ class NotificationService
         // attempt to whatsapp_message_logs either way.
         SendWhatsappMessageJob::dispatchAfterResponse(
             $to,
-            $this->render($type, $vars),
+            // In the recipient's own language, resolved from the account the
+            // caller already identified for the log. One extra read on a path
+            // that is about to queue a network call, in exchange for never
+            // again sending a Brazilian sentence to somebody who does not read
+            // one.
+            $this->render($type, $vars, $this->localeFor($userId)),
             $type->logType(),
             $userId,
         );
@@ -66,14 +72,45 @@ class NotificationService
     }
 
     /**
+     * The language to write to this recipient in, or null to leave it to the
+     * platform default.
+     *
+     * Resolved from the account the caller already names for the audit log
+     * rather than from a new argument: every sender here has the user in hand,
+     * and a locale parameter is the kind of thing the next call site forgets —
+     * silently, in Portuguese, to somebody who does not read it.
+     *
+     * Failure is swallowed on purpose. This runs inside send(), which promises
+     * never to throw, and a missing row is a reason to fall back to the default
+     * language, not to lose a customer's verification code.
+     */
+    private function localeFor(?int $userId): ?string
+    {
+        if ($userId === null) {
+            return null;
+        }
+
+        try {
+            return User::query()->with('tenant.market')->find($userId)?->localeCode();
+        } catch (\Throwable $th) {
+            Log::warning('NotificationService: could not resolve the recipient language', [
+                'user_id' => $userId,
+                'error' => $th->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
      * Interpolate {{key}} placeholders in the event's template.
      *
      * @param array<string, mixed> $vars
      */
-    public function render(NotificationType $type, array $vars = []): string
+    public function render(NotificationType $type, array $vars = [], ?string $locale = null): string
     {
         // Use the admin-configured template when present, else the default.
-        $message = NotificationConfig::template($type);
+        $message = NotificationConfig::template($type, $locale);
 
         foreach ($vars as $key => $value) {
             $message = str_replace('{{' . $key . '}}', (string) $value, $message);

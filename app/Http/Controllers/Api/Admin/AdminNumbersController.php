@@ -61,10 +61,23 @@ class AdminNumbersController extends Controller
             'status' => $row->status->value,
             'cost_cents' => $row->cost_cents,
             'price_cents' => $row->price_cents,
+            // ⚠️ Two different currencies on one row, and they have to be
+            // labelled separately. The cost is what API Way bills the platform,
+            // always in the platform's own money; the price is what the
+            // workspace was charged, in *its* market's. Printing both as reais
+            // was correct until a second country was priced, and is how a
+            // rupiah price ends up reading as forty reais on this page.
+            'cost_currency' => \App\Services\Money\MarketMoney::baseCurrency(),
+            'currency' => $row->currency ?: \App\Services\Money\MarketMoney::baseCurrency(),
             // Precomputed rather than left to the client: a margin the Back
             // Office derives and a margin the pricing class derives are two
             // numbers that will disagree the first time an override changes.
-            'margin_cents' => $row->price_cents - $row->cost_cents,
+            //
+            // Null when the two sides are not the same money: a margin is a
+            // subtraction, and subtracting rupiah from reais is not one.
+            'margin_cents' => ($row->currency ?: \App\Services\Money\MarketMoney::baseCurrency()) === \App\Services\Money\MarketMoney::baseCurrency()
+                ? $row->price_cents - $row->cost_cents
+                : null,
             'renews_at' => $row->renews_at?->toISOString(),
             'cancelled_at' => $row->cancelled_at?->toISOString(),
             'cancel_reason' => $row->cancelReason(),
@@ -80,14 +93,26 @@ class AdminNumbersController extends Controller
      */
     public function summary()
     {
-        $live = VirtualNumber::query()->live()->get(['cost_cents', 'price_cents']);
+        $live = VirtualNumber::query()->live()->get(['cost_cents', 'price_cents', 'currency']);
+        $base = \App\Services\Money\MarketMoney::baseCurrency();
+
+        // ⚠️ Revenue is scoped to the platform's own currency and the rest is
+        // reported beside it, never added in. A total that mixes currencies is
+        // not a smaller truth, it is a number that reads perfectly and is
+        // wrong — the same fault already fixed on the Revenue page.
+        $byCurrency = $live
+            ->groupBy(fn (VirtualNumber $row) => $row->currency ?: $base)
+            ->map(fn ($rows) => (int) $rows->sum('price_cents'));
 
         return response()->json([
             'data' => [
                 'configured' => ApiwayNumbersConfig::isConfigured(),
                 'live_count' => $live->count(),
+                'base_currency' => $base,
+                // What API Way bills the platform: one account, one currency.
                 'monthly_cost_cents' => (int) $live->sum('cost_cents'),
-                'monthly_revenue_cents' => (int) $live->sum('price_cents'),
+                'monthly_revenue_cents' => (int) ($byCurrency[$base] ?? 0),
+                'revenue_by_currency' => $byCurrency->except($base)->all(),
                 'pending_count' => VirtualNumber::query()
                     ->where('status', \App\Enums\Numbers\VirtualNumberStatus::Pending->value)
                     ->count(),

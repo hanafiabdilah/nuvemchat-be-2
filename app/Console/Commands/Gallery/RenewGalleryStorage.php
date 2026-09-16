@@ -139,7 +139,7 @@ class RenewGalleryStorage extends Command
 
         $notifier->notifyTenant(NotificationType::GalleryStorageRenewalNoCredit, $rental->tenant, [
             'gb' => $gb,
-            'due_date' => $rental->renews_at->format('d/m/Y'),
+            'due_date' => $rental->tenant?->formatDate($rental->renews_at) ?? '',
             'amount' => Money::format($amountCents, $rental->currency ?: $rental->tenant?->currency()),
         ]);
 

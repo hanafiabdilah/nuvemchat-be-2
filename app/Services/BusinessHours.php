@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Connection;
+use App\Models\Tenant;
 use Carbon\Carbon;
 
 /**
@@ -40,7 +41,13 @@ class BusinessHours
             return true;
         }
 
-        $tz = $config['timezone'] ?? config('app.timezone', 'UTC');
+        // The workspace's own clock when the stored config has no zone, never
+        // config('app.timezone'): that is 'UTC' here, so a connection saved
+        // before this field existed would be judged open by London's hours.
+        $tz = filled($config['timezone'] ?? null)
+            ? $config['timezone']
+            : ($connection->tenant?->displayTimezone() ?? 'UTC');
+
         $now = ($now ? $now->copy() : Carbon::now())->setTimezone($tz);
 
         $dayKey = self::DAYS[$now->dayOfWeekIso - 1]; // 1 (Mon) .. 7 (Sun)
@@ -77,8 +84,16 @@ class BusinessHours
 
     /**
      * A sensible default config used by the settings API when nothing is set yet.
+     *
+     * ⚠️ The zone used to be `config('app.timezone', 'America/Sao_Paulo')`, and
+     * that second argument never once fired: the key exists and holds 'UTC', so
+     * Laravel returned 'UTC' and the fallback was decoration. Every connection
+     * that switched service hours on therefore started in UTC, which made the
+     * offered "open 08:00–22:00" mean 05:00–19:00 in São Paulo — a bug that was
+     * live long before a second country existed, and invisible from inside the
+     * only country that existed.
      */
-    public static function defaultConfig(): array
+    public static function defaultConfig(?Tenant $tenant = null): array
     {
         $days = [];
         foreach (self::DAYS as $day) {
@@ -90,7 +105,7 @@ class BusinessHours
 
         return [
             'enabled' => false,
-            'timezone' => config('app.timezone', 'America/Sao_Paulo'),
+            'timezone' => $tenant?->displayTimezone() ?? 'UTC',
             'days' => $days,
             'away_message' => '',
         ];

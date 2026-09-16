@@ -170,7 +170,7 @@ class RenewApiwaySubscriptions extends Command
         }
 
         $notifier->notifyTenant(NotificationType::ApiwayRenewalNoCredit, $row->tenant, [
-            'due_date' => $row->expires_at->format('d/m/Y'),
+            'due_date' => $row->tenant?->formatDate($row->expires_at) ?? '',
             'amount' => Money::format($row->total_price_cents, $row->currency ?: $row->tenant?->currency()),
         ]);
 
@@ -185,7 +185,7 @@ class RenewApiwaySubscriptions extends Command
         }
 
         $notifier->notifyTenant(NotificationType::ApiwayRenewalDue, $row->tenant, [
-            'due_date' => $row->expires_at->format('d/m/Y'),
+            'due_date' => $row->tenant?->formatDate($row->expires_at) ?? '',
             'amount' => 'regularize sua assinatura',
             'quantity' => $row->quantity,
         ]);

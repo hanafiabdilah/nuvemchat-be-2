@@ -360,8 +360,14 @@ class EmailHandler implements MessageHandlerInterface, MarksMessagesAsRead
     {
         $timestamp = $message->sent_at ?: $message->created_at?->timestamp;
 
+        // The workspace's clock, not the server's. config('app.timezone') is
+        // 'UTC', so the "Em {date}, Fulano escreveu:" line that opens every
+        // quoted reply has been three hours ahead of its Brazilian sender all
+        // along — visible to the person receiving the mail, and to nobody here.
+        $timezone = $message->conversation?->connection?->tenant?->displayTimezone() ?? 'UTC';
+
         return Carbon::createFromTimestamp((int) $timestamp)
-            ->timezone(config('app.timezone'))
+            ->timezone($timezone)
             ->format('d/m/Y H:i');
     }
 

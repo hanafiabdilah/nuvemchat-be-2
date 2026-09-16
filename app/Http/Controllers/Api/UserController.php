@@ -123,9 +123,17 @@ class UserController extends Controller
     }
 
     /**
-     * Per-user UI preferences: which theme preset the app renders and whether it
-     * follows light/dark/system. Cosmetic only — kept apart from update() so the
-     * frontend can persist a single click without resending the whole profile.
+     * Per-user display preferences: theme preset, light/dark, and language.
+     *
+     * Kept apart from update() so the frontend can persist a single click
+     * without resending the whole profile — the settings page saves one control
+     * at a time, and each of these is one control.
+     *
+     * Language rides along here because it is chosen on the same screen and by
+     * the same click, but it is stored in its own column rather than in the
+     * ui_preferences blob: that blob is cosmetic and the server never reads it,
+     * whereas the language is the one preference a notification will have to
+     * consult with nobody at the screen.
      */
     public function updatePreferences(Request $request)
     {
@@ -136,13 +144,24 @@ class UserController extends Controller
             // silently ignored by the frontend fallback.
             'theme' => ['sometimes', 'string', Rule::in(['classic', 'studio'])],
             'appearance' => ['sometimes', 'string', Rule::in(['light', 'dark', 'system'])],
+            // The same list markets choose their default from, so a person can
+            // never pick a language a market could not have been launched in.
+            // Nullable is a real value: it means "follow my workspace's country
+            // again", which is the only way back once something was chosen.
+            'locale' => ['sometimes', 'nullable', 'string', Rule::in(array_keys(config('markets.locales')))],
         ]);
+
+        if (array_key_exists('locale', $validated)) {
+            $user->locale = $validated['locale'];
+            unset($validated['locale']);
+        }
 
         $user->ui_preferences = array_merge($user->ui_preferences ?? [], $validated);
         $user->save();
 
         return response()->json([
             'ui_preferences' => $user->ui_preferences,
+            'locale' => $user->locale,
         ]);
     }
 

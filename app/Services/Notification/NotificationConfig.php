@@ -121,13 +121,82 @@ class NotificationConfig
     }
 
     /**
-     * The effective message body for an event: the admin override if set and non-empty,
-     * otherwise the hardcoded default. Both use the {{placeholder}} convention.
+     * The effective message body for an event, in the recipient's language: the
+     * admin override when one exists for that language, otherwise the packaged
+     * default. Both use the {{placeholder}} convention.
      */
-    public static function template(NotificationType $type): string
+    public static function template(NotificationType $type, ?string $locale = null): string
     {
-        $custom = self::templatesMap()[$type->value] ?? null;
+        $locale = $locale ?: config('markets.default_locale');
+        $custom = self::overridesFor($type)[$locale] ?? null;
 
-        return is_string($custom) && trim($custom) !== '' ? $custom : $type->defaultTemplate();
+        return is_string($custom) && trim($custom) !== ''
+            ? $custom
+            : $type->defaultTemplate($locale);
+    }
+
+    /**
+     * The admin's overrides for one event, keyed by locale.
+     *
+     * ⚠️ A stored value that is a bare string is an override written before this
+     * setting had languages — and therefore written in the platform's own. It is
+     * claimed for that locale alone: handing a Portuguese customisation to an
+     * Indonesian reader is not honouring the admin's intent, it is undoing the
+     * translation they never knew existed.
+     *
+     * @return array<string, string>
+     */
+    private static function overridesFor(NotificationType $type): array
+    {
+        $entry = self::templatesMap()[$type->value] ?? null;
+
+        if (is_string($entry)) {
+            return [config('markets.default_locale') => $entry];
+        }
+
+        return is_array($entry) ? $entry : [];
+    }
+
+    /**
+     * Narrow what the Back Office sent to what may actually be stored: known
+     * events, known languages, non-blank bodies.
+     *
+     * Blank is dropped rather than saved because an empty override is how the
+     * editor says "use the default" — storing it would pin the event to an
+     * empty message instead. Accepts the legacy flat shape so a Back Office
+     * build that predates languages can still save.
+     *
+     * @param  array<string, mixed>  $input
+     * @return array<string, array<string, string>>
+     */
+    public static function sanitizeTemplates(array $input): array
+    {
+        $events = array_column(NotificationType::cases(), 'value');
+        $locales = array_keys(config('markets.locales'));
+        $out = [];
+
+        foreach ($input as $event => $bodies) {
+            if (! in_array($event, $events, true)) {
+                continue;
+            }
+
+            if (is_string($bodies)) {
+                $bodies = [config('markets.default_locale') => $bodies];
+            }
+
+            if (! is_array($bodies)) {
+                continue;
+            }
+
+            foreach ($bodies as $locale => $body) {
+                if (! in_array($locale, $locales, true) || ! is_string($body) || trim($body) === '') {
+                    continue;
+                }
+
+                $out[$event][$locale] = mb_substr($body, 0, 2000);
+            }
+        }
+
+        return $out;
     }
 }

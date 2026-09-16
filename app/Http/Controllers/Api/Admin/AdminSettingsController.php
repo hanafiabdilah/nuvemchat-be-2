@@ -153,6 +153,12 @@ class AdminSettingsController extends Controller
                     'event_types' => NotificationType::catalog(),
                     'events' => NotificationConfig::eventsMap(),
                     'templates' => NotificationConfig::templatesMap(),
+                    // The languages a message can be written in — the same list
+                    // a market may default to. Served rather than hard-coded in
+                    // the Back Office so opening a country in a new language
+                    // does not leave its messages uneditable.
+                    'locales' => config('markets.locales'),
+                    'default_locale' => config('markets.default_locale'),
                 ],
             ],
         ]);
@@ -239,8 +245,11 @@ class AdminSettingsController extends Controller
             'notifications.proxybr.token' => ['nullable', 'string', 'max:1024'],
             'notifications.events' => ['sometimes', 'array'],
             'notifications.events.*' => ['boolean'],
+            // Shape is checked in NotificationConfig::sanitizeTemplates rather
+            // than here: an override is now per language, and a rule set that
+            // only accepted the nested shape would reject a Back Office build
+            // that predates languages instead of saving what it meant.
             'notifications.templates' => ['sometimes', 'array'],
-            'notifications.templates.*' => ['nullable', 'string', 'max:2000'],
         ]);
 
         // `proxyhub` is the pre-rebrand payload key; still honoured for older clients.
@@ -402,12 +411,12 @@ class AdminSettingsController extends Controller
                 }
             }
             if (array_key_exists('templates', $n)) {
-                // Store only non-empty overrides; blank falls back to the enum default.
-                $templates = array_filter(
-                    $n['templates'],
-                    fn ($v) => is_string($v) && trim($v) !== '',
+                // Store only non-empty overrides, per language; blank falls back
+                // to the packaged default for that language.
+                Setting::set(
+                    NotificationConfig::KEY_TEMPLATES,
+                    json_encode(NotificationConfig::sanitizeTemplates($n['templates'])),
                 );
-                Setting::set(NotificationConfig::KEY_TEMPLATES, json_encode($templates));
             }
 
             if (array_key_exists('events', $n)) {

@@ -50,7 +50,15 @@ test('an admin can save a custom template and it is what actually gets sent', fu
             ],
         ],
     ])->assertOk()
-        ->assertJsonPath('data.notifications.templates.password_reset_otp', 'Codigo {{code}} para {{name}} ({{ttl}}min)');
+        // Stored per language now. This payload has no language in it — it is
+        // exactly what a Back Office build from before languages sends — and it
+        // is claimed for the platform's own rather than dropped or spread
+        // across all three: an override typed in Portuguese is a Portuguese
+        // override, whoever ends up reading it.
+        ->assertJsonPath(
+            'data.notifications.templates.password_reset_otp.'.config('markets.default_locale'),
+            'Codigo {{code}} para {{name}} ({{ttl}}min)',
+        );
 
     expect(app(NotificationService::class)->render(NotificationType::PasswordResetOtp, [
         'name' => 'Ana', 'code' => '654321', 'ttl' => '10',

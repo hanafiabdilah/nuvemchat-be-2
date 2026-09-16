@@ -142,7 +142,7 @@ class RenewVirtualNumbers extends Command
 
         $notifier->notifyTenant(NotificationType::VirtualNumberRenewalNoCredit, $row->tenant, [
             'msisdn' => $row->msisdn,
-            'due_date' => $row->renews_at->format('d/m/Y'),
+            'due_date' => $row->tenant?->formatDate($row->renews_at) ?? '',
             'amount' => Money::format($row->price_cents, $row->currency ?: $row->tenant?->currency()),
         ]);
 

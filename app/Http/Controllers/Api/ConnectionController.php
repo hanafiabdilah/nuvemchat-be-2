@@ -1003,10 +1003,13 @@ class ConnectionController extends Controller
      */
     public function serviceHours(int $id)
     {
-        $connection = request()->user()->tenant->connections()->findOrFail($id);
+        $tenant = request()->user()->tenant;
+        $connection = $tenant->connections()->findOrFail($id);
         $this->assertSupportsServiceHours($connection);
 
-        $config = $connection->service_hours ?: BusinessHours::defaultConfig();
+        // The tenant's own clock, so the schedule this form offers is already
+        // in the hours the business keeps rather than in UTC.
+        $config = $connection->service_hours ?: BusinessHours::defaultConfig($tenant);
 
         return response()->json([
             'data' => array_merge($config, [

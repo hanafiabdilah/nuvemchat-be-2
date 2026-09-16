@@ -25,6 +25,16 @@ class UserResource extends JsonResource
             'tenant_id' => $this->tenant_id,
             'whatsapp_number' => $this->whatsapp_number,
             'whatsapp_verified' => $this->whatsapp_verified_at !== null,
+            // The language this person picked, or null when they never did.
+            //
+            // Sent raw rather than already resolved, and the difference is the
+            // whole point: null lets the dashboard fall back to the market's
+            // language, and a resolved value could not be told apart from
+            // somebody deliberately choosing the same one. It is also a column
+            // rather than a key inside ui_preferences because that blob is
+            // cosmetic and never read by the server, while this decides what
+            // language a notification will eventually be written in.
+            'locale' => $this->locale,
             // Cosmetic UI state (theme preset + appearance) so a user's chosen
             // theme follows them to any browser/device, not just the one that set it.
             'ui_preferences' => $this->ui_preferences ?: null,

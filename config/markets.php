@@ -18,6 +18,35 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | The platform's own business day
+    |--------------------------------------------------------------------------
+    |
+    | When the daily passes run: renewal charges, due reminders, reconciliation,
+    | the stale-lead sweep, log pruning. One zone for the whole platform, and
+    | deliberately NOT one per market.
+    |
+    | Every daily pass here is a deadline pass with a window measured in days
+    | (D-7 warn, D-3 charge), so the hour inside that window changes nothing
+    | about whether the right thing happens — only about what time a reminder
+    | lands. Making it per-market would mean either a schedule entry per market,
+    | which cannot work when markets are created at runtime from the Back
+    | Office, or every command running hourly and filtering on each tenant's
+    | local hour: five commands rewritten to move a notification by a few hours.
+    |
+    | What was actually wrong was never the hour — it was that the dates inside
+    | those notifications were UTC. That is fixed at Tenant::formatDate().
+    |
+    | The known cost of keeping it global: an Indonesian owner gets the billing
+    | reminder around 19:00 local, and the stale-lead sweep runs mid-afternoon
+    | there rather than overnight. Worth revisiting when a market outside the
+    | Americas has enough workspaces for either to be noticed.
+    |
+    */
+
+    'scheduler_timezone' => env('SCHEDULER_TIMEZONE', 'America/Sao_Paulo'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Languages a market can default to
     |--------------------------------------------------------------------------
     |
@@ -31,6 +60,44 @@ return [
         'pt_BR' => 'Português (Brasil)',
         'en' => 'English',
         'id' => 'Bahasa Indonesia',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | The platform's own language
+    |--------------------------------------------------------------------------
+    |
+    | What the platform falls back to when nobody has said otherwise: a person
+    | with no chosen language whose workspace has no market, a notification
+    | whose template was never translated, an admin override written before
+    | languages existed.
+    |
+    | Deliberately not `config('app.locale')` — that one is 'en' and governs
+    | Laravel's own validation strings, which is a different question from what
+    | language this business writes to its customers in.
+    |
+    */
+
+    'default_locale' => env('DEFAULT_LOCALE', 'pt_BR'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | How a date is written, per language
+    |--------------------------------------------------------------------------
+    |
+    | A due date in a WhatsApp message is read by a person, and 05/08 is the
+    | fifth of August to a Brazilian and the eighth of May to an American. The
+    | pattern therefore belongs to the reader's language, not to the server.
+    |
+    | Indonesian writes dates the same way Portuguese does, which is why this
+    | table looked unnecessary until a third language was possible.
+    |
+    */
+
+    'date_formats' => [
+        'pt_BR' => ['date' => 'd/m/Y', 'datetime' => 'd/m/Y H:i'],
+        'id' => ['date' => 'd/m/Y', 'datetime' => 'd/m/Y H:i'],
+        'en' => ['date' => 'm/d/Y', 'datetime' => 'm/d/Y g:i A'],
     ],
 
     /*

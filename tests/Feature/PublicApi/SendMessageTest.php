@@ -30,7 +30,15 @@ it('gives every connection a random public id and shows it instead of an API key
     expect($a->public_id)->toStartWith(Connection::PUBLIC_ID_PREFIX)
         ->and(strlen($a->public_id))->toBe(strlen(Connection::PUBLIC_ID_PREFIX) + 16)
         ->and($a->public_id)->not->toBe($b->public_id)
-        ->and($a->public_id)->not->toContain((string) $a->id);
+        // ⚠️ The row id must not be reconstructable from the public one — stated
+        // as the shape an encoded id would take, and deliberately NOT as "must
+        // not contain the digits of the id". That earlier form asked a random
+        // 16-character string never to contain "1" anywhere, because the row id
+        // in this test is 1: false about a third of the time, so this test went
+        // red on roughly one full-suite run in three for no reason at all. A
+        // suffix of 16 characters drawn from [a-z0-9] being all digits has a
+        // probability around 1e-9, which is a test and not a coin flip.
+        ->and(substr($a->public_id, strlen(Connection::PUBLIC_ID_PREFIX)))->not->toMatch('/^0*\d+$/');
 
     $payload = (new ConnectionResource($a))->resolve();
 

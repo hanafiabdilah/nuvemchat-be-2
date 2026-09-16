@@ -160,7 +160,12 @@ test('email reply sends threading headers and quoted original while storing only
     expect($sentEmail->getSubject())->toBe('Re: Pedido comercial')
         ->and($sentEmail->getHeaders()->get('In-Reply-To')->getBodyAsString())->toBe('<original-message@example.com>')
         ->and($sentEmail->getHeaders()->get('References')->getBodyAsString())->toBe('<root-message@example.com> <original-message@example.com>')
-        ->and($sentEmail->getTextBody())->toContain("Nova resposta do atendente\n\nEm 15/07/2026 10:30, Cliente Teste <customer@example.com> escreveu:")
+        // 07:30, not the 10:30 stored: the quoted header is written in the
+        // workspace's own zone now, and this fixture's tenant is Brazilian
+        // (10:30 UTC = 07:30 in São Paulo). The old number was not a decision —
+        // it was config('app.timezone'), which is 'UTC', printing the raw
+        // column at every recipient of every reply this product has ever sent.
+        ->and($sentEmail->getTextBody())->toContain("Nova resposta do atendente\n\nEm 15/07/2026 07:30, Cliente Teste <customer@example.com> escreveu:")
         ->and($sentEmail->getTextBody())->toContain("> Linha original 1\n> Linha original 2");
 });
 

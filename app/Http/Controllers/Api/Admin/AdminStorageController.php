@@ -90,8 +90,21 @@ class AdminStorageController extends Controller
             ->where('status', StorageRentalStatus::Active->value)
             ->where('gb', '>', 0)
             ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
-            ->selectRaw('COUNT(*) as rentals, SUM(gb) as gb, SUM(gb * price_per_gb_cents) as monthly_cents')
+            ->selectRaw('COUNT(*) as rentals, SUM(gb) as gb')
             ->first();
+
+        // ⚠️ Summed per currency, not in one SUM. Each rental holds the money
+        // its workspace was charged in, so one total across markets adds rupiah
+        // to reais and prints a number nobody can reconcile.
+        $base = \App\Services\Money\MarketMoney::baseCurrency();
+        $monthlyByCurrency = GalleryStorageRental::query()
+            ->where('status', StorageRentalStatus::Active->value)
+            ->where('gb', '>', 0)
+            ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId))
+            ->selectRaw('currency, SUM(gb * price_per_gb_cents) as monthly_cents')
+            ->groupBy('currency')
+            ->pluck('monthly_cents', 'currency')
+            ->mapWithKeys(fn ($cents, $currency) => [$currency ?: $base => (int) $cents]);
 
         return [
             'files' => (int) ($totals->files ?? 0),
@@ -102,7 +115,11 @@ class AdminStorageController extends Controller
             // What the rented space bills every month at the price each row was
             // last charged at — not at today's list price, which is what the
             // platform *would* charge and not what it *is* charging.
-            'monthly_revenue_cents' => (int) ($rentals->monthly_cents ?? 0),
+            'base_currency' => $base,
+            'monthly_revenue_cents' => (int) ($monthlyByCurrency[$base] ?? 0),
+            'revenue_by_currency' => collect($monthlyByCurrency)->except($base)->all(),
+            // The list price is set once, centrally, in the platform's own
+            // money — every market's price is converted from it.
             'pricing' => GalleryPricing::settings(),
             'by_tenant' => $tenantId ? [] : $this->galleryByTenant(),
         ];
@@ -118,7 +135,9 @@ class AdminStorageController extends Controller
             ->limit(self::TOP_N)
             ->get();
 
-        $tenants = Tenant::with('user:id,name,email')
+        // `market` eagerly, because each row now states the currency it is
+        // billed in: without it this page fires one query per workspace listed.
+        $tenants = Tenant::with(['user:id,name,email', 'market'])
             ->whereIn('id', $rows->pluck('tenant_id'))
             ->get()
             ->keyBy('id');
@@ -144,6 +163,8 @@ class AdminStorageController extends Controller
                 'plan_gb' => $tenant ? $storage->planGb($tenant) : 0,
                 'rented_gb' => $rental?->status === StorageRentalStatus::Active ? (int) $rental->gb : 0,
                 'monthly_cents' => $rental?->status === StorageRentalStatus::Active ? $rental->monthlyCents() : 0,
+                // The money this row is in — its workspace's, not the platform's.
+                'currency' => $rental?->currency ?: ($tenant?->currency() ?? \App\Services\Money\MarketMoney::baseCurrency()),
             ];
         })->values()->all();
     }

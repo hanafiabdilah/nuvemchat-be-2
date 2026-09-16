@@ -95,6 +95,7 @@ use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
 use App\Http\Controllers\Api\V1\LeadController as V1LeadController;
 use App\Http\Controllers\Api\V1\SendMessageController;
 use App\Http\Controllers\Api\WebhookController;
+use App\Http\Controllers\Api\WorkspaceController;
 use App\Http\Middleware\V1\ApiKeyAuth;
 use Illuminate\Support\Facades\Route;
 
@@ -133,6 +134,14 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // profile update so the frontend can persist a click without resending
     // name/email/password.
     Route::put('/user/preferences', [UserController::class, 'updatePreferences']);
+    // Settings that belong to the workspace, not to the person reading it.
+    // Readable by anyone in it (the zone explains every date they are shown);
+    // changing it is gated on billing.manage, the grant that already means
+    // "may change this company's own details" and the one guarding the page
+    // this field lives on.
+    Route::get('/workspace', [WorkspaceController::class, 'show']);
+    Route::put('/workspace', [WorkspaceController::class, 'update'])
+        ->middleware('permission:billing.manage');
     // Who is allowed to interrupt this user, and from which connections. Stored
     // on the account so the choice follows them to another browser; applied by
     // the dashboard, which is the only place that knows who is looking at what.

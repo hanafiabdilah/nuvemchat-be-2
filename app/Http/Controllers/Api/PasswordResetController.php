@@ -111,7 +111,11 @@ class PasswordResetController extends Controller
         // Out-of-band heads-up: if the owner did not do this, this message is how they find out.
         $this->notifications->send(NotificationType::PasswordChanged, (string) $user->whatsapp_number, [
             'name' => $user->name,
-            'datetime' => now()->format('d/m/Y H:i'),
+            // On the workspace's clock and in its country's notation. "Changed
+            // at 14:30" is the one fact in this message a person checks against
+            // their own memory, and a UTC timestamp makes a legitimate change
+            // look like it happened while they were asleep.
+            'datetime' => $user->tenant?->formatDateTime(now()) ?: now()->format('d/m/Y H:i'),
         ], $user->id);
 
         return response()->json(['message' => 'Password updated. Please log in with your new password.']);

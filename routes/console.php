@@ -9,6 +9,11 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
+// The hour the platform keeps. One zone for every market on purpose — the
+// reasoning, and what it costs a country on the other side of the world, is
+// written out at config/markets.php.
+$platformTimezone = config('markets.scheduler_timezone');
+
 // The scheduler proving it is running at all. Everything else on this page is
 // downstream of it, so when this one goes quiet the Back Office health page can
 // say "the scheduler is down" instead of reporting nine separate failures.
@@ -21,7 +26,7 @@ Schedule::call(fn () => Heartbeat::ping('scheduler'))
 Schedule::command('instagram:refresh-tokens --days-before=7')
     ->daily()
     ->at('02:00')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->onSuccess(function () {
         info('Instagram token refresh completed successfully');
     })
@@ -104,7 +109,7 @@ Schedule::command('media:purge')
 // Generate fresh Pix charges a few days before period end (pix isn't auto-debited).
 Schedule::command('billing:pix-generate --days-before=3')
     ->dailyAt('08:00')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->onFailure(fn () => logger()->error('Pix renewal charge generation failed'));
 
 // ⚠️ Card renewal. This is the whole clock: the payment service holds a stored
@@ -121,7 +126,7 @@ Schedule::command('billing:charge-renewals --days-before=3')
 // so a fresh pix charge already exists when the reminder goes out.
 Schedule::command('billing:send-due-reminders --days-before=1')
     ->dailyAt('09:00')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->onFailure(fn () => logger()->error('Due reminder dispatch failed'));
 
 // Advance overdue subscriptions: past_due → grace → suspended; expire stale pix.
@@ -136,7 +141,7 @@ Schedule::command('billing:process-overdue')
 // deliveries that were abandoned after the retry ladder gave up.
 Schedule::command('billing:reconcile')
     ->dailyAt('03:00')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->onFailure(fn () => logger()->error('Billing reconciliation failed'));
 
 // --- API Way (ProxyBR partner) -------------------------------------------
@@ -145,7 +150,7 @@ Schedule::command('billing:reconcile')
 // unit ones a few days ahead. Runs after billing:pix-generate.
 Schedule::command('apiway:renew --days-before=3')
     ->dailyAt('08:30')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->onFailure(fn () => logger()->error('API Way renewal pass failed'));
 
 // Mirror ProxyBR's hourly revoke cron (runs at :20, after theirs likely fired):
@@ -163,7 +168,7 @@ Schedule::command('apiway:sync')
 // platform's money.
 Schedule::command('numbers:renew --days-before=3')
     ->dailyAt('08:45')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->onFailure(fn () => logger()->error('Virtual number renewal pass failed'));
 
 // Reconcile with the account: renewal dates, numbers cancelled upstream,
@@ -181,7 +186,7 @@ Schedule::command('numbers:sync')
 // is a library that stops accepting uploads until somebody tops up.
 Schedule::command('gallery:renew --days-before=3')
     ->dailyAt('08:50')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->onFailure(fn () => logger()->error('Gallery storage renewal pass failed'));
 
 // --- Broadcasts ----------------------------------------------------------
@@ -231,13 +236,13 @@ Schedule::command('leads:score')
 // agent has actually worked — see LeadSettings.
 Schedule::command('leads:close-stale')
     ->dailyAt('03:30')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->withoutOverlapping(30)
     ->onFailure(fn () => logger()->error('Stale lead sweep failed'));
 
 // Webhook delivery logs carry full lead payloads; keep a month for debugging.
 Schedule::command('webhooks:prune')
     ->dailyAt('04:10')
-    ->timezone('America/Sao_Paulo')
+    ->timezone($platformTimezone)
     ->withoutOverlapping(30)
     ->onFailure(fn () => logger()->error('Webhook delivery prune failed'));

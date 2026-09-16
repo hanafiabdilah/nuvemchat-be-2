@@ -2,6 +2,8 @@
 
 namespace App\Enums\Notification;
 
+use Illuminate\Support\Facades\Lang;
+
 /**
  * Catalog of platform-level transactional notifications (sent to tenants/owners
  * over WhatsApp). This is the single source of truth for which lifecycle events
@@ -102,33 +104,54 @@ enum NotificationType: string
     }
 
     /**
-     * Default message template. Placeholders are interpolated by
-     * NotificationService::render() / OtpService using the {{key}} convention.
+     * Default message template, in the language the recipient reads.
+     *
+     * The wording lives in `lang/{locale}/notifications.php` keyed by this
+     * enum's own value, so adding a language is a file and adding an event is a
+     * case here. It used to be a match arm per event, which was right while the
+     * platform sold in one country and became the reason an Indonesian customer
+     * received their signup code in Portuguese.
+     *
+     * ⚠️ Falls back explicitly rather than trusting the translator: a missing
+     * key makes Laravel return the key itself, and "notifications.whatsapp_otp"
+     * is a string this product would happily have sent to a customer.
      */
-    public function defaultTemplate(): string
+    public function defaultTemplate(?string $locale = null): string
     {
-        return match ($this) {
-            self::WhatsappOtp => "🔐 Seu código de verificação Pingly é *{{code}}*. Ele expira em {{ttl}} minutos. Não compartilhe este código.",
-            self::PasswordResetOtp => "🔑 Olá {{name}}, seu código para redefinir a senha da Chat Pingly é *{{code}}*. Ele expira em {{ttl}} minutos. Se não foi você que pediu, ignore esta mensagem e não compartilhe o código.",
-            self::PasswordChanged => "✅ Olá {{name}}, a senha da sua conta Chat Pingly foi alterada em {{datetime}}. Se não foi você, entre em contato com o suporte imediatamente.",
-            self::WelcomeRegistration => "Olá {{name}}! 👋 Sua conta na Chat Pingly foi criada com sucesso. Escolha um plano para começar.",
-            self::SubscriptionActivated => "Parabéns {{name}}! 🎉 Sua assinatura do plano {{plan}} está ativa. Bom trabalho!",
-            self::SubscriptionDue => "Olá {{name}}, sua assinatura {{plan}} vence em {{due_date}}. Valor: {{amount}}.",
-            self::SubscriptionPastDue => "Olá {{name}}, não identificamos o pagamento da sua assinatura {{plan}}. Regularize para evitar a suspensão.",
-            self::SubscriptionSuspended => "Olá {{name}}, sua assinatura {{plan}} foi suspensa por falta de pagamento. Reative quando quiser.",
-            self::ApiwayPurchaseActivated => "Olá {{name}}! 🎉 Sua(s) {{quantity}} instância(s) API Way já está(ão) ativa(s). Acesse o painel para parear seu WhatsApp.",
-            self::ApiwayRenewalDue => "Olá {{name}}, sua assinatura API Way vence em {{due_date}}. Valor: {{amount}}. Atenção: após o vencimento a instância é desativada permanentemente.",
-            self::ApiwayExpired => "Olá {{name}}, sua assinatura API Way expirou e a(s) instância(s) foi(ram) desativada(s) permanentemente. Contrate uma nova instância para continuar.",
-            self::ApiwayProvisionFailed => "Olá {{name}}, não conseguimos ativar sua instância API Way. Nossa equipe já foi acionada e entrará em contato.",
-            self::ApiwayProvisionRefunded => "Olá {{name}}, não conseguimos ativar sua instância API Way e devolvemos {{amount}} ao seu saldo. Você pode tentar novamente pelo painel.",
-            self::ApiwayRenewalNoCredit => "Olá {{name}}, sua assinatura API Way vence em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento: depois dele a instância é desativada permanentemente e não há como recuperá-la.",
-            self::CreditLowBalance => "Olá {{name}}, seu saldo está acabando: restam {{amount}}. Recarregue para o seu atendimento com IA e suas instâncias continuarem funcionando.",
-            self::VirtualNumberRenewalNoCredit => "Olá {{name}}, seu número {{msisdn}} renova em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento: sem saldo o número é cancelado e não pode ser recuperado.",
-            self::VirtualNumberCancelledNoCredit => "Olá {{name}}, seu número {{msisdn}} foi cancelado porque não havia saldo para a renovação. Contrate um novo número pelo painel quando quiser.",
-            self::VirtualNumberRefunded => "Olá {{name}}, não conseguimos ativar o número virtual e devolvemos {{amount}} ao seu saldo. Você pode tentar novamente pelo painel.",
-            self::GalleryStorageRenewalNoCredit => "Olá {{name}}, seu armazenamento extra da galeria ({{gb}} GB) renova em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento. Seus arquivos não serão apagados, mas novos envios para a galeria ficam bloqueados enquanto o espaço estiver acima do limite.",
-            self::GalleryStorageCancelledNoCredit => "Olá {{name}}, seu armazenamento extra da galeria ({{gb}} GB) foi encerrado por falta de saldo. Nenhum arquivo foi apagado — eles continuam disponíveis para envio. Para voltar a subir arquivos novos, recarregue e contrate o espaço novamente.",
-        };
+        $key = 'notifications.'.$this->value;
+        $fallback = config('markets.default_locale');
+        $locale = $locale ?: $fallback;
+
+        // ⚠️ Two checks, and the first is the one that is easy to miss.
+        // Lang::has() alone answers "can the translator produce something", and
+        // for an unknown locale it answers yes — Laravel walks to
+        // app.fallback_locale ('en') by itself. So a typo in a market row would
+        // not land here, it would quietly switch that country's customers to
+        // English. Asking whether we offer the language at all comes first;
+        // whether the file carries this key comes second.
+        $offered = array_key_exists($locale, config('markets.locales'));
+
+        return (string) __($key, [], $offered && Lang::has($key, $locale) ? $locale : $fallback);
+    }
+
+    /**
+     * Every language this event is written in, keyed by locale.
+     *
+     * For the Back Office editor, which has to show an admin what each language
+     * currently says before they override it — a per-locale override written
+     * against an unseen default is a guess.
+     *
+     * @return array<string, string>
+     */
+    public function defaultTemplates(): array
+    {
+        $out = [];
+
+        foreach (array_keys(config('markets.locales')) as $locale) {
+            $out[$locale] = $this->defaultTemplate($locale);
+        }
+
+        return $out;
     }
 
     /**
@@ -199,7 +222,11 @@ enum NotificationType: string
             fn (self $t) => [
                 'value' => $t->value,
                 'label' => $t->label(),
+                // Kept alongside the per-locale map so a Back Office build that
+                // predates languages still renders something real rather than
+                // an empty editor.
                 'default_template' => $t->defaultTemplate(),
+                'default_templates' => $t->defaultTemplates(),
                 'placeholders' => $t->placeholders(),
                 'required' => $t->isRequired(),
             ],

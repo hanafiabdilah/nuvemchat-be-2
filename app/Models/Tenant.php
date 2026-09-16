@@ -4,6 +4,7 @@ namespace App\Models;
 
 use App\Services\Market\MarketDocuments;
 use App\Services\Market\MarketResolver;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasManyThrough;
@@ -17,6 +18,9 @@ class Tenant extends Model
         'lead_settings',
         'entitlement_overrides',
         'audio_dictionary',
+        // Unlike market_code this one may be corrected later: a business can
+        // move, and its country's default zone is only ever a starting guess.
+        'timezone',
         'billing_name',
         'billing_document_type',
         'billing_document_number',
@@ -48,6 +52,16 @@ class Tenant extends Model
     {
         if (! $this->exists) {
             $this->market_code ??= MarketResolver::codeForRequest();
+
+            // Copied from the market rather than read through it forever. The
+            // market's zone is a starting value, not a live link: Brazil alone
+            // spans four of them, so a workspace may legitimately sit somewhere
+            // its country's default does not name — and correcting a market's
+            // default years later must not silently move the business hours and
+            // renewal dates of every workspace already inside it.
+            $this->timezone ??= Market::query()
+                ->whereKey($this->market_code)
+                ->value('default_timezone');
         } elseif ($this->isDirty('market_code')) {
             throw new LogicException(
                 "Workspace {$this->id} belongs to market {$this->getOriginal('market_code')}; a workspace never changes market."
@@ -78,6 +92,68 @@ class Tenant extends Model
     public function currency(): string
     {
         return $this->market?->currency ?: 'BRL';
+    }
+
+    /**
+     * The clock this workspace reads: its own if one was ever set, else the
+     * zone its market starts everyone at.
+     *
+     * ⚠️ Named displayTimezone() and not timezone() on purpose. `timezone` is
+     * also the column, and Eloquent resolves a missing attribute by looking for
+     * a method of the same name and demanding it return a relation — so a
+     * method named after a column throws a LogicException the moment the
+     * attribute is absent, which is exactly what a fresh `new Tenant` is. Same
+     * trap as the $connection property; currency() is only safe because
+     * `currency` is not a column here.
+     *
+     * UTC as the last resort rather than Brazil: reaching it means both the
+     * column and the market row are gone, and an obviously foreign time is far
+     * easier to notice than a wrong-but-plausible local one.
+     */
+    public function displayTimezone(): string
+    {
+        return $this->timezone ?: ($this->market?->default_timezone ?: 'UTC');
+    }
+
+    /**
+     * A date as this workspace's own day, not as the database's.
+     *
+     * Timestamps are stored in UTC, and that is not a formatting detail: a
+     * period ending 02:00 UTC on the 20th is still the 19th in São Paulo and
+     * already the 20th in Jakarta, so printing the raw column tells customers
+     * in both countries the wrong day. Every caller is filling a {{due_date}}
+     * in a notification template, which is why this returns '' and not null.
+     *
+     * The pattern comes from the market's language, not from the server: 05/08
+     * is the fifth of August to a Brazilian reader and the eighth of May to an
+     * American one, and a due date that means two things is worse than no date.
+     */
+    public function formatDate(?CarbonInterface $date): string
+    {
+        return $this->writeDate($date, 'date');
+    }
+
+    /** The same, to the minute — for "your password was changed on …". */
+    public function formatDateTime(?CarbonInterface $date): string
+    {
+        return $this->writeDate($date, 'datetime');
+    }
+
+    private function writeDate(?CarbonInterface $date, string $shape): string
+    {
+        if ($date === null) {
+            return '';
+        }
+
+        $locale = $this->market?->default_locale ?: config('markets.default_locale');
+        $formats = config('markets.date_formats');
+        $pattern = $formats[$locale][$shape]
+            ?? $formats[config('markets.default_locale')][$shape]
+            ?? 'd/m/Y';
+
+        // copy() because Carbon's timezone() mutates in place: without it this
+        // rewrites the caller's own model attribute as a side effect.
+        return $date->copy()->timezone($this->displayTimezone())->format($pattern);
     }
 
     /**
