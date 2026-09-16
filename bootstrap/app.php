@@ -81,6 +81,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'super-admin' => \App\Http\Middleware\EnsureUserIsSuperAdmin::class,
             'subscription.active' => \App\Http\Middleware\EnsureSubscriptionActive::class,
             'feature' => \App\Http\Middleware\EnsureFeatureEnabled::class,
+            'capability' => \App\Http\Middleware\EnsureMarketCapability::class,
             'whatsapp.verified' => \App\Http\Middleware\EnsureWhatsAppVerified::class,
             'messaging.window' => \App\Http\Middleware\EnsureMessagingWindowIsOpen::class,
             'platform.only' => \App\Http\Middleware\EnsurePlatformHost::class,
@@ -114,7 +115,7 @@ return Application::configure(basePath: dirname(__DIR__))
             if ($e->isPermissionError()) {
                 return response()->json([
                     'message' => 'A conta do Instagram conectada não tem as permissões necessárias para esta ação. '
-                        . 'Reconecte a conta concedendo todas as permissões pedidas.',
+                        .'Reconecte a conta concedendo todas as permissões pedidas.',
                     'code' => 'instagram_permission_required',
                 ], $e->httpStatus());
             }

@@ -179,10 +179,15 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // `apiway.` name prefix is exempt from the subscription.active gate — a
     // tenant with no plan can own and manage unit-purchased instances.
     Route::prefix('apiway')->name('apiway.')->group(function () {
-        Route::get('/catalog', [ApiwayCatalogController::class, 'catalog'])->name('catalog');
-        Route::post('/quote', [ApiwayCatalogController::class, 'quote'])->name('quote');
+        // Selling is gated on the country (ProxyBR provisions Brazilian
+        // infrastructure); owning is not. Renew, rename and cancel stay open on
+        // purpose: turning a capability off stops new sales, and stranding
+        // somebody with an instance they can neither renew nor cancel would be
+        // the platform breaking a contract it already took money for.
+        Route::get('/catalog', [ApiwayCatalogController::class, 'catalog'])->middleware('capability:apiway_instances')->name('catalog');
+        Route::post('/quote', [ApiwayCatalogController::class, 'quote'])->middleware('capability:apiway_instances')->name('quote');
         Route::get('/instances', [ApiwayInstanceController::class, 'index'])->name('instances.index');
-        Route::post('/instances', [ApiwayInstanceController::class, 'store'])->middleware('permission:billing.manage')->name('instances.store');
+        Route::post('/instances', [ApiwayInstanceController::class, 'store'])->middleware(['permission:billing.manage', 'capability:apiway_instances'])->name('instances.store');
         Route::patch('/instances/{instance}', [ApiwayInstanceController::class, 'rename'])->middleware('permission:connections.connect')->name('instances.rename');
         Route::post('/instances/{instance}/token/reveal', [ApiwayInstanceController::class, 'revealToken'])->middleware('permission:connections.connect')->name('instances.token');
         Route::post('/subscriptions/{subscription}/renew', [ApiwaySubscriptionController::class, 'renew'])->middleware('permission:billing.manage')->name('subscriptions.renew');
@@ -196,9 +201,12 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // lapses must not lock somebody out of a code arriving on a number they
     // paid for — nor out of cancelling it before it renews.
     Route::prefix('numbers')->name('numbers.')->group(function () {
-        Route::get('/catalog', [VirtualNumberController::class, 'catalog'])->middleware('permission:numbers.view')->name('catalog');
+        // The stock is Brazilian, so the catalog and the purchase are gated on
+        // the country — but a number already rented stays listed, readable and
+        // cancellable, because it keeps billing the platform until it is not.
+        Route::get('/catalog', [VirtualNumberController::class, 'catalog'])->middleware(['permission:numbers.view', 'capability:virtual_numbers'])->name('catalog');
         Route::get('/', [VirtualNumberController::class, 'index'])->middleware('permission:numbers.view')->name('index');
-        Route::post('/', [VirtualNumberController::class, 'store'])->middleware('permission:numbers.manage')->name('store');
+        Route::post('/', [VirtualNumberController::class, 'store'])->middleware(['permission:numbers.manage', 'capability:virtual_numbers'])->name('store');
         Route::get('/{id}', [VirtualNumberController::class, 'show'])->middleware('permission:numbers.view')->name('show');
         Route::post('/{id}/cancel', [VirtualNumberController::class, 'cancel'])->middleware('permission:numbers.manage')->name('cancel');
     });

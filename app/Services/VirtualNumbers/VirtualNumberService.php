@@ -3,6 +3,7 @@
 namespace App\Services\VirtualNumbers;
 
 use App\Enums\Credit\CreditTransactionType;
+use App\Enums\Market\MarketCapability;
 use App\Enums\Notification\NotificationType;
 use App\Enums\Numbers\VirtualNumberStatus;
 use App\Events\VirtualNumberSmsReceived;
@@ -14,6 +15,7 @@ use App\Models\VirtualNumber;
 use App\Models\VirtualNumberMessage;
 use App\Services\Billing\BillingNotifier;
 use App\Services\Credits\CreditService;
+use App\Services\Market\MarketCapabilities;
 use App\Services\Money\MarketMoney;
 use App\Support\Money;
 use Illuminate\Support\Carbon;
@@ -160,6 +162,15 @@ class VirtualNumberService
      */
     public function purchase(Tenant $tenant, string $ddd, string $app): VirtualNumber
     {
+        // Asked here as well as on the route: a country that does not sell these
+        // must not be able to buy one from a job, a command or a caller added
+        // later, and this is the one line every purchase passes through.
+        if (! MarketCapabilities::allowsFor($tenant, MarketCapability::VirtualNumbers->value)) {
+            throw ValidationException::withMessages([
+                'app' => 'Virtual numbers are not available in your country.',
+            ]);
+        }
+
         $catalog = $this->catalog();
         $this->assertInCatalog($catalog, $ddd, $app);
 

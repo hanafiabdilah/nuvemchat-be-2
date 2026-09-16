@@ -7,7 +7,10 @@ use App\Enums\Integration\IntegrationProvider;
 use App\Exceptions\UpstreamServiceException;
 use App\Models\FlowNode;
 use App\Models\Integration;
+use App\Models\Tenant;
+use App\Services\Market\MarketCapabilities;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Connecting, editing and removing a workspace's external apps.
@@ -26,6 +29,17 @@ class IntegrationService
      */
     public function create(int $tenantId, IntegrationProvider $provider, array $input): Integration
     {
+        // The catalog already hides what this country cannot connect, but the
+        // catalog is a display: a provider posted by hand, or left in an old
+        // tab, has to be refused where the row is actually written.
+        $market = Tenant::query()->whereKey($tenantId)->value('market_code');
+
+        if (! MarketCapabilities::allowsProvider($market, $provider)) {
+            throw ValidationException::withMessages([
+                'provider' => ["{$provider->label()} is not available in your country."],
+            ]);
+        }
+
         $integration = new Integration([
             'tenant_id' => $tenantId,
             'provider' => $provider,

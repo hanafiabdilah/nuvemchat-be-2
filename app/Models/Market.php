@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\Market\MarketStatus;
+use App\Services\Market\MarketCapabilities;
 use App\Services\Market\MarketResolver;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -29,6 +30,7 @@ class Market extends Model
         'name',
         'currency',
         'price_rounding_cents',
+        'capabilities',
         'default_locale',
         'default_timezone',
         'phone_country',
@@ -38,6 +40,7 @@ class Market extends Model
     protected $casts = [
         'status' => MarketStatus::class,
         'price_rounding_cents' => 'integer',
+        'capabilities' => 'array',
     ];
 
     /**
@@ -72,7 +75,15 @@ class Market extends Model
             }
         }
 
-        return parent::save($options);
+        $saved = parent::save($options);
+
+        if ($saved) {
+            // Capabilities are read on every purchase path and cached forever,
+            // so the row that changed them is the only thing that can say so.
+            MarketCapabilities::flush($this->code);
+        }
+
+        return $saved;
     }
 
     /** The market used when nothing else decides — see config/markets.php. */

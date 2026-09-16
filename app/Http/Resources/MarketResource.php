@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Services\Market\MarketCapabilities;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -26,6 +27,11 @@ class MarketResource extends JsonResource
             'default_locale' => $this->default_locale,
             'default_timezone' => $this->default_timezone,
             'phone_country' => $this->phone_country,
+            // What this country sells and may connect. The dashboard hides what
+            // it cannot buy rather than letting someone reach a form whose
+            // submit is refused — and hiding it in the bundle instead would mean
+            // one build per country.
+            'capabilities' => MarketCapabilities::forMarket($this->code),
         ];
     }
 }

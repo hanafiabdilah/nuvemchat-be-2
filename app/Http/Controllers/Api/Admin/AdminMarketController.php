@@ -8,6 +8,7 @@ use App\Http\Resources\Admin\AdminMarketResource;
 use App\Models\AuditLog;
 use App\Models\Market;
 use App\Models\MarketDomain;
+use App\Services\Market\MarketCapabilities;
 use App\Services\Market\MarketResolver;
 use App\Services\Money\ExchangeRates;
 use App\Support\Market\CountryCatalog;
@@ -65,6 +66,9 @@ class AdminMarketController extends Controller
                 ->map(fn (string $label, string $code) => ['code' => $code, 'label' => $label])
                 ->values(),
             'statuses' => array_column(MarketStatus::cases(), 'value'),
+            // The vocabulary of what a country may sell and connect. Same list
+            // everywhere — only the answers differ per market.
+            'capabilities' => MarketCapabilities::catalog(),
             'default_market' => MarketResolver::defaultCode(),
             'platform_hosts' => $this->platformHosts(),
         ]);
@@ -130,6 +134,8 @@ class AdminMarketController extends Controller
             'code.unique' => 'This country already has a market.',
         ]);
 
+        $validated = $this->withSanitizedCapabilities($validated);
+
         $market = Market::create([
             ...$validated,
             // A fact of the country, not a choice: derived, never accepted from
@@ -166,7 +172,7 @@ class AdminMarketController extends Controller
             ]);
         }
 
-        $market->fill($validated);
+        $market->fill($this->withSanitizedCapabilities($validated));
         $changes = $market->getDirty();
         $before = array_intersect_key($market->getRawOriginal(), $changes);
         $market->save();
@@ -386,9 +392,29 @@ class AdminMarketController extends Controller
             // converts pass through it; a price set per market is already the
             // number somebody chose.
             'price_rounding_cents' => ['sometimes', 'required', 'integer', 'min:1', 'max:100000000'],
+            // What this country sells and may connect. Only decisions are
+            // stored: a key left out falls back to the supplier's own country,
+            // so this map is a list of deviations, not a full inventory.
+            'capabilities' => ['sometimes', 'array'],
+            'capabilities.*' => ['boolean'],
             'default_locale' => ['required', 'string', Rule::in(array_keys(config('markets.locales', [])))],
             'default_timezone' => ['required', 'string', 'timezone:all'],
         ];
+    }
+
+    /**
+     * Keep only capability keys that exist, as booleans.
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array<string, mixed>
+     */
+    private function withSanitizedCapabilities(array $validated): array
+    {
+        if (array_key_exists('capabilities', $validated)) {
+            $validated['capabilities'] = MarketCapabilities::sanitize((array) $validated['capabilities']);
+        }
+
+        return $validated;
     }
 
     /**

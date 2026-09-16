@@ -4,13 +4,16 @@ namespace App\Services\Gallery;
 
 use App\Enums\Credit\CreditTransactionType;
 use App\Enums\Gallery\StorageRentalStatus;
+use App\Enums\Market\MarketCapability;
 use App\Exceptions\Billing\InsufficientCreditException;
 use App\Models\GalleryStorageRental;
 use App\Models\Tenant;
 use App\Services\Credits\CreditService;
+use App\Services\Market\MarketCapabilities;
 use App\Services\Money\MarketMoney;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Renting extra gallery space, month by month, out of the prepaid balance.
@@ -97,6 +100,18 @@ class GalleryRentalService
     {
         $gb = max(0, $gb);
         $rental = $this->activeRental($tenant);
+
+        // Only growing is a sale. This endpoint is also how somebody shrinks or
+        // cancels a rental, and a country that stops selling storage must not
+        // leave a customer stuck at 50 GB they can no longer reduce — the month
+        // they already paid for is theirs either way.
+        $growing = $rental === null ? $gb > 0 : $gb > $rental->gb;
+
+        if ($growing && ! MarketCapabilities::allowsFor($tenant, MarketCapability::GalleryStorage->value)) {
+            throw ValidationException::withMessages([
+                'gb' => 'Extra storage is not available in your country.',
+            ]);
+        }
 
         if ($rental === null) {
             return $gb === 0 ? null : $this->start($tenant, $gb);

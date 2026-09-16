@@ -53,6 +53,24 @@ DNS resolves to the server.
    the JavaScript SDK*. WhatsApp Embedded Signup runs `FB.login` on the page the
    customer is on, and Meta refuses it on an unlisted domain.
 
+## What the country sells
+
+BO → Markets → the market → **On sale here**. Two things are decided per
+country: the products bought outside a plan (virtual numbers, API Way instances,
+extra media storage) and the outside accounts a workspace may connect (payment
+gateways, nota fiscal issuers). Plans are already per country through their
+per-market prices, so they are not here.
+
+Nothing has to be ticked to open a country. A box nobody touched answers from
+the supplier's own country, so a new market starts with the global products and
+without the Brazilian ones — API Way's numbers and instances, the Pix gateways,
+Spedy. Each row says where its default came from. Tick one to sell it anyway
+(API Way instances are the usual candidate), untick one to stop selling it here.
+
+⚠️ Turning something off stops **new sales only**. A number or an instance
+already rented stays listed, keeps renewing and can still be cancelled — which
+is the point: it keeps billing the platform until somebody cancels it.
+
 ## Checking it
 
 BO → Markets → the market → *Check* next to the domain asks it

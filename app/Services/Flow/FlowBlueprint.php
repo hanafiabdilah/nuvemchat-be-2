@@ -4,8 +4,8 @@ namespace App\Services\Flow;
 
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Integration\IntegrationCategory;
-use App\Enums\Integration\IntegrationProvider;
 use App\Services\Integrations\Pixels\PixelEvents;
+use App\Services\Market\MarketCapabilities;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -51,6 +51,7 @@ class FlowBlueprint
 
     /** Portable export envelope identifiers. */
     public const EXPORT_FORMAT = 'nuvemchat.flow';
+
     public const EXPORT_VERSION = 1;
 
     /**
@@ -100,12 +101,12 @@ class FlowBlueprint
                 'body' => ['nullable', 'string'],
                 'message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
                 'attachment_url' => ['nullable', 'string'],
-                'delay' => ['nullable', 'integer', 'min:0', 'max:' . MessageNodes::MAX_DELAY_SECONDS],
-                'messages' => ['nullable', 'array', 'max:' . MessageNodes::MAX_ITEMS],
+                'delay' => ['nullable', 'integer', 'min:0', 'max:'.MessageNodes::MAX_DELAY_SECONDS],
+                'messages' => ['nullable', 'array', 'max:'.MessageNodes::MAX_ITEMS],
                 'messages.*.body' => ['nullable', 'string'],
                 'messages.*.message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
                 'messages.*.attachment_url' => ['nullable', 'string'],
-                'messages.*.delay' => ['nullable', 'integer', 'min:0', 'max:' . MessageNodes::MAX_DELAY_SECONDS],
+                'messages.*.delay' => ['nullable', 'integer', 'min:0', 'max:'.MessageNodes::MAX_DELAY_SECONDS],
             ],
             'response' => [
                 'body' => ['required', 'string'],
@@ -119,13 +120,13 @@ class FlowBlueprint
             // the Message node's old switch was. `timeout_unit` is how the
             // builder shows the limit; the engine only reads the seconds.
             'wait_response' => [
-                'message' => ['nullable', 'string', 'max:' . WaitResponseNodes::MAX_MESSAGE_LENGTH],
+                'message' => ['nullable', 'string', 'max:'.WaitResponseNodes::MAX_MESSAGE_LENGTH],
                 'variable_key' => ['nullable', 'string', 'max:255'],
-                'timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:' . WaitResponseNodes::MAX_TIMEOUT_SECONDS],
+                'timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:'.WaitResponseNodes::MAX_TIMEOUT_SECONDS],
                 'timeout_unit' => ['nullable', 'string', Rule::in(array_keys(WaitResponseNodes::TIMEOUT_UNITS))],
-                'buffer_seconds' => ['nullable', 'integer', 'min:0', 'max:' . WaitResponseNodes::MAX_BUFFER_SECONDS],
+                'buffer_seconds' => ['nullable', 'integer', 'min:0', 'max:'.WaitResponseNodes::MAX_BUFFER_SECONDS],
                 'validation' => ['nullable', 'string', Rule::in(WaitResponseNodes::VALIDATIONS)],
-                'error_message' => ['nullable', 'string', 'max:' . WaitResponseNodes::MAX_MESSAGE_LENGTH],
+                'error_message' => ['nullable', 'string', 'max:'.WaitResponseNodes::MAX_MESSAGE_LENGTH],
             ],
             // Resolved is the only status a flow may set; the reasoning is on
             // NodeType::data and FlowExecutor::executeStatusNode. Strict rather
@@ -225,7 +226,7 @@ class FlowBlueprint
                 // here: a node grows one card at a time and auto-save fires in
                 // between. The executor skips a carousel that never got there.
                 'card_button_type' => ['nullable', 'string', Rule::in(['quick_reply', 'cta_url'])],
-                'cards' => ['nullable', 'array', 'max:' . InteractiveNodes::CAROUSEL_MAX_CARDS],
+                'cards' => ['nullable', 'array', 'max:'.InteractiveNodes::CAROUSEL_MAX_CARDS],
                 'cards.*.header_type' => ['nullable', 'string', Rule::in(['image', 'video'])],
                 'cards.*.header_url' => ['nullable', 'string', 'max:2000'],
                 'cards.*.body' => ['nullable', 'string', 'max:160'],
@@ -261,7 +262,7 @@ class FlowBlueprint
                     'integer',
                     Rule::exists('integrations', 'id')
                         ->where('tenant_id', self::tenantId())
-                        ->whereIn('provider', IntegrationProvider::valuesFor(IntegrationCategory::Payment)),
+                        ->whereIn('provider', self::providersFor(IntegrationCategory::Payment)),
                 ],
                 'method' => ['nullable', 'string', Rule::in(PaymentNodes::METHODS)],
                 'amount' => ['nullable', 'string', 'max:64'],
@@ -283,7 +284,7 @@ class FlowBlueprint
                     'integer',
                     Rule::exists('integrations', 'id')
                         ->where('tenant_id', self::tenantId())
-                        ->whereIn('provider', IntegrationProvider::valuesFor(IntegrationCategory::Invoice)),
+                        ->whereIn('provider', self::providersFor(IntegrationCategory::Invoice)),
                 ],
                 'amount' => ['nullable', 'string', 'max:64'],
                 'description' => ['nullable', 'string', 'max:2000'],
@@ -309,7 +310,7 @@ class FlowBlueprint
                     'integer',
                     Rule::exists('integrations', 'id')
                         ->where('tenant_id', self::tenantId())
-                        ->whereIn('provider', IntegrationProvider::valuesFor(IntegrationCategory::Pixel)),
+                        ->whereIn('provider', self::providersFor(IntegrationCategory::Pixel)),
                 ],
                 'event' => ['nullable', 'string', Rule::in(PixelEvents::EVENTS)],
                 'custom_event_name' => ['nullable', 'string', 'regex:'.PixelEvents::CUSTOM_NAME_PATTERN],
@@ -363,6 +364,24 @@ class FlowBlueprint
     private static function tenantId(): int
     {
         return (int) (auth()->user()?->tenant_id ?? 0);
+    }
+
+    /**
+     * The providers of a category this workspace's country may connect.
+     *
+     * Narrower than the category itself, and it has to be: an integration a
+     * market cannot create is one a node here must not be able to point at. An
+     * empty list matches nothing, which is the honest answer — a country with no
+     * invoice issuer has no invoice node to configure.
+     *
+     * @return list<string>
+     */
+    private static function providersFor(IntegrationCategory $category): array
+    {
+        return MarketCapabilities::providerValuesFor(
+            auth()->user()?->tenant?->market_code,
+            $category,
+        );
     }
 
     /**
@@ -444,11 +463,13 @@ class FlowBlueprint
 
             if (! isset($keySet[$source])) {
                 $problems[] = "Edge source_key \"{$source}\" does not match any node key.";
+
                 continue;
             }
 
             if (! isset($keySet[$target])) {
                 $problems[] = "Edge target_key \"{$target}\" does not match any node key.";
+
                 continue;
             }
 
@@ -529,7 +550,7 @@ class FlowBlueprint
 
             if (! in_array($value, $allowed, true)) {
                 $shown = $value === null ? 'null' : "\"{$value}\"";
-                $list = '"' . implode('", "', $allowed) . '"';
+                $list = '"'.implode('", "', $allowed).'"';
 
                 return ["Edge from node \"{$sourceKey}\" ({$type}) has condition_value {$shown}; it must be one of {$list}."];
             }
@@ -550,7 +571,7 @@ class FlowBlueprint
 
             if (! in_array($value, $ids, true)) {
                 $shown = $value === null ? 'null' : "\"{$value}\"";
-                $list = $ids === [] ? '(none)' : '"' . implode('", "', $ids) . '"';
+                $list = $ids === [] ? '(none)' : '"'.implode('", "', $ids).'"';
 
                 return ["Edge from interactive node \"{$sourceKey}\" has condition_value {$shown}; it must be one of that node's option ids: {$list}."];
             }
@@ -963,6 +984,6 @@ class FlowBlueprint
     /** @param list<string> $values */
     private static function quoted(array $values): string
     {
-        return '"' . implode('" | "', $values) . '"';
+        return '"'.implode('" | "', $values).'"';
     }
 }

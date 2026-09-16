@@ -9,6 +9,7 @@ use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Credit\CreditTransactionType;
+use App\Enums\Market\MarketCapability;
 use App\Enums\Notification\NotificationType;
 use App\Events\ApiwaySubscriptionUpdated;
 use App\Events\ConnectionUpdated;
@@ -25,6 +26,7 @@ use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\Channels\WhatsappApiwayChannel;
 use App\Services\Credits\CreditService;
+use App\Services\Market\MarketCapabilities;
 use App\Services\Money\MarketMoney;
 use App\Support\Money;
 use Illuminate\Support\Facades\Cache;
@@ -157,6 +159,8 @@ class ApiwayService
         ?string $locationCode = null,
         int $quantity = 1,
     ): ApiwaySubscription {
+        $this->assertSoldHere($tenant);
+
         if (! $tenant->currentSubscription?->isUsable()) {
             throw ValidationException::withMessages([
                 'included' => 'An active plan subscription is required for included instances.',
@@ -195,6 +199,23 @@ class ApiwayService
     }
 
     /**
+     * Both ways of getting an instance pass through here.
+     *
+     * The plan-included path needs it as much as the paid one: a plan sold in a
+     * country that does not carry instances would otherwise hand them out for
+     * free, which is the same delivery problem without the invoice. Renewing and
+     * cancelling stay open — see routes/api.php.
+     */
+    private function assertSoldHere(Tenant $tenant): void
+    {
+        if (! MarketCapabilities::allowsFor($tenant, MarketCapability::ApiwayInstances->value)) {
+            throw ValidationException::withMessages([
+                'instances' => 'API Way instances are not available in your country.',
+            ]);
+        }
+    }
+
+    /**
      * Buy instances at catalog price, paid from the prepaid balance.
      *
      * There is no pending-payment step any more: the balance is already the
@@ -217,6 +238,8 @@ class ApiwayService
         string $cycle,
         string $locationCode,
     ): ApiwaySubscription {
+        $this->assertSoldHere($tenant);
+
         // ProxyBR is the price authority — never trust a client-provided total.
         $quote = $this->partner->quote($quantity, $locationCode, $cycle);
         // ProxyBR quotes in the platform's own money; the workspace pays in

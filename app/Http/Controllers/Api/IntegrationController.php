@@ -13,6 +13,7 @@ use App\Http\Resources\FlowPaymentResource;
 use App\Http\Resources\IntegrationResource;
 use App\Models\Integration;
 use App\Services\Integrations\IntegrationService;
+use App\Services\Market\MarketCapabilities;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
@@ -54,14 +55,27 @@ class IntegrationController extends Controller
             fn (Integration $integration) => $integration->setRelation('usedByFlows', collect($usage[$integration->id] ?? [])),
         );
 
+        // Only what this country may connect. A Pix gateway or a nota fiscal
+        // issuer offered to a workspace outside Brazil is a form that can be
+        // filled in and will never verify — and the whole category disappears
+        // with its last provider, rather than standing there empty.
+        $market = $request->user()->tenant?->market_code;
+        $providers = MarketCapabilities::providersFor($market);
+
+        $categories = array_values(array_filter(
+            IntegrationCategory::cases(),
+            fn (IntegrationCategory $category) => collect($providers)
+                ->contains(fn (IntegrationProvider $provider) => $provider->category() === $category),
+        ));
+
         return response()->json([
             'data' => IntegrationResource::collection($integrations),
-            'catalog' => array_map(fn (IntegrationProvider $provider) => $provider->toCatalog(), IntegrationProvider::cases()),
+            'catalog' => array_map(fn (IntegrationProvider $provider) => $provider->toCatalog(), $providers),
             'categories' => array_map(fn (IntegrationCategory $category) => [
                 'key' => $category->value,
                 'label' => $category->label(),
                 'description' => $category->description(),
-            ], IntegrationCategory::cases()),
+            ], $categories),
         ]);
     }
 

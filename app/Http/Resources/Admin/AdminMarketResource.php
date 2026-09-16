@@ -3,6 +3,7 @@
 namespace App\Http\Resources\Admin;
 
 use App\Models\MarketDomain;
+use App\Services\Market\MarketCapabilities;
 use App\Services\Market\MarketResolver;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -32,6 +33,12 @@ class AdminMarketResource extends JsonResource
             'default_timezone' => $this->default_timezone,
             'phone_country' => $this->phone_country,
             'status' => $this->status->value,
+            // The effective answers, and what they would be with nothing stored.
+            // The form needs both: a box ticked because an admin decided it and
+            // a box ticked because the supplier is in this country are the same
+            // picture, and only one of them is a decision somebody made.
+            'capabilities' => MarketCapabilities::forMarket($this->code),
+            'capability_defaults' => MarketCapabilities::defaultsFor($this->code),
             'is_default' => $isDefault,
             'tenants_count' => $tenants,
             'currency_locked' => $tenants > 0,
