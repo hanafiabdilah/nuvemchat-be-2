@@ -24,6 +24,9 @@ class ApiwaySubscription extends Model
         'quantity',
         'unit_price_cents',
         'total_price_cents',
+        // The balance these are debited from is the workspace's own currency,
+        // so the amounts on this row have to say which one they are in.
+        'currency',
         'location_code',
         'status',
         'expires_at',

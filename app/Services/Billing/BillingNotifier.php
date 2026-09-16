@@ -6,6 +6,7 @@ use App\Enums\Notification\NotificationType;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Services\Notification\NotificationService;
+use App\Support\Money;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -47,7 +48,13 @@ class BillingNotifier
             'name' => $owner->name,
             'plan' => $subscription->plan?->name ?? '',
             'due_date' => $subscription->current_period_end?->format('d/m/Y') ?? '',
-            'amount' => 'R$ ' . number_format($subscription->price_cents / 100, 2, ',', '.'),
+            // In the currency the subscription was sold in, not the platform's:
+            // an Indonesian workspace reading "R$ 149.000,00" for its own
+            // rupiah is the platform telling a customer the wrong price.
+            'amount' => Money::format(
+                $subscription->price_cents,
+                $subscription->currency ?: $subscription->tenant?->currency(),
+            ),
         ], $owner->id);
     }
 

@@ -28,6 +28,7 @@ class Market extends Model
         'code',
         'name',
         'currency',
+        'price_rounding_cents',
         'default_locale',
         'default_timezone',
         'phone_country',
@@ -36,7 +37,21 @@ class Market extends Model
 
     protected $casts = [
         'status' => MarketStatus::class,
+        'price_rounding_cents' => 'integer',
     ];
+
+    /**
+     * What a converted price is rounded up to here, in minor units.
+     *
+     * Only prices the platform converts pass through it (an AI run, an API Way
+     * instance, a gigabyte of storage) — a price set per market is already the
+     * number somebody chose. 1 means no rounding, which is what a market whose
+     * prices were authored in its own currency wants.
+     */
+    public function roundingCents(): int
+    {
+        return max(1, (int) ($this->price_rounding_cents ?? 1));
+    }
 
     /**
      * In save() rather than a model event, so a faked dispatcher or a quiet

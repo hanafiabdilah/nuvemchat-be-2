@@ -3,22 +3,22 @@
 namespace App\Services\TrainedAgent;
 
 use App\Enums\Billing\InvoicePurpose;
-use App\Enums\Credit\CreditTransactionType;
-use App\Exceptions\Billing\InsufficientCreditException;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\Quota;
+use App\Enums\Credit\CreditTransactionType;
 use App\Enums\TrainedAgent\HireSource;
 use App\Enums\TrainedAgent\HireStatus;
 use App\Events\TrainedAgentHireUpdated;
+use App\Exceptions\Billing\InsufficientCreditException;
 use App\Jobs\TrainedAgent\FulfillTrainedAgentHire;
 use App\Models\AiHubProviderCredential;
-use App\Services\AiTokens\AiTokenRentalService;
 use App\Models\Invoice;
 use App\Models\Tenant;
 use App\Models\TrainedAgentBlueprint;
 use App\Models\TrainedAgentHire;
 use App\Services\AiAgentHub\AiAgentHubService;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\AiTokens\AiTokenRentalService;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Credits\CreditService;
@@ -56,18 +56,28 @@ class TrainedAgentService
      * ------------------------------------------------------------------ */
 
     /**
-     * Blueprints the tenant may hire, in catalog order.
+     * Blueprints the tenant may hire, in catalog order, at their country's
+     * prices.
+     *
+     * An agent with no price for the market is not in this list: the catalog is
+     * per market and per language by decision, and a card showing the
+     * platform's home price to a country nobody priced is an offer that cannot
+     * be honoured.
      *
      * @return \Illuminate\Database\Eloquent\Collection<int, TrainedAgentBlueprint>
      */
-    public function catalog()
+    public function catalog(?Tenant $tenant = null)
     {
+        $market = $tenant?->market_code;
+
         return TrainedAgentBlueprint::query()
             ->available()
-            ->with('category')
+            ->soldIn($market)
+            ->with(['category', 'marketPrices'])
             ->orderBy('sort_order')
             ->orderBy('name')
-            ->get();
+            ->get()
+            ->map(fn (TrainedAgentBlueprint $blueprint) => $blueprint->applyMarketPrice($market));
     }
 
     /**
@@ -158,15 +168,30 @@ class TrainedAgentService
             ]);
         }
 
-        $priceCents = $useIncluded ? 0 : $blueprint->price_cents;
+        // The price for this workspace's country. Absent, the agent is not sold
+        // there at all — including through the plan allowance, because "free
+        // with your plan" is still an offer, and this catalog is per market.
+        $marketPrice = $blueprint->priceForMarket($tenant->market_code);
+
+        if ($marketPrice === null) {
+            throw ValidationException::withMessages([
+                'blueprint' => __('This agent is not available in your country.'),
+            ]);
+        }
+
+        $priceCents = $useIncluded ? 0 : $marketPrice->amount_cents;
 
         // Checked before the row exists so an unaffordable attempt leaves
         // nothing behind. The debit re-checks under its own lock.
         if ($priceCents > 0 && ! $this->credits->canAfford($tenant, $priceCents)) {
-            throw new InsufficientCreditException($this->credits->balanceCents($tenant), $priceCents);
+            throw new InsufficientCreditException(
+                $this->credits->balanceCents($tenant),
+                $priceCents,
+                $this->credits->currencyFor($tenant),
+            );
         }
 
-        $hire = DB::transaction(function () use ($tenant, $blueprint, $credential, $agentName, $useIncluded, $priceCents) {
+        $hire = DB::transaction(function () use ($tenant, $blueprint, $credential, $agentName, $useIncluded, $priceCents, $marketPrice) {
             /** @var TrainedAgentHire $hire */
             $hire = TrainedAgentHire::create([
                 'tenant_id' => $tenant->id,
@@ -177,7 +202,7 @@ class TrainedAgentService
                 'status' => HireStatus::Provisioning,
                 'agent_name' => $agentName ?: $blueprint->name,
                 'price_cents' => $priceCents,
-                'currency' => $blueprint->currency ?: 'BRL',
+                'currency' => $marketPrice->currency,
                 'blueprint_snapshot' => $blueprint->snapshot(),
             ]);
 

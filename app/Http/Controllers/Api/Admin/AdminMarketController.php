@@ -9,6 +9,7 @@ use App\Models\AuditLog;
 use App\Models\Market;
 use App\Models\MarketDomain;
 use App\Services\Market\MarketResolver;
+use App\Services\Money\ExchangeRates;
 use App\Support\Market\CountryCatalog;
 use App\Support\PlatformUrl;
 use Illuminate\Http\Client\ConnectionException;
@@ -67,6 +68,53 @@ class AdminMarketController extends Controller
             'default_market' => MarketResolver::defaultCode(),
             'platform_hosts' => $this->platformHosts(),
         ]);
+    }
+
+    /**
+     * The exchange rates prices are converted at, one per currency some market
+     * sells in.
+     *
+     * Only prices the platform did not set per country pass through them (an AI
+     * run, an API Way instance, a gigabyte of storage): a plan's price is
+     * whatever an admin typed for that country, converted from nothing.
+     */
+    public function rates(): JsonResponse
+    {
+        $rates = ExchangeRates::all();
+
+        $rows = Market::query()
+            ->orderBy('currency')
+            ->get()
+            ->groupBy(fn (Market $market) => strtoupper($market->currency))
+            ->map(fn ($markets, string $currency) => [
+                'currency' => $currency,
+                'per_usd' => $rates[$currency] ?? null,
+                'is_base' => $currency === ExchangeRates::BASE,
+                'markets' => $markets->pluck('code')->values(),
+            ])
+            ->values();
+
+        return response()->json([
+            'data' => $rows,
+            'base' => ExchangeRates::BASE,
+            'rates' => $rates,
+        ]);
+    }
+
+    public function updateRates(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'rates' => ['required', 'array'],
+            'rates.*' => ['required', 'numeric', 'min:0.000001', 'max:100000000'],
+        ]);
+
+        ExchangeRates::store($validated['rates']);
+
+        AuditLog::record('markets.rates.update', 'Updated exchange rates', [
+            'rates' => $validated['rates'],
+        ]);
+
+        return $this->rates();
     }
 
     public function store(Request $request)
@@ -334,6 +382,10 @@ class AdminMarketController extends Controller
         return [
             'name' => ['required', 'string', 'max:100'],
             'currency' => ['required', 'string', Rule::in(CountryCatalog::currencies())],
+            // Minor units, so 100000 is Rp 1.000. Only prices the platform
+            // converts pass through it; a price set per market is already the
+            // number somebody chose.
+            'price_rounding_cents' => ['sometimes', 'required', 'integer', 'min:1', 'max:100000000'],
             'default_locale' => ['required', 'string', Rule::in(array_keys(config('markets.locales', [])))],
             'default_timezone' => ['required', 'string', 'timezone:all'],
         ];

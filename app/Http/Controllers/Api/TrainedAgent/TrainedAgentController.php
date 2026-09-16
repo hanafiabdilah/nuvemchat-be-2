@@ -39,7 +39,7 @@ class TrainedAgentController extends Controller
             ->get();
 
         return response()->json([
-            'data' => TrainedAgentCatalogResource::collection($this->service->catalog()),
+            'data' => TrainedAgentCatalogResource::collection($this->service->catalog($tenant)),
             'categories' => TrainedAgentCategoryResource::collection($categories),
             'hires' => TrainedAgentHireResource::collection($this->service->hires($tenant)),
             'usage' => $this->service->usageSummary($tenant),

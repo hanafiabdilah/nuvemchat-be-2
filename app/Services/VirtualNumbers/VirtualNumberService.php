@@ -14,6 +14,8 @@ use App\Models\VirtualNumber;
 use App\Models\VirtualNumberMessage;
 use App\Services\Billing\BillingNotifier;
 use App\Services\Credits\CreditService;
+use App\Services\Money\MarketMoney;
+use App\Support\Money;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -99,7 +101,7 @@ class VirtualNumberService
      *
      * @return array{apps: list<array{id: string, label: string, price_cents: int}>, regions: array<string, string>, currency: string}
      */
-    public function tenantCatalog(): array
+    public function tenantCatalog(?Tenant $tenant = null): array
     {
         $catalog = $this->catalog();
         $costCents = (int) ($catalog['price_cents'] ?? 0);
@@ -116,21 +118,30 @@ class VirtualNumberService
             $apps[] = [
                 'id' => $id,
                 'label' => (string) ($app['label'] ?? $id),
-                'price_cents' => NumberPricing::saleCents($id, $costCents),
+                'price_cents' => $this->priceFor($id, $tenant),
             ];
         }
 
         return [
             'apps' => $apps,
             'regions' => $catalog['regions'] ?? [],
-            'currency' => $catalog['currency'] ?? 'BRL',
+            // The money the tenant actually pays in — their balance's, not API
+            // Way's. The upstream cost is nobody's business but ours.
+            'currency' => $tenant !== null
+                ? $this->credits->currencyFor($tenant)
+                : ($catalog['currency'] ?? 'BRL'),
         ];
     }
 
-    /** What one month of this app costs the tenant, priced from the live catalog. */
-    public function priceFor(string $app): int
+    /**
+     * What one month of this app costs the tenant, priced from the live catalog
+     * and converted into their own currency.
+     */
+    public function priceFor(string $app, ?Tenant $tenant = null): int
     {
-        return NumberPricing::saleCents($app, (int) ($this->catalog()['price_cents'] ?? 0));
+        $sale = NumberPricing::saleCents($app, (int) ($this->catalog()['price_cents'] ?? 0));
+
+        return $tenant === null ? $sale : MarketMoney::orBase($sale, $tenant);
     }
 
     // --- Purchase ----------------------------------------------------------
@@ -143,9 +154,9 @@ class VirtualNumberService
      * `refundUndelivered()` — and it is what keeps the invariant the rest of the
      * platform relies on: nothing is provisioned that has not been paid for.
      *
-     * @throws InsufficientCreditException  balance will not cover the month
-     * @throws ValidationException          app/DDD not in the catalog
-     * @throws ApiwayNumbersException       upstream refused or is unreachable
+     * @throws InsufficientCreditException balance will not cover the month
+     * @throws ValidationException app/DDD not in the catalog
+     * @throws ApiwayNumbersException upstream refused or is unreachable
      */
     public function purchase(Tenant $tenant, string $ddd, string $app): VirtualNumber
     {
@@ -153,7 +164,7 @@ class VirtualNumberService
         $this->assertInCatalog($catalog, $ddd, $app);
 
         $costCents = (int) ($catalog['price_cents'] ?? 0);
-        $priceCents = NumberPricing::saleCents($app, $costCents);
+        $priceCents = $this->priceFor($app, $tenant);
 
         if ($priceCents <= 0) {
             throw ValidationException::withMessages([
@@ -165,7 +176,11 @@ class VirtualNumberService
         // unaffordable attempt leaves no row behind; the one under the lock is
         // the gate two simultaneous purchases cannot both slip past.
         if (! $this->credits->canAfford($tenant, $priceCents)) {
-            throw new InsufficientCreditException($this->credits->balanceCents($tenant), $priceCents);
+            throw new InsufficientCreditException(
+                $this->credits->balanceCents($tenant),
+                $priceCents,
+                $this->credits->currencyFor($tenant),
+            );
         }
 
         $row = $tenant->virtualNumbers()->create([
@@ -173,9 +188,11 @@ class VirtualNumberService
             'ddd' => $ddd,
             'region' => $catalog['regions'][$ddd] ?? null,
             'status' => VirtualNumberStatus::Pending,
+            // Cost stays in the platform's money (it is what API Way charges
+            // us); price and currency are what the customer paid.
             'cost_cents' => $costCents,
             'price_cents' => $priceCents,
-            'currency' => $catalog['currency'] ?? 'BRL',
+            'currency' => $this->credits->currencyFor($tenant),
         ]);
 
         try {
@@ -280,12 +297,12 @@ class VirtualNumberService
      * waits for `numbers:sync`.
      *
      * @return \Throwable|null what the caller should raise, or null when the
-     *                          number turned out to exist and the purchase
-     *                          stands. A returned exception is not always the
-     *                          one passed in: once the charge is back,
-     *                          "unavailable" and "unavailable, and your money is
-     *                          back" are different things to be told by a page
-     *                          showing a debited balance.
+     *                         number turned out to exist and the purchase
+     *                         stands. A returned exception is not always the
+     *                         one passed in: once the charge is back,
+     *                         "unavailable" and "unavailable, and your money is
+     *                         back" are different things to be told by a page
+     *                         showing a debited balance.
      */
     protected function settleUnconfirmed(VirtualNumber $row, \Throwable $e): ?\Throwable
     {
@@ -436,7 +453,7 @@ class VirtualNumberService
 
         if ($reversal !== null) {
             $this->notifier->notifyTenant(NotificationType::VirtualNumberRefunded, $row->tenant, [
-                'amount' => $this->money(abs((int) $reversal->amount_cents)),
+                'amount' => $this->money(abs((int) $reversal->amount_cents), $reversal->currency ?: $row->currency),
             ]);
         }
     }
@@ -458,7 +475,9 @@ class VirtualNumberService
     public function chargeRenewal(VirtualNumber $row): bool
     {
         $costCents = (int) ($this->catalog()['price_cents'] ?? $row->cost_cents);
-        $priceCents = NumberPricing::saleCents($row->app, $costCents);
+        $priceCents = $row->tenant === null
+            ? NumberPricing::saleCents($row->app, $costCents)
+            : $this->priceFor($row->app, $row->tenant);
 
         if ($priceCents <= 0) {
             $priceCents = $row->price_cents;
@@ -923,9 +942,16 @@ class VirtualNumberService
         return $app;
     }
 
-    protected function money(int $cents): string
+    /**
+     * An amount as the workspace reading it writes money.
+     *
+     * The currency is passed rather than assumed: this text goes into a
+     * WhatsApp message, and "R$ 149.000,00" in front of an Indonesian customer
+     * is the platform stating a price that does not exist.
+     */
+    protected function money(int $cents, ?string $currency = null): string
     {
-        return 'R$ '.number_format($cents / 100, 2, ',', '.');
+        return Money::format($cents, $currency ?: MarketMoney::baseCurrency());
     }
 
     protected function trimOrNull(mixed $value, ?int $max = null): ?string

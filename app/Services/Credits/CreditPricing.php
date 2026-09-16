@@ -5,6 +5,8 @@ namespace App\Services\Credits;
 use App\Models\AiModelPrice;
 use App\Models\Setting;
 use App\Services\AiTokens\KnownModelPrices;
+use App\Services\Money\ExchangeRates;
+use App\Services\Money\MarketMoney;
 
 /**
  * What the balance costs to fill and what spending it buys — every commercial
@@ -38,9 +40,13 @@ class CreditPricing
     // miss and fall back to config — to fix a prefix no reader of the product
     // ever sees.
     public const KEY_MARKUP_PCT = 'ai_credits.markup_pct';
+
     public const KEY_USD_BRL_RATE = 'ai_credits.usd_brl_rate';
+
     public const KEY_FALLBACK_RUN_CENTS = 'ai_credits.fallback_run_cents';
+
     public const KEY_MIN_TOPUP_CENTS = 'ai_credits.min_topup_cents';
+
     public const KEY_LOW_BALANCE_CENTS = 'ai_credits.low_balance_cents';
 
     /**
@@ -50,6 +56,7 @@ class CreditPricing
      * to be read as one.
      */
     private const EXAMPLE_INPUT_TOKENS = 2000;
+
     private const EXAMPLE_OUTPUT_TOKENS = 300;
 
     /** Markup on the provider's cost, in percent. */
@@ -69,22 +76,55 @@ class CreditPricing
         return $rate > 0 ? $rate : (float) config('ai.credits.usd_brl_rate', 5.60);
     }
 
-    /** What a run costs when the hub reports no cost at all. */
-    public static function fallbackRunCents(): int
+    /**
+     * What a run costs when the hub reports no cost at all.
+     *
+     * The three amounts below are typed once, in the platform's own currency,
+     * and converted for a workspace that holds another: a floor and a warning
+     * threshold are commercial numbers, not per-country decisions, and asking
+     * an admin to restate each of them per market is how they drift apart.
+     */
+    public static function fallbackRunCents(?string $currency = null): int
     {
-        return max(0, (int) self::number(self::KEY_FALLBACK_RUN_CENTS, 'fallback_run_cents', 5));
+        return self::inCurrency(
+            max(0, (int) self::number(self::KEY_FALLBACK_RUN_CENTS, 'fallback_run_cents', 5)),
+            $currency,
+        );
     }
 
     /** Smallest top-up we will issue a Pix for. */
-    public static function minTopupCents(): int
+    public static function minTopupCents(?string $currency = null): int
     {
-        return max(1, (int) self::number(self::KEY_MIN_TOPUP_CENTS, 'min_topup_cents', 1000));
+        return max(1, self::inCurrency(
+            max(1, (int) self::number(self::KEY_MIN_TOPUP_CENTS, 'min_topup_cents', 1000)),
+            $currency,
+        ));
     }
 
     /** Balance under which the workspace is warned it is about to lose its AI. */
-    public static function lowBalanceCents(): int
+    public static function lowBalanceCents(?string $currency = null): int
     {
-        return max(0, (int) self::number(self::KEY_LOW_BALANCE_CENTS, 'low_balance_cents', 500));
+        return self::inCurrency(
+            max(0, (int) self::number(self::KEY_LOW_BALANCE_CENTS, 'low_balance_cents', 500)),
+            $currency,
+        );
+    }
+
+    /**
+     * A platform amount in another currency, or unchanged when it is already
+     * that one — or when no rate exists, because a floor nobody can meet and a
+     * warning that never fires are both worse than an approximate number.
+     */
+    private static function inCurrency(int $cents, ?string $currency): int
+    {
+        $base = MarketMoney::baseCurrency();
+        $target = strtoupper($currency ?: $base);
+
+        if ($target === strtoupper($base)) {
+            return $cents;
+        }
+
+        return ExchangeRates::convert($cents, $base, $target) ?? $cents;
     }
 
     /**
@@ -149,16 +189,34 @@ class CreditPricing
      *
      * @return array{cents: int, cost_usd: float|null, rate: float, markup_pct: float, estimated: bool}
      */
-    public static function priceRun(?float $costUsd, ?string $provider = null, ?string $model = null): array
-    {
-        $rate = self::usdBrlRate();
+    public static function priceRun(
+        ?float $costUsd,
+        ?string $provider = null,
+        ?string $model = null,
+        ?string $currency = null,
+    ): array {
+        $currency = strtoupper($currency ?: MarketMoney::baseCurrency());
+        $rate = ExchangeRates::perUsd($currency);
+
+        // No rate for the workspace's currency is a misconfiguration, not a
+        // reason to hand out free AI: the run already happened and the provider
+        // already charged for it. Priced at the home rate instead, and said so
+        // loudly enough for the caller to log it.
+        $rateMissing = $rate <= 0;
+
+        if ($rateMissing) {
+            $rate = ExchangeRates::perUsd(MarketMoney::baseCurrency());
+        }
+
         $markup = self::markupFor($provider, $model);
 
         if ($costUsd === null || $costUsd <= 0) {
             return [
-                'cents' => self::fallbackRunCents(),
+                'cents' => self::fallbackRunCents($currency),
                 'cost_usd' => $costUsd,
                 'rate' => $rate,
+                'currency' => $currency,
+                'rate_missing' => $rateMissing,
                 'markup_pct' => $markup,
                 'estimated' => true,
             ];
@@ -168,12 +226,14 @@ class CreditPricing
         // 0.02 × 5 × 1.5 is 0.15000000000000002 in binary floating point, and
         // ceiling that gives 16 cents instead of 15. Without this every single
         // price would quietly carry an extra cent it cannot justify.
-        $brl = round($costUsd * $rate * (1 + $markup / 100), 6);
+        $amount = round($costUsd * $rate * (1 + $markup / 100), 6);
 
         return [
-            'cents' => max(1, (int) ceil(round($brl * 100, 6))),
+            'cents' => max(1, (int) ceil(round($amount * 100, 6))),
             'cost_usd' => $costUsd,
             'rate' => $rate,
+            'currency' => $currency,
+            'rate_missing' => $rateMissing,
             'markup_pct' => $markup,
             'estimated' => false,
         ];
@@ -200,9 +260,10 @@ class CreditPricing
      *
      * @return list<array{provider: string, model: string, label: ?string, input_cents_per_1m: int, output_cents_per_1m: int, example_reply_cents: int}>
      */
-    public static function priceList(): array
+    public static function priceList(?string $currency = null): array
     {
-        $rate = self::usdBrlRate();
+        $currency = strtoupper($currency ?: MarketMoney::baseCurrency());
+        $rate = ExchangeRates::perUsd($currency) ?: ExchangeRates::perUsd(MarketMoney::baseCurrency());
         $platformMarkup = self::markupPct();
 
         return AiModelPrice::query()
@@ -255,7 +316,7 @@ class CreditPricing
      * @param  list<string>  $providers
      * @return list<array{provider: string, model: string, label: ?string, input_cents_per_1m: ?int, output_cents_per_1m: ?int, example_reply_cents: ?int, priced: bool}>
      */
-    public static function rentableModels(array $providers): array
+    public static function rentableModels(array $providers, ?string $currency = null): array
     {
         $wanted = array_map('strtoupper', $providers);
 
@@ -263,10 +324,12 @@ class CreditPricing
             return [];
         }
 
-        $priced = collect(self::priceList())
-            ->keyBy(fn (array $row) => strtoupper($row['provider']) . '|' . strtolower($row['model']));
+        $currency = strtoupper($currency ?: MarketMoney::baseCurrency());
 
-        $rate = self::usdBrlRate();
+        $priced = collect(self::priceList($currency))
+            ->keyBy(fn (array $row) => strtoupper($row['provider']).'|'.strtolower($row['model']));
+
+        $rate = ExchangeRates::perUsd($currency) ?: ExchangeRates::perUsd(MarketMoney::baseCurrency());
         $platformMarkup = self::markupPct();
         $rows = [];
 
@@ -288,7 +351,7 @@ class CreditPricing
             $inputPerM = (float) $model['input'] * $factor;
             $outputPerM = (float) $model['output'] * $factor;
 
-            $rows[$provider . '|' . strtolower($model['id'])] = [
+            $rows[$provider.'|'.strtolower($model['id'])] = [
                 'provider' => $provider,
                 'model' => $model['id'],
                 'label' => $model['name'],

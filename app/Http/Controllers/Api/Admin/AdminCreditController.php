@@ -4,10 +4,10 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Enums\Credit\CreditTransactionType;
 use App\Http\Controllers\Controller;
-use App\Models\CreditTransaction;
-use App\Models\CreditWallet;
 use App\Models\AiModelPrice;
 use App\Models\AuditLog;
+use App\Models\CreditTransaction;
+use App\Models\CreditWallet;
 use App\Models\Tenant;
 use App\Services\Credits\CreditPricing;
 use App\Services\Credits\CreditService;
@@ -118,7 +118,7 @@ class AdminCreditController extends Controller
 
         AuditLog::record(
             'credit.pricing_updated',
-            'Changed: ' . implode(', ', array_keys($validated)),
+            'Changed: '.implode(', ', array_keys($validated)),
             ['before' => $before, 'after' => CreditPricing::settings()],
             $request->user(),
         );
@@ -212,7 +212,7 @@ class AdminCreditController extends Controller
 
         AuditLog::record(
             'credit.model_priced',
-            "{$price->provider} {$price->model}: markup " . ($price->markup_pct ?? 'default'),
+            "{$price->provider} {$price->model}: markup ".($price->markup_pct ?? 'default'),
             $price->only(['provider', 'model', 'markup_pct', 'input_usd_per_1m', 'output_usd_per_1m', 'is_listed']),
             $request->user(),
         );
@@ -282,7 +282,7 @@ class AdminCreditController extends Controller
                 'balance_after_cents' => $t->balance_after_cents,
                 'description' => $t->description,
                 'cost_usd' => $t->cost_usd,
-                'usd_brl_rate' => $t->usd_brl_rate,
+                'usd_rate' => $t->usd_rate,
                 'markup_pct' => $t->markup_pct,
                 'estimated' => (bool) ($t->meta['estimated'] ?? false),
                 'ai_hub_run_id' => $t->ai_hub_run_id,
@@ -323,7 +323,7 @@ class AdminCreditController extends Controller
 
         AuditLog::record(
             'credit.adjusted',
-            "Tenant #{$tenant->id}: " . $validated['amount_cents'] . ' cents — ' . $validated['reason'],
+            "Tenant #{$tenant->id}: ".$validated['amount_cents'].' cents — '.$validated['reason'],
             [
                 'tenant_id' => $tenant->id,
                 'amount_cents' => (int) $validated['amount_cents'],

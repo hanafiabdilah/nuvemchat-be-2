@@ -10,6 +10,7 @@ use App\Services\Credits\CreditService;
 use App\Services\Gallery\GalleryPricing;
 use App\Services\Gallery\GalleryRentalService;
 use App\Services\Gallery\GalleryStorage;
+use App\Services\Money\MarketMoney;
 use Illuminate\Http\Request;
 
 /**
@@ -45,7 +46,7 @@ class GalleryStorageController extends Controller
     public function quote(Request $request)
     {
         $validated = $request->validate([
-            'gb' => ['required', 'integer', 'min:0', 'max:' . GalleryPricing::maxRentGb()],
+            'gb' => ['required', 'integer', 'min:0', 'max:'.GalleryPricing::maxRentGb()],
         ]);
 
         $tenant = $request->user()->tenant;
@@ -71,7 +72,7 @@ class GalleryStorageController extends Controller
     public function update(Request $request)
     {
         $validated = $request->validate([
-            'gb' => ['required', 'integer', 'min:0', 'max:' . GalleryPricing::maxRentGb()],
+            'gb' => ['required', 'integer', 'min:0', 'max:'.GalleryPricing::maxRentGb()],
         ]);
 
         $gb = (int) $validated['gb'];
@@ -139,7 +140,13 @@ class GalleryStorageController extends Controller
 
         return [
             'storage' => $this->storage->summary($tenant),
-            'pricing' => GalleryPricing::settings(),
+            // Priced in the workspace's own money, like everything else it is
+            // charged: the page states a price and the balance it comes out of,
+            // and two currencies on one screen cannot be reconciled by anyone.
+            'pricing' => GalleryPricing::settings() + [
+                'price_per_gb_cents' => MarketMoney::orBase(GalleryPricing::pricePerGbCents(), $tenant),
+            ],
+            'currency' => $this->credits->currencyFor($tenant),
             'balance_cents' => $this->credits->balanceCents($tenant),
             'rental' => $rental === null ? null : [
                 'gb' => $rental->gb,

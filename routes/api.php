@@ -934,6 +934,10 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         Route::middleware('permission:bo.markets.manage')->group(function () {
             Route::get('/markets', [AdminMarketController::class, 'index']);
             Route::get('/markets/meta', [AdminMarketController::class, 'meta']);
+            // Declared before /markets/{market}: without this, a PUT to
+            // "rates" would be read as an edit of a market with that code.
+            Route::get('/markets/rates', [AdminMarketController::class, 'rates']);
+            Route::put('/markets/rates', [AdminMarketController::class, 'updateRates']);
             Route::post('/markets', [AdminMarketController::class, 'store']);
             Route::put('/markets/{market}', [AdminMarketController::class, 'update']);
             Route::delete('/markets/{market}', [AdminMarketController::class, 'destroy']);
@@ -951,6 +955,9 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
 
         // Trained agent catalog — categories, blueprints, and who took what.
         Route::middleware('permission:bo.trained-agents.manage')->group(function () {
+            // Before the {blueprint} routes, like "reorder" below: "meta" is
+            // not a blueprint id.
+            Route::get('/trained-agents/meta', [AdminTrainedAgentController::class, 'meta']);
             Route::get('/trained-agents/categories', [AdminTrainedAgentController::class, 'categories']);
             Route::post('/trained-agents/categories', [AdminTrainedAgentController::class, 'storeCategory']);
             // Ordering is dragged, not typed. Declared before the {blueprint}

@@ -3,13 +3,14 @@
 namespace App\Http\Controllers\Api\Credits;
 
 use App\Http\Controllers\Controller;
-use App\Http\Resources\Credit\CreditTransactionResource;
 use App\Http\Resources\Billing\InvoiceResource;
+use App\Http\Resources\Credit\CreditTransactionResource;
 use App\Models\CreditTransaction;
-use App\Services\Credits\CreditPricing;
-use App\Services\Credits\CreditService;
 use App\Services\Billing\BillingService;
 use App\Services\Connection\Apiway\ApiwayService;
+use App\Services\Credits\CreditPricing;
+use App\Services\Credits\CreditService;
+use App\Services\Money\ExchangeRates;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -42,21 +43,32 @@ class CreditController extends Controller
             ->limit(100)
             ->get();
 
+        $currency = $wallet->currency;
+
         return response()->json([
             'data' => [
                 'balance_cents' => $wallet->balance_cents,
-                'currency' => $wallet->currency,
+                'currency' => $currency,
                 // Straight from CreditPricing, never from config: the floor
                 // printed on the page has to be the floor the API enforces, or
                 // a customer is told one number and refused for another. The
                 // markup and rate are published for the same reason — a first
                 // top-up with no stated price is a purchase in the dark.
-            ] + CreditPricing::settings(),
+                //
+                // Every amount here is converted into the balance's own
+                // currency; the rate published is this workspace's own, per
+                // dollar — not the platform's home one.
+                'markup_pct' => CreditPricing::markupPct(),
+                'usd_rate' => ExchangeRates::perUsd($currency),
+                'fallback_run_cents' => CreditPricing::fallbackRunCents($currency),
+                'min_topup_cents' => CreditPricing::minTopupCents($currency),
+                'low_balance_cents' => CreditPricing::lowBalanceCents($currency),
+            ],
             // What each model costs, in the currency the balance is held in.
             // Shipped with the balance rather than behind its own endpoint
             // because "how long will R$50 last me" is the question the page
             // exists to answer, and neither half answers it alone.
-            'models' => CreditPricing::priceList(),
+            'models' => CreditPricing::priceList($currency),
             'transactions' => CreditTransactionResource::collection($transactions),
         ]);
     }
@@ -77,16 +89,17 @@ class CreditController extends Controller
     {
         $tenant = $request->user()->tenant;
         $balance = $this->credits->balanceCents($tenant);
+        $currency = $this->credits->currencyFor($tenant);
 
         $atRisk = $apiway->renewalsAtRisk($tenant);
 
         return response()->json([
             'data' => [
                 'balance_cents' => $balance,
-                'currency' => 'BRL',
+                'currency' => $currency,
                 // Only meaningful once there has been money to run low on: a
                 // workspace that has never topped up is not "running out".
-                'low_balance' => $balance > 0 && $balance < CreditPricing::lowBalanceCents(),
+                'low_balance' => $balance > 0 && $balance < CreditPricing::lowBalanceCents($currency),
                 'renewals_at_risk' => [
                     'count' => $atRisk->count(),
                     'instances' => (int) $atRisk->sum('quantity'),
@@ -107,7 +120,8 @@ class CreditController extends Controller
      */
     public function topup(Request $request): JsonResponse
     {
-        $min = CreditPricing::minTopupCents();
+        // In the workspace's own currency, like the floor its screen printed.
+        $min = CreditPricing::minTopupCents($this->credits->currencyFor($request->user()->tenant));
 
         $validated = $request->validate([
             'amount_cents' => ['required', 'integer', "min:{$min}", 'max:10000000'],

@@ -9,6 +9,7 @@ use App\Services\Credits\CreditService;
 use App\Services\Gallery\GalleryPricing;
 use App\Services\Gallery\GalleryRentalService;
 use App\Support\Heartbeat;
+use App\Support\Money;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -139,7 +140,7 @@ class RenewGalleryStorage extends Command
         $notifier->notifyTenant(NotificationType::GalleryStorageRenewalNoCredit, $rental->tenant, [
             'gb' => $gb,
             'due_date' => $rental->renews_at->format('d/m/Y'),
-            'amount' => 'R$ '.number_format($amountCents / 100, 2, ',', '.'),
+            'amount' => Money::format($amountCents, $rental->currency ?: $rental->tenant?->currency()),
         ]);
 
         $rental->forceFill(['renewal_reminder_sent_at' => now()])->save();

@@ -35,6 +35,19 @@ class TrainedAgentBlueprintResource extends JsonResource
             'training_examples' => $this->training_examples ?? [],
             'price_cents' => $this->price_cents,
             'currency' => $this->currency,
+            // What it costs in each country, and — by being listed at all —
+            // where it is on sale. Empty means nowhere.
+            'prices' => $this->whenLoaded(
+                'marketPrices',
+                fn () => $this->marketPrices
+                    ->sortBy('market_code')
+                    ->map(fn ($price) => [
+                        'market_code' => $price->market_code,
+                        'amount_cents' => $price->amount_cents,
+                        'currency' => $price->currency,
+                    ])
+                    ->values(),
+            ),
             'is_active' => $this->is_active,
             'is_public' => $this->is_public,
             'sort_order' => $this->sort_order,

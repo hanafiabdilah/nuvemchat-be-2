@@ -11,12 +11,12 @@ use App\Events\SubscriptionUpdated;
 use App\Exceptions\Billing\MissingBillingIdentityException;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
 use App\Models\Admin;
+use App\Models\ApiwaySubscription;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
-use App\Models\ApiwaySubscription;
 use App\Services\Billing\PaymentService\PaymentServiceClient;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditService;
@@ -73,6 +73,15 @@ class BillingService
      */
     public function subscribe(Tenant $tenant, Plan $plan, PaymentMethod $method, array $opts): Subscription
     {
+        // Refused here rather than priced at the platform's own number: a plan
+        // with no price for this country was never offered to this customer,
+        // and charging them anything for it would be a price nobody set.
+        if (! $plan->isSoldIn($tenant->market_code)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'plan_id' => __('This plan is not available in your country.'),
+            ]);
+        }
+
         return match ($method) {
             PaymentMethod::Card => $this->subscribeWithCard($tenant, $plan, $opts),
             PaymentMethod::Pix => $this->subscribeWithPix($tenant, $plan, $opts),
@@ -105,7 +114,9 @@ class BillingService
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Card,
             'amount_cents' => $subscription->price_cents,
-            'currency' => $plan->currency ?? 'BRL',
+            // From the subscription, which froze both halves of the price when
+            // it was created — see createPendingSubscription().
+            'currency' => $subscription->currency ?: ($plan->currency ?? 'BRL'),
             'period_start' => $subscription->current_period_start,
             'period_end' => $periodEnd,
             'order_reference' => $this->orderReference($subscription, $subscription->current_period_start),
@@ -202,7 +213,9 @@ class BillingService
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Pix,
             'amount_cents' => $subscription->price_cents,
-            'currency' => $plan?->currency ?? 'BRL',
+            // The snapshot taken when the workspace subscribed, not today's
+            // plan: the price is frozen, so its unit has to be frozen with it.
+            'currency' => $subscription->currency ?: ($plan?->currency ?? 'BRL'),
             'period_start' => $periodStart,
             'period_end' => $periodEnd,
             'due_date' => $periodEnd?->toDateString(),
@@ -266,7 +279,9 @@ class BillingService
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Pix,
             'amount_cents' => $amountCents,
-            'currency' => 'BRL',
+            // The balance this tops up is in the workspace's own currency, so
+            // the charge that fills it has to be too.
+            'currency' => $tenant->currency(),
             'due_date' => $expiresAt->toDateString(),
             'idempotency_key' => (string) Str::uuid(),
         ]);
@@ -279,7 +294,7 @@ class BillingService
             $response = $this->payments->createPayment([
                 'order_reference' => $invoice->order_reference,
                 'amount' => $invoice->amount_cents,
-                'currency' => 'BRL',
+                'currency' => $invoice->currency,
                 'payment_method' => 'pix',
                 'description' => "Créditos — fatura #{$invoice->id}",
                 'expires_at' => $expiresAt->toIso8601String(),
@@ -309,7 +324,7 @@ class BillingService
      * double-firing scheduler, two racing workers, and an operator pressing
      * retry all converge on the same payment.
      *
-     * @return Invoice|null  null when there was nothing to charge.
+     * @return Invoice|null null when there was nothing to charge.
      */
     public function chargeRenewal(Subscription $subscription): ?Invoice
     {
@@ -343,7 +358,12 @@ class BillingService
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Card,
             'amount_cents' => $subscription->price_cents,
-            'currency' => $subscription->plan?->currency ?? 'BRL',
+            // ⚠️ The snapshot, never the live plan. Reading the currency off
+            // the plan while the amount comes from the subscription meant a
+            // plan edited from one currency to another silently re-denominated
+            // every subscription already on it: same integer, different money,
+            // on the next renewal.
+            'currency' => $subscription->currency ?: ($subscription->plan?->currency ?? 'BRL'),
             'period_start' => $periodStart,
             'period_end' => $periodEnd,
             'order_reference' => $reference,
@@ -495,10 +515,8 @@ class BillingService
                 $fresh = $invoice->fresh();
 
                 match (true) {
-                    $fresh->purpose === InvoicePurpose::TrainedAgentPurchase
-                        => app(TrainedAgentService::class)->handleInvoicePaid($fresh),
-                    $fresh->purpose === InvoicePurpose::CreditTopup
-                        => app(CreditService::class)->creditTopup($fresh),
+                    $fresh->purpose === InvoicePurpose::TrainedAgentPurchase => app(TrainedAgentService::class)->handleInvoicePaid($fresh),
+                    $fresh->purpose === InvoicePurpose::CreditTopup => app(CreditService::class)->creditTopup($fresh),
                     default => app(ApiwayService::class)->handleApiwayInvoicePaid($fresh),
                 };
             }
@@ -840,7 +858,10 @@ class BillingService
             'email' => $payerEmail ?: $user?->email,
             'document_type' => $tenant->billing_document_type,
             'document_number' => $tenant->billing_document_number,
-            'document_country' => 'BR',
+            // The workspace's own country, not the platform's. Sent as 'BR' for
+            // everyone, an Indonesian customer's NPWP was declared a Brazilian
+            // document on every charge.
+            'document_country' => $tenant->market_code ?: 'BR',
             'consented_to_stored_instruments' => true,
         ], fn ($value) => $value !== null && $value !== '');
     }
@@ -965,7 +986,11 @@ class BillingService
         // out of the transaction).
         $this->voidSupersededCharges($tenant);
 
-        return DB::transaction(function () use ($tenant, $plan, $method) {
+        // The country's own price, snapshotted with its currency. Resolved once,
+        // here, because everything downstream reads the subscription.
+        $price = $plan->priceForMarket($tenant->market_code);
+
+        return DB::transaction(function () use ($tenant, $plan, $method, $price) {
             $this->supersedeCurrent($tenant);
 
             $subscription = Subscription::create([
@@ -979,7 +1004,10 @@ class BillingService
                 'status' => SubscriptionStatus::PastDue,
                 'payment_method' => $method,
                 'billing_cycle' => $plan->billing_cycle->value,
-                'price_cents' => $plan->price_cents,
+                'price_cents' => $price?->amount_cents ?? $plan->price_cents,
+                // Snapshotted with the price, not read off the plan later: a
+                // frozen number whose unit can still move is not frozen.
+                'currency' => $price?->currency ?: ($plan->currency ?: $tenant->currency()),
                 'quotas_snapshot' => $plan->quotas,
                 'features_snapshot' => $plan->features,
                 'current_period_start' => now(),

@@ -27,6 +27,7 @@ class AdminMarketResource extends JsonResource
             'code' => $this->code,
             'name' => $this->name,
             'currency' => $this->currency,
+            'price_rounding_cents' => $this->roundingCents(),
             'default_locale' => $this->default_locale,
             'default_timezone' => $this->default_timezone,
             'phone_country' => $this->phone_country,

@@ -14,6 +14,7 @@ use App\Services\Connection\Apiway\ApiwayPartnerClient;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditService;
 use App\Support\Heartbeat;
+use App\Support\Money;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -170,7 +171,7 @@ class RenewApiwaySubscriptions extends Command
 
         $notifier->notifyTenant(NotificationType::ApiwayRenewalNoCredit, $row->tenant, [
             'due_date' => $row->expires_at->format('d/m/Y'),
-            'amount' => 'R$ '.number_format($row->total_price_cents / 100, 2, ',', '.'),
+            'amount' => Money::format($row->total_price_cents, $row->currency ?: $row->tenant?->currency()),
         ]);
 
         $row->forceFill(['renewal_reminder_sent_at' => now()])->save();

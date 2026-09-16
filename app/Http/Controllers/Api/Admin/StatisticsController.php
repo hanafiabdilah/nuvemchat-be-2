@@ -71,8 +71,18 @@ class StatisticsController extends Controller
      */
     public function revenue()
     {
+        // ⚠️ Scoped to one currency, and that is the substantive change here: a
+        // sum across currencies is not a number. Adding R$ 10 to Rp 10.000
+        // produces 10.010 of nothing, and the page used to do exactly that
+        // while labelling the result with the currency of an arbitrary row.
+        // The headline stays the platform's home currency; every other one is
+        // listed beside it, each summed on its own.
+        $base = \App\Services\Money\MarketMoney::baseCurrency();
+
         // Qualified: by_plan joins subscriptions, which has its own `status`.
-        $paid = fn () => Invoice::query()->where('invoices.status', InvoiceStatus::Paid->value);
+        $paid = fn () => Invoice::query()
+            ->where('invoices.status', InvoiceStatus::Paid->value)
+            ->where('invoices.currency', $base);
 
         $months = GrowthStats::months();
         $expr = GrowthStats::monthExpr('paid_at');
@@ -118,13 +128,28 @@ class StatisticsController extends Controller
                 'total' => (int) $r->total,
             ])->values();
 
-        $refunded = Invoice::query()->where('status', InvoiceStatus::Refunded->value);
+        $refunded = Invoice::query()
+            ->where('status', InvoiceStatus::Refunded->value)
+            ->where('currency', $base);
 
         return response()->json([
             'data' => [
-                // plans.currency and invoices.currency are char(3) default BRL and
-                // nothing writes anything else today.
-                'currency' => Invoice::query()->value('currency') ?? 'BRL',
+                'currency' => $base,
+                // Money that arrived in another country's currency, each
+                // summed on its own. Empty until a second market is paid in —
+                // and never folded into the totals above.
+                'by_currency' => Invoice::query()
+                    ->where('invoices.status', InvoiceStatus::Paid->value)
+                    ->where('invoices.currency', '!=', $base)
+                    ->selectRaw('currency, SUM(amount_cents) as total, COUNT(*) as invoices')
+                    ->groupBy('currency')
+                    ->orderByDesc('total')
+                    ->get()
+                    ->map(fn ($row) => [
+                        'currency' => $row->currency,
+                        'total' => (int) $row->total,
+                        'invoices' => (int) $row->invoices,
+                    ])->values(),
                 'totals' => [
                     'this_month' => $thisMonth,
                     'last_month' => $lastMonth,

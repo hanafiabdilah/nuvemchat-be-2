@@ -39,7 +39,9 @@ class VirtualNumberController extends Controller
         }
 
         try {
-            return response()->json(['data' => $this->numbers->tenantCatalog()]);
+            // With the workspace, so the prices come back in the currency its
+            // balance is held in rather than the platform's.
+            return response()->json(['data' => $this->numbers->tenantCatalog($request->user()->tenant)]);
         } catch (ApiwayNumbersException $e) {
             return $this->upstreamError($e);
         }

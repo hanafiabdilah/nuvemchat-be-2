@@ -9,6 +9,7 @@ use App\Services\Credits\CreditService;
 use App\Services\VirtualNumbers\ApiwayNumbersConfig;
 use App\Services\VirtualNumbers\VirtualNumberService;
 use App\Support\Heartbeat;
+use App\Support\Money;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -142,7 +143,7 @@ class RenewVirtualNumbers extends Command
         $notifier->notifyTenant(NotificationType::VirtualNumberRenewalNoCredit, $row->tenant, [
             'msisdn' => $row->msisdn,
             'due_date' => $row->renews_at->format('d/m/Y'),
-            'amount' => 'R$ '.number_format($row->price_cents / 100, 2, ',', '.'),
+            'amount' => Money::format($row->price_cents, $row->currency ?: $row->tenant?->currency()),
         ]);
 
         $row->forceFill(['renewal_reminder_sent_at' => now()])->save();

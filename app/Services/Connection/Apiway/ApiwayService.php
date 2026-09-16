@@ -7,7 +7,6 @@ use App\Enums\Apiway\ApiwaySubscriptionStatus;
 use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
-use App\Enums\Billing\PaymentMethod;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Credit\CreditTransactionType;
 use App\Enums\Notification\NotificationType;
@@ -26,6 +25,8 @@ use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\Channels\WhatsappApiwayChannel;
 use App\Services\Credits\CreditService;
+use App\Services\Money\MarketMoney;
+use App\Support\Money;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -218,13 +219,19 @@ class ApiwayService
     ): ApiwaySubscription {
         // ProxyBR is the price authority — never trust a client-provided total.
         $quote = $this->partner->quote($quantity, $locationCode, $cycle);
-        $totalCents = $this->toCents($quote['total_price'] ?? 0);
+        // ProxyBR quotes in the platform's own money; the workspace pays in
+        // theirs, at the market's rate and rounding.
+        $totalCents = MarketMoney::orBase($this->toCents($quote['total_price'] ?? 0), $tenant);
 
         // Checked here as well as inside the debit's lock: this one exists to
         // fail before a subscription row is created, so an unaffordable attempt
         // leaves nothing behind. The one in the lock is the real gate.
         if (! $this->credits->canAfford($tenant, $totalCents)) {
-            throw new InsufficientCreditException($this->credits->balanceCents($tenant), $totalCents);
+            throw new InsufficientCreditException(
+                $this->credits->balanceCents($tenant),
+                $totalCents,
+                $this->credits->currencyFor($tenant),
+            );
         }
 
         $row = $this->createLocalSubscription($tenant, [
@@ -233,8 +240,9 @@ class ApiwayService
             'quantity' => $quantity,
             'cycle' => $this->normalizeCycle($quote['cycle'] ?? $cycle),
             'location_code' => $locationCode,
-            'unit_price_cents' => $this->toCents($quote['unit_price'] ?? 0),
+            'unit_price_cents' => MarketMoney::orBase($this->toCents($quote['unit_price'] ?? 0), $tenant),
             'total_price_cents' => $totalCents,
+            'currency' => $this->credits->currencyFor($tenant),
             'meta' => ['quote' => $quote],
         ]);
 
@@ -532,7 +540,7 @@ class ApiwayService
         $refunded === null
             ? $this->notifier->notifyTenant(NotificationType::ApiwayProvisionFailed, $row->tenant)
             : $this->notifier->notifyTenant(NotificationType::ApiwayProvisionRefunded, $row->tenant, [
-                'amount' => 'R$ '.number_format($refunded->amount_cents / 100, 2, ',', '.'),
+                'amount' => Money::format($refunded->amount_cents, $refunded->currency ?: $row->tenant?->currency()),
             ]);
     }
 
@@ -673,10 +681,14 @@ class ApiwayService
     public function renewFromBalance(ApiwaySubscription $row, ?string $cycle = null): bool
     {
         $quote = $this->partner->quote($row->quantity, $row->location_code, $cycle ?? $row->cycle);
+        $tenant = $row->tenant;
 
         $row->update([
-            'unit_price_cents' => $this->toCents($quote['unit_price'] ?? 0),
-            'total_price_cents' => $this->toCents($quote['total_price'] ?? 0),
+            // Re-quoted upstream in the platform's money, then converted into
+            // the workspace's — the same two steps as the first purchase.
+            'unit_price_cents' => MarketMoney::orBase($this->toCents($quote['unit_price'] ?? 0), $tenant),
+            'total_price_cents' => MarketMoney::orBase($this->toCents($quote['total_price'] ?? 0), $tenant),
+            'currency' => $this->credits->currencyFor($tenant),
         ]);
 
         $row->refresh();

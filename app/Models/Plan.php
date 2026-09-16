@@ -3,12 +3,14 @@
 namespace App\Models;
 
 use App\Enums\Billing\BillingCycle;
+use App\Models\Concerns\HasMarketPrices;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Plan extends Model
 {
+    use HasMarketPrices;
     use SoftDeletes;
 
     protected $fillable = [

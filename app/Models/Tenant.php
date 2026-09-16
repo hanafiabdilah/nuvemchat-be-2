@@ -62,6 +62,24 @@ class Tenant extends Model
     }
 
     /**
+     * The currency this workspace's money is in — its market's, fixed with it.
+     *
+     * One place to ask, because the answer has to be the same in all of them:
+     * the prepaid balance, the invoices, the ledger and every price quoted on a
+     * screen are one currency or the customer cannot reconcile any of them.
+     *
+     * `market_code` is NOT NULL with a foreign key, so the fallback is only
+     * reachable when the relation was not loadable at all (a deleted market
+     * row, a fixture built by hand). Reais rather than an exception: this is
+     * called from notification and renewal paths where throwing would turn a
+     * missing join into a charge that never happens.
+     */
+    public function currency(): string
+    {
+        return $this->market?->currency ?: 'BRL';
+    }
+
+    /**
      * Whether this workspace can be charged at all.
      *
      * The acquirer refuses a Pix or a boleto without a CPF or CNPJ, so the

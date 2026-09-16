@@ -7,7 +7,9 @@ use App\Enums\Billing\Feature;
 use App\Enums\Billing\Quota;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Billing\PlanResource;
+use App\Models\Market;
 use App\Models\Plan;
+use App\Services\Market\MarketResolver;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -16,7 +18,7 @@ class AdminPlanController extends Controller
 {
     public function index()
     {
-        $plans = Plan::orderBy('sort_order')->get();
+        $plans = Plan::with('marketPrices')->orderBy('sort_order')->get();
 
         return PlanResource::collection($plans);
     }
@@ -46,6 +48,14 @@ class AdminPlanController extends Controller
                     'description' => $q->description(),
                     'enforced_at' => $q->enforcedAt(),
                 ], Quota::cases()),
+                // The countries a plan can be priced for. Served here rather
+                // than from the Markets endpoint so pricing a plan does not
+                // also require the permission that opens a country.
+                'markets' => Market::query()
+                    ->orderBy('name')
+                    ->get(['code', 'name', 'currency']),
+                // Which of them the plan row's own `price_cents` belongs to.
+                'default_market' => MarketResolver::defaultCode(),
             ],
         ]);
     }
@@ -54,18 +64,35 @@ class AdminPlanController extends Controller
     {
         $validated = $this->validatePlan($request);
         $validated['slug'] ??= Str::slug($validated['name']);
+        $prices = $this->pricesFrom($validated);
 
         $plan = Plan::create($validated);
 
-        return (new PlanResource($plan))->response()->setStatusCode(201);
+        // Absent, the plan keeps the home-market price the model seeded from
+        // its own columns — an editor that predates per-country prices must
+        // still produce a plan that is on sale.
+        if ($prices !== null) {
+            $plan->syncMarketPrices($prices);
+        }
+
+        return (new PlanResource($plan->load('marketPrices')))->response()->setStatusCode(201);
     }
 
     public function update(Request $request, Plan $plan)
     {
         $validated = $this->validatePlan($request, $plan);
+        $prices = $this->pricesFrom($validated);
+
         $plan->update($validated);
 
-        return new PlanResource($plan->fresh());
+        // Only when the editor sent a list. A client that does not know about
+        // per-country prices must not be able to take a plan off sale
+        // everywhere by omitting them.
+        if ($prices !== null) {
+            $plan->syncMarketPrices($prices);
+        }
+
+        return new PlanResource($plan->fresh()->load('marketPrices'));
     }
 
     public function destroy(Plan $plan)
@@ -75,9 +102,36 @@ class AdminPlanController extends Controller
         return response()->json(['message' => 'Plan deleted']);
     }
 
+    /**
+     * Pull the price list out of the validated payload.
+     *
+     * Null (rather than an empty list) when the key is absent, so "did not say"
+     * and "said: nowhere" stay different answers.
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array<string, int>|null
+     */
+    private function pricesFrom(array &$validated): ?array
+    {
+        if (! array_key_exists('prices', $validated)) {
+            return null;
+        }
+
+        $prices = $validated['prices'] ?? [];
+        unset($validated['prices']);
+
+        return array_map(fn ($amount) => (int) $amount, $prices);
+    }
+
     private function validatePlan(Request $request, ?Plan $plan = null): array
     {
         return $request->validate([
+            // Per-country prices, keyed by market code: what the plan costs
+            // there, and — by being present at all — that it is sold there.
+            // No exchange rate is involved; a plan's price is whatever somebody
+            // typed for that country.
+            'prices' => ['sometimes', 'array'],
+            'prices.*' => ['nullable', 'integer', 'min:0'],
             'name' => ['required', 'string', 'max:100'],
             'slug' => ['nullable', 'string', 'max:120', Rule::unique('plans', 'slug')->ignore($plan?->id)],
             'description' => ['nullable', 'string', 'max:500'],

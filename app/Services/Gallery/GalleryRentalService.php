@@ -8,6 +8,7 @@ use App\Exceptions\Billing\InsufficientCreditException;
 use App\Models\GalleryStorageRental;
 use App\Models\Tenant;
 use App\Services\Credits\CreditService;
+use App\Services\Money\MarketMoney;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 
@@ -44,7 +45,7 @@ class GalleryRentalService
     {
         $gb = max(0, $gb);
         $rental = $this->activeRental($tenant);
-        $price = GalleryPricing::pricePerGbCents();
+        $price = $this->pricePerGbFor($tenant);
         $currentGb = $rental?->gb ?? 0;
 
         // Nothing live: the first month is charged in full, from today.
@@ -170,7 +171,7 @@ class GalleryRentalService
         // month-to-month rental of a platform resource, and a price that could
         // never move would make the first customer's rate permanent. The row
         // keeps the number it was actually charged at.
-        $price = GalleryPricing::pricePerGbCents();
+        $price = $this->pricePerGbFor($tenant);
         $amount = $gb * $price;
         $due = CarbonImmutable::instance($rental->renews_at ?? now());
 
@@ -205,6 +206,7 @@ class GalleryRentalService
             'gb' => $gb,
             'pending_gb' => null,
             'price_per_gb_cents' => $price,
+            'currency' => $this->credits->currencyFor($tenant),
             'renews_at' => $next,
             'renewal_reminder_sent_at' => null,
         ]);
@@ -248,9 +250,23 @@ class GalleryRentalService
             : null;
     }
 
+    /**
+     * A gigabyte's price in this workspace's money.
+     *
+     * The platform types one number, in its own currency; a workspace in
+     * another country pays the converted one, rounded up to that market's step.
+     * Unlike a plan, storage is not priced per country by hand — there is no
+     * catalog to mark up and no local competitor to match, so one number and a
+     * rate is the honest shape.
+     */
+    private function pricePerGbFor(Tenant $tenant): int
+    {
+        return MarketMoney::orBase(GalleryPricing::pricePerGbCents(), $tenant);
+    }
+
     private function start(Tenant $tenant, int $gb): GalleryStorageRental
     {
-        $price = GalleryPricing::pricePerGbCents();
+        $price = $this->pricePerGbFor($tenant);
 
         // Created before it is paid for, then charged, then activated. The row
         // has to exist for the charge to have a reference, and a row sitting at
@@ -262,6 +278,9 @@ class GalleryRentalService
                 'gb' => 0,
                 'pending_gb' => null,
                 'price_per_gb_cents' => $price,
+                // The price is debited from the workspace's balance, so the row
+                // records which money it was quoted in.
+                'currency' => $this->credits->currencyFor($tenant),
                 'status' => StorageRentalStatus::Cancelled,
                 'cancelled_at' => now(),
             ],
@@ -285,7 +304,7 @@ class GalleryRentalService
     private function increase(Tenant $tenant, GalleryStorageRental $rental, int $gb): GalleryStorageRental
     {
         $added = $gb - $rental->gb;
-        $price = GalleryPricing::pricePerGbCents();
+        $price = $this->pricePerGbFor($tenant);
         $amount = $this->prorataCents($rental, $added, $price);
 
         if ($amount > 0) {

@@ -14,6 +14,7 @@ use App\Models\Plan;
 use App\Models\Tenant;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\PaymentService\PaymentServiceClient;
+use App\Services\Market\MarketDocuments;
 use App\Support\Errors\HasUserSafeMessage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -44,13 +45,18 @@ class BillingController extends Controller
      * Cached for a minute: cheap enough to ask on every render, and the whole
      * point is that the answer changes.
      */
-    public function paymentMethods()
+    public function paymentMethods(Request $request)
     {
+        // Asked for the currency this workspace actually pays in: what Brazil
+        // can be charged with says nothing about Indonesia, and offering Pix to
+        // a rupiah checkout is a button that cannot work.
+        $currency = $this->tenant($request)->currency();
+
         try {
             $methods = Cache::remember(
-                'billing:payment-methods:BRL',
+                "billing:payment-methods:{$currency}",
                 now()->addMinute(),
-                fn () => $this->payments->paymentMethods('BRL'),
+                fn () => $this->payments->paymentMethods($currency),
             );
         } catch (\Throwable $e) {
             Log::warning('Could not load payment methods', ['error' => $e->getMessage()]);
@@ -111,26 +117,36 @@ class BillingController extends Controller
 
     public function updateBillingProfile(Request $request)
     {
+        $tenant = $this->tenant($request);
+        $market = $tenant->market_code;
+
         $validated = $request->validate([
             'billing_name' => ['required', 'string', 'max:191'],
-            'billing_document_type' => ['required', Rule::in(['CPF', 'CNPJ'])],
+            // Whatever this country's rails ask for — CPF/CNPJ in Brazil,
+            // NPWP/NIK in Indonesia. Hard-coding the Brazilian pair did not read
+            // as a Brazilian assumption; it read as an Indonesian workspace
+            // unable to save a billing profile, and so unable to pay at all.
+            'billing_document_type' => ['required', Rule::in(MarketDocuments::codes($market))],
             // Length only, and punctuation stripped below. The check digits are
             // the acquirer's business — rejecting a valid edge case ourselves
             // would be worse than passing it on.
             'billing_document_number' => ['required', 'string', 'max:32'],
         ]);
 
-        $digits = preg_replace('/\D/', '', $validated['billing_document_number']);
-        $expected = $validated['billing_document_type'] === 'CNPJ' ? 14 : 11;
+        $problem = MarketDocuments::problem(
+            $market,
+            $validated['billing_document_type'],
+            $validated['billing_document_number'],
+        );
 
-        if (strlen($digits) !== $expected) {
+        if ($problem !== null) {
             return response()->json([
-                'message' => "Um {$validated['billing_document_type']} tem {$expected} dígitos.",
-                'errors' => ['billing_document_number' => ["Um {$validated['billing_document_type']} tem {$expected} dígitos."]],
+                'message' => $problem,
+                'errors' => ['billing_document_number' => [$problem]],
             ], 422);
         }
 
-        $tenant = $this->tenant($request);
+        $digits = preg_replace('/\D/', '', $validated['billing_document_number']);
         $tenant->update([
             'billing_name' => $validated['billing_name'],
             'billing_document_type' => $validated['billing_document_type'],
@@ -140,9 +156,23 @@ class BillingController extends Controller
         return response()->json(['data' => $this->profilePayload($tenant->fresh())]);
     }
 
-    public function plans()
+    /**
+     * The plans on sale in this workspace's country, at that country's prices.
+     *
+     * A plan with no price for the market is not listed: it is not sold there,
+     * and showing it at the platform's own price would quote a number nobody
+     * set for this country.
+     */
+    public function plans(Request $request)
     {
-        $plans = Plan::active()->public()->orderBy('sort_order')->get();
+        $market = $this->tenant($request)->market_code;
+
+        $plans = Plan::active()->public()
+            ->soldIn($market)
+            ->with('marketPrices')
+            ->orderBy('sort_order')
+            ->get()
+            ->map(fn (Plan $plan) => $plan->applyMarketPrice($market));
 
         return response()->json(['data' => PlanResource::collection($plans)]);
     }
@@ -367,6 +397,9 @@ class BillingController extends Controller
             'billing_document_type' => $tenant->billing_document_type,
             'billing_document_hint' => $number === '' ? null : '•••'.substr($number, -4),
             'is_complete' => $tenant->hasBillingIdentity(),
+            // What this country accepts, so the form offers those and not a
+            // list of Brazilian documents its customer does not hold.
+            'document_types' => MarketDocuments::forMarket($tenant->market_code),
         ];
     }
 

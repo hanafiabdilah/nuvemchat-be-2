@@ -3,15 +3,16 @@
 namespace App\Services\Credits;
 
 use App\Enums\Credit\CreditTransactionType;
-use App\Events\CreditUpdated;
 use App\Enums\Notification\NotificationType;
+use App\Events\CreditUpdated;
 use App\Exceptions\Billing\InsufficientCreditException;
+use App\Models\AiHubRun;
 use App\Models\CreditTransaction;
 use App\Models\CreditWallet;
-use App\Models\AiHubRun;
 use App\Models\Invoice;
 use App\Models\Tenant;
 use App\Services\Billing\BillingNotifier;
+use App\Support\Money;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -44,8 +45,24 @@ class CreditService
     {
         return CreditWallet::firstOrCreate(
             ['tenant_id' => $tenant->id],
-            ['balance_cents' => 0, 'currency' => 'BRL'],
+            // The workspace's own market currency, set once with the wallet and
+            // never converted afterwards: a balance that changes denomination
+            // under the person holding it is not a balance.
+            ['balance_cents' => 0, 'currency' => $tenant->currency()],
         );
+    }
+
+    /**
+     * What this workspace's balance is denominated in.
+     *
+     * The wallet's own column rather than the market, because those two can
+     * only disagree if a market's currency moved under an existing workspace —
+     * which Market::save() refuses — and if it ever did, the money on the
+     * ledger is what the customer actually holds.
+     */
+    public function currencyFor(Tenant $tenant): string
+    {
+        return $this->wallet($tenant)->currency ?: $tenant->currency();
     }
 
     public function balanceCents(Tenant $tenant): int
@@ -209,7 +226,22 @@ class CreditService
             $run->cost_usd === null ? null : (float) $run->cost_usd,
             $run->provider,
             $run->model,
+            // The wallet's currency: the cost arrives in dollars and is priced
+            // straight into the money this workspace holds, never through
+            // reais on the way.
+            $this->currencyFor($tenant),
         );
+
+        if ($price['rate_missing'] ?? false) {
+            // Charged at the home rate because the run already happened and the
+            // provider already billed for it — but this is a market nobody set
+            // a rate for, and every charge in it is wrong until somebody does.
+            Log::error('CreditService: no exchange rate for the workspace currency, run priced at the home rate', [
+                'tenant_id' => $tenant->id,
+                'currency' => $price['currency'] ?? null,
+                'ai_hub_run_id' => $run->id,
+            ]);
+        }
 
         if ($price['estimated']) {
             // Worth a line every time: a hub that stops reporting cost turns
@@ -232,9 +264,11 @@ class CreditService
             [
                 'ai_hub_run_id' => $run->id,
                 'cost_usd' => $price['cost_usd'],
-                'usd_brl_rate' => $price['rate'],
+                // Units of this row's own currency per dollar — the number that
+                // makes an old charge explainable months later.
+                'usd_rate' => $price['rate'],
                 'markup_pct' => $price['markup_pct'],
-                'description' => trim(($run->provider ?? 'AI') . ' ' . ($run->model ?? '')) ?: 'AI run',
+                'description' => trim(($run->provider ?? 'AI').' '.($run->model ?? '')) ?: 'AI run',
                 'meta' => [
                     'estimated' => $price['estimated'],
                     'total_tokens' => $run->total_tokens,
@@ -425,7 +459,10 @@ class CreditService
      */
     protected function warnIfLow(Tenant $tenant, int $balanceCents): void
     {
-        $threshold = CreditPricing::lowBalanceCents();
+        // In the workspace's own currency: a threshold typed in reais is not a
+        // meaningful amount of rupiah, and a warning that fires at the wrong
+        // number is worse than one that never fires.
+        $threshold = CreditPricing::lowBalanceCents($this->currencyFor($tenant));
 
         if ($threshold <= 0 || $balanceCents >= $threshold) {
             return;
@@ -449,7 +486,7 @@ class CreditService
             }
 
             app(BillingNotifier::class)->notifyTenant(NotificationType::CreditLowBalance, $tenant, [
-                'amount' => 'R$ '.number_format(max(0, $balanceCents) / 100, 2, ',', '.'),
+                'amount' => Money::format(max(0, $balanceCents), $this->currencyFor($tenant)),
             ]);
         } catch (\Throwable $e) {
             Log::warning('CreditService: could not send the low balance warning', [

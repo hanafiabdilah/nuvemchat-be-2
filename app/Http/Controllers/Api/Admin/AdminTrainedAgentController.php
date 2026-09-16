@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\TrainedAgent\TrainedAgentBlueprintResource;
 use App\Http\Resources\TrainedAgent\TrainedAgentCategoryResource;
 use App\Models\AuditLog;
+use App\Models\Market;
 use App\Models\TrainedAgentBlueprint;
 use App\Models\TrainedAgentCategory;
 use App\Models\TrainedAgentHire;
+use App\Services\Market\MarketResolver;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -27,6 +29,25 @@ class AdminTrainedAgentController extends Controller
     /* ------------------------------------------------------------------
      | Categories
      * ------------------------------------------------------------------ */
+
+    /**
+     * The countries an agent can be priced for.
+     *
+     * Served from here rather than from the Markets endpoint so authoring the
+     * catalog does not also require the permission that opens a country.
+     */
+    public function meta(): JsonResponse
+    {
+        return response()->json([
+            'data' => [
+                'markets' => Market::query()
+                    ->orderBy('name')
+                    ->get(['code', 'name', 'currency']),
+                // Which of them the blueprint row's own `price_cents` belongs to.
+                'default_market' => MarketResolver::defaultCode(),
+            ],
+        ]);
+    }
 
     public function categories()
     {
@@ -108,7 +129,7 @@ class AdminTrainedAgentController extends Controller
     public function index(Request $request)
     {
         $blueprints = TrainedAgentBlueprint::query()
-            ->with('category')
+            ->with(['category', 'marketPrices'])
             ->withCount('hires')
             ->when($request->filled('category_id'), fn ($q) => $q->where('trained_agent_category_id', $request->integer('category_id')))
             ->when($request->filled('q'), fn ($q) => $q->where('name', 'like', '%'.$request->string('q').'%'))
@@ -121,34 +142,49 @@ class AdminTrainedAgentController extends Controller
 
     public function show(TrainedAgentBlueprint $blueprint)
     {
-        return new TrainedAgentBlueprintResource($blueprint->load('category')->loadCount('hires'));
+        return new TrainedAgentBlueprintResource($blueprint->load(['category', 'marketPrices'])->loadCount('hires'));
     }
 
     public function store(Request $request)
     {
         $validated = $this->validateBlueprint($request);
         $validated['slug'] ??= Str::slug($validated['name']);
+        $prices = $this->pricesFrom($validated);
 
         $blueprint = TrainedAgentBlueprint::create($validated);
+
+        // Absent, it keeps the home-market price seeded from its own columns.
+        if ($prices !== null) {
+            $blueprint->syncMarketPrices($prices);
+        }
 
         AuditLog::record('trained-agents.blueprint.create', "Created trained agent {$blueprint->name}", [
             'id' => $blueprint->id,
             'price_cents' => $blueprint->price_cents,
         ]);
 
-        return (new TrainedAgentBlueprintResource($blueprint->load('category')))->response()->setStatusCode(201);
+        return (new TrainedAgentBlueprintResource($blueprint->load(['category', 'marketPrices'])))->response()->setStatusCode(201);
     }
 
     public function update(Request $request, TrainedAgentBlueprint $blueprint)
     {
-        $blueprint->update($this->validateBlueprint($request, $blueprint));
+        $validated = $this->validateBlueprint($request, $blueprint);
+        $prices = $this->pricesFrom($validated);
+
+        $blueprint->update($validated);
+
+        // Only when the editor sent a list: a client that predates per-country
+        // prices must not take an agent off sale everywhere by omitting them.
+        if ($prices !== null) {
+            $blueprint->syncMarketPrices($prices);
+        }
 
         AuditLog::record('trained-agents.blueprint.update', "Updated trained agent {$blueprint->name}", [
             'id' => $blueprint->id,
             'price_cents' => $blueprint->price_cents,
         ]);
 
-        return new TrainedAgentBlueprintResource($blueprint->fresh()->load('category'));
+        return new TrainedAgentBlueprintResource($blueprint->fresh()->load(['category', 'marketPrices']));
     }
 
     /**
@@ -271,6 +307,25 @@ class AdminTrainedAgentController extends Controller
         ]);
     }
 
+    /**
+     * Pull the price list out of the validated payload. Null when the key was
+     * absent, so "did not say" stays different from "said: nowhere".
+     *
+     * @param  array<string, mixed>  $validated
+     * @return array<string, int>|null
+     */
+    private function pricesFrom(array &$validated): ?array
+    {
+        if (! array_key_exists('prices', $validated)) {
+            return null;
+        }
+
+        $prices = $validated['prices'] ?? [];
+        unset($validated['prices']);
+
+        return array_map(fn ($amount) => (int) $amount, $prices);
+    }
+
     private function validateBlueprint(Request $request, ?TrainedAgentBlueprint $blueprint = null): array
     {
         return $request->validate([
@@ -315,6 +370,11 @@ class AdminTrainedAgentController extends Controller
 
             'price_cents' => ['required', 'integer', 'min:0'],
             'currency' => ['nullable', 'string', 'size:3'],
+            // Per-country prices, keyed by market code. Present means on sale
+            // there; the amount is what somebody typed for that country, never
+            // a conversion.
+            'prices' => ['sometimes', 'array'],
+            'prices.*' => ['nullable', 'integer', 'min:0'],
             'is_active' => ['boolean'],
             'is_public' => ['boolean'],
             'sort_order' => ['nullable', 'integer', 'min:0', 'max:9999'],

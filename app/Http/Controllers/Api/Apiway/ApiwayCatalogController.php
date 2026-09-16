@@ -6,6 +6,8 @@ use App\Exceptions\ApiwayPartnerException;
 use App\Http\Controllers\Controller;
 use App\Services\Connection\Apiway\ApiwayPartnerClient;
 use App\Services\Connection\Apiway\ApiwayService;
+use App\Services\Credits\CreditService;
+use App\Services\Money\MarketMoney;
 use Illuminate\Http\Request;
 
 class ApiwayCatalogController extends Controller
@@ -70,6 +72,20 @@ class ApiwayCatalogController extends Controller
             ], in_array($e->getHttpStatus(), [400, 422], true) ? 422 : 502);
         }
 
-        return response()->json(['data' => $quote]);
+        // ProxyBR quotes in the platform's money. What the modal must show is
+        // what the balance will be debited, so the two documented amounts are
+        // converted here and the currency travels with them — a price beside a
+        // balance in another currency is a sum the customer cannot check.
+        $tenant = $request->user()->tenant;
+
+        foreach (['unit_price', 'total_price'] as $key) {
+            if (isset($quote[$key]) && is_numeric($quote[$key])) {
+                $quote[$key] = MarketMoney::orBase((int) round(((float) $quote[$key]) * 100), $tenant) / 100;
+            }
+        }
+
+        return response()->json([
+            'data' => $quote + ['currency' => app(CreditService::class)->currencyFor($tenant)],
+        ]);
     }
 }

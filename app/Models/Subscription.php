@@ -16,6 +16,9 @@ class Subscription extends Model
         'payment_method',
         'billing_cycle',
         'price_cents',
+        // Snapshotted beside the price. A frozen amount whose unit is read live
+        // off the plan is not frozen — see BillingService::chargeRenewal().
+        'currency',
         'quotas_snapshot',
         'features_snapshot',
         'current_period_start',
