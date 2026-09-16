@@ -41,6 +41,22 @@ class AiConversationContext
 
     protected const WHOLE_LINES = 5;
 
+    /** How the node's own opening is labelled in the transcript. */
+    protected const WELCOME_SPEAKER = 'You (welcome message)';
+
+    /**
+     * What the node's opening is reduced to before it travels.
+     *
+     * Everything in this block is sent to the hub as the *customer's* message
+     * — that is the only field a run has — and the hub scans that field for
+     * handoff keywords. So a welcome that politely offers "falar com um
+     * atendente humano" reads to the detector as the customer asking for one,
+     * and every conversation is handed to a person on its first turn. The
+     * agent needs to know it has already greeted; it does not need the
+     * sentence back.
+     */
+    protected const WELCOME_PLACEHOLDER = '(your opening message was delivered to the customer)';
+
     /**
      * The id up to which the customer counts as answered when the node is
      * entered: the newest message anybody sent them.
@@ -110,11 +126,16 @@ class AiConversationContext
                 continue;
             }
 
-            if (count($lines) >= self::WHOLE_LINES && mb_strlen($body) > self::OLD_LINE_CHAR_CAP) {
-                $body = mb_substr($body, 0, self::OLD_LINE_CHAR_CAP) . '…';
+            [$speaker, $counts] = self::speaker($message);
+
+            if ($speaker === self::WELCOME_SPEAKER) {
+                $body = self::WELCOME_PLACEHOLDER;
             }
 
-            [$speaker, $counts] = self::speaker($message);
+            if (count($lines) >= self::WHOLE_LINES && mb_strlen($body) > self::OLD_LINE_CHAR_CAP) {
+                $body = mb_substr($body, 0, self::OLD_LINE_CHAR_CAP).'…';
+            }
+
             $line = "{$speaker}: {$body}";
 
             if (mb_strlen($line) > $budget) {
@@ -166,16 +187,23 @@ CONTEXT;
      * right above it. A model that does not know that greets and introduces
      * itself as well, and two openings stacked on top of each other read as a
      * bot that is not listening to itself.
+     *
+     * The welcome is named, never quoted. This whole string is delivered to the
+     * hub as the customer's message, and the hub scans that field for handoff
+     * keywords: quoting a welcome that ends "se quiser falar com um atendente
+     * humano, é só pedir" made the detector read every opening turn as the
+     * customer asking for a person — 53 of 53 such runs were handed off. The
+     * instruction that has to survive is "you already greeted", and that needs
+     * no copy of the sentence. $welcome is still taken so an empty one means
+     * there is nothing to say.
      */
     public static function precededByWelcome(string $welcome, string $input): string
     {
-        $welcome = trim($welcome);
-
-        if ($welcome === '') {
+        if (trim($welcome) === '') {
             return $input;
         }
 
-        return "[Your welcome message is sent to the customer immediately before this reply: \"{$welcome}\". Do not greet the customer or introduce yourself again.]\n\n{$input}";
+        return "[Your welcome message is being sent to the customer in the bubble immediately above this reply. Do not greet the customer or introduce yourself again.]\n\n{$input}";
     }
 
     protected static function body(Message $message): string
@@ -211,7 +239,7 @@ CONTEXT;
         // Sent in the agent's name, from the node's settings — the agent never
         // wrote it, but it is the agent's own opening.
         if (data_get($message->meta, 'ai_welcome') === true) {
-            return ['You (welcome message)', false];
+            return [self::WELCOME_SPEAKER, false];
         }
 
         if ($message->sent_by_user_id !== null) {

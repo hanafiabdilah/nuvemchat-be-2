@@ -5,8 +5,8 @@ namespace App\Services\AiAgentHub;
 use App\Enums\Billing\Quota;
 use App\Enums\Connection\Channel;
 use App\Exceptions\AiHubObjectMissingException;
-use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
+use App\Exceptions\Billing\CreditExhaustedException;
 use App\Models\AiHubAgent;
 use App\Models\AiHubAgentProfile;
 use App\Models\AiHubKnowledge;
@@ -16,8 +16,8 @@ use App\Models\AiHubSkill;
 use App\Models\AiHubTenant;
 use App\Models\AiHubTrainingExample;
 use App\Models\Conversation;
-use App\Services\Credits\CreditService;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Credits\CreditService;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Carbon\Carbon;
@@ -271,7 +271,7 @@ class AiAgentHubTenantService
         $data = $response->json();
 
         $localProviderCredentialId = null;
-        if (!empty($data['providerCredentialId'])) {
+        if (! empty($data['providerCredentialId'])) {
             $localProviderCredentialId = AiHubProviderCredential::query()
                 ->where('ai_hub_tenant_id', $tenant->id)
                 ->where('hub_provider_credential_id', $data['providerCredentialId'])
@@ -332,7 +332,7 @@ class AiAgentHubTenantService
         $data = $response->json();
 
         $localProviderCredentialId = $agent->ai_hub_provider_credential_id;
-        if (!empty($data['providerCredentialId'])) {
+        if (! empty($data['providerCredentialId'])) {
             $localProviderCredentialId = AiHubProviderCredential::query()
                 ->where('ai_hub_tenant_id', $tenant->id)
                 ->where('hub_provider_credential_id', $data['providerCredentialId'])
@@ -508,6 +508,7 @@ class AiAgentHubTenantService
 
         if (($data['status'] ?? null) === 'DISABLED') {
             $knowledge->delete();
+
             return null;
         }
 
@@ -624,6 +625,7 @@ class AiAgentHubTenantService
 
         if (($data['status'] ?? null) === 'DISABLED') {
             $skill->delete();
+
             return null;
         }
 
@@ -742,6 +744,7 @@ class AiAgentHubTenantService
 
         if (($data['status'] ?? null) === 'DISABLED') {
             $example->delete();
+
             return null;
         }
 
@@ -781,6 +784,30 @@ class AiAgentHubTenantService
      * ------------------------------------------------------------------ */
 
     /**
+     * The key the hub files this thread's dialogue under.
+     *
+     * One hub conversation per `conversations` row, which is what everything
+     * upstream of here already assumes — the AI node's watermarks, the handoff,
+     * the turn counter are all per conversation.
+     *
+     * It used to be `conversations.external_id`, and that is the channel
+     * address: a phone number on WhatsApp, a PSID on Messenger. A number that
+     * writes in every month lands in a new conversation each time and kept
+     * landing in the *same* hub conversation — one production number had 28
+     * threads sharing a single hub history. Months-old context leaked into
+     * every new thread, and a customer who once asked for a person went on
+     * being handed one on the first turn of conversations they opened weeks
+     * later, because the hub's handoff detector could still see the request.
+     *
+     * Conversation ids are unique across the platform, so the prefix is only
+     * there to keep these apart from the synthetic keys other callers pass in.
+     */
+    public static function hubConversationKey(Conversation $conversation): string
+    {
+        return "conv:{$conversation->id}";
+    }
+
+    /**
      * Run an agent synchronously against a conversation and persist the
      * resulting hub run record locally for billing/observability.
      *
@@ -789,6 +816,9 @@ class AiAgentHubTenantService
      * message — history is tracked hub-side. The hub only knows what went
      * through it, though: what the flow said before an AI node was reached is
      * folded into the message by the caller (AiConversationContext).
+     *
+     * That key is ours to choose, and it is one conversation per thread — see
+     * {@see hubConversationKey()} for why it cannot be the channel address.
      *
      * The caller is responsible for delivering the AI reply to the contact
      * (via MessageService) and linking the produced Message back to the
@@ -841,7 +871,7 @@ class AiAgentHubTenantService
             'agentExternalId' => $agent->external_id,
             'responseMode' => 'sync',
             'conversation' => [
-                'externalId' => $conversationExternalId ?? $conversation->external_id,
+                'externalId' => $conversationExternalId ?? self::hubConversationKey($conversation),
                 'channel' => $this->mapChannelForHub($conversation->connection->channel),
                 'contactExternalId' => $conversation->contact->external_id,
                 'contactName' => $conversation->contact->name,
@@ -868,7 +898,7 @@ class AiAgentHubTenantService
             $metadata['voiceRequested'] = true;
         }
 
-        if (!empty($metadata)) {
+        if (! empty($metadata)) {
             $payload['metadata'] = $metadata;
         }
 
@@ -1020,7 +1050,7 @@ class AiAgentHubTenantService
 
         // A fresh hub conversation per test: nothing said to the bench may
         // leak into the agent's memory of anything else, or into the next test.
-        $externalId = 'vocabulary-test-' . bin2hex(random_bytes(8));
+        $externalId = 'vocabulary-test-'.bin2hex(random_bytes(8));
         $metadata = ['purpose' => 'vocabulary_test'];
 
         $payload = array_filter([
@@ -1127,7 +1157,7 @@ class AiAgentHubTenantService
             return (string) ($error['message'] ?? json_encode($error));
         }
 
-        return 'status ' . ($data['status'] ?? 'unknown');
+        return 'status '.($data['status'] ?? 'unknown');
     }
 
     /**
@@ -1296,8 +1326,8 @@ class AiAgentHubTenantService
             $metadata['responseAudio'] = $output['audio'];
         }
 
-        $startedAt = !empty($data['startedAt']) ? Carbon::parse($data['startedAt']) : null;
-        $completedAt = !empty($data['completedAt']) ? Carbon::parse($data['completedAt']) : null;
+        $startedAt = ! empty($data['startedAt']) ? Carbon::parse($data['startedAt']) : null;
+        $completedAt = ! empty($data['completedAt']) ? Carbon::parse($data['completedAt']) : null;
         $latencyMs = ($startedAt && $completedAt)
             ? (int) $startedAt->diffInMilliseconds($completedAt)
             : null;
@@ -1425,7 +1455,7 @@ class AiAgentHubTenantService
             'name' => $credential->name,
             // Long enough to clear the hub's 8-character minimum, and shaped so
             // that anyone reading the key preview there sees what it is.
-            'apiKey' => $placeholder ? 'placeholder-key-' . Str::random(32) : $apiKey,
+            'apiKey' => $placeholder ? 'placeholder-key-'.Str::random(32) : $apiKey,
             'defaultModel' => $credential->default_model,
             'metadata' => $metadata,
         ], fn ($v) => $v !== null);
@@ -1628,7 +1658,7 @@ class AiAgentHubTenantService
             $base = 'agent';
         }
 
-        return $base . '-' . Str::lower(Str::random(8));
+        return $base.'-'.Str::lower(Str::random(8));
     }
 
     /**
@@ -1646,7 +1676,7 @@ class AiAgentHubTenantService
     {
         $token = AiAgentHubConfig::tenantToken();
 
-        if (!$token) {
+        if (! $token) {
             // Ours to fix, and the tenant cannot open the screen this used to
             // name — so it reads as an outage on our side, which it is. The
             // instruction stays where whoever can act on it will see it.
@@ -1669,7 +1699,7 @@ class AiAgentHubTenantService
     protected function headers(): array
     {
         return [
-            'Authorization' => 'Bearer ' . $this->resolveApiKey(),
+            'Authorization' => 'Bearer '.$this->resolveApiKey(),
             'Accept' => 'application/json',
         ];
     }
@@ -1739,7 +1769,7 @@ class AiAgentHubTenantService
             return;
         }
 
-        if($response->status() === 400){
+        if ($response->status() === 400) {
             Log::warning("AiAgentHubTenantService: Validation failed to {$action}", array_merge($context, [
                 'status' => $response->status(),
                 'body' => $response->body(),
@@ -1755,7 +1785,7 @@ class AiAgentHubTenantService
                 status: 400,
                 context: array_merge($context, ['action' => $action]),
             );
-        }elseif($response->status() === 404){
+        } elseif ($response->status() === 404) {
             // Not an error we report — one we repair. See
             // AiHubObjectMissingException and the `repush*` methods.
             Log::warning("AiAgentHubTenantService: the hub does not have what we asked to {$action}", array_merge($context, [
@@ -1764,7 +1794,7 @@ class AiAgentHubTenantService
             ]));
 
             throw new AiHubObjectMissingException("The hub no longer has the object needed to {$action}");
-        }elseif($response->status() === 409){
+        } elseif ($response->status() === 409) {
             Log::warning("AiAgentHubTenantService: Conflict occurred trying to {$action}", array_merge($context, [
                 'status' => $response->status(),
                 'body' => $response->body(),

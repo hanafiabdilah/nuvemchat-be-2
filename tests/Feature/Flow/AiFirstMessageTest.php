@@ -165,8 +165,12 @@ test('an opening that carries a question gets the welcome and an answer', functi
     $runs = AiAgentFixtures::hubRuns();
     expect($runs)->toHaveCount(1)
         ->and($runs[0]['message']['content'])->toEndWith('Bom dia, meu pedido não chegou')
-        // Told the welcome sits right above its reply, so it does not greet twice.
-        ->and($runs[0]['message']['content'])->toContain('Oi! Como posso ajudar?');
+        // Told the welcome sits right above its reply, so it does not greet
+        // twice — told, never handed the sentence: this field reaches the hub
+        // as the customer's message and is scanned there for handoff keywords.
+        ->and($runs[0]['message']['content'])
+        ->toContain('Do not greet the customer or introduce yourself again')
+        ->not->toContain('Oi! Como posso ajudar?');
 
     expect(welcomesSent($conversation))->toBe(1)
         ->and($conversation->messages()

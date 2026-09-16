@@ -79,7 +79,11 @@ test('the agent is told what the flow said before it was reached', function () {
         ->toContain('Automated message: Mohon maaf, server Cipayung sedang mengalami mati listrik.')
         // The welcome is held for this answer and sent right above it, so the
         // agent learns it from the note ahead of the input, not the transcript.
-        ->toContain('Your welcome message is sent to the customer immediately before this reply: "Oi! Como posso ajudar?"')
+        ->toContain('Your welcome message is being sent to the customer in the bubble immediately above this reply')
+        // Named, never quoted: this string reaches the hub as the customer's
+        // message, and a welcome offering a human agent reads to the hub's
+        // handoff detector as the customer asking for one.
+        ->not->toContain('Oi! Como posso ajudar?')
         ->not->toContain('You (welcome message)')
         ->toEndWith("The customer's new message — reply to this:\nberapa lama lagi normal?");
 
@@ -116,7 +120,11 @@ test('reached right after the flow spoke, the node greets and waits for the cust
 
     expect(AiAgentFixtures::hubRuns()[0]['message']['content'])
         ->toContain('Automated message: Mohon maaf, server Cipayung sedang mengalami mati listrik.')
-        ->toContain('You (welcome message): Oi! Como posso ajudar?')
+        // Named, not quoted — the transcript reaches the hub as the customer's
+        // own message, and a welcome that offers a human agent reads there as
+        // the customer asking for one.
+        ->toContain('You (welcome message): (your opening message was delivered to the customer)')
+        ->not->toContain('Oi! Como posso ajudar?')
         ->toEndWith("reply to this:\nok, berapa lama?");
 });
 
