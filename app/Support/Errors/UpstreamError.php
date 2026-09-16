@@ -714,6 +714,20 @@ final class UpstreamError
             // convenience and asks for the security code every time, so an
             // automatic renewal on it is impossible — and that is ours to fix,
             // not something the customer can retry into working.
+            // The service cannot charge in this workspace's money at all — a
+            // country we opened before its rails were connected. Not their card,
+            // not their data, and not something a retry fixes, so it must not
+            // read like any of those. Narrow on purpose: the word "currency"
+            // alone appears in refusals that are nothing to do with this.
+            $code === 'currency_not_supported',
+            $code === 'unsupported_currency',
+            str_contains($m, 'currency is not supported'),
+            str_contains($m, 'unsupported currency') => [
+                'currency_unsupported',
+                'Ainda não é possível cobrar na moeda do seu país. Nossa equipe já está trabalhando nisso.',
+                422,
+            ],
+
             str_contains($m, 'merchant-initiated'),
             str_contains($m, 'merchant initiated') => [
                 'card_autorenew_unsupported',

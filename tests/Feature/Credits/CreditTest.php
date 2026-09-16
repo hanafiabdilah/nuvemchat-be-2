@@ -1,21 +1,26 @@
 <?php
 
-use App\Enums\Credit\CreditTransactionType;
 use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
+use App\Enums\Credit\CreditTransactionType;
 use App\Exceptions\Billing\CreditExhaustedException;
-use App\Models\CreditTransaction;
+use App\Exceptions\UserFacingException;
 use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
 use App\Models\AiHubRun;
+use App\Models\CreditTransaction;
 use App\Models\Invoice;
+use App\Models\Market;
+use App\Models\Setting;
 use App\Models\Tenant;
+use App\Models\User;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
-use App\Services\Credits\CreditPricing;
-use App\Services\Credits\CreditService;
 use App\Services\AiTokens\AiTokenRentalService;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\PaymentService\PaymentServiceConfig;
+use App\Services\Credits\CreditPricing;
+use App\Services\Credits\CreditService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
@@ -62,6 +67,97 @@ function creditGate(): object
         }
     };
 }
+
+/**
+ * A billable workspace in a given country.
+ *
+ * Named for this file: Pest loads every test file into one process, so a helper
+ * sharing a name with a sibling's is a fatal redeclare. CreditFixtures' own
+ * workspace is always Brazilian and carries no document, and both matter here.
+ */
+function topupWorkspace(string $marketCode = 'BR'): Tenant
+{
+    if ($marketCode !== 'BR') {
+        Market::create([
+            'code' => $marketCode,
+            'name' => 'Indonesia',
+            'currency' => 'IDR',
+            'default_locale' => 'id',
+            'default_timezone' => 'Asia/Jakarta',
+            'phone_country' => '62',
+            'status' => 'active',
+        ]);
+    }
+
+    $user = User::factory()->create(['email' => 'topup-'.uniqid().'@example.test']);
+
+    $tenant = new Tenant(['user_id' => $user->id]);
+    $tenant->market_code = $marketCode;
+    $tenant->save();
+
+    $user->forceFill(['tenant_id' => $tenant->id])->save();
+
+    // Past assertBillable, so what these tests fail on is the payment method
+    // and nothing else.
+    $tenant->forceFill([
+        'billing_name' => 'Acme',
+        'billing_document_type' => $marketCode === 'BR' ? 'CNPJ' : 'NPWP',
+        'billing_document_number' => $marketCode === 'BR' ? '12345678000199' : '091234567890123',
+    ])->save();
+
+    return $tenant->fresh();
+}
+
+it('refuses a top-up in a country whose rails cannot take a Pix', function () {
+    // Without a key the client refuses before any HTTP call, the guard's
+    // fail-open path swallows that, and this test would pass on the wrong
+    // exception entirely.
+    Setting::set(PaymentServiceConfig::KEY_API_KEY, 'ps_test_key');
+
+    // This endpoint issues a Pix and nothing else, and Pix is Brazilian. Before
+    // the guard, an Indonesian workspace got a real invoice, a gateway refusal
+    // and generic copy telling them to try another payment method — one this
+    // endpoint never offered a choice about.
+    Http::fake([
+        '*/payment-methods*' => Http::response(['data' => [
+            ['method' => 'card', 'instruction_type' => 'card', 'merchant_initiated_cards' => false],
+        ]]),
+    ]);
+
+    $tenant = topupWorkspace('ID');
+
+    expect(fn () => app(BillingService::class)->createCreditTopupPixInvoice($tenant, 500000))
+        ->toThrow(UserFacingException::class);
+
+    // Refused before anything was written or charged: an invoice left behind
+    // would sit in the customer's list as a bill they can never pay.
+    expect(Invoice::count())->toBe(0);
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), '/payments'));
+});
+
+it('still issues a top-up where Pix exists', function () {
+    // The control that matters: a guard that refuses everybody would pass the
+    // test above and quietly stop every Brazilian customer from paying us.
+    Setting::set(PaymentServiceConfig::KEY_API_KEY, 'ps_test_key');
+
+    Http::fake([
+        '*/payment-methods*' => Http::response(['data' => [
+            ['method' => 'pix', 'instruction_type' => 'pix', 'merchant_initiated_cards' => false],
+        ]]),
+        '*/payments' => Http::response(['data' => [
+            'id' => 'pay_1',
+            'status' => 'pending',
+            'order_reference' => 'ref',
+            'instructions' => ['type' => 'pix', 'qr_code' => 'QR'],
+        ]]),
+    ]);
+
+    $invoice = app(BillingService::class)->createCreditTopupPixInvoice(topupWorkspace(), 5000);
+
+    expect($invoice->purpose)->toBe(InvoicePurpose::CreditTopup)
+        ->and($invoice->status)->toBe(InvoiceStatus::Pending)
+        ->and($invoice->pix_qr_code)->toBe('QR');
+});
 
 it('prices a run at the provider cost plus the markup, converted', function () {
     // US$0.01 × 5 × 1.5 = R$0.075 → 8 cents, rounded up so a cheap run is

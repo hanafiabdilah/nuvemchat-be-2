@@ -10,6 +10,7 @@ use App\Enums\Notification\NotificationType;
 use App\Events\SubscriptionUpdated;
 use App\Exceptions\Billing\MissingBillingIdentityException;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
+use App\Exceptions\UserFacingException;
 use App\Models\Admin;
 use App\Models\ApiwaySubscription;
 use App\Models\Invoice;
@@ -24,6 +25,7 @@ use App\Services\Market\MarketDocuments;
 use App\Services\TrainedAgent\TrainedAgentService;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -77,9 +79,27 @@ class BillingService
         // Refused here rather than priced at the platform's own number: a plan
         // with no price for this country was never offered to this customer,
         // and charging them anything for it would be a price nobody set.
-        if (! $plan->isSoldIn($tenant->market_code)) {
+        $price = $plan->priceForMarket($tenant->market_code);
+
+        if ($price === null) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'plan_id' => __('This plan is not available in your country.'),
+            ]);
+        }
+
+        // ⚠️ Enforced here, not only in the browser. The checkout hides a method
+        // the plan does not sell, but this endpoint accepted one anyway — so a
+        // Pix charge could be raised against a plan that sells no Pix, and in a
+        // country that has no Pix at all.
+        $offered = match ($method) {
+            PaymentMethod::Card => (bool) $price->card_enabled,
+            PaymentMethod::Pix => (bool) $price->pix_enabled,
+            default => true,
+        };
+
+        if (! $offered) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'method' => __('This plan cannot be paid for this way in your country.'),
             ]);
         }
 
@@ -271,6 +291,19 @@ class BillingService
     public function createCreditTopupPixInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
     {
         $this->assertBillable($tenant);
+
+        // ⚠️ This method issues a Pix and nothing else — and Pix is a Brazilian
+        // rail. Without this an Indonesian workspace got a real invoice, then a
+        // gateway refusal, then generic copy telling them to try another payment
+        // method: one this endpoint never offered a choice about and their
+        // country does not have. Refused here, where the sentence can say so.
+        if (! $this->acceptsPix($tenant->currency())) {
+            throw new UserFacingException(
+                'Ainda não há meio de pagamento disponível no seu país para adicionar saldo.',
+                422,
+                'topup_unavailable_in_market',
+            );
+        }
 
         $expiresAt = now()->addHours(self::PIX_WINDOW_HOURS);
 
@@ -874,6 +907,38 @@ class BillingService
      * `customer.document_number` — a field the person reading it has never seen
      * and cannot find in this product.
      */
+    /**
+     * Whether the payment service can take a Pix in this currency today.
+     *
+     * ⚠️ Unknown counts as yes. The two failures are not equal: refusing a
+     * top-up that would have worked, because the service blinked, stops a
+     * Brazilian customer from paying us — while letting one through in a
+     * country with no Pix ends where it ended before, at the gateway. So only a
+     * positive answer that omits Pix refuses.
+     *
+     * Shares BillingController::paymentMethods()'s cache key deliberately: two
+     * readers asking the same question a minute apart must not get two answers.
+     */
+    private function acceptsPix(string $currency): bool
+    {
+        try {
+            $methods = Cache::remember(
+                "billing:payment-methods:{$currency}",
+                now()->addMinute(),
+                fn () => $this->payments->paymentMethods($currency),
+            );
+        } catch (\Throwable $e) {
+            Log::warning('could not read the payment methods before a top-up', [
+                'currency' => $currency,
+                'error' => $e->getMessage(),
+            ]);
+
+            return true;
+        }
+
+        return collect($methods)->contains(fn ($method) => ($method['method'] ?? null) === 'pix');
+    }
+
     protected function assertBillable(?Tenant $tenant): void
     {
         if (! $tenant?->hasBillingIdentity()) {

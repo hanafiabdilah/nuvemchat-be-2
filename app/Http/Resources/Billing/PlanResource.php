@@ -29,6 +29,11 @@ class PlanResource extends JsonResource
                         'market_code' => $price->market_code,
                         'amount_cents' => $price->amount_cents,
                         'currency' => $price->currency,
+                        // Per country, because Pix is: one global checkbox used
+                        // to offer it everywhere the moment a plan was priced
+                        // for a second country.
+                        'card_enabled' => (bool) $price->card_enabled,
+                        'pix_enabled' => (bool) $price->pix_enabled,
                     ])
                     ->values(),
             ),

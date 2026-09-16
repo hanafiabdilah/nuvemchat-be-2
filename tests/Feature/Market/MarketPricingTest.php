@@ -69,6 +69,44 @@ it('sells a plan only where it has a price', function () {
         ->and($plan->priceForMarket('BR')->currency)->toBe('BRL');
 });
 
+it('carries the payment methods of the country it was resolved for', function () {
+    pricingMarket();
+
+    // Pix is a Brazilian rail. It used to be one checkbox on the plan, so the
+    // moment a plan was priced for a second country it offered Pix there too.
+    $plan = pricingPlan([
+        'BR' => ['amount_cents' => 4990, 'pix_enabled' => true],
+        'ID' => ['amount_cents' => 14900000, 'pix_enabled' => false],
+    ]);
+
+    expect($plan->fresh()->applyMarketPrice('ID')->pix_enabled)->toBeFalse()
+        ->and($plan->fresh()->applyMarketPrice('BR')->pix_enabled)->toBeTrue()
+        // Untouched keys keep the column default rather than being switched off
+        // by a caller that never mentioned them.
+        ->and($plan->fresh()->applyMarketPrice('ID')->card_enabled)->toBeTrue();
+});
+
+it('refuses a payment method the plan does not offer in that country', function () {
+    pricingMarket();
+
+    $plan = pricingPlan([
+        'BR' => ['amount_cents' => 4990, 'pix_enabled' => true],
+        'ID' => ['amount_cents' => 14900000, 'pix_enabled' => false],
+    ]);
+
+    $owner = pricingWorkspace('ID');
+
+    // Refused at the service, not only hidden in the checkout: this endpoint
+    // accepted the method whatever the plan said, so a Pix charge could be
+    // raised in a country that has no Pix at all.
+    expect(fn () => app(BillingService::class)->subscribe(
+        $owner->tenant,
+        $plan->fresh(),
+        PaymentMethod::Pix,
+        ['payer_email' => $owner->email],
+    ))->toThrow(ValidationException::class);
+});
+
 it('lists a country only the plans priced for it, at its own price', function () {
     pricingMarket();
     pricingPlan(['BR' => 4990], ['name' => 'Brasil só']);

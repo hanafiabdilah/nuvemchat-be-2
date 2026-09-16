@@ -20,10 +20,17 @@ class MarketPrice extends Model
         'market_code',
         'amount_cents',
         'currency',
+        'card_enabled',
+        'pix_enabled',
     ];
 
     protected $casts = [
         'amount_cents' => 'integer',
+        // Which methods this thing is bought with **here**. Pix is a Brazilian
+        // rail, so this is a per-country question, not a per-plan one. Ignored
+        // for anything not bought at a checkout (a trained agent).
+        'card_enabled' => 'boolean',
+        'pix_enabled' => 'boolean',
     ];
 
     public function priceable(): MorphTo

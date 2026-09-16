@@ -120,7 +120,19 @@ class AdminPlanController extends Controller
         $prices = $validated['prices'] ?? [];
         unset($validated['prices']);
 
-        return array_map(fn ($amount) => (int) $amount, $prices);
+        // Either shape: a bare amount (what the editor sent before payment
+        // methods moved per country) or the whole row. The trait accepts both,
+        // so an older client keeps working and simply leaves the methods alone.
+        return array_map(
+            fn ($value) => is_array($value)
+                ? [
+                    'amount_cents' => (int) ($value['amount_cents'] ?? 0),
+                    ...(array_key_exists('card_enabled', $value) ? ['card_enabled' => (bool) $value['card_enabled']] : []),
+                    ...(array_key_exists('pix_enabled', $value) ? ['pix_enabled' => (bool) $value['pix_enabled']] : []),
+                ]
+                : (int) $value,
+            $prices,
+        );
     }
 
     private function validatePlan(Request $request, ?Plan $plan = null): array
@@ -131,7 +143,13 @@ class AdminPlanController extends Controller
             // No exchange rate is involved; a plan's price is whatever somebody
             // typed for that country.
             'prices' => ['sometimes', 'array'],
-            'prices.*' => ['nullable', 'integer', 'min:0'],
+            // A number, or a row carrying the payment methods this plan offers
+            // in that country. Pix is a Brazilian rail, so the question is per
+            // country — `plans.pix_enabled` answered it for the whole world.
+            'prices.*' => ['nullable'],
+            'prices.*.amount_cents' => ['sometimes', 'integer', 'min:0'],
+            'prices.*.card_enabled' => ['sometimes', 'boolean'],
+            'prices.*.pix_enabled' => ['sometimes', 'boolean'],
             'name' => ['required', 'string', 'max:100'],
             'slug' => ['nullable', 'string', 'max:120', Rule::unique('plans', 'slug')->ignore($plan?->id)],
             'description' => ['nullable', 'string', 'max:500'],

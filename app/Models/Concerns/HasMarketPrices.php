@@ -93,9 +93,36 @@ trait HasMarketPrices
         if ($price !== null) {
             $this->setAttribute('price_cents', $price->amount_cents);
             $this->setAttribute('currency', $price->currency);
+
+            // The payment methods travel with the price, so every reader that
+            // already asks a plan whether it takes Pix gets the answer for the
+            // country it was resolved for — without being taught about markets.
+            if ($this->hasPaymentFlags()) {
+                foreach (['card_enabled', 'pix_enabled'] as $flag) {
+                    $this->setAttribute($flag, (bool) $price->{$flag});
+                }
+            }
         }
 
         return $this;
+    }
+
+    /**
+     * Whether this kind of thing is bought at a checkout at all.
+     *
+     * A trained agent shares the price table and has no such columns: it is paid
+     * for out of the prepaid balance, where there is no method to choose.
+     */
+    protected function hasPaymentFlags(): bool
+    {
+        // ⚠️ A fact about the model, not about which attributes happen to be
+        // hydrated. Reading getAttributes() alone meant a plan created without
+        // naming these columns — which is exactly what the Back Office editor
+        // sends now that the methods moved per country — silently dropped every
+        // per-market method on the way in, and the plan came out selling Pix
+        // everywhere. A test caught it; nothing on screen would have.
+        return in_array('card_enabled', $this->getFillable(), true)
+            || array_key_exists('card_enabled', $this->getAttributes());
     }
 
     /** Only the ones on sale in this country. */
@@ -117,24 +144,41 @@ trait HasMarketPrices
      * market's, and letting a form set it would allow a country to be priced in
      * a currency its workspaces cannot pay in.
      *
-     * @param  array<string, int|null>  $prices  market code => minor units (null removes)
+     * @param  array<string, int|array{amount_cents?: int, card_enabled?: bool, pix_enabled?: bool}|null>  $prices
+     *                                                                                                              market code => minor units, or the whole row (null removes)
      */
     public function syncMarketPrices(array $prices): void
     {
         $currencies = Market::query()->pluck('currency', 'code');
         $keep = [];
 
-        foreach ($prices as $code => $amount) {
+        foreach ($prices as $code => $value) {
             $code = strtoupper(trim((string) $code));
 
-            if ($code === '' || $amount === null || ! isset($currencies[$code])) {
+            if ($code === '' || $value === null || ! isset($currencies[$code])) {
                 continue;
             }
 
-            $this->marketPrices()->updateOrCreate(
-                ['market_code' => $code],
-                ['amount_cents' => max(0, (int) $amount), 'currency' => $currencies[$code]],
-            );
+            // A bare number is still accepted: most callers only set a price,
+            // and the payment methods are a plan-only concern.
+            $row = is_array($value) ? $value : ['amount_cents' => $value];
+
+            $attributes = [
+                'amount_cents' => max(0, (int) ($row['amount_cents'] ?? 0)),
+                'currency' => $currencies[$code],
+            ];
+
+            if ($this->hasPaymentFlags()) {
+                // Absent means "as it was", so a caller that does not know about
+                // methods cannot silently turn one off.
+                foreach (['card_enabled', 'pix_enabled'] as $flag) {
+                    if (array_key_exists($flag, $row)) {
+                        $attributes[$flag] = (bool) $row[$flag];
+                    }
+                }
+            }
+
+            $this->marketPrices()->updateOrCreate(['market_code' => $code], $attributes);
 
             $keep[] = $code;
         }
@@ -164,6 +208,16 @@ trait HasMarketPrices
             [
                 'amount_cents' => max(0, (int) ($this->price_cents ?? 0)),
                 'currency' => $market->currency,
+                // ⚠️ `?? true`, never a bare cast: a plan created without naming
+                // these columns leaves the attribute unset, and casting that to
+                // false would seed a home-market price selling no payment method
+                // at all — a plan nobody could ever buy, from a line nobody
+                // wrote. The table's default is true, so that is what an unset
+                // attribute means here.
+                ...($this->hasPaymentFlags() ? [
+                    'card_enabled' => (bool) ($this->getAttribute('card_enabled') ?? true),
+                    'pix_enabled' => (bool) ($this->getAttribute('pix_enabled') ?? true),
+                ] : []),
             ],
         );
     }
@@ -171,10 +225,12 @@ trait HasMarketPrices
     /**
      * The price list as the Back Office edits it.
      *
-     * @return list<array{market_code: string, amount_cents: int, currency: string}>
+     * @return list<array{market_code: string, amount_cents: int, currency: string, card_enabled?: bool, pix_enabled?: bool}>
      */
     public function marketPriceList(): array
     {
+        $withMethods = $this->hasPaymentFlags();
+
         return $this->marketPrices()
             ->orderBy('market_code')
             ->get()
@@ -182,6 +238,10 @@ trait HasMarketPrices
                 'market_code' => $price->market_code,
                 'amount_cents' => $price->amount_cents,
                 'currency' => $price->currency,
+                ...($withMethods ? [
+                    'card_enabled' => (bool) $price->card_enabled,
+                    'pix_enabled' => (bool) $price->pix_enabled,
+                ] : []),
             ])
             ->all();
     }
