@@ -4,8 +4,12 @@ Dua hal yang dikerjakan bersama, karena keduanya lahir dari satu permintaan
 partner (ProxyBR, Set 2026): **agen AI harus bisa tahu siapa yang sedang
 menulis**, dan **harus bisa bicara lagi setelah sesuatu terjadi di luar chat**.
 
-Dokumen aslinya: `pedido-han-pingly-suporte.md` + balasannya
-`resposta-pingly-proxybr-atendimento-autonomo.md` (root monorepo).
+| Dokumen | Untuk siapa |
+|---|---|
+| Ini | Kita — cara kerja, kenapa begitu, cara mendiagnosis |
+| `referencia-api-ia-proativa.md` (root monorepo) | Developer hub/partner — referensi integrasi lengkap |
+| `pedido-han-pingly-suporte.md` + `resposta-pingly-proxybr-atendimento-autonomo.md` | Riwayat: permintaan asli dan apa yang kita ubah beserta alasannya |
+| `nuvemchat-fe-2/src/manual/pt-BR/29-desenvolvedor.md` § *IA proativa* | Pemilik akun — versi tanpa jargon |
 
 ---
 
