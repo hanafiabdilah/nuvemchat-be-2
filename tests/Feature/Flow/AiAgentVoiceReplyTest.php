@@ -378,6 +378,36 @@ test('a node can speak through ElevenLabs, in ElevenLabs\' own spelling', functi
     expect(outgoing(MessageType::Audio))->toHaveCount(1);
 });
 
+test('Eleven v3 is offered without a speed it does not have', function () {
+    $elevenLabs = fn (array $extra) => AiVoiceReply::config(['response_audio' => array_merge([
+        'enabled' => true,
+        'provider' => 'elevenlabs',
+        'voice_id' => 'v0iceId11labs',
+    ], $extra)]);
+
+    $v3 = AiVoiceReply::options($elevenLabs(['model' => 'eleven_v3', 'speed' => 1.2]), Channel::WhatsappOfficial);
+    $flash = AiVoiceReply::options($elevenLabs(['model' => 'eleven_flash_v2_5', 'speed' => 1.2]), Channel::WhatsappOfficial);
+
+    // ElevenLabs documents speed as unavailable for v3. Sending it anyway is at
+    // best ignored and at worst refused — and a refused run is not an error
+    // anyone sees: the retry drops every optional part, so the symptom is the
+    // voice reply quietly arriving as text.
+    expect($v3['model'])->toBe('eleven_v3')
+        ->and($v3)->not->toHaveKey('speed')
+        // Only the speed is subtracted. It is the same voice otherwise.
+        ->and($v3['voiceId'])->toBe('v0iceId11labs')
+        ->and($v3['outputFormat'])->toBe('opus_48000_32')
+        // And the models that do have one keep it.
+        ->and($flash['speed'])->toBe(1.2);
+
+    // The reason it has to be subtracted rather than simply not added: with no
+    // speed on the node, the platform default fills one in for every request.
+    config(['ai.voice.speed' => 1.0, 'ai.voice.elevenlabs_model' => 'eleven_v3_conversational']);
+
+    expect(AiVoiceReply::options($elevenLabs([]), Channel::WhatsappOfficial))
+        ->not->toHaveKey('speed');
+});
+
 test('the pronunciation fields can be emptied without a deploy', function () {
     Storage::fake('local', ['serve' => true]);
     // A hub that has not shipped them rejects the whole run over one unknown

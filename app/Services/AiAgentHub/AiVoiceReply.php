@@ -237,8 +237,15 @@ class AiVoiceReply
         ], fn ($value) => $value !== null && $value !== '');
 
         if ($config['provider'] === AiTranscription::ELEVENLABS) {
+            $model = $config['model'] ?? config('ai.voice.elevenlabs_model');
+
             return array_filter(array_merge($common, [
-                'model' => $config['model'] ?? config('ai.voice.elevenlabs_model'),
+                'model' => $model,
+                // Speed is sent on every request — the platform default fills it
+                // in when the node does not — so a model that has none has to be
+                // subtracted here rather than simply not added. Null is the way
+                // out: the filter below drops it back out of $common.
+                'speed' => self::elevenLabsSupportsSpeed($model) ? ($common['speed'] ?? null) : null,
                 'voiceId' => $config['voice_id'],
                 'outputFormat' => self::elevenLabsOutputFormat($channel),
                 'voiceSettings' => $config['voice_settings'] ?: null,
@@ -257,6 +264,28 @@ class AiVoiceReply
             'format' => self::format($channel),
             'instructions' => $config['instructions'] ?? config('ai.voice.instructions'),
         ]), fn ($value) => $value !== null && $value !== '');
+    }
+
+    /**
+     * Whether an ElevenLabs model has a speed control at all.
+     *
+     * Eleven v3 does not — ElevenLabs documents speed as unavailable for it,
+     * and it is the only one of their models here that drops it. Sending it
+     * anyway is at best ignored and at worst refused, and a refused run is not
+     * an error anyone sees: the retry drops every optional part, so the symptom
+     * is voice replies quietly arriving as text. Nothing is lost by leaving it
+     * out, because there is no speed there to set.
+     *
+     * Matched on the family rather than the exact id: `eleven_v3_conversational`
+     * and the next one along are the same model with the same gap, and a list
+     * of exact names would go quietly stale.
+     *
+     * Mirrored in the flow builder (`lib/audioVoices.ts`), which greys the field
+     * out — but this is where it actually stops.
+     */
+    public static function elevenLabsSupportsSpeed(mixed $model): bool
+    {
+        return ! str_starts_with(strtolower(trim((string) $model)), 'eleven_v3');
     }
 
     /** What the hub is asked for: the platform override, or the channel's own answer. */
