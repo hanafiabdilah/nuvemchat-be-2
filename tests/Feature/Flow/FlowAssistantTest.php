@@ -658,3 +658,71 @@ test('the assistant reports itself unavailable until the platform provisions it'
         ->assertOk()
         ->assertJsonPath('data.available', false);
 });
+
+test('the composer ceiling is served, not left for the browser to know', function () {
+    // The number backing the validation rule below. A copy written into
+    // TypeScript drifts the day this one moves, and the drift shows up as a
+    // message the box accepted and the server refused.
+    $user = assistantUser();
+
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/flows/assistant/status')
+        ->assertOk()
+        ->assertJsonPath('data.max_message_chars', FlowAssistantConfig::MAX_MESSAGE_CHARS);
+});
+
+test('a long pasted prompt is accepted', function () {
+    // The ceiling used to be 4000, tuned for someone typing a sentence. People
+    // paste prompts another AI wrote for them, and those run long — so the
+    // limit was refusing the requests this feature is best at, after they had
+    // already been written.
+    $user = assistantUser();
+    provisionAssistant();
+
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
+    $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
+
+    Http::fake([
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
+        '*/runs' => hubRun(envelope(validBlueprint(), 'Pronto.')),
+    ]);
+
+    $message = str_repeat('Descreva o atendimento da pizzaria em detalhes. ', 200);
+
+    expect(mb_strlen($message))->toBeGreaterThan(4000);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant", ['message' => $message])
+        ->assertOk();
+
+    // Whole, not clipped: a request that arrives missing its end is answered
+    // as if the person had asked for something else.
+    Http::assertSent(fn ($request) => ! str_ends_with($request->url(), '/runs')
+        || str_contains($request->data()['message']['content'], $message));
+});
+
+test('a message past the ceiling is refused before the model is called', function () {
+    // Still a ceiling, and it still has to bite before anything is spent: the
+    // whole message is replayed into the prompt, and a paste with no upper
+    // bound is a prompt with no upper bound.
+    $user = assistantUser();
+    provisionAssistant();
+
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
+    $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
+
+    Http::fake(['*' => Http::response([])]);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant", [
+            'message' => str_repeat('a', FlowAssistantConfig::MAX_MESSAGE_CHARS + 1),
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('message');
+
+    Http::assertNothingSent();
+
+    // And nothing landed in the shared transcript — a refused turn is not part
+    // of the reasoning a colleague reads later.
+    expect(FlowAssistantMessage::where('flow_id', $flow->id)->count())->toBe(0);
+});

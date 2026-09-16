@@ -67,8 +67,25 @@ class FlowAssistantConfig
     /** How many past turns of the conversation the client may send back. */
     public const MAX_HISTORY_TURNS = 12;
 
-    /** Ceiling on one message's text, so a pasted novel cannot become the prompt. */
-    public const MAX_MESSAGE_CHARS = 4000;
+    /**
+     * Ceiling on one message's text.
+     *
+     * It was 4000, and that was tuned for someone typing a request. People do
+     * not only type here: they paste a prompt another AI wrote for them, and
+     * those run long — so the ceiling was rejecting the requests the assistant
+     * is best at, after the person had already written them.
+     *
+     * A long message costs one turn, not every turn: {@see FlowAssistantService}
+     * clips each replayed history turn to 800 characters, so nothing here
+     * accumulates in later prompts.
+     *
+     * ⚠️ 16000 is the most `flow_assistant_messages.content` can hold: it is a
+     * MySQL `text` column (65,535 *bytes*), and 16000 characters is 64,000 bytes
+     * even if every one of them is a 4-byte emoji. Raising this further means
+     * widening that column to `mediumText` first — otherwise strict mode throws
+     * on insert and the person loses the text they just wrote.
+     */
+    public const MAX_MESSAGE_CHARS = 16000;
 
     /**
      * How many times a blueprint that fails validation is handed back to the

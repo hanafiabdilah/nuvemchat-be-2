@@ -66,6 +66,12 @@ class FlowAssistantController extends Controller
         return response()->json([
             'data' => [
                 'available' => FlowAssistantConfig::ready(),
+                // The composer's ceiling, served rather than mirrored in
+                // TypeScript: a second copy of the number drifts the day this
+                // one moves, and the drift shows up as a request the browser
+                // accepts and the server refuses. This response is already
+                // fetched once when the builder opens, so it costs nothing.
+                'max_message_chars' => FlowAssistantConfig::MAX_MESSAGE_CHARS,
             ],
         ]);
     }
