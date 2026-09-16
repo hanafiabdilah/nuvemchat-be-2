@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Enums\Billing\Feature;
+use App\Enums\Connection\Channel;
 use App\Events\LeadUpdated;
 use App\Models\Conversation;
 use App\Services\Billing\SubscriptionGate;
@@ -62,6 +63,23 @@ class EnsureLeadForConversation implements ShouldQueue
         // A workspace that works its funnel by hand should not have cards
         // appearing behind it.
         if (! LeadSettings::for($tenant)->autoCreate) {
+            return;
+        }
+
+        // A page view is not a lead.
+        //
+        // The live chat widget is the one channel that opens its conversation
+        // row before anybody has said anything: initSession() creates it the
+        // moment a visitor loads the page, which is why it deliberately does
+        // not broadcast the row either — an empty thread has nothing to show.
+        // The funnel had no such guard, so every visit became a card in the
+        // first column, and the column stopped being able to answer the only
+        // question it exists for: who is still waiting for a first reply.
+        //
+        // Nothing is lost by waiting: the visitor's opening message dispatches
+        // this job again, and it is idempotent.
+        if ($conversation->getRelationValue('connection')?->channel === Channel::LiveChatWidget
+            && $conversation->messages()->doesntExist()) {
             return;
         }
 

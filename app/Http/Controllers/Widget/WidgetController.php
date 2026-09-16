@@ -10,6 +10,7 @@ use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\MessageResource;
+use App\Jobs\EnsureLeadForConversation;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -208,6 +209,17 @@ class WidgetController extends Controller
         broadcast(new MessageReceived($message));
         broadcast(new ConversationUpdated($session->conversation->load('contact')));
 
+        $isOpeningMessage = $this->isOpeningMessage($session->conversation, $message);
+
+        // The funnel skipped this conversation when the session opened — a
+        // visitor who only loads the page is not a lead, and the row existed
+        // before they had said anything. Now they have said something, so the
+        // card is opened here instead, at the moment there is a person behind
+        // the thread. Idempotent: an existing open card is reused, not doubled.
+        if ($isOpeningMessage) {
+            EnsureLeadForConversation::dispatch($session->conversation->id);
+        }
+
         // A visitor who reopens the widget minutes after their chat was closed
         // goes back to the agent they were speaking to. Only on the opening
         // message: after that the thread is wherever it was routed, and the
@@ -217,8 +229,7 @@ class WidgetController extends Controller
         // the widget cannot use — its conversation is created when the session
         // opens, before the visitor has said anything, and assigning an empty
         // thread would push a blank row into the dashboard.
-        if ($this->isOpeningMessage($session->conversation, $message)
-            && LastAgentRouter::route($session->conversation)) {
+        if ($isOpeningMessage && LastAgentRouter::route($session->conversation)) {
             return response()->json([
                 'message' => (new MessageResource($message))->resolve(),
             ]);
