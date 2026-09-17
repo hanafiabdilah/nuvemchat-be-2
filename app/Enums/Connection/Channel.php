@@ -267,6 +267,24 @@ enum Channel: string
     }
 
     /**
+     * Whether the channel draws tappable reply buttons, a list menu or a media
+     * carousel natively. Only the WhatsApp Cloud API does.
+     *
+     * This is not a gate on the Interactive flow node — that node runs
+     * everywhere. It only decides *how* it is rendered: where this is false the
+     * executor spells the same options out as a numbered menu (and a carousel's
+     * cards as one media message each), and a customer who types "2" lands on
+     * exactly the branch a tap would have taken. See {@see InteractiveFallback}.
+     *
+     * Mirrored in `lib/channelCapabilities.ts`, which the builder reads to show
+     * the author what the non-tapping channels will actually receive.
+     */
+    public function supportsInteractiveMessages(): bool
+    {
+        return $this === self::WhatsappOfficial;
+    }
+
+    /**
      * The audio format to ask the AI hub for, so the reply arrives as the
      * right *kind* of message here.
      *

@@ -84,23 +84,26 @@ test('a flow bound only to whatsapp official accepts an interactive node', funct
         ->postJson("/api/flows/{$flow->id}/save", interactiveSavePayload($flow))
         ->assertOk();
 
-    expect(InteractiveNodes::flowUsesInteractive($flow->id))->toBeTrue();
+    expect(FlowNode::where('flow_id', $flow->id)->where('type', NodeType::Interactive)->exists())->toBeTrue();
 });
 
-test('a flow bound to another channel refuses an interactive node', function () {
+// The node used to be fenced off to WhatsApp Official from both ends, because
+// only the Cloud API draws tappable buttons. It is a menu, though, and every
+// channel can put a menu in front of somebody — so the fence is gone and only
+// the rendering changes. These two guard the fence staying gone.
+test('a flow bound to another channel accepts an interactive node', function () {
     $user = interactiveTestUser();
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Menu']);
     interactiveConnection($user, Channel::Telegram, $flow);
 
     $this->actingAs($user, 'sanctum')
         ->postJson("/api/flows/{$flow->id}/save", interactiveSavePayload($flow))
-        ->assertStatus(422)
-        ->assertJsonValidationErrors('nodes');
+        ->assertOk();
 
-    expect(InteractiveNodes::flowUsesInteractive($flow->id))->toBeFalse();
+    expect(FlowNode::where('flow_id', $flow->id)->where('type', NodeType::Interactive)->exists())->toBeTrue();
 });
 
-test('a flow with an interactive node cannot be assigned to a non whatsapp official connection', function () {
+test('a flow with an interactive node can be assigned to any channel', function () {
     $user = interactiveTestUser();
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Menu']);
     $flow->nodes()->create([
@@ -110,22 +113,68 @@ test('a flow with an interactive node cannot be assigned to a non whatsapp offic
         'position_y' => 0,
     ]);
 
-    $telegram = interactiveConnection($user, Channel::Telegram);
+    foreach ([Channel::Telegram, Channel::WhatsappOfficial] as $channel) {
+        $connection = interactiveConnection($user, $channel);
+
+        $this->actingAs($user, 'sanctum')
+            ->putJson("/api/connections/{$connection->id}", ['name' => $connection->name, 'flow_id' => $flow->id])
+            ->assertOk();
+
+        expect($connection->fresh()->flow_id)->toBe($flow->id);
+    }
+});
+
+test('the invalid branch is an accepted edge value alongside the option ids', function () {
+    $user = interactiveTestUser();
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Menu']);
+    interactiveConnection($user, Channel::Telegram, $flow);
+
+    $payload = interactiveSavePayload($flow);
+    $payload['nodes'][1]['data']['invalid_message'] = 'Não entendi, responda com o número.';
+    $payload['nodes'][1]['data']['invalid_attempts'] = 2;
+    $payload['nodes'][] = [
+        'id' => 'node-2', 'type' => 'message',
+        'data' => ['message_type' => 'text', 'body' => 'Vou te transferir.'],
+        'position_x' => 500, 'position_y' => 300,
+    ];
+    $payload['edges'][] = [
+        'source_node_id' => 'node-1',
+        'target_node_id' => 'node-2',
+        'condition_value' => InteractiveNodes::BRANCH_INVALID,
+    ];
 
     $this->actingAs($user, 'sanctum')
-        ->putJson("/api/connections/{$telegram->id}", ['name' => $telegram->name, 'flow_id' => $flow->id])
-        ->assertStatus(422)
-        ->assertJsonValidationErrors('flow_id');
-
-    expect($telegram->fresh()->flow_id)->toBeNull();
-
-    $whatsapp = interactiveConnection($user, Channel::WhatsappOfficial);
-
-    $this->actingAs($user, 'sanctum')
-        ->putJson("/api/connections/{$whatsapp->id}", ['name' => $whatsapp->name, 'flow_id' => $flow->id])
+        ->postJson("/api/flows/{$flow->id}/save", $payload)
         ->assertOk();
 
-    expect($whatsapp->fresh()->flow_id)->toBe($flow->id);
+    $node = FlowNode::where('flow_id', $flow->id)->where('type', NodeType::Interactive)->firstOrFail();
+
+    expect($node->data['invalid_attempts'])->toBe(2)
+        ->and($node->outgoingEdges()->where('condition_value', InteractiveNodes::BRANCH_INVALID)->exists())->toBeTrue();
+});
+
+test('invalid_attempts is clamped and defaults to one', function () {
+    expect(InteractiveNodes::invalidAttempts([]))->toBe(InteractiveNodes::DEFAULT_INVALID_ATTEMPTS)
+        ->and(InteractiveNodes::invalidAttempts(['invalid_attempts' => 0]))->toBe(1)
+        ->and(InteractiveNodes::invalidAttempts(['invalid_attempts' => 99]))->toBe(InteractiveNodes::MAX_INVALID_ATTEMPTS);
+});
+
+test('a typed number picks the branch even with trailing punctuation', function () {
+    $data = [
+        'interactive_type' => 'button',
+        'body' => 'Pick one',
+        'buttons' => [['id' => 'btn_a1', 'title' => 'Suporte'], ['id' => 'btn_b2', 'title' => 'Vendas']],
+    ];
+
+    // On a channel without buttons typing the number *is* the interaction, so
+    // the shapes people actually send have to count.
+    expect(InteractiveNodes::matchOption($data, null, '2'))->toBe('btn_b2')
+        ->and(InteractiveNodes::matchOption($data, null, ' 2. '))->toBe('btn_b2')
+        ->and(InteractiveNodes::matchOption($data, null, '2)'))->toBe('btn_b2')
+        ->and(InteractiveNodes::matchOption($data, null, 'vendas'))->toBe('btn_b2')
+        // Still a sentence, not a pick.
+        ->and(InteractiveNodes::matchOption($data, null, '2 caixas'))->toBeNull()
+        ->and(InteractiveNodes::matchOption($data, null, '9'))->toBeNull();
 });
 
 test('every option becomes its own branch id, reused for the send payload', function () {

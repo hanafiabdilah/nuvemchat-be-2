@@ -639,11 +639,11 @@ class FlowExecutor
         }
 
         try {
-            $isWhatsappOfficial = $conversation->connection->channel === InteractiveNodes::CHANNEL;
+            $native = $conversation->connection->channel->supportsInteractiveMessages();
 
-            $message = $isWhatsappOfficial
+            $message = $native
                 ? $this->messageService->sendInteractive($conversation, InteractiveNodes::sendPayload($data))
-                : $this->sendInteractiveAsPlainText($conversation, $data, $options);
+                : $this->sendInteractiveAsPlainText($flowState, $conversation, $data);
 
             if (! $message) {
                 Log::error('FlowExecutor: Failed to send interactive message', [
@@ -654,15 +654,17 @@ class FlowExecutor
                 return;
             }
 
-            $message->update(['sent_by_flow_id' => $flowState->flow_id]);
-            broadcast(new MessageReceived($message));
+            if ($native) {
+                $message->update(['sent_by_flow_id' => $flowState->flow_id]);
+                broadcast(new MessageReceived($message));
+            }
 
             Log::info('FlowExecutor: Interactive message sent', [
                 'node_id' => $node->id,
                 'message_id' => $message->id,
                 'conversation_id' => $conversation->id,
                 'options' => count($options),
-                'as_plain_text' => ! $isWhatsappOfficial,
+                'as_plain_text' => ! $native,
             ]);
 
             if (! InteractiveNodes::awaitsReply($data)) {
@@ -672,9 +674,12 @@ class FlowExecutor
             }
 
             // Mark the prompt as sent and stay put — the next inbound message
-            // is the answer, routed back here through resumeFlow().
+            // is the answer, routed back here through resumeFlow(). The wrong
+            // answer tally starts over: a customer who comes back to this menu
+            // is not carrying the mistakes from the last time they saw it.
             $stateData = $flowState->state_data ?? [];
             $stateData["_interactive_sent_{$node->id}"] = true;
+            unset($stateData[InteractiveNodes::attemptsKey($node->id)]);
             $flowState->update(['state_data' => $stateData]);
 
             // No timeout branch exists on this node, so there is no clock to
@@ -697,8 +702,13 @@ class FlowExecutor
      *
      * The tap arrives as an inbound `interactive` message whose reply id is the
      * option id we sent; typed answers are matched by title or by position.
-     * An answer that matches nothing leaves the flow on this node, so the
-     * customer can simply tap again.
+     *
+     * An answer that matches nothing used to leave the flow sitting here in
+     * complete silence. Behind buttons that was fine — the menu is still on
+     * screen and the customer taps again. On a channel where the menu is text,
+     * it is a dead end: somebody writes "oi" and the bot never speaks again. So
+     * a miss now answers (`invalid_message`) and, once the author's patience
+     * runs out, leaves through the `invalid` branch.
      */
     protected function handleInteractiveNodeInput(FlowState $flowState, FlowNode $node, string $userInput): void
     {
@@ -709,18 +719,13 @@ class FlowExecutor
         $optionId = InteractiveNodes::matchOption($data, $replyId, $userInput);
 
         if ($optionId === null) {
-            Log::info('FlowExecutor: Interactive reply matched no option, waiting for another', [
-                'node_id' => $node->id,
-                'conversation_id' => $flowState->conversation_id,
-                'reply_id' => $replyId,
-                'input' => mb_substr($userInput, 0, 50),
-            ]);
+            $this->handleInteractiveMiss($flowState, $node, $data, $replyId, $userInput);
 
             return;
         }
 
         $stateData = $flowState->state_data ?? [];
-        unset($stateData["_interactive_sent_{$node->id}"]);
+        unset($stateData["_interactive_sent_{$node->id}"], $stateData[InteractiveNodes::attemptsKey($node->id)]);
         $flowState->update(['state_data' => $stateData]);
 
         Log::info('FlowExecutor: Interactive option selected', [
@@ -730,6 +735,67 @@ class FlowExecutor
         ]);
 
         $this->moveToNextNodeByBranch($flowState, $node, $optionId);
+    }
+
+    /**
+     * The customer answered something that is not on the menu.
+     *
+     * Say so, count it, and give up on the menu once the count reaches the
+     * node's limit — but only into an edge the author actually drew. Without an
+     * `invalid` edge there is nowhere to give up *to*, so the node keeps
+     * waiting exactly as it always has; that is what makes this safe for every
+     * flow saved before the branch existed.
+     *
+     * @param  array<string, mixed>  $data  interpolated node data
+     */
+    protected function handleInteractiveMiss(
+        FlowState $flowState,
+        FlowNode $node,
+        array $data,
+        ?string $replyId,
+        string $userInput
+    ): void {
+        $stateData = $flowState->state_data ?? [];
+        $attempts = (int) ($stateData[InteractiveNodes::attemptsKey($node->id)] ?? 0) + 1;
+
+        $leaving = $attempts >= InteractiveNodes::invalidAttempts($data)
+            && $node->outgoingEdges()->where('condition_value', InteractiveNodes::BRANCH_INVALID)->exists();
+
+        Log::info('FlowExecutor: Interactive reply matched no option', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'reply_id' => $replyId,
+            'input' => mb_substr($userInput, 0, 50),
+            'attempts' => $attempts,
+            'leaving' => $leaving,
+        ]);
+
+        // Sent before the branch is taken, so the explanation arrives ahead of
+        // whatever the invalid branch does next — which is often a handoff, and
+        // "não entendi" landing after "vou te transferir" reads like two bots.
+        if (($message = InteractiveNodes::invalidMessage($data)) !== '') {
+            // Already interpolated with the rest of the node's copy.
+            $sent = $this->messageService->sendMessage($flowState->conversation, [
+                'message' => $message,
+            ]);
+
+            if ($sent) {
+                $sent->update(['sent_by_flow_id' => $flowState->flow_id]);
+                broadcast(new MessageReceived($sent));
+            }
+        }
+
+        if (! $leaving) {
+            $stateData[InteractiveNodes::attemptsKey($node->id)] = $attempts;
+            $flowState->update(['state_data' => $stateData]);
+
+            return;
+        }
+
+        unset($stateData["_interactive_sent_{$node->id}"], $stateData[InteractiveNodes::attemptsKey($node->id)]);
+        $flowState->update(['state_data' => $stateData]);
+
+        $this->moveToNextNodeByBranch($flowState, $node, InteractiveNodes::BRANCH_INVALID);
     }
 
     /**
@@ -750,51 +816,54 @@ class FlowExecutor
     }
 
     /**
-     * Fallback for a flow whose connection is not WhatsApp Official — which
-     * validation prevents, but a connection can be re-pointed after the fact.
-     * The options go out as a numbered list so replying "2" still picks branch 2.
+     * Put the node in front of a customer on a channel that cannot draw
+     * buttons: the same options, spelled out as a numbered menu.
+     *
+     * The rendering — and the reasoning behind it — lives in
+     * {@see InteractiveFallback}; here it is only sent. A carousel comes back as
+     * several bubbles (one media message per card), so the loop is not an
+     * optimisation waiting to happen: it is the shape of the thing.
+     *
+     * Returns the first bubble that actually went out, which is all the caller
+     * needs to know the prompt reached somebody. A later bubble failing leaves
+     * a partial menu — worth logging, but not worth pretending the whole node
+     * failed and re-sending it on the customer's next message.
+     *
+     * @param  array<string, mixed>  $data  interpolated node data
      */
-    protected function sendInteractiveAsPlainText(Conversation $conversation, array $data, array $options): ?Message
+    protected function sendInteractiveAsPlainText(FlowState $flowState, Conversation $conversation, array $data): ?Message
     {
-        Log::warning('FlowExecutor: Interactive node on a non-WhatsApp-Official channel, sending plain text', [
+        Log::info('FlowExecutor: Interactive node on a channel without buttons, sending a numbered menu', [
             'conversation_id' => $conversation->id,
             'channel' => $conversation->connection->channel->value,
+            'interactive_type' => InteractiveNodes::type($data),
         ]);
 
-        $isCarousel = InteractiveNodes::type($data) === 'carousel';
+        $first = null;
 
-        $lines = array_filter([
-            $isCarousel ? '' : trim((string) ($data['header'] ?? '')),
-            trim((string) ($data['body'] ?? '')),
-        ]);
+        foreach (InteractiveFallback::bubbles($data) as $index => $bubble) {
+            // No flow state on purpose: $data arrived already interpolated, and
+            // a second pass would re-read {{…}} that a customer's own answer had
+            // put into the text. The stamp is applied by hand below instead.
+            $message = $this->sendByMessageType($conversation, $bubble);
 
-        // A carousel has no plain-text equivalent, so each card is spelled out:
-        // its caption, then wherever its button would have taken the customer.
-        if ($isCarousel) {
-            foreach (InteractiveNodes::cards($data) as $card) {
-                $lines[] = '— '.($card['body'] !== '' ? $card['body'] : $card['header_url']);
+            if (! $message) {
+                Log::error('FlowExecutor: Failed to send an interactive fallback bubble', [
+                    'conversation_id' => $conversation->id,
+                    'index' => $index,
+                    'message_type' => $bubble['message_type'],
+                ]);
 
-                if (($card['button_url'] ?? '') !== '') {
-                    $lines[] = '  '.$card['button_label'].': '.$card['button_url'];
-                }
+                continue;
             }
 
-            if ($options !== []) {
-                $lines[] = '';
-            }
+            $message->update(['sent_by_flow_id' => $flowState->flow_id]);
+            broadcast(new MessageReceived($message));
+
+            $first ??= $message;
         }
 
-        foreach ($options as $i => $option) {
-            $lines[] = ($i + 1).'. '.$option['title'];
-        }
-
-        if (! $isCarousel && $footer = trim((string) ($data['footer'] ?? ''))) {
-            $lines[] = $footer;
-        }
-
-        return $this->messageService->sendMessage($conversation, [
-            'message' => implode("\n", $lines),
-        ]);
+        return $first;
     }
 
     /**
@@ -804,7 +873,7 @@ class FlowExecutor
      */
     protected function interpolateInteractiveData(array $data, FlowState $flowState): array
     {
-        foreach (['header', 'body', 'footer', 'button_label'] as $key) {
+        foreach (['header', 'body', 'footer', 'button_label', 'invalid_message'] as $key) {
             if (isset($data[$key]) && is_string($data[$key])) {
                 $data[$key] = $this->interpolateVariables($data[$key], $flowState);
             }

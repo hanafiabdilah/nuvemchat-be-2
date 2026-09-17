@@ -22,7 +22,11 @@ class CreditTransaction extends Model
         'invoice_id',
         'reference',
         'cost_usd',
-        'usd_brl_rate',
+        // Renamed from usd_brl_rate when a second currency arrived. It was
+        // missed here, so every debit since has mass-assigned a key that is not
+        // fillable and lost its rate — the one number that makes an old charge
+        // explainable months later.
+        'usd_rate',
         'markup_pct',
         'description',
         'meta',
@@ -33,7 +37,7 @@ class CreditTransaction extends Model
         'amount_cents' => 'integer',
         'balance_after_cents' => 'integer',
         'cost_usd' => 'decimal:8',
-        'usd_brl_rate' => 'decimal:4',
+        'usd_rate' => 'decimal:4',
         'markup_pct' => 'decimal:2',
         'meta' => 'array',
     ];

@@ -235,6 +235,12 @@ class FlowBlueprint
                 'cards.*.buttons.*.title' => ['nullable', 'string', 'max:20'],
                 'cards.*.button_label' => ['nullable', 'string', 'max:20'],
                 'cards.*.button_url' => ['nullable', 'string', 'max:2000'],
+                // What to say when the answer is not on the menu, and how many
+                // misses to absorb before leaving through the `invalid` branch.
+                // Both only matter off WhatsApp, where the menu is text and a
+                // silent node is a dead end.
+                'invalid_message' => ['nullable', 'string', 'max:1024'],
+                'invalid_attempts' => ['nullable', 'integer', 'min:1', 'max:'.InteractiveNodes::MAX_INVALID_ATTEMPTS],
             ],
             'http_request' => [
                 'method' => ['required', 'string', Rule::in(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])],
@@ -559,8 +565,8 @@ class FlowBlueprint
         }
 
         if ($type === 'interactive') {
-            $options = InteractiveNodes::options($sourceNode['data'] ?? []);
-            $ids = array_column($options, 'id');
+            $data = $sourceNode['data'] ?? [];
+            $ids = array_column(InteractiveNodes::options($data), 'id');
 
             // A carousel of link-out cards has no branches at all: tapping one
             // leaves WhatsApp and the flow moves straight on, so its single
@@ -569,9 +575,15 @@ class FlowBlueprint
                 return [];
             }
 
+            // Everything that waits for a pick also emits `invalid` — the one
+            // branch the author did not invent, taken when the answer is not on
+            // the menu. It is optional: drawing no edge from it leaves the node
+            // waiting, exactly as it did before the branch existed.
+            $ids[] = InteractiveNodes::BRANCH_INVALID;
+
             if (! in_array($value, $ids, true)) {
                 $shown = $value === null ? 'null' : "\"{$value}\"";
-                $list = $ids === [] ? '(none)' : '"'.implode('", "', $ids).'"';
+                $list = '"'.implode('", "', $ids).'"';
 
                 return ["Edge from interactive node \"{$sourceKey}\" has condition_value {$shown}; it must be one of that node's option ids: {$list}."];
             }
@@ -684,6 +696,8 @@ class FlowBlueprint
         $interactiveTypes = self::quoted(InteractiveNodes::TYPES);
         $carouselMin = InteractiveNodes::CAROUSEL_MIN_CARDS;
         $carouselMax = InteractiveNodes::CAROUSEL_MAX_CARDS;
+        $invalidBranch = InteractiveNodes::BRANCH_INVALID;
+        $invalidAttempts = InteractiveNodes::MAX_INVALID_ATTEMPTS;
         $resolved = ConversationStatus::Resolved->value;
         $replied = WaitResponseNodes::BRANCH_REPLIED;
         $timeout = WaitResponseNodes::BRANCH_TIMEOUT;
@@ -729,7 +743,7 @@ class FlowBlueprint
             http_request  → "success" / "error"
             payment       → "{$paid}" / "{$failed}"
             invoice       → "{$issued}" / "{$invoiceFailed}"
-            interactive   → the id of one of that node's own options
+            interactive   → the id of one of that node's own options, or "{$invalidBranch}"
         - status and go_to_flow END the flow: no edge may leave them.
         - Lay the canvas out left to right: x grows by ~280 per step, y separates
           branches by ~180. Never stack two nodes on the same coordinates.
@@ -822,10 +836,20 @@ class FlowBlueprint
           ("image"/"video"), a public `header_url`, and a body ≤ 160 chars. Only
           propose a carousel when the user gave you media URLs.
         - Option ids: lowercase letters, digits, underscore or dash. Make them
-          readable ("btn_suporte", not "1").
+          readable ("btn_suporte", not "1"). Never use "{$invalidBranch}" — that name
+          belongs to the branch below.
         - ONE OUTPUT PER OPTION. Each edge's `condition_value` is that option's id.
-        - WhatsApp Official ONLY. If you do not know the channel, prefer a message
-          node with numbered choices plus a response node.
+        - Runs on EVERY channel. Only WhatsApp Official draws real buttons;
+          elsewhere the same options go out as a numbered menu and a customer who
+          replies "2" takes branch 2, so you never need a message-plus-response
+          pair to fake a menu.
+        - PLUS one optional output "{$invalidBranch}", taken when the answer is not on
+          the menu. Wire it whenever there is somewhere sensible to go (a human
+          handoff, a repeat of the menu); leave it unwired to keep waiting.
+          `invalid_message` is what to say on a miss and `invalid_attempts`
+          (1–{$invalidAttempts}) how many misses to absorb first. Both are worth setting
+          whenever the flow may run off WhatsApp: there the menu is text, and a
+          node that answers nothing is a dead end.
 
         ### ai_agent — hand the conversation to a configured AI agent
         { "ai_hub_agent_id": 12, "welcoming_message": "Oi! Sou o assistente virtual." }

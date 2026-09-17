@@ -211,7 +211,7 @@ trait Commerce
             $this->make(CreditTransaction::class, [
                 'tenant_id' => $this->tenant->id, 'type' => $type, 'amount_cents' => $amount, 'balance_after_cents' => $balance,
                 'currency' => 'BRL', 'description' => $description, 'reference' => "demo:{$type}:{$i}",
-                'usd_brl_rate' => $type === 'usage' ? 5.6 : null, 'markup_pct' => $type === 'usage' ? 40 : null,
+                'usd_rate' => $type === 'usage' ? 5.6 : null, 'markup_pct' => $type === 'usage' ? 40 : null,
                 'created_at' => $at, 'updated_at' => $at,
             ]);
         }

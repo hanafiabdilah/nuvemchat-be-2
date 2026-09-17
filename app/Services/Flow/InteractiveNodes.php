@@ -2,29 +2,44 @@
 
 namespace App\Services\Flow;
 
-use App\Enums\Connection\Channel;
-use App\Enums\Flow\NodeType;
-use App\Models\Connection;
-use App\Models\Flow;
-use App\Models\FlowNode;
-use Illuminate\Support\Collection;
-
 /**
  * Rules and shapes shared by the Interactive flow node (reply buttons, a list
  * menu, or a media carousel).
  *
- * Interactive messages are a WhatsApp Cloud API feature — no other channel we
- * speak has a native equivalent — so a flow containing one of these nodes may
- * only be wired to WhatsApp Official connections. That constraint is enforced
- * from both ends: saving the flow, and pointing a connection at it.
+ * Tappable buttons are a WhatsApp Cloud API feature, and this node used to be
+ * fenced off to WhatsApp Official because of it — a flow that used one refused
+ * to save while any other connection pointed at it. That fence is gone: the
+ * node is a *menu with one branch per choice*, and a menu works on every
+ * channel. Where the taps do not exist the executor spells the same options out
+ * as a numbered list ({@see InteractiveFallback}), and `matchOption()` — which
+ * has always accepted a typed number — routes the answer to the same branch.
+ *
+ * Which channels draw it natively is {@see Channel::supportsInteractiveMessages()}.
+ *
+ * ⚠️ `BRANCH_INVALID` shares a namespace with the option ids an author invents.
+ * Generated ids are `btn_…` / `row_…` / `card_…`, so nothing we create collides,
+ * but an imported flow whose option is literally called `invalid` would share a
+ * handle with the fallback branch.
  */
 class InteractiveNodes
 {
-    /** The only channel able to run these nodes. */
-    public const CHANNEL = Channel::WhatsappOfficial;
-
     /** The interactive kinds a node may be authored as. */
     public const TYPES = ['button', 'list', 'carousel'];
+
+    /**
+     * The one branch this node emits that its author did not invent: the
+     * customer answered something that is not on the menu.
+     *
+     * It only ever fires when an edge was actually drawn from it. Without one
+     * the flow stays on the node and re-prompts, which is what it has always
+     * done — so no flow saved before this existed can change behaviour.
+     */
+    public const BRANCH_INVALID = 'invalid';
+
+    /** Wrong answers tolerated before leaving through `invalid`, when unset. */
+    public const DEFAULT_INVALID_ATTEMPTS = 1;
+
+    public const MAX_INVALID_ATTEMPTS = 5;
 
     /** A carousel needs at least this many cards before the Cloud API accepts it. */
     public const CAROUSEL_MIN_CARDS = 2;
@@ -123,6 +138,66 @@ class InteractiveNodes
         }
 
         return $options;
+    }
+
+    /**
+     * Each option's 1-based position, keyed by option id.
+     *
+     * The position is what a customer types on a channel without buttons, and
+     * `matchOption()` resolves a typed digit through the very same order — so
+     * anything printing those numbers ({@see InteractiveFallback}) looks them
+     * up here rather than counting rows a second time and risking a drift.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, int>
+     */
+    public static function optionNumbers(array $data): array
+    {
+        $numbers = [];
+
+        foreach (self::options($data) as $i => $option) {
+            $numbers[$option['id']] = $i + 1;
+        }
+
+        return $numbers;
+    }
+
+    /**
+     * What to say when the answer is not on the menu. Empty means say nothing,
+     * which is what this node did before the field existed.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public static function invalidMessage(array $data): string
+    {
+        return trim((string) ($data['invalid_message'] ?? ''));
+    }
+
+    /**
+     * How many unmatched answers to absorb before taking the `invalid` branch.
+     *
+     * At least one, because zero would mean the branch can never be reached and
+     * the field would silently do nothing. The ceiling is there because a menu
+     * that has already been missed five times is not going to be hit on the
+     * sixth — at that point the customer wants a person, not another prompt.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public static function invalidAttempts(array $data): int
+    {
+        $attempts = (int) ($data['invalid_attempts'] ?? self::DEFAULT_INVALID_ATTEMPTS);
+
+        return max(1, min(self::MAX_INVALID_ATTEMPTS, $attempts));
+    }
+
+    /**
+     * Where the unmatched-answer tally lives, alongside the `_interactive_sent_`
+     * flag the executor parks on. Cleared whenever the flow leaves the node —
+     * by a pick, by the invalid branch, or by running the node again.
+     */
+    public static function attemptsKey(int|string $nodeId): string
+    {
+        return "_interactive_invalid_{$nodeId}";
     }
 
     /**
@@ -334,6 +409,10 @@ class InteractiveNodes
      * On a carousel the titles repeat across cards ("Learn more" on each), so
      * only the reply id truly disambiguates; the text fallbacks land on the
      * first card that matches, which is the best a typed answer can do.
+     *
+     * The positional fallback stopped being a nicety once this node started
+     * running on channels with no buttons: there, typing the number *is* the
+     * interaction, so "2." and "2)" have to count as much as a bare "2".
      */
     public static function matchOption(array $data, ?string $replyId, string $userInput): ?string
     {
@@ -363,8 +442,15 @@ class InteractiveNodes
             }
         }
 
-        if (ctype_digit($input)) {
-            $index = (int) $input - 1;
+        // "2." and "2)" are how people answer a numbered menu; anything with a
+        // digit *and* something else ("2 caixas") is left alone, because that
+        // is a sentence, not a pick.
+        // ASCII only: rtrim works on bytes, and handing it a multibyte dash
+        // would strip half a character rather than the character.
+        $digits = rtrim($input, " \t.)-:");
+
+        if (ctype_digit($digits)) {
+            $index = (int) $digits - 1;
 
             if (isset($options[$index])) {
                 return $options[$index]['id'];
@@ -374,49 +460,13 @@ class InteractiveNodes
         return null;
     }
 
-    /** Does this flow contain at least one interactive node? */
-    public static function flowUsesInteractive(int|string $flowId): bool
-    {
-        return FlowNode::where('flow_id', $flowId)
-            ->where('type', NodeType::Interactive)
-            ->exists();
-    }
-
-    /** Same question, answered from an unsaved set of nodes coming off the builder. */
-    public static function payloadUsesInteractive(array $nodes): bool
-    {
-        foreach ($nodes as $node) {
-            if (($node['type'] ?? null) === NodeType::Interactive->value) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     /**
-     * Connections wired to this flow that cannot run interactive nodes — the
-     * reason a save (or an assignment) is refused, and what we name in the error.
+     * An option's stored id, or a positional one for options authored without it.
+     *
+     * Public because anything walking the authored structure — sections, cards —
+     * has to arrive at the same id this class does to look an option back up.
      */
-    public static function conflictingConnections(Flow|int|string $flow): Collection
-    {
-        $flowId = $flow instanceof Flow ? $flow->id : $flow;
-
-        return Connection::where('flow_id', $flowId)
-            ->where('channel', '!=', self::CHANNEL)
-            ->get(['id', 'name', 'channel']);
-    }
-
-    /** Human-readable "telegram (Support), instagram (Shop)" for error messages. */
-    public static function describeConnections(Collection $connections): string
-    {
-        return $connections
-            ->map(fn (Connection $connection) => $connection->channel->value . ' (' . $connection->name . ')')
-            ->implode(', ');
-    }
-
-    /** An option's stored id, or a positional one for options authored without it. */
-    private static function optionId(array $option, string $fallback): string
+    public static function optionId(array $option, string $fallback): string
     {
         $id = trim((string) ($option['id'] ?? ''));
 

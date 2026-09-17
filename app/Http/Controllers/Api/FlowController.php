@@ -11,7 +11,6 @@ use App\Models\FlowEdge;
 use App\Models\FlowNode;
 use App\Services\Flow\FlowBlueprint;
 use App\Services\Flow\LegacyWaitUpgrade;
-use App\Services\Flow\InteractiveNodes;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -155,10 +154,6 @@ class FlowController extends Controller
 
         // Validate each node's data based on its type
         $this->validateNodesData($validated['nodes']);
-
-        // Interactive nodes only run on WhatsApp Official, so a flow that uses
-        // one cannot stay wired to any other channel.
-        $this->assertInteractiveNodesAllowed($flow, $validated['nodes']);
 
         $this->assertNoSelfJump($flow, $validated['nodes']);
 
@@ -380,33 +375,6 @@ class FlowController extends Controller
             'message' => 'Flow imported successfully',
             'data' => new FlowResource($flow),
         ], 201);
-    }
-
-    /**
-     * Refuse a flow that mixes interactive nodes with connections that cannot
-     * run them. Reply buttons and list menus exist only on the WhatsApp Cloud
-     * API, so the moment a flow uses one it is a WhatsApp-Official-only flow.
-     * The mirror check lives in ConnectionController, which refuses to point a
-     * non-official connection at such a flow.
-     */
-    private function assertInteractiveNodesAllowed(Flow $flow, array $nodes): void
-    {
-        if (!InteractiveNodes::payloadUsesInteractive($nodes)) {
-            return;
-        }
-
-        $conflicting = InteractiveNodes::conflictingConnections($flow);
-
-        if ($conflicting->isEmpty()) {
-            return;
-        }
-
-        throw ValidationException::withMessages([
-            'nodes' => [
-                'This flow uses WhatsApp buttons or a list menu, which only work on WhatsApp Official. '
-                . 'Unlink it from these connections first: ' . InteractiveNodes::describeConnections($conflicting) . '.',
-            ],
-        ]);
     }
 
     /**

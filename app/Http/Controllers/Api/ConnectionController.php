@@ -26,7 +26,6 @@ use App\Services\Connection\TikTok\TikTokAuthClient;
 use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
 use App\Services\Connection\WhatsApp\WhatsappNumberMigrationService;
 use App\Services\Email\EmailInboxSynchronizer;
-use App\Services\Flow\InteractiveNodes;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -249,8 +248,6 @@ class ConnectionController extends Controller
             ], 422);
         }
 
-        $this->assertFlowRunsOnChannel(Channel::from($validated['channel']), $validated['flow_id'] ?? null);
-
         $connection = $tenant->connections()->create($validated);
 
         return response()->json([
@@ -290,28 +287,6 @@ class ConnectionController extends Controller
 
         return response()->json([
             'data' => $service->update($connection, $validated),
-        ]);
-    }
-
-    /**
-     * A flow containing reply-button / list nodes can only drive WhatsApp
-     * Official connections — the Cloud API is the only channel that renders
-     * them. Mirrors the check FlowController makes when the flow is saved.
-     */
-    private function assertFlowRunsOnChannel(Channel $channel, int|string|null $flowId): void
-    {
-        if ($flowId === null || $channel === InteractiveNodes::CHANNEL) {
-            return;
-        }
-
-        if (!InteractiveNodes::flowUsesInteractive($flowId)) {
-            return;
-        }
-
-        throw ValidationException::withMessages([
-            'flow_id' => [
-                'This flow uses WhatsApp buttons or a list menu, so it can only be assigned to a WhatsApp Official connection.',
-            ],
         ]);
     }
 
@@ -549,8 +524,6 @@ class ConnectionController extends Controller
             // same visit" and becomes a routing rule nobody remembers writing.
             'return_to_last_agent_minutes' => ['sometimes', 'integer', 'min:1', 'max:1440'],
         ]);
-
-        $this->assertFlowRunsOnChannel($connection->channel, $validated['flow_id'] ?? null);
 
         $connection->update($validated);
 
