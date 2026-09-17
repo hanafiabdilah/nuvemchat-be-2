@@ -25,6 +25,7 @@ use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowWaitResponseBuffer;
 use App\Jobs\RunFlowWaitResponseTimeout;
+use App\Jobs\SendAiHoldingMessage;
 use App\Jobs\SendPixelEvent;
 use App\Models\AiHubAgent;
 use App\Models\AiHubRun;
@@ -47,8 +48,10 @@ use App\Services\AiAgentHub\AiAttachments;
 use App\Services\AiAgentHub\AiConversationContext;
 use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiFirstMessage;
+use App\Services\AiAgentHub\AiHoldingMessage;
 use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
+use App\Services\AiAgentHub\AiTypingPresence;
 use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
@@ -1781,6 +1784,15 @@ class FlowExecutor
             // the handoff path too: transferToHuman() ends up here.
             LiveActivity::idle($conversation);
 
+            // Said to the customer rather than to the agents, and for that
+            // reason worth more care: an agent who presses "Assumir da IA"
+            // leaves a thread that is still eligible for a flow, so the
+            // refresher would happily keep the bot typing over them until its
+            // deadline. Both are idempotent — the turn's own `finally` usually
+            // gets here first.
+            $this->clearAiHoldingMessage($conversation);
+            AiTypingPresence::stop($conversation);
+
             // Don't delete flow state - preserve context data
             // Flow will automatically stop executing due to status check
         }
@@ -2857,6 +2869,12 @@ class FlowExecutor
         // is what stops somebody taking the thread over mid-turn.
         LiveActivity::aiArmed($flowState->conversation, $node, $delay);
 
+        // The agent is told; the customer is not, and they are the one staring
+        // at a conversation that has stopped. "digitando…" starts here rather
+        // than at the hub call because this window is the first half of the
+        // wait — and on a node that sets a long one, most of it.
+        AiTypingPresence::start($flowState->conversation);
+
         Log::info('FlowExecutor: AIAgent turn armed', [
             'node_id' => $node->id,
             'conversation_id' => $flowState->conversation_id,
@@ -2957,6 +2975,168 @@ class FlowExecutor
         return "ai-turn:{$conversationId}";
     }
 
+    /** Where the pending "um momento…" for this conversation is claimed. */
+    protected function aiHoldingKey(int $conversationId): string
+    {
+        return "ai-holding:{$conversationId}";
+    }
+
+    /**
+     * Arm the holding message, if this node has one and nothing has armed one
+     * already for this wait.
+     *
+     * The delay is measured from the customer's last message, not from now:
+     * what they experience is one silence, and by the time a turn actually runs
+     * most of the configured threshold has usually been spent in the debounce
+     * window. A node that waits 30s for the burst to finish would otherwise
+     * tell the customer to hold on 38 seconds in, long after they stopped
+     * wondering whether anyone had read it.
+     *
+     * `Cache::add` is what keeps it to one line per wait: a turn deferred for a
+     * download arms it, and the turn that resumes afterwards finds the claim
+     * already taken rather than promising the same thing twice.
+     *
+     * @param  Collection<int, Message>  $messages  the turn's input, oldest first
+     */
+    protected function scheduleAiHoldingMessage(FlowState $flowState, FlowNode $node, Collection $messages, bool $media): void
+    {
+        $config = AiHoldingMessage::config($node->data ?? []);
+
+        if (! $config['enabled'] || $messages->isEmpty()) {
+            return;
+        }
+
+        $last = $messages->last();
+        $token = (string) Str::uuid();
+
+        $elapsed = $last->created_at?->diffInSeconds(now(), absolute: true) ?? 0;
+        $delay = max(0, $config['after_seconds'] - (int) $elapsed);
+
+        // Long enough to outlive the wait it covers: the job re-reads this
+        // token, and one that expired underneath it would simply be a courtesy
+        // that never arrives.
+        if (! Cache::add($this->aiHoldingKey($flowState->conversation_id), $token, $delay + self::AI_TURN_LOCK_SECONDS)) {
+            return;
+        }
+
+        SendAiHoldingMessage::dispatch($flowState->id, $node->id, $token, (int) $last->id, $media)
+            ->delay(now()->addSeconds($delay));
+    }
+
+    /** Disarm a holding message that has not fired. */
+    protected function clearAiHoldingMessage(Conversation $conversation): void
+    {
+        Cache::forget($this->aiHoldingKey($conversation->id));
+    }
+
+    /**
+     * Send the holding message — unless, by now, there is no longer a wait to
+     * apologise for.
+     *
+     * Reached only from SendAiHoldingMessage. Every check here asks the same
+     * question the turn's own guards ask: is this still true? The job was queued
+     * seconds ago, and in those seconds the model may have answered, a person
+     * may have taken the conversation, or the flow may have moved on — and a
+     * "só um instante" landing under any of those is worse than the silence it
+     * was meant to fill.
+     */
+    public function sendAiHoldingMessage(int $flowStateId, int $nodeId, string $token, int $afterMessageId, bool $media): void
+    {
+        $flowState = FlowState::find($flowStateId);
+
+        if (! $flowState || $flowState->status !== FlowStateStatus::Running) {
+            return;
+        }
+
+        $conversation = $flowState->conversation;
+
+        if (! $conversation) {
+            return;
+        }
+
+        // Pulled rather than read: the claim is spent here whatever the checks
+        // below decide, so a turn that drags on cannot end up sending a second.
+        if (Cache::pull($this->aiHoldingKey($conversation->id)) !== $token) {
+            return;
+        }
+
+        $node = $flowState->currentNode;
+
+        if (! $node || $node->id !== $nodeId || $node->type !== NodeType::AIAgent) {
+            return;
+        }
+
+        if (! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return;
+        }
+
+        // The answer beat us to it. The token is normally cleared when the turn
+        // ends, but that clear and this job can be in flight at the same time,
+        // and only one of them is looking at the thread.
+        $answered = Message::where('conversation_id', $conversation->id)
+            ->where('sender_type', SenderType::Outgoing)
+            ->where('message_type', '!=', MessageType::Info)
+            ->where('id', '>', $afterMessageId)
+            ->exists();
+
+        if ($answered) {
+            return;
+        }
+
+        $text = AiHoldingMessage::pick(
+            AiHoldingMessage::config($node->data ?? []),
+            $media,
+            $afterMessageId,
+        );
+
+        if ($text === null) {
+            return;
+        }
+
+        $text = trim($this->interpolateVariables($text, $flowState));
+
+        if ($text === '') {
+            return;
+        }
+
+        try {
+            $message = $this->messageService->sendMessage($conversation, [
+                'message' => $text,
+            ]);
+
+            if ($message) {
+                $message->update([
+                    'sent_by_flow_id' => $flowState->flow_id,
+                    'sent_by_ai_hub_agent_id' => $node->data['ai_hub_agent_id'] ?? null,
+                    'meta' => array_merge((array) ($message->meta ?? []), [
+                        // Read by AiConversationContext, which must leave it out
+                        // of the transcript: it is our sentence, it tells the
+                        // agent nothing, and everything in that block is scanned
+                        // by the hub's handoff detector.
+                        AiHoldingMessage::META_FLAG => true,
+                        'ai_hub_agent_id' => $node->data['ai_hub_agent_id'] ?? null,
+                    ]),
+                ]);
+
+                broadcast(new MessageReceived($message));
+            }
+
+            Log::info('FlowExecutor: AIAgent holding message sent', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'media' => $media,
+            ]);
+        } catch (\Throwable $th) {
+            // A courtesy that failed to send is not a failure worth retrying —
+            // by the next attempt the answer itself would be on its way.
+            Log::warning('FlowExecutor: failed to send the AIAgent holding message', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
     /**
      * Assemble one AI turn out of what the customer has actually sent, and run
      * it: their text, the screenshots that text is about, and the voice notes
@@ -2983,6 +3163,11 @@ class FlowExecutor
         );
 
         if ($messages->isEmpty()) {
+            // Nothing is owed, so nothing is being written. An indicator left
+            // running here would be the ghost API Way in particular never
+            // clears on its own.
+            AiTypingPresence::stop($flowState->conversation);
+
             return;
         }
 
@@ -2997,6 +3182,12 @@ class FlowExecutor
             ]);
 
             LiveActivity::aiMedia($flowState->conversation, $node);
+
+            // The longest wait of the three, and the only one the customer has
+            // a reason to expect: they sent a file. The indicator stays up —
+            // this turn is coming back through resumeAfterMedia(), which is
+            // also what will eventually clear both.
+            $this->scheduleAiHoldingMessage($flowState, $node, $messages, media: true);
 
             return;
         }
@@ -3034,6 +3225,17 @@ class FlowExecutor
         // would eventually do it, but minutes later.
         LiveActivity::aiThinking($flowState->conversation, $node);
 
+        // Armed, not sent: if the model answers before it fires, the job finds
+        // the reply already in the thread and steps aside. What the customer
+        // must never get is an apology for a delay, followed immediately by the
+        // answer that made it a lie.
+        $this->scheduleAiHoldingMessage(
+            $flowState,
+            $node,
+            $messages,
+            media: AiHoldingMessage::isMediaTurn($messages),
+        );
+
         $input = AiConversationContext::compose($context, $text);
 
         // A welcome held back for this answer goes out right before it, and the
@@ -3058,6 +3260,13 @@ class FlowExecutor
             );
         } finally {
             LiveActivity::idle($flowState->conversation);
+
+            // The turn is over — answered, handed off, or thrown. All three end
+            // the wait, so both signs of it come down together: the scheduled
+            // courtesy is disarmed before it can contradict what just went out,
+            // and the indicator is withdrawn on the channels that need telling.
+            $this->clearAiHoldingMessage($flowState->conversation);
+            AiTypingPresence::stop($flowState->conversation);
         }
 
         // Second pass over the same messages, now that their voice notes have
@@ -3243,6 +3452,8 @@ class FlowExecutor
         $stateData = $flowState->state_data ?? [];
         $stateData[$this->aiDebounceKey($node->id)] = $token;
         $flowState->update(['state_data' => $stateData]);
+
+        AiTypingPresence::start($flowState->conversation);
 
         RunAiAgentTurn::dispatch($flowState->id, $node->id, $token);
     }

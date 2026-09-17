@@ -82,6 +82,84 @@ service baru yang perlu dibuat — tapi konsekuensinya nyata:
 Bonusnya: request webhook tak lagi menahan seluruh round-trip hub. Meta dan
 Telegram sama-sama mengulang webhook yang dianggap lambat.
 
+## Mengisi penantiannya
+
+Jendela di atas **ditambah** round-trip hub adalah satu rentang senyap di layar
+pelanggan — dan dari kursinya, senyap tak bisa dibedakan dari nomor yang mati.
+Agen di panel juga salah membacanya, lalu mengambil alih thread di tengah
+giliran yang sedang jalan. Dua jawaban, sengaja berbeda sifatnya.
+
+### 1. "Digitando…" (otomatis, semua kanal yang punya)
+
+`App\Services\AiAgentHub\AiTypingPresence`. Menyala **saat giliran diarmed**,
+bukan saat hub dipanggil — jendela debounce adalah paruh pertama penantian, dan
+di node yang jedanya panjang ia justru mayoritasnya.
+
+Tiap indikator typing di tiap kanal adalah *dead man's switch* (Telegram padam
+4 dtk, Meta & API Way ~10 dtk, API Way **tak punya timeout sama sekali**), jadi
+satu episode = satu token di cache (`ai-typing:{conversationId}`) + job
+`RefreshAiTypingIndicator` yang men-dispatch dirinya tiap
+`Channel::typingRefreshSeconds()` sampai tokennya hilang.
+
+Yang menghentikannya: giliran selesai (`finally` di `runAIAgentTurn`), flow
+berhenti (`stopFlow`, termasuk handoff dan "Assumir da IA"), conversation tak
+lagi milik flow, atau `AI_TYPING_MAX_SECONDS` habis. Penarikannya mengirim
+`paused` ke kanal yang menerimanya — di API Way itu **satu-satunya** yang
+membersihkan indikator, tanpa itu pelanggan menonton agen hantu mengetik.
+
+> ⚠️ **Koneksi queue `sync` hanya dapat satu beat.** Tak ada "nanti" di sana,
+> jadi job yang menjadwalkan dirinya akan memanggil dirinya seketika, selamanya.
+> Ini bukan akomodasi tes: deployment sync memang tak punya penjadwal.
+
+### 2. Pesan tunggu (per node, default mati)
+
+`App\Services\AiAgentHub\AiHoldingMessage` + job `SendAiHoldingMessage`.
+Teksnya **selalu ditulis penulis flow**, di kartu "Avisar enquanto a resposta é
+preparada" pada node AIAgent — engine tak tahu bahasa percakapannya, jadi tak
+ada kalimat bawaan yang aman untuk dikarang. Node tanpa daftar tetap diam, yang
+juga alasan fitur ini aman di-deploy: tiap flow produksi berperilaku sama persis
+seperti sebelumnya.
+
+- **Dijadwalkan, bukan dikirim inline.** Delay = `after_seconds` dikurangi waktu
+  yang sudah berlalu sejak pesan pelanggan **sendiri** — bukan sejak giliran
+  mulai jalan, karena pada saat itu sebagian besar ambangnya sudah dihabiskan
+  jendela debounce. Balasan yang datang cepat tak pernah didahului permintaan
+  maaf atas keterlambatan yang tak terjadi.
+- **Satu baris per penantian** (`Cache::add` pada `ai-holding:{conversationId}`).
+  Giliran yang ditahan menunggu unduhan media mengklaimnya; giliran yang
+  melanjutkan sesudahnya menemukan klaim sudah terpakai.
+- **Tak jadi dikirim** bila balasan sudah mendarat, seseorang sudah mengambil
+  thread, atau flow sudah pindah node.
+- **Rotasi** antar baris, dipilih dari id pesan — tak ada counter yang ditulis
+  ke `state_data`, karena job ini jalan **di luar** kunci percakapan dan salinan
+  `state_data` yang basi dari sana akan membatalkan watermark giliran.
+- **Daftar kedua** (`media_messages`) dipakai saat pelanggan mengirim foto,
+  berkas, atau voice note. Penantian itu yang terpanjang — file-nya harus
+  diunduh dulu.
+- ⚠️ **Ditandai `meta.ai_holding`, dan `AiConversationContext` melewatinya.**
+  Semua yang masuk blok transkrip dikirim ke hub sebagai `message.content` dan
+  dipindai detektor handoff di sana; kalimat kita sendiri bukan isi percakapan.
+
+### Setelan
+
+| Tempat | Kunci | Default |
+|---|---|---|
+| `.env` / `config/ai.php` | `AI_TYPING_INDICATOR_ENABLED` | `true` |
+| `.env` / `config/ai.php` | `AI_TYPING_MAX_SECONDS` | 180 detik (plafon keras 600) |
+| `.env` / `config/ai.php` | `AI_HOLDING_MESSAGES_ENABLED` | `true` (kill switch platform) |
+| `.env` / `config/ai.php` | `AI_HOLDING_AFTER_SECONDS` | 8 detik |
+| Flow builder → node AIAgent | `holding_message.{messages,media_messages,after_seconds,enabled}` | kosong = diam |
+
+### ⚠️ Ops
+
+Keduanya menambah job ke antrean **`default`** yang sama: satu job pesan tunggu
+per giliran (hanya bila node-nya punya daftar) dan satu job typing per beat
+selama penantian. Pada kanal ber-refresh 10 detik, satu percakapan yang menunggu
+30 detik = 3 job. Tak ada service baru, tapi kalau antrean sedang tertahan,
+indikatornya tersendat — dan itu memang kosmetik: `sendTyping` menelan errornya
+sendiri, dan pesan tunggu yang gagal kirim tak pernah di-retry (`$tries = 1` —
+percobaan kedua adalah gelembung kedua di depan pelanggan yang sudah dijawab).
+
 ## Kalau ada yang aneh
 
 ```bash
@@ -90,6 +168,11 @@ grep 'AIAgent turn armed' storage/logs/laravel.log
 
 # giliran yang tak pernah jalan sama sekali
 grep 'RunAiAgentTurn: AI turn never ran' storage/logs/laravel.log
+
+# pesan tunggu yang benar-benar terkirim, dan yang gagal
+grep 'AIAgent holding message sent' storage/logs/laravel.log
+grep 'failed to send the AIAgent holding message' storage/logs/laravel.log
 ```
 
-Tes: `tests/Feature/Flow/AiAgentBurstTest.php`.
+Tes: `tests/Feature/Flow/AiAgentBurstTest.php`,
+`tests/Feature/Flow/AiHoldingMessageTest.php`.

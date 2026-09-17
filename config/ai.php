@@ -40,6 +40,70 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Filling the wait: holding messages and the typing indicator
+    |--------------------------------------------------------------------------
+    |
+    | The window above plus the hub round-trip is a stretch of nothing on the
+    | customer's screen — long enough for them to decide the number is dead, and
+    | long enough for an agent watching the panel to decide the bot has hung and
+    | take the thread over mid-turn.
+    |
+    | Two answers, deliberately different in kind. The typing indicator is ours
+    | to send and says nothing, so it is on everywhere the channel supports it.
+    | The holding message ("só um instante, estou verificando…") is *words to a
+    | customer*, and the engine has no idea what language this conversation is
+    | in — so the text is always the flow author's, per node, and a node without
+    | a list stays silent. See App\Services\AiAgentHub\AiHoldingMessage.
+    |
+    | Both switches here are platform kill switches rather than preferences: the
+    | way to stop this across every flow at once without editing any of them.
+    |
+    */
+
+    'holding' => [
+
+        'enabled' => (bool) env('AI_HOLDING_MESSAGES_ENABLED', true),
+
+        /*
+        | How long the customer waits before being told anything, measured from
+        | their own last message rather than from when the turn starts running.
+        |
+        | That distinction is the whole design: by the time a turn runs, most of
+        | this has usually been spent in the debounce window above, and a node
+        | that waits 30s for a burst to finish would otherwise be reassuring the
+        | customer 38 seconds in — long after they stopped wondering whether
+        | anyone had read it.
+        |
+        | High enough that a fast answer is never preceded by an apology for a
+        | delay that did not happen. A node overrides it with
+        | `holding_message.after_seconds`.
+        */
+
+        'after_seconds' => (int) env('AI_HOLDING_AFTER_SECONDS', 8),
+
+    ],
+
+    'typing' => [
+
+        'enabled' => (bool) env('AI_TYPING_INDICATOR_ENABLED', true),
+
+        /*
+        | Longest one episode keeps refreshing.
+        |
+        | Every channel's indicator is a dead man's switch (Telegram clears in
+        | 5s, Meta in ~25s, API Way never), so showing it for a whole turn means
+        | a job that re-queues itself — and this is what stands between a turn
+        | that got stuck and a conversation that types at the customer for the
+        | rest of the day. It is a backstop, not a budget: a turn that ends
+        | normally withdraws the indicator long before this.
+        */
+
+        'max_seconds' => (int) env('AI_TYPING_MAX_SECONDS', 180),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Voice notes as agent input
     |--------------------------------------------------------------------------
     |

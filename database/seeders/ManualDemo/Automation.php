@@ -250,6 +250,14 @@ trait Automation
             ['ai', 'ai_agent', ['ai_hub_agent_id' => $this->ai['sofia']->id,
                 'welcoming_message' => 'Oi! Sou a Sofia, assistente da Loja Aurora. Me conta o que aconteceu? 🙂',
                 'answer_first_message' => true, 'service_hours_behavior' => 'handoff_in_hours', 'response_delay_seconds' => 8,
+                'holding_message' => [
+                    'messages' => [
+                        'Só um instante, estou verificando isso…',
+                        'Um momento, já te respondo.',
+                    ],
+                    'media_messages' => ['Deixa eu dar uma olhada no que você enviou…'],
+                    'after_seconds' => 8,
+                ],
                 'response_audio' => ['mode' => 'dynamic']], 1340, 380],
             ['closed', 'message', ['messages' => [$text('Estamos fora do horário de atendimento agora 🌙. Deixe sua mensagem que respondemos assim que abrirmos!')]], 1340, 720],
             ['end', 'status', ['value' => 'resolved'], 1700, 560],

@@ -124,8 +124,16 @@ class AiConversationContext
             // `message.content` is read by the hub's handoff detector, so a
             // proactive message mentioning an "atendente" would hand the
             // conversation to a human on the next turn.
+            // A holding message ("um momento, estou verificando…") is ours, not
+            // the conversation's: it carries no fact the agent could use, and
+            // handing it back would spend the transcript's budget saying
+            // nothing. It would also make an otherwise uninformative thread
+            // look informative, which is what decides whether the block travels
+            // at all — and, like every line in here, it would be read by the
+            // hub's handoff detector.
             if (data_get($message->meta, 'ai_hub_run_id') !== null
-                || data_get($message->meta, 'ai_hub_proactive') !== null) {
+                || data_get($message->meta, 'ai_hub_proactive') !== null
+                || data_get($message->meta, AiHoldingMessage::META_FLAG) !== null) {
                 continue;
             }
 

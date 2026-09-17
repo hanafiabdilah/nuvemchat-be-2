@@ -4,6 +4,7 @@ namespace App\Services\Flow;
 
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Integration\IntegrationCategory;
+use App\Services\AiAgentHub\AiHoldingMessage;
 use App\Services\Integrations\Pixels\PixelEvents;
 use App\Services\Market\MarketCapabilities;
 use Illuminate\Support\Facades\Validator;
@@ -202,6 +203,17 @@ class FlowBlueprint
                 ],
                 'welcoming_message' => ['nullable', 'string', 'max:4000'],
                 'store_summary_to_variable' => ['nullable', 'string', 'alpha_dash'],
+                // What fills the wait while the agent thinks. Absent on every
+                // node built before it existed, and absent means silent — the
+                // engine does not know what language the conversation is in, so
+                // there is no default sentence it could safely invent.
+                'holding_message' => ['nullable', 'array'],
+                'holding_message.enabled' => ['nullable', 'boolean'],
+                'holding_message.after_seconds' => ['nullable', 'integer', 'min:0', 'max:'.AiHoldingMessage::MAX_AFTER_SECONDS],
+                'holding_message.messages' => ['nullable', 'array', 'max:'.AiHoldingMessage::MAX_LINES],
+                'holding_message.messages.*' => ['nullable', 'string', 'max:'.AiHoldingMessage::MAX_LENGTH],
+                'holding_message.media_messages' => ['nullable', 'array', 'max:'.AiHoldingMessage::MAX_LINES],
+                'holding_message.media_messages.*' => ['nullable', 'string', 'max:'.AiHoldingMessage::MAX_LENGTH],
             ],
             // Lengths mirror the WhatsApp Cloud API limits so the builder warns
             // long before a send fails. Texts stay nullable (like http_request)
@@ -698,6 +710,8 @@ class FlowBlueprint
         $carouselMax = InteractiveNodes::CAROUSEL_MAX_CARDS;
         $invalidBranch = InteractiveNodes::BRANCH_INVALID;
         $invalidAttempts = InteractiveNodes::MAX_INVALID_ATTEMPTS;
+        $holdingLines = AiHoldingMessage::MAX_LINES;
+        $holdingAfter = AiHoldingMessage::MAX_AFTER_SECONDS;
         $resolved = ConversationStatus::Resolved->value;
         $replied = WaitResponseNodes::BRANCH_REPLIED;
         $timeout = WaitResponseNodes::BRANCH_TIMEOUT;
@@ -858,6 +872,23 @@ class FlowBlueprint
         - `welcoming_message` is REQUIRED.
         - Optional: `store_summary_to_variable`, and `service_hours_behavior`
           ("always_ai" | "handoff_in_hours" | "human_only_in_hours").
+        - Optional `holding_message` — what to say when the answer is taking a
+          while, so the customer is not left watching a conversation that stopped:
+          { "messages": ["Só um instante, estou verificando isso…",
+                         "Um momento, já te respondo."],
+            "media_messages": ["Deixa eu dar uma olhada no que você enviou…"],
+            "after_seconds": 8 }
+          Write these in the language the flow speaks to its customers; there is no
+          default, and a node without `messages` simply stays silent. Up to
+          {$holdingLines} lines each, picked in rotation so a customer who waits
+          twice does not read the same sentence twice. `media_messages` is used when
+          the customer sent an image, a file or a voice note — omit it and the main
+          list covers those too. `after_seconds` (0–{$holdingAfter}, default 8) is
+          how long the customer waits before any of it is sent, counted from their
+          own message: an answer that arrives quickly is never preceded by an
+          apology for a delay that did not happen. Only add this when the user asks
+          for it or the flow's agent is likely to be slow (long tool calls, document
+          lookups) — an extra bubble on every turn is a cost, not a courtesy.
         - One output (taken when the agent hands off).
 
         ### tagging — label the conversation or the contact
