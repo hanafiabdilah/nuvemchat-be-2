@@ -494,6 +494,8 @@ class FlowBlueprint
             $problems = array_merge($problems, self::branchProblems($byKey[$source], $edge));
         }
 
+        $problems = array_merge($problems, self::duplicateOutputProblems($edges, $keySet));
+
         // An orphan is not a validation failure — the save endpoint takes it —
         // but it is always a mistake in generated output, and it is invisible
         // on a canvas until someone tests the flow and nothing happens.
@@ -618,6 +620,60 @@ class FlowBlueprint
     }
 
     /**
+     * Two edges leaving the same output: a step that is drawn and never taken.
+     *
+     * Nothing in the engine fans out. A conversation sits at one node
+     * (`flow_states.current_node_id`) and every "move on" reads a single edge,
+     * so the second edge from an output is not a second path — it is a branch
+     * the author was shown and the customer will never walk. Refused here
+     * rather than dropped ({@see dedupeEdges()} does the dropping for people)
+     * because generated output is the one caller that can be asked to try
+     * again: the model is told which output, repairs it, and nobody sees it.
+     *
+     * Branch values each own their bucket, so a condition's true/false and an
+     * interactive node's options are peers, not duplicates.
+     *
+     * @param  list<array>  $edges
+     * @param  array<string, int>  $keySet
+     * @return list<string>
+     */
+    private static function duplicateOutputProblems(array $edges, array $keySet): array
+    {
+        $counts = [];
+
+        foreach ($edges as $edge) {
+            $source = (string) ($edge['source_key'] ?? '');
+
+            // Unresolved sources are already reported, and counting them would
+            // say the same thing twice about one broken edge.
+            if (! isset($keySet[$source])) {
+                continue;
+            }
+
+            $branch = (string) ($edge['condition_value'] ?? '');
+            $counts[$source][$branch] = ($counts[$source][$branch] ?? 0) + 1;
+        }
+
+        $problems = [];
+
+        foreach ($counts as $source => $branches) {
+            foreach ($branches as $branch => $count) {
+                if ($count < 2) {
+                    continue;
+                }
+
+                $output = ((string) $branch) === ''
+                    ? "node \"{$source}\""
+                    : "the \"{$branch}\" branch of node \"{$source}\"";
+
+                $problems[] = "{$count} edges leave {$output}; an output leads to exactly one node, and the flow would only ever follow one of them.";
+            }
+        }
+
+        return $problems;
+    }
+
+    /**
      * Node keys reachable from the start node by following edges.
      *
      * @return array<string, true>
@@ -684,6 +740,61 @@ class FlowBlueprint
                 throw ValidationException::withMessages(['flow.edges' => ['An edge references a node that is not in the flow.']]);
             }
         }
+    }
+
+    /**
+     * One edge per output, for the callers that must not refuse.
+     *
+     * The rule is the one {@see duplicateOutputProblems()} explains: an output
+     * is a handle, a handle leads to one node, and the engine only ever walks
+     * one edge. What differs here is the answer to a flow that already breaks
+     * it — and it has to differ, because a person is holding it.
+     *
+     * Auto-save fires three seconds after any change. Refusing would make a
+     * flow carrying a duplicate unsavable: every later edit rejected over an
+     * edge the author did not draw and, until the canvas started marking them,
+     * could not tell apart from the live one. Duplicates were drawable until
+     * May 2026, an export of such a flow still carries them, and a direct API
+     * call or a stale builder tab can still send them — so they are dropped,
+     * and the caller is handed what was dropped to say so.
+     *
+     * Kept: the first edge of each output, which is the one the executor was
+     * already following (it reads `outgoingEdges()` in id order, and edges are
+     * recreated in the order they arrive). The dropped ones were dead before
+     * this ran.
+     *
+     * Left alone on purpose: a branching node holding both a labelled and a
+     * plain edge. Those are different outputs here, and that pairing is the
+     * legacy shape {@see LegacyWaitUpgrade} and the executor's whereNull()
+     * fallback still deliberately serve.
+     *
+     * @param  list<array<string, mixed>>  $edges
+     * @param  string  $sourceField  'source_node_id' when saving, 'source_key' on import
+     * @return array{edges: list<array<string, mixed>>, dropped: list<array<string, mixed>>}
+     */
+    public static function dedupeEdges(array $edges, string $sourceField): array
+    {
+        $kept = [];
+        $dropped = [];
+        $seen = [];
+
+        foreach ($edges as $edge) {
+            // NUL as the join, because it is the one byte that cannot appear in
+            // a node id, an export key or a branch value — so no pair of them
+            // can spell another pair's output.
+            $output = ((string) ($edge[$sourceField] ?? ''))."\0".((string) ($edge['condition_value'] ?? ''));
+
+            if (isset($seen[$output])) {
+                $dropped[] = $edge;
+
+                continue;
+            }
+
+            $seen[$output] = true;
+            $kept[] = $edge;
+        }
+
+        return ['edges' => $kept, 'dropped' => $dropped];
     }
 
     /**

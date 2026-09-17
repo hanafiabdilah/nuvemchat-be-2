@@ -14,6 +14,7 @@ use App\Services\Flow\LegacyWaitUpgrade;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -62,10 +63,14 @@ class FlowController extends Controller
     {
         $flow = Flow::with('nodes')->where('tenant_id', auth()->user()->tenant_id)->findOrFail($id);
 
-        // Manually load edges for this flow's nodes
+        // Manually load edges for this flow's nodes, in the order the executor
+        // reads them (FlowNode::outgoingEdges). It matters only for a flow that
+        // still carries two edges on one output: the builder marks the first
+        // one live, and it must be the same first one the engine would take.
         $nodeIds = $flow->nodes->pluck('id');
         $edges = FlowEdge::whereIn('source_node_id', $nodeIds)
             ->orWhereIn('target_node_id', $nodeIds)
+            ->orderBy('id')
             ->get();
         $flow->setRelation('edges', $edges);
 
@@ -157,6 +162,25 @@ class FlowController extends Controller
 
         $this->assertNoSelfJump($flow, $validated['nodes']);
 
+        // One edge per output. The builder has enforced this since May 2026 and
+        // now replaces rather than adds, so this is the backstop for everything
+        // that does not go through today's builder: a stale tab, a direct API
+        // call, and — the common one — a flow that has carried a duplicate
+        // since before the guard existed and is now being saved for an
+        // unrelated edit. Dropped instead of refused because auto-save fires
+        // three seconds after any change: refusing would make such a flow
+        // unsavable. What went is reported back so the canvas can stop drawing
+        // it instead of quietly disagreeing with the database.
+        $deduped = FlowBlueprint::dedupeEdges($validated['edges'], 'source_node_id');
+        $validated['edges'] = $deduped['edges'];
+
+        if ($deduped['dropped'] !== []) {
+            Log::info('FlowController: dropped duplicate outgoing edges', [
+                'flow_id' => $flow->id,
+                'dropped' => count($deduped['dropped']),
+            ]);
+        }
+
         DB::transaction(function () use ($flow, $validated) {
             // Get all existing nodes for this flow
             $existingNodes = FlowNode::where('flow_id', $flow->id)->get()->keyBy('id');
@@ -243,6 +267,7 @@ class FlowController extends Controller
         $nodeIds = $flow->nodes->pluck('id');
         $edges = FlowEdge::whereIn('source_node_id', $nodeIds)
             ->orWhereIn('target_node_id', $nodeIds)
+            ->orderBy('id')
             ->get();
         $flow->setRelation('edges', $edges);
 
@@ -251,7 +276,29 @@ class FlowController extends Controller
         return response()->json([
             'message' => 'Flow saved successfully',
             'data' => new FlowResource($flow),
+            'dropped_edges' => self::echoDroppedEdges($deduped['dropped']),
         ]);
+    }
+
+    /**
+     * Duplicate outputs that were not saved, in the caller's own ids.
+     *
+     * Echoed rather than described: the builder sends its own node ids (a node
+     * created this session has no database id yet), so naming them back is the
+     * only form it can match against what is on the canvas. Always all three
+     * keys — a missing `condition_value` and a null one are the same output
+     * here, and the client should not have to know that.
+     *
+     * @param  list<array<string, mixed>>  $dropped
+     * @return list<array<string, mixed>>
+     */
+    private static function echoDroppedEdges(array $dropped): array
+    {
+        return array_map(fn (array $edge) => [
+            'source_node_id' => (string) ($edge['source_node_id'] ?? $edge['source_key'] ?? ''),
+            'target_node_id' => (string) ($edge['target_node_id'] ?? $edge['target_key'] ?? ''),
+            'condition_value' => $edge['condition_value'] ?? null,
+        ], $dropped);
     }
 
     /**
@@ -266,6 +313,7 @@ class FlowController extends Controller
         $nodeIds = $flow->nodes->pluck('id');
         $edges = FlowEdge::whereIn('source_node_id', $nodeIds)
             ->whereIn('target_node_id', $nodeIds)
+            ->orderBy('id')
             ->get();
 
         return response()->json([
@@ -323,7 +371,14 @@ class FlowController extends Controller
         // flows, so an old export imports as the flow it was.
         $upgraded = LegacyWaitUpgrade::upgrade($validated['flow']['nodes'], $validated['flow']['edges']);
         $nodes = $upgraded['nodes'];
-        $edges = $upgraded['edges'];
+
+        // Same rule as saving, and dropped here for a second reason: export is
+        // a straight dump of the database, so a flow that has carried a
+        // duplicate since before the builder guarded against it exports with
+        // one. Refusing would mean a workspace cannot move its own flow.
+        // After the upgrade, which creates edges of its own.
+        $deduped = FlowBlueprint::dedupeEdges($upgraded['edges'], 'source_key');
+        $edges = $deduped['edges'];
 
         // Per-type data validation — same rules as saving a flow.
         $this->validateNodesData($nodes);
@@ -368,12 +423,14 @@ class FlowController extends Controller
         $newNodeIds = $flow->nodes->pluck('id');
         $newEdges = FlowEdge::whereIn('source_node_id', $newNodeIds)
             ->whereIn('target_node_id', $newNodeIds)
+            ->orderBy('id')
             ->get();
         $flow->setRelation('edges', $newEdges);
 
         return response()->json([
             'message' => 'Flow imported successfully',
             'data' => new FlowResource($flow),
+            'dropped_edges' => self::echoDroppedEdges($deduped['dropped']),
         ], 201);
     }
 
