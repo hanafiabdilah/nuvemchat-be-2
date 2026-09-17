@@ -60,6 +60,26 @@ return [
     |
     */
 
+    /*
+    | Which queue carries both of them.
+    |
+    | ⚠️ Default `default`, so nothing needs doing — but this is a real escape
+    | hatch, and the reason is structural. An AI turn holds its worker for the
+    | whole hub round-trip, and both of these are queued *from inside that turn*.
+    | On a queue with no other free worker they cannot run until the wait they
+    | were meant to cover is already over — a feature that works on an idle
+    | queue and stops working under exactly the load it exists for.
+    |
+    | The common case needs no queue at all: when the grouping window has
+    | already spent the threshold, FlowExecutor sends the line inline, before
+    | the hub call. Point this at a queue with its own worker when the
+    | thresholds are longer than the grouping window, or when turns are slow
+    | enough that beats of "digitando…" arrive late. Same shape as
+    | `config('queue.media')`; see docs/ai-turn-delay.md.
+    */
+
+    'presence_queue' => env('AI_PRESENCE_QUEUE', 'default'),
+
     'holding' => [
 
         'enabled' => (bool) env('AI_HOLDING_MESSAGES_ENABLED', true),
@@ -73,6 +93,15 @@ return [
         | that waits 30s for a burst to finish would otherwise be reassuring the
         | customer 38 seconds in — long after they stopped wondering whether
         | anyone had read it.
+        |
+        | ⚠️ It is compared against the *projected* wait, not against a running
+        | clock: the grouping window already spent, plus what the run is assumed
+        | to add (AiHoldingMessage::ASSUMED_RUN_SECONDS). Nothing is free to
+        | watch a clock here — the turn blocks its own worker for the whole hub
+        | round-trip, so a decision deferred to a queued job is a decision that
+        | may never be taken. In practice that means any threshold within a few
+        | seconds of the grouping window is honoured reliably, and only much
+        | longer ones depend on `presence_queue` having a worker of its own.
         |
         | High enough that a fast answer is never preceded by an apology for a
         | delay that did not happen. A node overrides it with

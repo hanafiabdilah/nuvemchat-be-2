@@ -61,12 +61,47 @@ class AiHoldingMessage
     public const MAX_LENGTH = 500;
 
     /**
+     * What the hub round-trip is assumed to add, when deciding whether a wait
+     * will cross the threshold.
+     *
+     * A guess, and deliberately a conservative one. It exists because the
+     * decision has to be made *before* the model is called — the turn then
+     * holds its worker for the whole round-trip, so anything that defers the
+     * decision to a queued job cannot be relied on to run (see
+     * FlowExecutor::scheduleAiHoldingMessage).
+     *
+     * Wrong in the safe direction: too high sends a courtesy to somebody whose
+     * answer then arrives quickly, too low stays silent through a wait the flow
+     * author asked to cover. The first is a redundant bubble; the second is the
+     * bug this whole feature exists to fix.
+     */
+    public const ASSUMED_RUN_SECONDS = 5;
+
+    /**
      * Platform kill switch. Off, no node sends one — the way back from a
      * channel rejecting these, without editing every flow.
      */
     public static function platformEnabled(): bool
     {
         return (bool) config('ai.holding.enabled', true);
+    }
+
+    /**
+     * Which queue carries the two things that fill a wait.
+     *
+     * Default `default`, so this needs no ops step — but it is a real escape
+     * hatch, and the reason is structural: an AI turn occupies its worker for
+     * the whole hub round-trip, so anything queued behind it on the same queue
+     * cannot run until the wait it was meant to cover is already over. The
+     * common case is handled without a queue at all (FlowExecutor sends inline
+     * when the threshold is already spent); this is for the rest. Same shape as
+     * `config('queue.media')` — see docs/ai-turn-delay.md.
+     */
+    public static function queue(): string
+    {
+        $queue = trim((string) config('ai.presence_queue', 'default'));
+
+        return $queue !== '' ? $queue : 'default';
     }
 
     /**

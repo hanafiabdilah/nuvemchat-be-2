@@ -82,7 +82,7 @@ class AiTypingPresence
             $conversation->id,
             $token,
             now()->addSeconds($seconds)->timestamp,
-        );
+        )->onQueue(AiHoldingMessage::queue());
     }
 
     /**
@@ -155,7 +155,8 @@ class AiTypingPresence
         }
 
         RefreshAiTypingIndicator::dispatch($conversationId, $token, $deadline, $beat + 1)
-            ->delay(now()->addSeconds($interval));
+            ->delay(now()->addSeconds($interval))
+            ->onQueue(AiHoldingMessage::queue());
     }
 
     /**

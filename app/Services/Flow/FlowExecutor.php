@@ -3009,8 +3009,8 @@ class FlowExecutor
         $last = $messages->last();
         $token = (string) Str::uuid();
 
-        $elapsed = $last->created_at?->diffInSeconds(now(), absolute: true) ?? 0;
-        $delay = max(0, $config['after_seconds'] - (int) $elapsed);
+        $elapsed = (int) ($last->created_at?->diffInSeconds(now(), absolute: true) ?? 0);
+        $delay = max(0, $config['after_seconds'] - $elapsed);
 
         // Long enough to outlive the wait it covers: the job re-reads this
         // token, and one that expired underneath it would simply be a courtesy
@@ -3019,8 +3019,37 @@ class FlowExecutor
             return;
         }
 
+        // ⚠️ Decided here, before the hub call, and sent **in this worker** —
+        // never as a job, whenever the wait is going to cross the threshold.
+        //
+        // This method runs inside RunAiAgentTurn, on the `default` queue, and
+        // the very next thing it does is block that worker for the whole hub
+        // round-trip. A job queued from here lands behind the turn that queued
+        // it: with no second free worker it cannot run until the turn ends, and
+        // by then the turn's own `finally` has cleared the claim. The result is
+        // a feature that works on an idle queue and silently stops working
+        // under exactly the load it exists for — which is how it was first
+        // reported (typing showed, the message never did; typing survives
+        // because its first beat is dispatched from the webhook, not from here).
+        //
+        // So the threshold is measured against the *projected* wait — what the
+        // customer has already spent in the grouping window plus what the run
+        // is assumed to add — rather than against the clock, which nothing here
+        // is free to watch. A threshold that is still out of reach even with
+        // that estimate is a genuinely long one, and only there is the job
+        // worth queueing (and only there is a dedicated queue worth having).
+        if ($delay <= AiHoldingMessage::ASSUMED_RUN_SECONDS) {
+            // The claim stays held, so a job armed earlier by the media branch
+            // cannot say the same thing a second time; the turn's `finally`
+            // releases it.
+            $this->deliverAiHoldingMessage($flowState, $node, $config, $media, (int) $last->id);
+
+            return;
+        }
+
         SendAiHoldingMessage::dispatch($flowState->id, $node->id, $token, (int) $last->id, $media)
-            ->delay(now()->addSeconds($delay));
+            ->delay(now()->addSeconds($delay))
+            ->onQueue(AiHoldingMessage::queue());
     }
 
     /** Disarm a holding message that has not fired. */
@@ -3042,31 +3071,54 @@ class FlowExecutor
      */
     public function sendAiHoldingMessage(int $flowStateId, int $nodeId, string $token, int $afterMessageId, bool $media): void
     {
+        // Every abandoned path says why. There are seven of them, they are all
+        // correct, and a silent one leaves "the message never arrived" with no
+        // way to tell a working guard from a broken feature — which is how the
+        // queueing bug above stayed invisible until somebody watched a real
+        // conversation.
+        $skip = function (string $why) use ($flowStateId, $nodeId): void {
+            Log::info('FlowExecutor: AIAgent holding message not sent', [
+                'flow_state_id' => $flowStateId,
+                'node_id' => $nodeId,
+                'reason' => $why,
+            ]);
+        };
+
         $flowState = FlowState::find($flowStateId);
 
         if (! $flowState || $flowState->status !== FlowStateStatus::Running) {
+            $skip('flow no longer running');
+
             return;
         }
 
         $conversation = $flowState->conversation;
 
         if (! $conversation) {
+            $skip('conversation gone');
+
             return;
         }
 
         // Pulled rather than read: the claim is spent here whatever the checks
         // below decide, so a turn that drags on cannot end up sending a second.
         if (Cache::pull($this->aiHoldingKey($conversation->id)) !== $token) {
+            $skip('the wait it was armed for is over');
+
             return;
         }
 
         $node = $flowState->currentNode;
 
         if (! $node || $node->id !== $nodeId || $node->type !== NodeType::AIAgent) {
+            $skip('the flow moved to another node');
+
             return;
         }
 
         if (! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            $skip('somebody took the conversation');
+
             return;
         }
 
@@ -3080,14 +3132,37 @@ class FlowExecutor
             ->exists();
 
         if ($answered) {
+            $skip('the answer already landed');
+
             return;
         }
 
-        $text = AiHoldingMessage::pick(
-            AiHoldingMessage::config($node->data ?? []),
-            $media,
-            $afterMessageId,
-        );
+        $config = AiHoldingMessage::config($node->data ?? []);
+
+        if (! $config['enabled']) {
+            $skip('the node has no lines to send');
+
+            return;
+        }
+
+        $this->deliverAiHoldingMessage($flowState, $node, $config, $media, $afterMessageId);
+    }
+
+    /**
+     * Put one holding line in front of the customer.
+     *
+     * Split from the guards above because it has two callers with genuinely
+     * different knowledge: the job, which has to re-establish that the wait is
+     * still owed, and the turn itself, which is standing in the middle of that
+     * wait and already knows.
+     *
+     * @param  array{enabled: bool, after_seconds: int, messages: array<int, string>, media_messages: array<int, string>}  $config
+     * @param  int  $seed  the message the line is about — also what rotates it
+     */
+    protected function deliverAiHoldingMessage(FlowState $flowState, FlowNode $node, array $config, bool $media, int $seed): void
+    {
+        $conversation = $flowState->conversation;
+        $text = AiHoldingMessage::pick($config, $media, $seed);
 
         if ($text === null) {
             return;

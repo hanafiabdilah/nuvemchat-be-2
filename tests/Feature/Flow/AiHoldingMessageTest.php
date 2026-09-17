@@ -269,6 +269,37 @@ it('arms the line for the moment the customer has waited long enough', function 
         ->and($armed[0]->delay->diffInSeconds(now()))->toBeLessThanOrEqual(10);
 });
 
+it('sends the line itself when the wait is already long enough, never as a job', function () {
+    holdFakeChannels();
+    Queue::fake([RunAiAgentTurn::class, SendAiHoldingMessage::class, RefreshAiTypingIndicator::class]);
+
+    [$conversation] = holdFixture([
+        // The reported setting: 5s, against a grouping window of the same order.
+        // Projected out — what the customer already waited plus what the run
+        // will add — the threshold is reached, so the line is owed and this
+        // turn is the only thing that can be trusted to send it.
+        'holding_message' => ['messages' => HOLD_LINES, 'after_seconds' => 5],
+    ]);
+    holdOpen($conversation);
+    holdIncoming($conversation, 'cadê meu pedido?');
+    holdRunTurns();
+
+    // ⚠️ The whole point. This runs inside RunAiAgentTurn, which then blocks its
+    // worker for the entire hub round-trip: a job queued from there lands behind
+    // the turn that queued it, and on a queue with no second free worker it
+    // cannot run until the turn — and the claim — are gone. That is how the
+    // feature first shipped, and it failed silently, only under load.
+    Queue::assertNotPushed(SendAiHoldingMessage::class);
+
+    $sent = holdOutgoing($conversation);
+
+    // Welcome, then the line, then the answer it was covering for.
+    expect($sent)->toHaveCount(3)
+        ->and($sent[0])->toBe('Oi! Como posso ajudar?')
+        ->and($sent[1])->toBeIn(HOLD_LINES)
+        ->and($sent[2])->toBe('Claro, o pedido 123 está a caminho.');
+});
+
 it('sends the line, flagged so the hub never reads it back', function () {
     Queue::fake([RunAiAgentTurn::class, SendAiHoldingMessage::class, RefreshAiTypingIndicator::class]);
 

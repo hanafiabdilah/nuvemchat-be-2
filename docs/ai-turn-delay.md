@@ -120,11 +120,25 @@ ada kalimat bawaan yang aman untuk dikarang. Node tanpa daftar tetap diam, yang
 juga alasan fitur ini aman di-deploy: tiap flow produksi berperilaku sama persis
 seperti sebelumnya.
 
-- **Dijadwalkan, bukan dikirim inline.** Delay = `after_seconds` dikurangi waktu
-  yang sudah berlalu sejak pesan pelanggan **sendiri** — bukan sejak giliran
-  mulai jalan, karena pada saat itu sebagian besar ambangnya sudah dihabiskan
-  jendela debounce. Balasan yang datang cepat tak pernah didahului permintaan
-  maaf atas keterlambatan yang tak terjadi.
+- ⚠️ **Dikirim inline oleh giliran itu sendiri, bukan oleh job — dan itu wajib.**
+  `runAIAgentTurn` jalan di worker antrean `default`, lalu **memblokir worker itu**
+  selama seluruh round-trip hub. Job yang di-dispatch dari sana mengantre di
+  belakang giliran yang men-dispatch-nya: tanpa worker `default` kedua yang bebas
+  ia baru bisa jalan **setelah** giliran selesai, dan pada saat itu `finally`
+  sudah menghapus klaimnya. Hasilnya fitur yang jalan di antrean sepi lalu diam
+  di bawah beban — persis keadaan yang ia ada untuk menutupinya. (Typing lolos
+  dari jebakan ini hanya karena beat pertamanya di-dispatch dari **webhook**,
+  bukan dari worker; itu sebabnya gejalanya "digitando ada, pesannya tidak".)
+- **Ambangnya karena itu dibandingkan dengan penantian yang DIPROYEKSIKAN**, bukan
+  dengan jam berjalan: waktu yang sudah dihabiskan jendela debounce **plus**
+  `AiHoldingMessage::ASSUMED_RUN_SECONDS` (5 dtk, tebakan konservatif — tak ada
+  yang bebas menonton jam di sini). Praktisnya: ambang apa pun yang berada dalam
+  beberapa detik dari jendela debounce dikirim **andal, tanpa langkah ops**.
+  Hanya ambang yang jauh lebih panjang yang jatuh ke job berjadwal — dan hanya di
+  situ `AI_PRESENCE_QUEUE` dgn worker sendiri berarti sesuatu.
+- Balasan yang datang cepat tetap tak pernah didahului permintaan maaf atas
+  keterlambatan yang tak terjadi: ambangnya tetap dihormati, hanya diukur lebih
+  awal. Node yang ambangnya belum terjangkau tetap diam.
 - **Satu baris per penantian** (`Cache::add` pada `ai-holding:{conversationId}`).
   Giliran yang ditahan menunggu unduhan media mengklaimnya; giliran yang
   melanjutkan sesudahnya menemukan klaim sudah terpakai.
@@ -148,6 +162,7 @@ seperti sebelumnya.
 | `.env` / `config/ai.php` | `AI_TYPING_MAX_SECONDS` | 180 detik (plafon keras 600) |
 | `.env` / `config/ai.php` | `AI_HOLDING_MESSAGES_ENABLED` | `true` (kill switch platform) |
 | `.env` / `config/ai.php` | `AI_HOLDING_AFTER_SECONDS` | 8 detik |
+| `.env` / `config/ai.php` | `AI_PRESENCE_QUEUE` | `default` (antrean untuk typing + pesan tunggu) |
 | Flow builder → node AIAgent | `holding_message.{messages,media_messages,after_seconds,enabled}` | kosong = diam |
 
 ### ⚠️ Ops
@@ -172,6 +187,18 @@ grep 'RunAiAgentTurn: AI turn never ran' storage/logs/laravel.log
 # pesan tunggu yang benar-benar terkirim, dan yang gagal
 grep 'AIAgent holding message sent' storage/logs/laravel.log
 grep 'failed to send the AIAgent holding message' storage/logs/laravel.log
+
+# ⚠️ dan yang TIDAK dikirim, beserta alasannya — tiap cabang yang mundur
+# menyebutkan dirinya, supaya "pesannya tak datang" bisa dibedakan antara
+# penjagaan yang bekerja dan fitur yang rusak
+grep 'AIAgent holding message not sent' storage/logs/laravel.log
+```
+
+Di produksi (log tak disimpan lintas deploy) baca dari container:
+
+```bash
+docker compose logs queue --since 30m | grep -i 'holding message'
+docker compose exec app php artisan queue:failed | grep -i SendAiHoldingMessage
 ```
 
 Tes: `tests/Feature/Flow/AiAgentBurstTest.php`,
