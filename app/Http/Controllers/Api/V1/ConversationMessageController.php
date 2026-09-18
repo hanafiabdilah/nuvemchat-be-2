@@ -29,6 +29,15 @@ class ConversationMessageController extends Controller
         $data = $request->validate([
             'callback_ref' => ['required', 'string', 'max:512'],
             'text' => ['required', 'string', 'max:'.$this->maxLength()],
+
+            // The answer sometimes ends the AI's part — a renewal only the team
+            // can release. Without this the hub had to choose between a reply
+            // that strands the customer and no reply at all.
+            'handoff' => ['sometimes', 'boolean'],
+
+            // Free prose, and it lands in an internal note rather than in
+            // `conversations.handoff_reason` — see AiProactiveMessageService::handOver.
+            'handoff_reason' => ['sometimes', 'nullable', 'string', 'max:1000'],
         ]);
 
         // Required, not optional. This is precisely the place where a retry

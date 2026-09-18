@@ -96,6 +96,32 @@ panggilan (`AiProactiveMessageService::assertStillWithTheAgent`).
 Ref **tidak** dicetak untuk run yang memakai `conversationExternalId` sendiri
 (AI-suggest, vocabulary bench): draft tak boleh membawa kemampuan mengirim.
 
+### ⚠️ Hub MENYENSOR `callbackRef` dari echo run — jangan mendiagnosis dari situ
+
+Respons `POST /v1/runs` menggemakan `input.conversation`, dan di echo itu
+`callbackRef` **selalu tidak ada** — hub membuangnya dengan sengaja supaya
+kredensial tak dikembalikan dalam teks terbuka. Yang ia simpan ada di
+`Conversation.callbackRefEncrypted` (terenkripsi), dan hanya bisa dilihat dari
+sisi mereka.
+
+Ini sudah menyesatkan dua pihak sekaligus (17–18 Sep 2026): partner melaporkan
+"callbackRef tidak pernah sampai" dan kita menyimpulkan "hub membuangnya",
+keduanya karena membaca echo yang sama. Delapan key keluar, tujuh key di echo —
+selisih itu **normal**, bukan gejala.
+
+Cara memeriksa yang benar: minta mereka melihat `Conversation.callbackRefEncrypted`
+untuk conversation itu, **bukan** `input.conversation` run-nya.
+
+⚠️ `forbidNonWhitelisted` di hub **menyala**, jadi field tak dikenal menghasilkan
+`400 "property X should not exist"`. Konsekuensinya sonda ini tetap sahih dan
+artinya persis seperti terbaca: POST `/v1/runs` dgn field yang dipertanyakan +
+`agentExternalId` karangan → `404 "Agent not found."` berarti **field lolos
+validasi**; `400` berarti ditolak. (Ada hipotesis bahwa `whitelist` tanpa
+`forbidNonWhitelisted` bisa membuang diam-diam — untuk hub ini **tidak berlaku**.)
+
+`callbackUrl` di level run itu **fitur lain** (hasil run asinkron) dan tak ada
+hubungannya dgn pesan proaktif; `null` di situ bukan petunjuk apa pun.
+
 ### Kontrak
 
 ```http
@@ -104,8 +130,57 @@ X-Api-Key: pk_…
 Idempotency-Key: evt_9f3a…        # WAJIB
 Content-Type: application/json
 
-{ "callback_ref": "cr1.…", "text": "Pronto, Maria! Confirmei que a conta é sua. …" }
+{
+  "callback_ref": "cr1.…",
+  "text": "Pronto, Maria! Confirmei que a conta é sua. …",
+  "handoff": true,                                    // opsional
+  "handoff_reason": "Renovação bloqueada — só a equipe libera."  // opsional
+}
 ```
+
+### `handoff` — kirim teksnya **lalu** serahkan ke manusia
+
+Sebagian jawaban mengakhiri bagian AI: "renovasi Anda terblokir, hanya tim yang
+bisa melepas". Tanpa ini hub harus memilih antara mengirim balasan yang
+menelantarkan pelanggan atau tidak mengirim apa-apa — **dan ia memilih tidak
+mengirim**, sehingga dua hasil verifikasi tak pernah sampai ke siapa pun
+(laporan ProxyBR, 18 Sep 2026).
+
+⚠️ **Urutannya inti dari fitur ini: teks dikirim lebih dulu dan tanpa syarat.**
+Apakah manusia bisa ditemukan sesudahnya tak pernah membuat pelanggan kehilangan
+jawabannya. Kirim gagal → 502, tak ada handoff, baris ditandai `failed` (aturan
+retry yang sama). Handoff gagal setelah teks terkirim → **dilaporkan, bukan
+dilempar**: pesannya sudah ada di chat pelanggan, dan 500 di situ mengundang
+retry yang mengirimnya dua kali.
+
+**Rutenya sama persis dgn handoff di dalam run** (`FlowExecutor::handoffRequestedByHub`
+→ `routeHandoff(..., aiCanContinue: true)`) — bukan jalan pintas privat: handoff
+yang diminta lewat callback dan yang diminta di dalam run adalah peristiwa yang
+sama, jadi dirutekan sama. Konsekuensinya `service_hours_behavior` node tetap
+yang memutuskan:
+
+| Keadaan node / jam | Hasil | `handed_off` |
+|---|---|---|
+| mode handoff, dalam jam layanan | masuk antrean manusia (`needs_human`, Pending, tak ter-assign) | `true` |
+| mode `always_ai` | flow lanjut ke node berikutnya | `false` |
+| di luar jam layanan | away message, tetap dgn AI | `false` |
+
+Respons selalu membawa `handoff: {requested, handed_off}` — **dibaca ulang dari
+DB**, bukan diasumsikan, supaya hub tahu apa yang benar-benar terjadi alih-alih
+menebak.
+
+⚠️ **`handoff_reason` jadi NOTE, bukan kolom `conversations.handoff_reason`.**
+Kolom itu **kode** yang diterjemahkan dashboard (`lib/handoffReason.ts`); kalimat
+bebas di sana tercetak mentah di badge "perlu agen", di toast, dan di papan Live.
+Kolomnya diisi `ai_requested` (kode yang sudah ada, dipakai handoff hub lewat
+run), dan prosanya ditulis sbg `SystemMessage::info` — tempat prosa memang
+dibaca agen yang mengambil alih. Pemisahan yang sama dgn node Action
+(`internal_note` vs `transfer_human` yang sengaja tanpa field alasan).
+
+⚠️ Retry dgn `Idempotency-Key` yang sama **tidak** menyerahkan dua kali: replay
+menjawab dari `result` tersimpan, sebelum gerbang mana pun. Sesudah handoff flow
+jadi `Stopped`, jadi panggilan berikutnya dgn ref yang sama dijawab
+`409 conversation_not_with_ai` — benar.
 
 **Tak ada field `sender`.** Atribusi datang dari ref (yang menamai agent-nya).
 Penulis yang bisa mendeklarasikan dirinya adalah penulis yang suatu hari akan

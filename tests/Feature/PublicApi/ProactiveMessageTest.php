@@ -2,6 +2,7 @@
 
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Flow\FlowStateStatus;
+use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\AiProactiveMessage;
 use App\Models\ApiKey;
@@ -304,6 +305,116 @@ it('needs a valid API key like every other public endpoint', function () {
         ])
         ->assertUnauthorized()
         ->assertJsonPath('code', 'api_key_invalid');
+});
+
+/** The fixture node defaults to `always_ai`; this is a node that may queue. */
+function allowsHandoff(array $scene): void
+{
+    $scene['node']->update([
+        'data' => array_merge($scene['node']->data, ['service_hours_behavior' => 'handoff_in_hours']),
+    ]);
+}
+
+it('delivers the text and hands the conversation to a person', function () {
+    $scene = F::scenario();
+    allowsHandoff($scene);
+
+    push($scene, [
+        'handoff' => true,
+        'handoff_reason' => 'Renovação bloqueada — só a equipe libera.',
+    ])->assertCreated()
+        ->assertJsonPath('handoff.requested', true)
+        ->assertJsonPath('handoff.handed_off', true);
+
+    $conversation = $scene['conversation']->fresh();
+
+    // The text is the part that must never be lost — it is what the hub was
+    // holding back when it had no way to transfer.
+    expect(Message::where('conversation_id', $conversation->id)
+        ->where('body', 'like', 'Pronto%')->count())->toBe(1);
+
+    expect($conversation->needs_human)->toBeTrue()
+        ->and($conversation->status)->toBe(ConversationStatus::Pending)
+        ->and($conversation->user_id)->toBeNull()
+        ->and(FlowState::where('conversation_id', $conversation->id)->value('status'))
+            ->toBe(FlowStateStatus::Stopped);
+});
+
+it('puts the reason in a note and a translatable code in the column', function () {
+    $scene = F::scenario();
+    allowsHandoff($scene);
+
+    $prose = 'Renovação bloqueada — só a equipe libera.';
+    push($scene, ['handoff' => true, 'handoff_reason' => $prose])->assertCreated();
+
+    $conversation = $scene['conversation']->fresh();
+
+    // `handoff_reason` is a code the dashboard translates. A sentence there
+    // prints raw in the "needs agent" badge, the toast and the live board.
+    expect($conversation->handoff_reason)->toBe('ai_requested')
+        ->not->toBe($prose);
+
+    // The sentence goes where prose belongs and where the agent taking the
+    // thread actually reads it.
+    expect(Message::where('conversation_id', $conversation->id)
+        ->where('message_type', MessageType::Info)
+        ->where('body', $prose)
+        ->exists())->toBeTrue();
+});
+
+it('hands over without a reason at all', function () {
+    $scene = F::scenario();
+    allowsHandoff($scene);
+
+    push($scene, ['handoff' => true])->assertCreated()->assertJsonPath('handoff.handed_off', true);
+
+    expect($scene['conversation']->fresh()->needs_human)->toBeTrue();
+});
+
+it('leaves the conversation alone when no handoff is asked for', function () {
+    $scene = F::scenario();
+    allowsHandoff($scene);
+
+    push($scene)->assertCreated()->assertJsonPath('handoff.requested', false);
+
+    $conversation = $scene['conversation']->fresh();
+    expect($conversation->needs_human)->toBeFalse()
+        ->and($conversation->status)->toBe(ConversationStatus::AiHandling);
+});
+
+it('reports honestly when the flow is set never to queue', function () {
+    $scene = F::scenario();
+    // Fixture default: `always_ai` — the flow moves on rather than queueing.
+
+    push($scene, ['handoff' => true])
+        ->assertCreated()
+        ->assertJsonPath('handoff.requested', true)
+        // Told plainly instead of left to guess: nobody was queued.
+        ->assertJsonPath('handoff.handed_off', false);
+
+    // …and the customer still got the answer, which is the point.
+    expect(Message::where('conversation_id', $scene['conversation']->id)
+        ->where('body', 'like', 'Pronto%')->count())->toBe(1)
+        ->and($scene['conversation']->fresh()->needs_human)->toBeFalse();
+});
+
+it('does not hand over twice when the same event is retried', function () {
+    $scene = F::scenario();
+    allowsHandoff($scene);
+
+    $prose = 'Renovação bloqueada.';
+    push($scene, ['handoff' => true, 'handoff_reason' => $prose])->assertCreated();
+
+    // The replay answers from the stored result, before any guard or transfer.
+    push($scene, ['handoff' => true, 'handoff_reason' => $prose])
+        ->assertOk()
+        ->assertJsonPath('duplicate', true)
+        ->assertJsonPath('handoff.handed_off', true);
+
+    expect(Message::where('conversation_id', $scene['conversation']->id)
+        ->where('message_type', MessageType::Info)->where('body', $prose)->count())->toBe(1)
+        ->and(Message::where('conversation_id', $scene['conversation']->id)
+            ->where('body', 'like', 'Pronto%')->count())->toBe(1);
 });
 
 it('keeps the proactive message out of the next turn sent to the hub', function () {

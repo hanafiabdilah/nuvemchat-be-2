@@ -1865,6 +1865,32 @@ class FlowExecutor
     }
 
     /**
+     * The hub asking for a person from outside a run.
+     *
+     * A proactive message (AiProactiveMessageService) is the agent speaking
+     * after something happened elsewhere, and sometimes what it has to say ends
+     * the AI's part: "your renewal is blocked, only the team can release it".
+     * Without a way to hand over, the hub had to choose between sending a reply
+     * that strands the customer and sending nothing — and it chose nothing, so
+     * two verification returns never reached anybody.
+     *
+     * Deliberately the same door the run path uses, not a private shortcut: a
+     * handoff asked for over the callback and one asked for inside a run are the
+     * same event, so they route the same way. That means the node's
+     * `service_hours_behavior` still decides — a flow set to `always_ai` moves
+     * on instead of queueing, and outside service hours the customer gets the
+     * away message rather than a queue nobody is watching.
+     *
+     * `$aiCanContinue: true` for the same reason it is true in the run path:
+     * this is the hub's intentional request, not a failure it cannot recover
+     * from.
+     */
+    public function handoffRequestedByHub(FlowState $flowState, FlowNode $node, string $reason = 'ai_requested'): void
+    {
+        $this->routeHandoff($flowState, $node, $reason, aiCanContinue: true);
+    }
+
+    /**
      * Put the conversation in the "AI" tab: an AI Agent node is serving it.
      *
      * Only ever from Pending — never over Active (a person already took it) or

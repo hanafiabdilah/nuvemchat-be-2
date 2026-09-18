@@ -11,9 +11,12 @@ use App\Models\AiHubAgent;
 use App\Models\AiProactiveMessage;
 use App\Models\ApiKey;
 use App\Models\Conversation;
+use App\Models\FlowNode;
 use App\Models\FlowState;
 use App\Models\Message;
 use App\Models\Tenant;
+use App\Services\Conversation\SystemMessage;
+use App\Services\Flow\FlowExecutor;
 use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -56,10 +59,11 @@ final class AiProactiveMessageService
 
     public function __construct(
         private MessageService $messages,
+        private FlowExecutor $flows,
     ) {}
 
     /**
-     * @param  array{callback_ref: string, text: string}  $data  already validated
+     * @param  array{callback_ref: string, text: string, handoff?: bool, handoff_reason?: string|null}  $data  already validated
      * @return array{status: int, body: array<string, mixed>}
      */
     public function send(Tenant $tenant, ApiKey $key, string $idempotencyKey, array $data): array
@@ -92,12 +96,15 @@ final class AiProactiveMessageService
             );
         }
 
-        $agent = $this->assertStillWithTheAgent($conversation, $claims);
+        ['agent' => $agent, 'flowState' => $flowState, 'node' => $node] =
+            $this->assertStillWithTheAgent($conversation, $claims);
 
         $this->assertWindowOpen($conversation);
         $this->assertWithinConversationCeiling($conversation);
 
         $text = $data['text'];
+        $wantsHandoff = (bool) ($data['handoff'] ?? false);
+        $handoffNote = trim((string) ($data['handoff_reason'] ?? ''));
 
         try {
             $record = AiProactiveMessage::create([
@@ -106,7 +113,11 @@ final class AiProactiveMessageService
                 'idempotency_key' => $idempotencyKey,
                 'conversation_id' => $conversation->id,
                 'ai_hub_agent_id' => $agent->id,
-                'payload' => ['text' => $text],
+                'payload' => array_filter([
+                    'text' => $text,
+                    'handoff' => $wantsHandoff ?: null,
+                    'handoff_reason' => $handoffNote ?: null,
+                ], fn ($v) => $v !== null),
             ]);
         } catch (UniqueConstraintViolationException) {
             // Two retries raced past the lookup above; the loser answers with
@@ -151,6 +162,9 @@ final class AiProactiveMessageService
             'message_id' => $message->id,
             'conversation_id' => $conversation->id,
             'duplicate' => false,
+            'handoff' => $wantsHandoff
+                ? $this->handOver($conversation, $flowState, $node, $handoffNote)
+                : ['requested' => false, 'handed_off' => false],
         ];
 
         $record->update([
@@ -172,13 +186,74 @@ final class AiProactiveMessageService
     }
 
     /**
+     * Hand the conversation to a person, after the text has already gone out.
+     *
+     * The order is the whole point. Some answers end the AI's part — "your
+     * renewal is blocked, only the team can release it" — and until this
+     * existed the hub had to choose between a reply that strands the customer
+     * and no reply at all. It chose no reply, so two verification returns
+     * reached nobody. The text goes first and unconditionally; whether a person
+     * can be found afterwards never costs the customer the answer.
+     *
+     * The free-text reason becomes an internal note, NOT
+     * `conversations.handoff_reason`. That column is a *code* the dashboard
+     * translates (lib/handoffReason.ts): a sentence written there prints raw in
+     * the "needs agent" badge, the handoff toast and the live board. The note is
+     * where prose belongs and where the agent taking the thread actually reads
+     * it — the same split the flow's Action node makes.
+     *
+     * A handoff that cannot be routed is reported, not thrown: the message is
+     * already in the customer's chat, and a 500 here would invite a retry that
+     * sends it twice.
+     *
+     * @return array{requested: bool, handed_off: bool}
+     */
+    private function handOver(Conversation $conversation, FlowState $flowState, FlowNode $node, string $note): array
+    {
+        if ($note !== '') {
+            SystemMessage::info($conversation, $note);
+        }
+
+        try {
+            $this->flows->handoffRequestedByHub($flowState, $node);
+        } catch (\Throwable $th) {
+            Log::error('AiProactiveMessage: the message went out but the handoff failed', [
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            return ['requested' => true, 'handed_off' => false];
+        }
+
+        // Read back rather than assumed. The node's own settings decide: a flow
+        // in `always_ai` moves on instead of queueing, and outside service hours
+        // the customer gets the away message — both leave the thread with the
+        // AI, and the hub is told so plainly instead of being left to guess.
+        $handedOff = (bool) Conversation::whereKey($conversation->getKey())->value('needs_human');
+
+        Log::info('AiProactiveMessage: handoff requested by the hub', [
+            'conversation_id' => $conversation->id,
+            'handed_off' => $handedOff,
+            'note' => $note !== '',
+        ]);
+
+        return ['requested' => true, 'handed_off' => $handedOff];
+    }
+
+    /**
      * Is this thread still the agent's to speak in?
      *
      * Four ways it can stop being, and they are deliberately four different
      * answers: the hub decides what to do next from the code, and "somebody is
      * handling this" is not the same instruction as "this thread is over".
+     *
+     * Returns the flow state and node alongside the agent: a `handoff` request
+     * routes through the node's own settings, and this method has already had
+     * to prove both are the ones the reference names.
+     *
+     * @return array{agent: AiHubAgent, flowState: FlowState, node: \App\Models\FlowNode}
      */
-    private function assertStillWithTheAgent(Conversation $conversation, array $claims): AiHubAgent
+    private function assertStillWithTheAgent(Conversation $conversation, array $claims): array
     {
         if ($conversation->status === ConversationStatus::Active) {
             throw new PublicApiException(
@@ -237,7 +312,7 @@ final class AiProactiveMessageService
             );
         }
 
-        return $agent;
+        return ['agent' => $agent, 'flowState' => $flowState, 'node' => $node];
     }
 
     /**
