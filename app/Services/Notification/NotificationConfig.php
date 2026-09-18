@@ -18,24 +18,26 @@ class NotificationConfig
     public const KEY_EVENTS = 'notifications.events';
     public const KEY_TEMPLATES = 'notifications.templates';
 
-    // Pingly — the platform's own public API (X-API-Key auth, /send-message with
-    // { to, message }). This is NOT the raw w-api.app endpoint.
+    // Pingly — the platform's own public API. One key per workspace, and the
+    // number that sends is named per request, so both halves are needed: the
+    // workspace's API key (Developer › API keys) and the public id of the
+    // connection to send through (Connections › connection details).
     public const KEY_PINGLY_BASE_URL = 'notifications.pingly.base_url';
     public const KEY_PINGLY_API_KEY = 'notifications.pingly.api_key';
+    public const KEY_PINGLY_CONNECTION_ID = 'notifications.pingly.connection_id';
 
-    // W-API (Directly) — a W-API instance the operator configures directly.
-    public const KEY_WAPI_BASE_URL = 'notifications.wapi.base_url';
-    public const KEY_WAPI_INSTANCE_ID = 'notifications.wapi.instance_id';
-    public const KEY_WAPI_TOKEN = 'notifications.wapi.token';
-
-    // ProxyBR API (Directly) — an API Way instance (client-level credentials,
-    // not the platform integrator token).
+    // API Way (Directly) — an API Way instance addressed with client-level
+    // credentials (instance id + token), not the platform integrator token.
+    //
+    // ⚠️ The stored keys still say `proxybr`: this is the channel's pre-rebrand
+    // name, and the rows are live credentials. Renaming them would orphan the
+    // token an operator already pasted — the same reason the channel enum is
+    // still `whatsapp_proxyhub`. Only the label changed.
     public const KEY_PROXYBR_BASE_URL = 'notifications.proxybr.base_url';
     public const KEY_PROXYBR_INSTANCE_ID = 'notifications.proxybr.instance_id';
     public const KEY_PROXYBR_TOKEN = 'notifications.proxybr.token';
 
     public const DEFAULT_PROVIDER = 'pingly';
-    public const DEFAULT_WAPI_BASE_URL = 'https://api.w-api.app/v1';
     public const DEFAULT_PINGLY_BASE_URL = 'https://chat.pingly.com.br/api/v1';
 
     /** Master switch — when off, nothing is ever dispatched. */
@@ -44,7 +46,7 @@ class NotificationConfig
         return filter_var(Setting::get(self::KEY_ENABLED), FILTER_VALIDATE_BOOL);
     }
 
-    /** The active provider key (e.g. 'wapi'); resolved by NotificationProviderFactory. */
+    /** The active provider key (e.g. 'pingly'); resolved by NotificationProviderFactory. */
     public static function provider(): string
     {
         return Setting::get(self::KEY_PROVIDER, self::DEFAULT_PROVIDER);
@@ -60,19 +62,10 @@ class NotificationConfig
         return Setting::get(self::KEY_PINGLY_API_KEY);
     }
 
-    public static function wapiBaseUrl(): string
+    /** Public id of the connection to send through (`conn_…`), not its numeric id. */
+    public static function pinglyConnectionId(): ?string
     {
-        return rtrim((string) Setting::get(self::KEY_WAPI_BASE_URL, self::DEFAULT_WAPI_BASE_URL), '/');
-    }
-
-    public static function wapiInstanceId(): ?string
-    {
-        return Setting::get(self::KEY_WAPI_INSTANCE_ID);
-    }
-
-    public static function wapiToken(): ?string
-    {
-        return Setting::get(self::KEY_WAPI_TOKEN);
+        return Setting::get(self::KEY_PINGLY_CONNECTION_ID);
     }
 
     public static function proxybrBaseUrl(): string

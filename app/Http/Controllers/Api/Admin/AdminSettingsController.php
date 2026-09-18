@@ -39,7 +39,6 @@ class AdminSettingsController extends Controller
         $ttSecret = TikTokConfig::appSecret();
         $aiToken = AiAgentHubConfig::tenantToken();
         $notifPinglyKey = NotificationConfig::pinglyApiKey();
-        $notifToken = NotificationConfig::wapiToken();
         $notifProxyToken = NotificationConfig::proxybrToken();
         $numbersToken = ApiwayNumbersConfig::token();
         $numbersWebhookSecret = ApiwayNumbersConfig::webhookSecret();
@@ -133,15 +132,16 @@ class AdminSettingsController extends Controller
                     'providers' => app(NotificationProviderFactory::class)->available(),
                     'pingly' => [
                         'base_url' => NotificationConfig::pinglyBaseUrl(),
+                        // The workspace API key plus the connection it sends
+                        // through: one key serves every number, so the number
+                        // is named per request.
+                        'connection_id' => NotificationConfig::pinglyConnectionId(),
                         'api_key_set' => ! empty($notifPinglyKey),
                         'api_key_preview' => $this->mask($notifPinglyKey),
                     ],
-                    'wapi' => [
-                        'base_url' => NotificationConfig::wapiBaseUrl(),
-                        'instance_id' => NotificationConfig::wapiInstanceId(),
-                        'token_set' => ! empty($notifToken),
-                        'token_preview' => $this->mask($notifToken),
-                    ],
+                    // Labelled "API Way (Directly)" in the Back Office; the key
+                    // is the channel's pre-rebrand name and stays put because
+                    // it addresses live credential rows.
                     'proxybr' => [
                         'base_url' => NotificationConfig::proxybrBaseUrl(),
                         'instance_id' => NotificationConfig::proxybrInstanceId(),
@@ -231,14 +231,14 @@ class AdminSettingsController extends Controller
 
             'notifications' => ['sometimes', 'array'],
             'notifications.enabled' => ['sometimes', 'boolean'],
-            'notifications.provider' => ['sometimes', 'string', 'max:50'],
+            // Refused rather than stored: an unknown key is only discovered when
+            // the factory throws inside the send job, which is to say when a
+            // customer does not get their verification code.
+            'notifications.provider' => ['sometimes', 'string', Rule::in(app(NotificationProviderFactory::class)->available())],
             'notifications.pingly' => ['sometimes', 'array'],
             'notifications.pingly.base_url' => ['nullable', 'url', 'max:255'],
             'notifications.pingly.api_key' => ['nullable', 'string', 'max:1024'],
-            'notifications.wapi' => ['sometimes', 'array'],
-            'notifications.wapi.base_url' => ['nullable', 'url', 'max:255'],
-            'notifications.wapi.instance_id' => ['nullable', 'string', 'max:255'],
-            'notifications.wapi.token' => ['nullable', 'string', 'max:1024'],
+            'notifications.pingly.connection_id' => ['nullable', 'string', 'max:40'],
             'notifications.proxybr' => ['sometimes', 'array'],
             'notifications.proxybr.base_url' => ['nullable', 'url', 'max:255'],
             'notifications.proxybr.instance_id' => ['nullable', 'string', 'max:255'],
@@ -388,19 +388,14 @@ class AdminSettingsController extends Controller
                 Setting::set(NotificationConfig::KEY_PROVIDER, $n['provider']);
             }
             if (isset($n['pingly'])) {
+                // Public values: stored as-is.
                 Setting::set(NotificationConfig::KEY_PINGLY_BASE_URL, $n['pingly']['base_url'] ?? null);
+                Setting::set(NotificationConfig::KEY_PINGLY_CONNECTION_ID, $n['pingly']['connection_id'] ?? null);
+
+                // Secret: only replaced when a new value is supplied, so
+                // changing the connection cannot wipe the key.
                 if (! empty($n['pingly']['api_key'])) {
                     Setting::set(NotificationConfig::KEY_PINGLY_API_KEY, $n['pingly']['api_key']);
-                }
-            }
-            if (isset($n['wapi'])) {
-                // Public values: stored as-is.
-                Setting::set(NotificationConfig::KEY_WAPI_BASE_URL, $n['wapi']['base_url'] ?? null);
-                Setting::set(NotificationConfig::KEY_WAPI_INSTANCE_ID, $n['wapi']['instance_id'] ?? null);
-
-                // Secret: only replaced when a new value is supplied.
-                if (! empty($n['wapi']['token'])) {
-                    Setting::set(NotificationConfig::KEY_WAPI_TOKEN, $n['wapi']['token']);
                 }
             }
             if (isset($n['proxybr'])) {

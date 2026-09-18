@@ -9,14 +9,19 @@ use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 /**
- * ProxyBR API (Directly) — an API Way instance using CLIENT-LEVEL credentials
+ * API Way (Directly) — an API Way instance using CLIENT-LEVEL credentials
  * (a specific instance id + token), not the platform integrator token.
  *
  *   POST {base}/v1/message/send-text?instanceId={id}
  *   Header: Authorization: Bearer {token}
  *   Body:   { "phone": "<phone>", "message": "<text>" }
  *
- * Default base: https://whats-api.ipbr.pro. Fully self-contained.
+ * Default base: https://whats-api.ipbr.pro. Fully self-contained — it talks to
+ * the instance's core directly, bypassing this platform's own API.
+ *
+ * ⚠️ The class, its key and its settings keep the pre-rebrand `proxybr` name:
+ * they are stored values (settings rows, whatsapp_message_logs.provider), not
+ * labels. Only the wording shown in the Back Office changed.
  */
 class ProxyBrNotificationProvider implements NotificationProvider
 {
@@ -34,7 +39,7 @@ class ProxyBrNotificationProvider implements NotificationProvider
     public function send(string $to, string $message): void
     {
         if (! $this->isConfigured()) {
-            throw new RuntimeException('ProxyBR notification provider is not configured.');
+            throw new RuntimeException('API Way notification provider is not configured.');
         }
 
         $endpoint = NotificationConfig::proxybrBaseUrl()
@@ -57,7 +62,7 @@ class ProxyBrNotificationProvider implements NotificationProvider
                 'status' => $response->status(),
                 'body' => $response->body(),
             ]);
-            throw new RuntimeException('ProxyBR notification send failed with status ' . $response->status());
+            throw new RuntimeException('API Way notification send failed with status ' . $response->status());
         }
     }
 }

@@ -84,17 +84,17 @@ test('clearing an override falls back to the default body', function () {
  */
 test('saving only the templates leaves the provider credentials intact', function () {
     $admin = boAdmin();
-    Setting::set(NotificationConfig::KEY_WAPI_TOKEN, 'secret-token');
-    Setting::set(NotificationConfig::KEY_WAPI_INSTANCE_ID, 'inst-1');
-    Setting::set(NotificationConfig::KEY_PROVIDER, 'wapi');
+    Setting::set(NotificationConfig::KEY_PINGLY_API_KEY, 'pk_secret');
+    Setting::set(NotificationConfig::KEY_PINGLY_CONNECTION_ID, 'conn_abc123');
+    Setting::set(NotificationConfig::KEY_PROVIDER, 'proxybr');
 
     $this->actingAs($admin, 'sanctum')->putJson('/api/admin/settings', [
         'notifications' => ['templates' => ['welcome_registration' => 'Oi {{name}}']],
     ])->assertOk();
 
-    expect(NotificationConfig::wapiToken())->toBe('secret-token');
-    expect(NotificationConfig::wapiInstanceId())->toBe('inst-1');
-    expect(NotificationConfig::provider())->toBe('wapi');
+    expect(NotificationConfig::pinglyApiKey())->toBe('pk_secret');
+    expect(NotificationConfig::pinglyConnectionId())->toBe('conn_abc123');
+    expect(NotificationConfig::provider())->toBe('proxybr');
 });
 
 test('saving the credentials and toggles leaves the custom templates intact', function () {

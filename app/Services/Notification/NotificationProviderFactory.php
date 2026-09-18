@@ -5,7 +5,6 @@ namespace App\Services\Notification;
 use App\Services\Notification\Contracts\NotificationProvider;
 use App\Services\Notification\Providers\PinglyNotificationProvider;
 use App\Services\Notification\Providers\ProxyBrNotificationProvider;
-use App\Services\Notification\Providers\WApiNotificationProvider;
 use InvalidArgumentException;
 
 /**
@@ -19,7 +18,8 @@ class NotificationProviderFactory
      */
     protected array $providers = [
         'pingly' => PinglyNotificationProvider::class,
-        'wapi' => WApiNotificationProvider::class,
+        // Labelled "API Way (Directly)"; the key stays `proxybr` because it is
+        // what the stored settings and the whatsapp_message_logs rows say.
         'proxybr' => ProxyBrNotificationProvider::class,
     ];
 

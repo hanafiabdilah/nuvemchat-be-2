@@ -3,7 +3,8 @@
 namespace App\Services\Notification\Contracts;
 
 /**
- * A transport that can deliver a platform notification (e.g. WhatsApp via W-API).
+ * A transport that can deliver a platform notification (e.g. WhatsApp through
+ * Pingly's own public API).
  *
  * Implement this + register the class in NotificationProviderFactory to add a
  * new provider (another WhatsApp API, SMS, email, etc.). Everything else — the
@@ -11,7 +12,7 @@ namespace App\Services\Notification\Contracts;
  */
 interface NotificationProvider
 {
-    /** Stable key used in settings (e.g. 'wapi'). */
+    /** Stable key used in settings (e.g. 'pingly'). */
     public function key(): string;
 
     /** Whether the provider has the credentials it needs to send. */
