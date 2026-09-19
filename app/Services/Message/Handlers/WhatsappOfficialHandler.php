@@ -455,10 +455,17 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
      * fetches it itself, and downloading a gallery mp3 to hand back the same
      * bytes buys nothing. An unacceptable one is pulled down and converted,
      * which costs a round trip on exactly the sends that would otherwise fail.
+     *
+     * An accepted extension is not on its own enough for Ogg — see
+     * {@see self::isChainedOgg()}.
      */
     private function normalizeAudio(?OutboundMedia $media): ?OutboundMedia
     {
-        if ($media === null || self::audioMime($media->extension) !== null) {
+        if ($media === null) {
+            return $media;
+        }
+
+        if (self::audioMime($media->extension) !== null && ! $this->isChainedOgg($media)) {
             return $media;
         }
 
@@ -476,6 +483,42 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
         }
 
         return OutboundMedia::fromFile($converted);
+    }
+
+    /**
+     * Whether an Ogg we would otherwise pass through has to be re-encoded.
+     *
+     * The comment on the format table says the one path producing Ogg here is
+     * the AI's own voice reply, "already Opus mono", so proving it through
+     * ffmpeg would make a working feature depend on a binary it never needed.
+     * Production disagreed: 8 of 104 AI voice replies on this channel arrived
+     * as *chained* Ogg (two logical streams end to end), every one of them a
+     * long reply, and in the worst case only 5 seconds of a 63-second answer
+     * sat in the first stream. Meta stores those bytes faithfully and the
+     * message is delivered and read — and then the recipient is told the audio
+     * is no longer available and to ask us to re-send it.
+     *
+     * So the pass-through stands for every accepted format; Ogg alone is
+     * looked at, and only when the bytes are already in hand. A URL is fetched
+     * by Meta itself, and pulling down every gallery file to inspect it would
+     * buy a round trip on sends that have never shown this.
+     */
+    private function isChainedOgg(OutboundMedia $media): bool
+    {
+        if ($media->file === null || ! in_array(strtolower($media->extension), ['ogg', 'opus'], true)) {
+            return false;
+        }
+
+        if (! AudioNormalizer::isChainedOgg($media->file->getRealPath())) {
+            return false;
+        }
+
+        Log::warning('WhatsappOfficialHandler: audio arrived as a chained Ogg, re-encoding before upload', [
+            'filename' => $media->filename,
+            'bytes' => @filesize($media->file->getRealPath()) ?: null,
+        ]);
+
+        return true;
     }
 
     /**

@@ -10,6 +10,7 @@ use App\Events\MessageReceived;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Media\MediaStorage;
+use App\Services\Message\AudioNormalizer;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
@@ -376,16 +377,26 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
         }
 
         try {
-            $audioContent = file_get_contents($data['audio']->getRealPath());
+            $inputPath = $data['audio']->getRealPath();
+            $audioContent = file_get_contents($inputPath);
             $extension = strtolower($data['audio']->getClientOriginalExtension());
 
+            /**
+             * A chained Ogg is an accepted format that WhatsApp still refuses
+             * to play: the AI's long replies come back as two logical streams
+             * concatenated, and the recipient is told the audio is no longer
+             * available. It is caught here for the same reason as on the Cloud
+             * API side — the client on the other end is the same one.
+             */
+            $chainedOgg = $extension === 'ogg' && AudioNormalizer::isChainedOgg($inputPath);
+
             // Convert to OGG if not MP3 or OGG
-            if (!in_array($extension, ['mp3', 'ogg'])) {
+            if (!in_array($extension, ['mp3', 'ogg']) || $chainedOgg) {
                 Log::info('WhatsappApiwayHandler: Converting audio to OGG', [
                     'original_format' => $extension,
+                    'chained_ogg' => $chainedOgg,
                 ]);
 
-                $inputPath = $data['audio']->getRealPath();
                 $outputPath = sys_get_temp_dir() . '/' . uniqid() . '.ogg';
 
                 // Convert using FFmpeg

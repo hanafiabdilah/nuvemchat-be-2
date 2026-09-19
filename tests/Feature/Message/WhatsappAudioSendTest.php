@@ -72,13 +72,50 @@ function waAudioFakeCloudApi(): void
  * empty `contents` — so a fake alone fails inside Guzzle with "A 'contents'
  * key is required", nothing to do with the code under test.
  */
-function waAudioFile(string $name, string $mime): UploadedFile
+function waAudioFile(string $name, string $mime, ?string $bytes = null): UploadedFile
 {
     $file = UploadedFile::fake()->create($name, 8, $mime);
 
-    file_put_contents($file->getRealPath(), random_bytes(512));
+    file_put_contents($file->getRealPath(), $bytes ?? random_bytes(512));
 
     return $file;
+}
+
+/**
+ * One Ogg page: the 27-byte header plus a token payload.
+ *
+ * Only the first six bytes decide anything here — "OggS", the zero version
+ * byte, and bit 0x02 of the header type, which marks the page that begins a
+ * logical stream. The rest is written out so the fixture is a page and not a
+ * shape that happens to pass.
+ */
+function waOggPage(int $serial, bool $beginsStream, int $sequence = 0): string
+{
+    return 'OggS'
+        . "\0"
+        . chr($beginsStream ? 0x02 : 0x00)
+        . str_repeat("\0", 8)   // granule position
+        . pack('V', $serial)
+        . pack('V', $sequence)
+        . pack('V', 0)          // CRC, unchecked by the detector
+        . chr(1) . chr(8)       // one segment, eight bytes
+        . ($beginsStream ? 'OpusHead' : 'audiodat');
+}
+
+/** What every working voice note looks like: one stream, however many pages. */
+function waSingleStreamOgg(): string
+{
+    return waOggPage(11, true) . waOggPage(11, false, 1) . waOggPage(11, false, 2);
+}
+
+/**
+ * What the hub hands back for a long spoken reply: two synthesised parts
+ * concatenated, so the second one opens a stream of its own. Legal Ogg, and
+ * unplayable on WhatsApp — the shape was read off eight production files.
+ */
+function waChainedOgg(): string
+{
+    return waSingleStreamOgg() . waOggPage(22, true) . waOggPage(22, false, 1);
 }
 
 /** The `type` the upload declared to Meta, read back off the multipart body. */
@@ -152,11 +189,79 @@ test('an ogg is declared as audio/ogg and sent as a voice note', function () {
     config(['media.ffmpeg_path' => '/nonexistent/ffmpeg']);
 
     (new MessageService)->sendAudio(waAudioConversation(), [
-        'audio' => waAudioFile('resposta.ogg', 'audio/ogg'),
+        'audio' => waAudioFile('resposta.ogg', 'audio/ogg', waSingleStreamOgg()),
     ]);
 
     expect(waAudioDeclaredType())->toBe('audio/ogg')
         ->and(waAudioMessagePayload()['voice'] ?? null)->toBeTrue();
+});
+
+test('a chained ogg is re-encoded instead of being passed through', function () {
+    waAudioFakeCloudApi();
+
+    $converted = false;
+
+    app()->instance(AudioNormalizer::class, new class($converted) extends AudioNormalizer
+    {
+        public function __construct(private bool &$converted) {}
+
+        public function available(): bool
+        {
+            return true;
+        }
+
+        public function toOggOpus(UploadedFile $file): UploadedFile
+        {
+            $this->converted = true;
+
+            $path = tempnam(sys_get_temp_dir(), 'fake_opus_');
+            file_put_contents($path, waSingleStreamOgg());
+
+            return new UploadedFile($path, 'resposta.ogg', 'audio/ogg', null, true);
+        }
+    });
+
+    (new MessageService)->sendAudio(waAudioConversation(), [
+        'audio' => waAudioFile('resposta.ogg', 'audio/ogg', waChainedOgg()),
+    ]);
+
+    // Without this the send succeeds at every layer we can see — Meta accepts
+    // the upload, the message is delivered and read — and the recipient is
+    // told the audio is no longer available and to ask the number to re-send.
+    expect($converted)->toBeTrue()
+        // And the repair must not cost the voice-note bubble it was sent for.
+        ->and(waAudioDeclaredType())->toBe('audio/ogg')
+        ->and(waAudioMessagePayload()['voice'] ?? null)->toBeTrue();
+});
+
+test('the chained-stream check reads pages, not markers', function () {
+    $path = tempnam(sys_get_temp_dir(), 'ogg_check_');
+
+    $cases = [
+        // One stream over several pages is the normal case and must not be
+        // sent through ffmpeg: it would make a working send depend on a binary.
+        [waSingleStreamOgg(), false],
+        [waChainedOgg(), true],
+        // A second stream anywhere in the file, not just appended at the end.
+        [waOggPage(1, true) . waOggPage(2, true) . waOggPage(1, false, 1), true],
+        // "OggS" and "OpusHead" inside audio data decide nothing on their own:
+        // a page needs the zero version byte and the beginning-of-stream bit.
+        [waSingleStreamOgg() . 'OggS' . "\x02\x02" . 'OpusHead' . 'OggS', false],
+        [random_bytes(512), false],
+        ['', false],
+    ];
+
+    foreach ($cases as $index => [$bytes, $expected]) {
+        file_put_contents($path, $bytes);
+
+        expect(AudioNormalizer::isChainedOgg($path))->toBe($expected, "case {$index}");
+    }
+
+    @unlink($path);
+
+    // A file that is not there is not a chained stream; it is a different
+    // failure, and one the send path already reports in its own words.
+    expect(AudioNormalizer::isChainedOgg($path))->toBeFalse();
 });
 
 test('a browser recording is converted to ogg before it reaches Meta', function () {

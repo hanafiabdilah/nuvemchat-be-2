@@ -72,6 +72,55 @@ class AudioNormalizer
     }
 
     /**
+     * Whether an Ogg file carries more than one logical bitstream.
+     *
+     * A "chained" Ogg — two OpusHead pages, two serial numbers, the rest of the
+     * sentence behind the second one — is legal Ogg. ffmpeg plays it, VLC plays
+     * it, the WhatsApp client does not: it delivers the message and then tells
+     * the recipient "This audio is no longer available. Please ask <number> to
+     * re-send it." Nothing upstream reports a problem, because nothing upstream
+     * has one — Meta accepts the upload and returns the bytes back identical.
+     *
+     * It reaches us because a long spoken reply is synthesised in more than one
+     * call and the parts arrive concatenated. Concatenating mp3 frames happens
+     * to work; concatenating Ogg streams produces this.
+     *
+     * The check reads pages rather than searching for "OpusHead", so a run of
+     * audio data that happens to spell the marker cannot trip it: a beginning-
+     * of-stream page is "OggS", a zero version byte, and bit 0x02 of the header
+     * type. The file is already capped at 16 MB by the caller's validation.
+     */
+    public static function isChainedOgg(string $path): bool
+    {
+        $data = @file_get_contents($path);
+
+        if ($data === false) {
+            return false;
+        }
+
+        $beginnings = 0;
+        $offset = 0;
+
+        while (($at = strpos($data, 'OggS', $offset)) !== false) {
+            $offset = $at + 4;
+
+            if (! isset($data[$at + 5]) || $data[$at + 4] !== "\0") {
+                continue;
+            }
+
+            if ((ord($data[$at + 5]) & 0x02) === 0) {
+                continue;
+            }
+
+            if (++$beginnings > 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Re-encode to mono Ogg/Opus and hand back the result as an UploadedFile.
      *
      * ⚠️ The caller owns the returned file. It is a temp file this method
