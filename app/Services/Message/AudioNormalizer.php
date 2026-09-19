@@ -36,6 +36,25 @@ class AudioNormalizer
     private const BITRATE = '32k';
 
     /**
+     * Start the output's timeline at zero instead of inheriting the source's.
+     *
+     * A browser recording does not begin at zero: WebM carries a codec delay,
+     * and MediaRecorder's first timestamp is whatever the capture clock said.
+     * ffmpeg copies that offset into the Ogg granule positions, and the result
+     * is a file whose page granules are not multiples of 120 samples — not a
+     * whole number of Opus frames. ffmpeg and VLC play it; WhatsApp accepts the
+     * upload, renders the voice note with the right waveform and duration, and
+     * then tells the recipient the audio is no longer available when they press
+     * play. It was the only measurable difference between the voice notes
+     * customers could hear (synthesised straight to Ogg, granules aligned) and
+     * the agent recordings they could not.
+     *
+     * `async=1` also fills the gaps a paused or glitching recorder leaves,
+     * which is the same class of problem one step further along.
+     */
+    private const TIMELINE_RESET = 'aresample=async=1:first_pts=0';
+
+    /**
      * One sentence for every way this can fail, on purpose. The agent's remedy
      * is identical whether the binary is missing or the file was unreadable,
      * and the difference between those two belongs in the log, where someone
@@ -144,10 +163,13 @@ class AudioNormalizer
         // -vn, because a .webm or .mp4 can carry a video track and this is the
         //   audio endpoint; keeping it only inflates a file with a hard cap.
         // -ac 1, because Meta accepts Ogg/Opus as "mono input only".
+        // -af, see the constant: it is what makes the output a clean stream
+        //   rather than the source's timeline copied into an Ogg container.
         $command = sprintf(
-            '%s -hide_banner -loglevel error -y -i %s -vn -ac 1 -c:a libopus -b:a %s %s 2>&1',
+            '%s -hide_banner -loglevel error -y -i %s -vn -ac 1 -af %s -c:a libopus -b:a %s %s 2>&1',
             escapeshellarg($this->binary()),
             escapeshellarg($file->getRealPath()),
+            escapeshellarg(self::TIMELINE_RESET),
             self::BITRATE,
             escapeshellarg($output),
         );

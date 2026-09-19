@@ -397,25 +397,15 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                     'chained_ogg' => $chainedOgg,
                 ]);
 
-                $outputPath = sys_get_temp_dir() . '/' . uniqid() . '.ogg';
-
-                // Convert using FFmpeg
-                $command = sprintf(
-                    'ffmpeg -i %s -c:a libopus -b:a 32k %s 2>&1',
-                    escapeshellarg($inputPath),
-                    escapeshellarg($outputPath)
-                );
-
-                exec($command, $output, $returnVar);
-
-                if ($returnVar !== 0 || !file_exists($outputPath)) {
-                    Log::error('WhatsappApiwayHandler: Audio conversion failed', [
-                        'command' => $command,
-                        'output' => $output,
-                        'return_var' => $returnVar,
-                    ]);
-                    throw new Exception('Failed to convert audio format');
-                }
+                /**
+                 * Converted by the shared normaliser rather than an ffmpeg
+                 * line of our own. The inline version predated it and drifted:
+                 * it kept the source's timeline, so a browser recording became
+                 * an Ogg whose granules are not whole Opus frames — the defect
+                 * that made WhatsApp refuse to play agent voice notes.
+                 */
+                $converted = app(AudioNormalizer::class)->toOggOpus($data['audio']);
+                $outputPath = $converted->getRealPath();
 
                 $audioContent = file_get_contents($outputPath);
                 $extension = 'ogg';

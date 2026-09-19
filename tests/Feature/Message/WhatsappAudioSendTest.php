@@ -234,6 +234,71 @@ test('a chained ogg is re-encoded instead of being passed through', function () 
         ->and(waAudioMessagePayload()['voice'] ?? null)->toBeTrue();
 });
 
+/** Every page granule, in order, read straight off the Ogg headers. */
+function waOggGranules(string $path): array
+{
+    $data = file_get_contents($path);
+    $granules = [];
+    $offset = 0;
+
+    while ($offset + 27 <= strlen($data) && substr($data, $offset, 4) === 'OggS') {
+        $segments = ord($data[$offset + 26]);
+        $table = substr($data, $offset + 27, $segments);
+        $body = 0;
+
+        for ($i = 0; $i < $segments; $i++) {
+            $body += ord($table[$i]);
+        }
+
+        $granules[] = unpack('P', substr($data, $offset + 6, 8))[1];
+        $offset += 27 + $segments + $body;
+    }
+
+    return $granules;
+}
+
+test('a converted recording starts its own timeline', function () {
+    $ffmpeg = (new AudioNormalizer)->available() ? config('media.ffmpeg_path') ?: 'ffmpeg' : null;
+
+    if ($ffmpeg === null) {
+        $this->markTestSkipped('ffmpeg is not installed here; this asserts what it produces.');
+    }
+
+    // What a browser hands over: Opus in WebM, whose codec delay and capture
+    // clock put the first sample somewhere other than zero.
+    $source = tempnam(sys_get_temp_dir(), 'rec_') . '.webm';
+    exec(sprintf(
+        '%s -hide_banner -loglevel error -y -f lavfi -i sine=frequency=440:duration=3 -ac 1 -c:a libopus -b:a 32k -f webm %s 2>&1',
+        escapeshellarg($ffmpeg),
+        escapeshellarg($source),
+    ), $out, $status);
+
+    if ($status !== 0 || ! is_file($source)) {
+        $this->markTestSkipped('this ffmpeg cannot synthesise the WebM the test needs.');
+    }
+
+    $converted = (new AudioNormalizer)->toOggOpus(
+        new UploadedFile($source, 'nota.webm', 'video/webm', null, true)
+    );
+
+    $granules = waOggGranules($converted->getRealPath());
+
+    // The two header pages carry granule 0, and the last page may be trimmed
+    // to the real end of the audio. Everything between must land on a whole
+    // Opus frame — 120 samples at 48 kHz. Carrying the source's offset here is
+    // what WhatsApp accepts, renders, and then refuses to play.
+    $audioPages = array_slice($granules, 2, -1);
+
+    expect($audioPages)->not->toBeEmpty();
+
+    foreach ($audioPages as $index => $granule) {
+        expect($granule % 120)->toBe(0, "page {$index} granule {$granule}");
+    }
+
+    @unlink($source);
+    @unlink($converted->getRealPath());
+});
+
 test('the chained-stream check reads pages, not markers', function () {
     $path = tempnam(sys_get_temp_dir(), 'ogg_check_');
 
