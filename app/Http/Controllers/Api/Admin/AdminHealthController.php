@@ -13,6 +13,7 @@ use App\Models\Broadcast;
 use App\Models\Connection;
 use App\Models\SystemHeartbeat;
 use App\Services\Connection\Apiway\ApiwayService;
+use App\Services\Webhook\ChatWebhookSecret;
 use App\Support\Heartbeat;
 use App\Support\PlatformUrl;
 use Illuminate\Support\Facades\DB;
@@ -46,6 +47,7 @@ class AdminHealthController extends Controller
                 $this->apiwayUndelivered(),
                 $this->emailSync(),
                 $this->brokenConnections(),
+                $this->chatWebhookSecrets(),
                 $this->platformUrl(),
             ],
         );
@@ -335,6 +337,62 @@ class AdminHealthController extends Controller
             $broken > 0 ? 'warn' : 'ok',
             (string) $broken,
             'Connections that hold credentials but are not active — usually a revoked token. The customer sees an inbox that has gone quiet.',
+        );
+    }
+
+    /**
+     * Telegram and API Way connections whose inbound webhook still carries no
+     * secret — deliveries to them are accepted on trust.
+     *
+     * This is the check that says whether WEBHOOK_CHAT_STRICT can be turned on.
+     * `warn` rather than `down` while any remain: messages are still arriving,
+     * which is the opposite of an outage, and the exposure is bounded to the
+     * connections named here. Once strict mode is on, a connection left
+     * unsecured IS an outage for that inbox, so it reads `down`.
+     */
+    private function chatWebhookSecrets(): array
+    {
+        $unsecured = Connection::query()
+            ->whereIn('channel', [Channel::Telegram->value, Channel::WhatsappApiway->value])
+            ->where('status', ConnectionStatus::Active->value)
+            ->get(['id', 'tenant_id', 'channel', 'name', 'credentials'])
+            ->filter(fn (Connection $connection) => ChatWebhookSecret::of($connection) === null);
+
+        $strict = ChatWebhookSecret::strict();
+
+        if ($unsecured->isEmpty()) {
+            return $this->check(
+                'webhooks:chat-secrets',
+                'Channels',
+                'Chat webhook secrets',
+                'ok',
+                $strict ? 'All secured (strict)' : 'All secured',
+                $strict
+                    ? 'Every inbound Telegram and API Way delivery has to present its connection secret.'
+                    : 'Every active connection carries a secret. Set WEBHOOK_CHAT_STRICT=true to refuse deliveries from any connection that does not.',
+            );
+        }
+
+        return $this->check(
+            'webhooks:chat-secrets',
+            'Channels',
+            'Chat webhook secrets',
+            $strict ? 'down' : 'warn',
+            (string) $unsecured->count(),
+            $strict
+                ? 'Strict mode is on and these connections have no secret, so their inbound messages are being refused. Run `php artisan webhooks:secure-chat`.'
+                : 'These connections accept inbound webhooks from anyone who knows their id. Run `php artisan webhooks:secure-chat`, then set WEBHOOK_CHAT_STRICT=true.',
+            [
+                // Named, not counted: an operator cannot act on a number, and
+                // the ones that fail to secure are usually a specific offline
+                // instance rather than the whole set.
+                'rows' => $unsecured->take(25)->map(fn (Connection $connection) => [
+                    'connection_id' => $connection->id,
+                    'tenant_id' => $connection->tenant_id,
+                    'channel' => $connection->channel->value,
+                    'name' => $connection->name,
+                ])->values()->all(),
+            ],
         );
     }
 

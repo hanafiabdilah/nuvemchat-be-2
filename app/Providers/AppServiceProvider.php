@@ -56,6 +56,17 @@ class AppServiceProvider extends ServiceProvider
 
             return Limit::perMinute(120)->by($key ? 'api-key:'.$key->id : 'ip:'.$request->ip());
         });
+
+        // Inbound chat webhooks (Telegram, WhatsApp API Way). Counted per
+        // connection rather than per IP for the same reason public-api is
+        // counted per key: both senders deliver every workspace's traffic from
+        // a handful of addresses, so an IP budget would throttle real customer
+        // messages the moment the platform got busy. Ten a second is far above
+        // any single inbox's real rate and still bounds what one connection can
+        // be made to absorb before the secret check even runs.
+        RateLimiter::for('webhook-chat', function (Request $request) {
+            return Limit::perMinute(600)->by('webhook-chat:'.$request->route('id'));
+        });
     }
 
     /**

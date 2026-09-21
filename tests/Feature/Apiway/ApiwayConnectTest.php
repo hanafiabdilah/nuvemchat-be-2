@@ -15,6 +15,7 @@ use App\Models\User;
 use App\Services\Connection\Channels\WhatsappApiwayChannel;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\Webhook\ChatWebhookSecret;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
@@ -51,12 +52,21 @@ test('connect links an owned instance: partner token fetched, webhook registered
 
     // The inbound-message webhook was registered straight on the core with the
     // instance token, carrying both body shapes (legacy {value} + new {url}).
-    Http::assertSent(function ($request) use ($connection) {
+    //
+    // The URL ends in this connection's webhook secret — the core stores an
+    // address and nothing else, so that is the only place it can carry one —
+    // and the secret is stored locally only because the core accepted the PUT.
+    $secret = ChatWebhookSecret::of($connection);
+    expect($secret)->not->toBeNull();
+
+    $expectedUrl = route('webhook.chat', ['id' => $connection->id, 'token' => $secret]);
+
+    Http::assertSent(function ($request) use ($expectedUrl) {
         return str_contains($request->url(), 'whats-api.ipbr.pro/v1/instance/update-webhook-received')
             && $request->method() === 'PUT'
             && $request->hasHeader('Authorization', 'Bearer instance-token-1')
-            && $request['value'] === route('webhook.chat', ['id' => $connection->id])
-            && $request['url'] === route('webhook.chat', ['id' => $connection->id]);
+            && $request['value'] === $expectedUrl
+            && $request['url'] === $expectedUrl;
     });
 
     // Nothing webhook-related went through the partner console.

@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Enums\Connection\Channel;
+use App\Services\Webhook\ChatWebhookSecret;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -17,6 +18,15 @@ class ConnectionResource extends JsonResource
     public function toArray(Request $request): array
     {
         $credentials = $this->credentials;
+
+        if (is_array($credentials)) {
+            // The inbound-webhook secret is what proves a delivery to
+            // /webhook/chat/{id} really came from Telegram or the API Way core.
+            // Unlike the channel tokens below it is not a credential the
+            // workspace ever needs to see, and it is stripped for every channel
+            // rather than per channel so a new one cannot leak it by omission.
+            unset($credentials[ChatWebhookSecret::CREDENTIAL_KEY]);
+        }
 
         if ($this->channel === Channel::Email && is_array($credentials)) {
             unset($credentials['password']);

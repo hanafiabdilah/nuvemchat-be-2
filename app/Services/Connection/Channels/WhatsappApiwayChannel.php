@@ -10,6 +10,7 @@ use App\Models\Connection;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\ChannelInterface;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\Webhook\ChatWebhookSecret;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Illuminate\Support\Facades\DB;
@@ -210,6 +211,12 @@ class WhatsappApiwayChannel implements ChannelInterface
         // Everything else in the old credentials belongs to the instance being
         // left behind (its token, its QR, its paired number, the record of an
         // import that already ran) and must not outlive it.
+        //
+        // The webhook secret is deliberately not kept either, even though it
+        // belongs to the connection rather than to the instance: registerWebhook()
+        // runs immediately after this and mints a new one, and rotating means the
+        // instance being left behind can no longer post into this inbox with the
+        // URL it was last given.
         $keep = array_intersect_key($connection->credentials ?? [], array_flip(['import_history']));
 
         DB::transaction(function () use ($connection, $instance, $token, $keep) {
@@ -246,12 +253,30 @@ class WhatsappApiwayChannel implements ChannelInterface
      * pre-partner channel used. Failures are non-fatal (registration re-runs on
      * every connect), but without `received` inbound messages never arrive —
      * hence the loud log.
+     *
+     * The URL now ends in this connection's webhook secret, because that is the
+     * only place the core can carry one: it stores an address and nothing else,
+     * so there is no header to sign with. See ChatWebhookSecret.
+     *
+     * Public so `webhooks:secure-chat` can re-register connections made before
+     * secrets existed without going through the whole connect flow.
      */
-    private function registerWebhook(Connection $connection): void
+    public function registerWebhook(Connection $connection): void
     {
-        $webhookUrl = route('webhook.chat', ['id' => $connection->id]);
+        // Reused when present so a second run is a no-op rather than a window
+        // in which the core still posts the previous value.
+        $secret = ChatWebhookSecret::of($connection) ?: ChatWebhookSecret::generate();
+
+        $webhookUrl = route('webhook.chat', ['id' => $connection->id, 'token' => $secret]);
         $instanceId = $connection->credentials['instance_id'];
         $token = $connection->credentials['token'];
+
+        // `received` is the inbound-message slot, and the only one whose
+        // acceptance tells us the core will actually send the secret back. The
+        // secret is stored only if it did — storing first would mean a failed
+        // registration leaves us expecting a token the core was never given,
+        // which is the one way this change could drop real messages.
+        $inboundAccepted = false;
 
         foreach (self::WEBHOOK_EVENTS as $event) {
             // Legacy core builds read {value}; newer ones read {url, events}.
@@ -263,11 +288,15 @@ class WhatsappApiwayChannel implements ChannelInterface
             }
 
             try {
-                Http::withToken($token)
+                $response = Http::withToken($token)
                     ->connectTimeout(15)
                     ->timeout(30)
                     ->retry(2, 500)
                     ->put($this->base() . '/v1/instance/update-webhook-' . $event . '?instanceId=' . $instanceId, $body);
+
+                if ($event === 'received') {
+                    $inboundAccepted = $response->successful();
+                }
             } catch (\Throwable $th) {
                 Log::log($event === 'received' ? 'error' : 'warning', 'API Way webhook registration failed', [
                     'event' => $event,
@@ -276,6 +305,17 @@ class WhatsappApiwayChannel implements ChannelInterface
                 ]);
             }
         }
+
+        if ($inboundAccepted) {
+            ChatWebhookSecret::store($connection, $secret);
+
+            return;
+        }
+
+        Log::warning('API Way webhook secret not stored: the core did not accept the inbound URL', [
+            'connection' => $connection->id,
+            'already_secured' => ChatWebhookSecret::of($connection) !== null,
+        ]);
     }
 
     private function retrieveQrCode(Connection $connection): void

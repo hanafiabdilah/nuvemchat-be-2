@@ -75,4 +75,19 @@ return [
         'verify_enforce' => (bool) env('WHATSAPP_VERIFY_ENFORCE', true),
     ],
 
+    'webhooks' => [
+        // Refuse a delivery to /webhook/chat/{id} for a connection that has no
+        // secret stored yet, instead of serving it with a warning in the log.
+        //
+        // OFF by default, and that default is load-bearing: every connection
+        // live today registered its webhook upstream before secrets existed, so
+        // turning this on before `webhooks:secure-chat` has run would drop real
+        // customer messages for every Telegram and API Way workspace at once.
+        // A connection that HAS a secret is always strict, flag or no flag — so
+        // the exposure closes one connection at a time as the command works
+        // through them. Flip this once Back Office → Health reports nothing left
+        // to secure. See App\Services\Webhook\ChatWebhookSecret.
+        'chat_strict' => (bool) env('WEBHOOK_CHAT_STRICT', false),
+    ],
+
 ];

@@ -12,7 +12,25 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 
-Route::post('/webhook/chat/{id}', [ChatController::class, 'handle'])->name('webhook.chat');
+/**
+ * Inbound messages for Telegram and WhatsApp API Way.
+ *
+ * `{token}` is optional because Telegram carries the same secret in a header
+ * instead (see App\Services\Webhook\ChatWebhookSecret), and because the URLs of
+ * connections registered before secrets existed have no segment there — they
+ * keep working until `webhooks:secure-chat` re-registers them.
+ *
+ * Throttled per connection, not per IP: Telegram and the API Way core each
+ * deliver every workspace's traffic from a handful of addresses, so an IP
+ * budget would start dropping real customer messages exactly when the platform
+ * got busy. Per connection it bounds what one inbox can be made to absorb and
+ * still leaves ten messages a second for a real one.
+ */
+Route::post('/webhook/chat/{id}/{token?}', [ChatController::class, 'handle'])
+    ->where('id', '[0-9]+')
+    ->where('token', '[A-Za-z0-9]+')
+    ->middleware('throttle:webhook-chat')
+    ->name('webhook.chat');
 
 Route::get('/webhook/instagram', [InstagramController::class, 'verify'])->name('webhook.instagram.verify');
 Route::post('/webhook/instagram', [InstagramController::class, 'handle'])->name('webhook.instagram.handle');
