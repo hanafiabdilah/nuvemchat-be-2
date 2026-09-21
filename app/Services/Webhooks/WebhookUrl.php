@@ -2,6 +2,8 @@
 
 namespace App\Services\Webhooks;
 
+use App\Support\PublicUrl;
+
 /**
  * Where a webhook may point.
  *
@@ -14,7 +16,15 @@ namespace App\Services\Webhooks;
  */
 final class WebhookUrl
 {
-    /** The reason this URL cannot be saved, or null when it can. */
+    /**
+     * The reason this URL cannot be saved, or null when it can.
+     *
+     * The rule itself now lives in App\Support\PublicUrl, which the flow
+     * engine's HTTP node and the media download path also read — the same
+     * check was missing from both, and one copy is what keeps them from
+     * drifting apart. The wording stays here: it is about webhooks, and a
+     * shared sentence would have to stop being about anything.
+     */
     public static function problem(string $url): ?string
     {
         $parts = parse_url(trim($url));
@@ -31,13 +41,7 @@ final class WebhookUrl
             return 'Use uma URL https:// — os eventos levam dados dos clientes.';
         }
 
-        $internalName = $host === 'localhost'
-            || str_ends_with($host, '.localhost')
-            || str_ends_with($host, '.local')
-            || str_ends_with($host, '.internal')
-            || (! str_contains($host, '.') && ! filter_var($host, FILTER_VALIDATE_IP));
-
-        if ($internalName || (filter_var($host, FILTER_VALIDATE_IP) && ! self::isPublicIp($host))) {
+        if (! PublicUrl::isPublic($url)) {
             return 'A URL precisa ser um endereço público na internet.';
         }
 
@@ -47,31 +51,6 @@ final class WebhookUrl
     /** Whether the URL's host currently resolves to a non-public address. */
     public static function resolvesToPrivate(string $url): bool
     {
-        $host = strtolower(trim((string) parse_url($url, PHP_URL_HOST), '[]'));
-
-        if ($host === '') {
-            return true;
-        }
-
-        if (filter_var($host, FILTER_VALIDATE_IP)) {
-            return ! self::isPublicIp($host);
-        }
-
-        // Unresolvable is not "private": the request will simply fail and be
-        // retried, which is the honest outcome for a name that is down.
-        $addresses = gethostbynamel($host) ?: [];
-
-        foreach ($addresses as $address) {
-            if (! self::isPublicIp($address)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static function isPublicIp(string $ip): bool
-    {
-        return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+        return PublicUrl::resolvesToPrivate($url);
     }
 }

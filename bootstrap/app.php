@@ -79,6 +79,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,
             'role_or_permission' => \Spatie\Permission\Middleware\RoleOrPermissionMiddleware::class,
             'super-admin' => \App\Http\Middleware\EnsureUserIsSuperAdmin::class,
+            'admin.mfa' => \App\Http\Middleware\EnsureAdminTwoFactor::class,
             'subscription.active' => \App\Http\Middleware\EnsureSubscriptionActive::class,
             'feature' => \App\Http\Middleware\EnsureFeatureEnabled::class,
             'capability' => \App\Http\Middleware\EnsureMarketCapability::class,

@@ -75,6 +75,17 @@ return [
         'verify_enforce' => (bool) env('WHATSAPP_VERIFY_ENFORCE', true),
     ],
 
+    'admin' => [
+        // Refuse Back Office access to accounts with no second factor enrolled.
+        //
+        // OFF by default, and that default is load-bearing: turning it on
+        // before the operators have enrolled locks every one of them out at
+        // once — including whoever would have to turn it back off. Deploy,
+        // let everyone enrol, watch Back Office → Health report nobody left,
+        // then flip it. See App\Http\Middleware\EnsureAdminTwoFactor.
+        'mfa_required' => (bool) env('ADMIN_MFA_REQUIRED', false),
+    ],
+
     'webhooks' => [
         // Refuse a delivery to /webhook/chat/{id} for a connection that has no
         // secret stored yet, instead of serving it with a warning in the log.

@@ -394,11 +394,11 @@ test('a carousel goes out as one media message per card, numbers beside the pict
         'card_button_type' => 'quick_reply',
         'cards' => [
             [
-                'header_type' => 'image', 'header_url' => 'https://cdn.test/basic.jpg', 'body' => 'Plano Basic',
+                'header_type' => 'image', 'header_url' => 'https://cdn.example.com/basic.jpg', 'body' => 'Plano Basic',
                 'buttons' => [['id' => 'card_basic', 'title' => 'Quero este']],
             ],
             [
-                'header_type' => 'image', 'header_url' => 'https://cdn.test/pro.jpg', 'body' => 'Plano Pro',
+                'header_type' => 'image', 'header_url' => 'https://cdn.example.com/pro.jpg', 'body' => 'Plano Pro',
                 'buttons' => [['id' => 'card_pro', 'title' => 'Quero este']],
             ],
         ],

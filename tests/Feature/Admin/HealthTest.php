@@ -19,6 +19,15 @@ function healthAdmin(): Admin
     $admin = Admin::factory()->create();
     $admin->assignRole($role);
 
+    // Enrolled, so the `admin:two-factor` check reads ok and the page-level
+    // assertions below stay about the thing they are testing. An admin without
+    // a second factor is a real warning, and this fixture would otherwise
+    // trigger it on every health test.
+    $admin->forceFill([
+        'two_factor_secret' => 'ABCDEFGHIJKLMNOP',
+        'two_factor_confirmed_at' => now(),
+    ])->save();
+
     return $admin;
 }
 

@@ -48,6 +48,7 @@ class AdminHealthController extends Controller
                 $this->emailSync(),
                 $this->brokenConnections(),
                 $this->chatWebhookSecrets(),
+                $this->adminTwoFactor(),
                 $this->platformUrl(),
             ],
         );
@@ -391,6 +392,60 @@ class AdminHealthController extends Controller
                     'tenant_id' => $connection->tenant_id,
                     'channel' => $connection->channel->value,
                     'name' => $connection->name,
+                ])->values()->all(),
+            ],
+        );
+    }
+
+    /**
+     * Back Office accounts with no second factor enrolled.
+     *
+     * This is the check that says whether ADMIN_MFA_REQUIRED can be turned on.
+     * `warn` while any remain and the flag is off — they can still sign in, and
+     * the exposure is bounded to the accounts named here. Once the flag is on,
+     * an account left unenrolled cannot work at all, so it reads `down`.
+     */
+    private function adminTwoFactor(): array
+    {
+        $twoFactor = app(\App\Services\Auth\TwoFactor::class);
+        $required = (bool) config('services.admin.mfa_required', false);
+
+        $admins = \App\Models\Admin::query()->get(['id', 'name', 'email', 'two_factor_secret', 'two_factor_confirmed_at']);
+
+        // Only accounts that can actually use the Back Office count. One
+        // stripped of every platform role grants nothing, so it is not an
+        // exposure and would only make this number impossible to get to zero.
+        $exposed = $admins
+            ->filter(fn ($admin) => $admin->isPlatformAdmin())
+            ->reject(fn ($admin) => $twoFactor->isEnabled($admin));
+
+        if ($exposed->isEmpty()) {
+            return $this->check(
+                'admin:two-factor',
+                'Platform',
+                'Back Office two-factor',
+                'ok',
+                $required ? 'All enrolled (enforced)' : 'All enrolled',
+                $required
+                    ? 'Every Back Office account needs a second factor to sign in.'
+                    : 'Every account has enrolled. Set ADMIN_MFA_REQUIRED=true to refuse any that has not.',
+            );
+        }
+
+        return $this->check(
+            'admin:two-factor',
+            'Platform',
+            'Back Office two-factor',
+            $required ? 'down' : 'warn',
+            (string) $exposed->count(),
+            $required
+                ? 'Enforcement is on and these accounts have no second factor, so they cannot sign in. They must enrol from Settings.'
+                : 'These accounts reach every workspace on the platform with a password alone. Have them enrol from Settings, then set ADMIN_MFA_REQUIRED=true.',
+            [
+                'rows' => $exposed->take(25)->map(fn ($admin) => [
+                    'admin_id' => $admin->id,
+                    'name' => $admin->name,
+                    'email' => $admin->email,
                 ])->values()->all(),
             ],
         );

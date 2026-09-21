@@ -100,7 +100,20 @@ use App\Http\Controllers\Api\WorkspaceController;
 use App\Http\Middleware\V1\ApiKeyAuth;
 use Illuminate\Support\Facades\Route;
 
-Route::post('/auth/login', [AuthController::class, 'login']);
+// Sign-in. `throttle:sign-in` is the coarse per-address flood stop; the
+// guessing budget itself counts failures inside the controller
+// (App\Services\Auth\LoginThrottle), so signing in successfully never
+// spends it.
+Route::middleware('throttle:sign-in')->group(function () {
+    Route::post('/auth/login', [AuthController::class, 'login']);
+    // Second step for accounts with a second factor enrolled. Public by
+    // necessity — there is no token yet — and safe because the challenge
+    // ticket it takes is only minted by a correct password.
+    Route::post('/auth/two-factor-challenge', [AuthController::class, 'twoFactorChallenge']);
+});
+
+// ⚠️ Still unthrottled beyond the group above, and it creates a tenant AND
+// sends a paid WhatsApp message on every call. Tracked as P2-11.
 Route::post('/auth/register', [AuthController::class, 'register']);
 
 // Public: which market this domain sells in, for pages shown before sign-in.
@@ -738,9 +751,12 @@ Route::prefix('/v1')->middleware([ApiKeyAuth::class, 'throttle:public-api'])->gr
 // Platform-only: the Back Office lives on the platform domain; a country domain
 // answers 404 here (EnsurePlatformHost), before authentication is even tried.
 Route::prefix('admin')->middleware('platform.only')->group(function () {
-    Route::post('/auth/login', [AdminAuthController::class, 'login']);
+    Route::middleware('throttle:sign-in')->group(function () {
+        Route::post('/auth/login', [AdminAuthController::class, 'login']);
+        Route::post('/auth/two-factor-challenge', [AdminAuthController::class, 'twoFactorChallenge']);
+    });
 
-    Route::middleware(['auth:sanctum', 'super-admin'])->group(function () {
+    Route::middleware(['auth:sanctum', 'super-admin', 'admin.mfa'])->group(function () {
         // Available to any Back Office admin
         Route::get('/auth/me', [AdminAuthController::class, 'me']);
         Route::post('/auth/logout', [AdminAuthController::class, 'logout']);
@@ -749,6 +765,14 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             ->middleware('permission:bo.statistics.view');
         Route::put('/account', [AdminAccountController::class, 'updateProfile']);
         Route::put('/account/password', [AdminAccountController::class, 'updatePassword']);
+
+        // Second factor, for the account making the request. Each of these
+        // asks for the current password again — adding or removing a factor
+        // from a stolen session is how a thief locks the real operator out.
+        Route::post('/account/two-factor', [AdminAccountController::class, 'startTwoFactor']);
+        Route::post('/account/two-factor/confirm', [AdminAccountController::class, 'confirmTwoFactor']);
+        Route::post('/account/two-factor/recovery-codes', [AdminAccountController::class, 'regenerateRecoveryCodes']);
+        Route::delete('/account/two-factor', [AdminAccountController::class, 'disableTwoFactor']);
 
         // Impersonation
         Route::post('/impersonate', [ImpersonationController::class, 'start'])

@@ -67,6 +67,8 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use App\Support\OutboundHttp;
+use App\Support\PublicUrl;
 
 class FlowExecutor
 {
@@ -1321,6 +1323,30 @@ class FlowExecutor
             return;
         }
 
+        // ⚠️ Where the request may go, checked before it is made. This node
+        // reaches out on behalf of whoever wrote the flow, and the URL can be
+        // assembled from {{variables}} filled by the customer's own messages —
+        // so without this it was read access to the platform's own network
+        // (cloud metadata, the database, Reverb, the queue) with the response
+        // mapped into a variable and sent straight back to the customer.
+        //
+        // Taking the `error` branch rather than throwing: a flow that hits a
+        // refusal has to keep running, and `error` is the branch its author
+        // already drew for "this call did not work".
+        if (! PublicUrl::isFetchable($url)) {
+            Log::warning('FlowExecutor: HTTP node refused a non-public address', [
+                'node_id' => $node->id,
+                'flow_id' => $node->flow_id,
+                // Host only. A flow author's query string carries their tokens
+                // and their customer's identifiers.
+                'host' => parse_url($url, PHP_URL_HOST),
+            ]);
+
+            $this->moveToNextNodeByBranch($flowState, $node, 'error');
+
+            return;
+        }
+
         try {
             // Build interpolated headers from the list of { key, value } rows.
             $headers = [];
@@ -1337,9 +1363,14 @@ class FlowExecutor
                 $timeout = 15;
             }
 
-            $request = Http::withHeaders($headers)
-                ->timeout($timeout)
-                ->connectTimeout(min($timeout, 10));
+            // The URL was checked above; the redirect guard is what keeps that
+            // check meaningful, since a public host may answer 302 with a
+            // private one and the client would follow it.
+            $request = OutboundHttp::guard(
+                Http::withHeaders($headers)
+                    ->timeout($timeout)
+                    ->connectTimeout(min($timeout, 10)),
+            );
 
             // Prepare the body for write verbs. If it parses as JSON we send it
             // as a JSON payload; otherwise it goes out as a raw string.

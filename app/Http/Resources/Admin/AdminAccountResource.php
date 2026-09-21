@@ -21,6 +21,17 @@ class AdminAccountResource extends JsonResource
             'id' => $this->id,
             'name' => $this->name,
             'email' => $this->email,
+            // Whether this account has a second factor, and whether the
+            // platform is currently refusing accounts that do not. The Back
+            // Office needs both: one decides what the Settings card says, the
+            // other decides whether it may be dismissed.
+            'two_factor' => [
+                'enabled' => $this->two_factor_confirmed_at !== null && ! empty($this->two_factor_secret),
+                'required' => (bool) config('services.admin.mfa_required', false),
+                // Never the codes themselves — they are stored hashed and were
+                // shown once. Only how many are left to spend.
+                'recovery_codes_left' => count((array) ($this->two_factor_recovery_codes ?? [])),
+            ],
             'roles' => $this->whenLoaded('roles', fn () => $this->roles->pluck('name')),
             'permissions' => $this->whenLoaded('permissions', fn () => $this->permissions()->orderBy('name')->pluck('name')),
             'all_permissions' => $this->when(

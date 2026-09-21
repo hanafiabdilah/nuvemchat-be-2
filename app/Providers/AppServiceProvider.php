@@ -67,6 +67,19 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('webhook-chat', function (Request $request) {
             return Limit::perMinute(600)->by('webhook-chat:'.$request->route('id'));
         });
+
+        // Sign-in, both surfaces. A blunt per-address flood stop that runs
+        // before the controller does any work at all — the guessing budget
+        // itself lives in App\Services\Auth\LoginThrottle, which counts
+        // failures rather than requests so a busy office cannot lock itself out
+        // by signing in successfully.
+        //
+        // ⚠️ Not named `login`: FortifyServiceProvider already registers a
+        // limiter under that name for the Inertia starter-kit routes, and the
+        // second registration would quietly replace the first.
+        RateLimiter::for('sign-in', function (Request $request) {
+            return Limit::perMinute(20)->by('sign-in:'.$request->ip());
+        });
     }
 
     /**
