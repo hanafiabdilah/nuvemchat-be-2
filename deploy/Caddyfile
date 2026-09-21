@@ -70,7 +70,11 @@
     # registered on the platform host, signed links are signed for it, media is
     # linked to it, and the Back Office is operated from it. /oauth/result is
     # deliberately absent — it is a dashboard route.
-    @platform_only path /webmin /webmin/* /api/admin /api/admin/* /webhook /webhook/* /widget-api /widget-api/* /oauth/instagram/* /oauth/facebook/* /oauth/tiktok/* /instagram/deletion-status /broadcasting /broadcasting/* /storage /storage/* /gallery/* /flow-payments/* /flow-invoices/*
+    # /widget.js and /widget/* are here for the same reason as /widget-api:
+    # the widget they install talks to the origin that served them, and that
+    # API answers 404 on this domain. Handing out a widget that cannot reach
+    # its backend is worse than not handing one out.
+    @platform_only path /webmin /webmin/* /api/admin /api/admin/* /webhook /webhook/* /widget-api /widget-api/* /widget.js /widget/* /oauth/instagram/* /oauth/facebook/* /oauth/tiktok/* /instagram/deletion-status /broadcasting /broadcasting/* /storage /storage/* /gallery/* /flow-payments/* /flow-invoices/*
     handle @platform_only {
         header Cache-Control "no-store"
         respond 404
@@ -91,6 +95,39 @@
 
 chat.pingly.com.br {
     encode gzip
+
+    # The embeddable chat widget, pasted into sites we do not own. Two files
+    # with opposite caching, which is the whole reason they are two files:
+    # /widget.js is the address written into other people's HTML and can never
+    # change, so it is short-lived and revalidated; the bundle it names carries
+    # a content hash and is therefore safe to keep forever. Publishing a new
+    # widget then costs each visitor one small revalidation.
+    #
+    # Static files straight from the backend's public folder — no PHP, and no
+    # SPA fallback: index.html answered under a .js URL and cached as
+    # "immutable" would poison that browser for a year.
+    @widget path /widget.js /widget/*
+    handle @widget {
+        root * /var/www/html/public
+        header /widget.js Cache-Control "public, max-age=300"
+
+        @widget_bundle {
+            path /widget/*
+            file
+        }
+        header @widget_bundle Cache-Control "public, max-age=31536000, immutable"
+
+        # A bundle that is not there yet — the Caddyfile deployed ahead of the
+        # backend, which is the recommended order — must not be remembered as
+        # missing for a year. Same guard, same reason, as @missing_asset above.
+        @widget_gone {
+            path /widget/*
+            not file
+        }
+        header @widget_gone Cache-Control "no-store"
+
+        file_server
+    }
 
     # Laravel routes outside the SPA. A path missing here falls through to the
     # SPA and answers index.html with a 200 — how every webhook once failed
