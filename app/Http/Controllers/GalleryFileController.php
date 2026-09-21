@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\GalleryAsset;
+use App\Services\Media\UploadPolicy;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -39,7 +40,26 @@ class GalleryFileController extends Controller
         abort_unless($disk->exists($asset->path), 404);
 
         return $disk->response($asset->path, $asset->public_filename, [
-            'Content-Type' => $asset->mime_type,
+            // ⚠️ Not `$asset->mime_type` directly. Upload validation now keeps
+            // renderable types out (UploadPolicy), but rows stored before it
+            // existed still carry whatever was detected then, and echoing a
+            // stored `text/html` back would serve a page on this domain — the
+            // one that also serves the dashboard and /webmin. Anything a
+            // browser would run comes back as an opaque download instead.
+            'Content-Type' => UploadPolicy::safeContentType($asset->mime_type),
+
+            // Stops the browser second-guessing the line above. This is what
+            // makes the allow-list hold against a polyglot: a file that is a
+            // valid GIF *and* valid HTML passes upload as `gif`, and only
+            // nosniff keeps it from being rendered as the second thing.
+            'X-Content-Type-Options' => 'nosniff',
+
+            // Same pair MediaFileController already serves private media with.
+            // Inert either way for the fetchers that matter here — Meta,
+            // Telegram and Discord pulling the bytes to deliver them — because
+            // a CSP on a subresource response is not applied to it.
+            'Content-Security-Policy' => "default-src 'none'; sandbox",
+
             // Long and immutable: the bytes behind a uuid never change (an
             // edit is a new asset), so every fetcher and every browser that
             // has seen it once should never ask again.

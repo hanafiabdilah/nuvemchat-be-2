@@ -9,6 +9,7 @@ use App\Http\Resources\Gallery\GalleryAssetResource;
 use App\Models\GalleryAsset;
 use App\Services\Gallery\GalleryService;
 use App\Services\Gallery\GalleryStorage;
+use App\Services\Media\UploadPolicy;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -66,21 +67,39 @@ class GalleryAssetController extends Controller
     {
         $maxKb = max(1, (int) config('gallery.max_upload_mb', 64)) * 1024;
 
-        $request->validate([
-            'file' => ['required', 'file', "max:{$maxKb}"],
-            'name' => ['nullable', 'string', 'max:250'],
-        ]);
-
         $file = $request->file('file');
-        $extension = strtolower($file->getClientOriginalExtension());
 
-        if (in_array($extension, (array) config('gallery.blocked_extensions', []), true)) {
+        // Checked ahead of validation so the named types keep their own,
+        // more specific refusal — the allow-list below would otherwise answer
+        // first with the generic "unsupported type" for a file the product has
+        // a real sentence about.
+        //
+        // ⚠️ Against BOTH extensions now. It used to read only
+        // getClientOriginalExtension(), which is the name the browser sent, so
+        // uploading `payload.html` as "invoice.png" walked straight past a list
+        // whose entire purpose was to stop that file.
+        $claimed = $file ? strtolower($file->getClientOriginalExtension()) : '';
+        $detected = $file ? strtolower((string) $file->guessExtension()) : '';
+        $blocked = (array) config('gallery.blocked_extensions', []);
+
+        if ($file && (in_array($claimed, $blocked, true) || in_array($detected, $blocked, true))) {
             return response()->json([
                 'message' => 'Este tipo de arquivo não pode ser guardado na galeria.',
                 'code' => 'blocked_file_type',
                 'errors' => ['file' => ['Este tipo de arquivo não pode ser guardado na galeria.']],
             ], 422);
         }
+
+        // ⚠️ The allow-list is what actually decides this, and it matches on
+        // the file's content rather than on its name. A gallery asset is served
+        // from our own domain, so an HTML or SVG file here became a live page on
+        // the origin that also serves the dashboard and /webmin. See UploadPolicy.
+        $request->validate([
+            'file' => UploadPolicy::rules($maxKb),
+            'name' => ['nullable', 'string', 'max:250'],
+        ], [
+            'file.mimes' => UploadPolicy::message(),
+        ]);
 
         $tenant = $request->user()->tenant;
         $before = GalleryAsset::forTenant($tenant->id)->count();

@@ -160,6 +160,22 @@ chat.pingly.com.br {
     handle_path /storage* {
         root * /var/www/html/storage/app/public
 
+        # These bytes were uploaded by customers and are served from the same
+        # origin as the dashboard and /webmin, so they are served as data and
+        # never as a document. Upload validation (App\Services\Media\
+        # UploadPolicy) keeps HTML and SVG out in the first place; this is what
+        # holds when the two disagree — a polyglot that is a valid GIF *and*
+        # valid HTML passes validation as an image, and `nosniff` is what stops
+        # the browser deciding it is the second thing.
+        #
+        # Both headers are inert for the fetchers that actually matter on this
+        # path — Meta, Telegram and Discord pulling media to deliver it — since
+        # a CSP on a subresource response is not applied to that subresource.
+        header {
+            X-Content-Type-Options "nosniff"
+            Content-Security-Policy "default-src 'none'; sandbox"
+        }
+
         @local_file file
         handle @local_file {
             file_server
