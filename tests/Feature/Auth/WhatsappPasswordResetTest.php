@@ -49,9 +49,13 @@ function resetCode(User $user): string
 test('forgot issues a password_reset OTP and queues it to WhatsApp', function () {
     $user = resetUser();
 
+    // ⚠️ The number is deliberately NOT echoed back. This endpoint is
+    // unauthenticated, and returning the masked number confirmed the address
+    // was registered while handing out the last four digits of the owner's
+    // phone — which is what a help desk asks for to prove identity.
     $this->postJson('/api/auth/password/forgot', ['email' => $user->email])
         ->assertOk()
-        ->assertJsonPath('whatsapp_number', '•••••••••8888');
+        ->assertJsonMissingPath('whatsapp_number');
 
     $otp = Otp::where('user_id', $user->id)->latest('id')->first();
     expect($otp->purpose)->toBe(OtpService::PURPOSE_PASSWORD_RESET);
@@ -240,4 +244,17 @@ test('password reset events are required and carry their own log type', function
     expect(NotificationType::PasswordResetOtp->logType())->toBe('otp:password_reset');
     expect(NotificationType::PasswordChanged->isRequired())->toBeFalse();
     expect(NotificationType::PasswordChanged->logType())->toBe('notification:password_changed');
+});
+
+
+test('forgot answers a registered and an unknown address identically', function () {
+    $user = resetUser();
+
+    $known = $this->postJson('/api/auth/password/forgot', ['email' => $user->email])->assertOk();
+    $unknown = $this->postJson('/api/auth/password/forgot', ['email' => 'nobody@example.test'])->assertOk();
+
+    // Byte for byte. `cooldown` used to differ too — the remaining seconds for
+    // a real account, a flat 60 otherwise — which was a second way to ask the
+    // same question.
+    expect($known->json())->toBe($unknown->json());
 });

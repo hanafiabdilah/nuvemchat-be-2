@@ -40,7 +40,6 @@ class PasswordResetController extends Controller
         ]);
 
         $user = User::where('email', $validated['email'])->first();
-        $cooldown = 0;
 
         if ($user && $user->whatsapp_number) {
             try {
@@ -54,8 +53,6 @@ class PasswordResetController extends Controller
                     'error' => $th->getMessage(),
                 ]);
             }
-
-            $cooldown = $this->otpService->cooldownRemaining($user, OtpService::PURPOSE_PASSWORD_RESET);
         } elseif ($user) {
             // Recovery runs over WhatsApp only, so a legacy account with no number on file
             // has no self-service path. The response stays generic; support needs the trail.
@@ -64,12 +61,20 @@ class PasswordResetController extends Controller
             ]);
         }
 
+        // ⚠️ Byte-for-byte the same answer whether or not the address is
+        // registered. The docblock above always claimed this, and the response
+        // did not: `whatsapp_number` came back masked for an account that
+        // existed and null for one that did not, so an anonymous caller could
+        // confirm any address — and collect the last four digits of the
+        // owner's phone number, which is exactly what a help desk asks for to
+        // prove identity.
+        //
+        // `cooldown` was the second tell: it carried the *remaining* seconds
+        // for a real account and a flat 60 otherwise. It is the full window
+        // for everyone now; the client only uses it to disable a button.
         return response()->json([
             'message' => 'If an account exists for that email, a reset code was sent to its WhatsApp number.',
-            // Masked so the user can confirm which number to check; null when there is
-            // nothing to send to (unknown email, or an account with no number on file).
-            'whatsapp_number' => $user ? $this->mask($user->whatsapp_number) : null,
-            'cooldown' => $cooldown ?: 60,
+            'cooldown' => OtpService::resendCooldownSeconds(),
             'expires_in_minutes' => OtpService::ttlMinutes(),
         ]);
     }
@@ -134,14 +139,5 @@ class PasswordResetController extends Controller
         }
 
         return $user;
-    }
-
-    /** Show only the last 4 digits of the destination number. */
-    private function mask(?string $number): ?string
-    {
-        if (! $number) return null;
-        $digits = preg_replace('/\D+/', '', $number);
-
-        return strlen($digits) <= 4 ? $digits : str_repeat('•', max(0, strlen($digits) - 4)) . substr($digits, -4);
     }
 }

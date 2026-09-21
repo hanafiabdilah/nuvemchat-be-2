@@ -80,6 +80,51 @@ class AppServiceProvider extends ServiceProvider
         RateLimiter::for('sign-in', function (Request $request) {
             return Limit::perMinute(20)->by('sign-in:'.$request->ip());
         });
+
+        $this->registerWidgetLimiters();
+    }
+
+    /**
+     * The Live Chat Widget's public API.
+     *
+     * Reachable by anyone who reads a customer's page source for its `app_id`,
+     * and until now it had no limit of any kind — while opening a session
+     * writes three permanent rows, an upload takes a 50 MB file, and a message
+     * runs the flow engine and can spend the workspace's prepaid AI balance.
+     *
+     * ⚠️ Two keys on every limiter, not one. Per address alone, one office
+     * behind a single NAT would throttle its own visitors; per app id alone, a
+     * single attacker could exhaust a workspace's budget for everybody. Both
+     * together means a flood is bounded from whichever side it comes.
+     *
+     * ⚠️ Limits are per route group, not global, because the work differs by
+     * two orders of magnitude between polling `status` and starting an AI turn.
+     */
+    private function registerWidgetLimiters(): void
+    {
+        $perVisitorAndApp = static function (Request $request, int $perAddress, int $perApp): array {
+            // `appId` on the bootstrap routes, `sessionToken` on the rest —
+            // either identifies the workspace footing the bill.
+            $scope = (string) ($request->route('appId') ?? $request->route('sessionToken') ?? 'unknown');
+
+            return [
+                Limit::perMinute($perAddress)->by('widget:'.$request->ip().'|'.$scope),
+                Limit::perMinute($perApp)->by('widget-app:'.$scope),
+            ];
+        };
+
+        // Polling and history. A widget left open asks for `status` on a timer,
+        // so this has to be comfortable for a person doing nothing at all.
+        RateLimiter::for('widget-read', fn (Request $request) => $perVisitorAndApp($request, 60, 6000));
+
+        // Rows that are written once and never cleaned up on their own.
+        RateLimiter::for('widget-session', fn (Request $request) => $perVisitorAndApp($request, 5, 600));
+
+        // A person typing. Well above conversational pace, far below a loop.
+        RateLimiter::for('widget-send', fn (Request $request) => $perVisitorAndApp($request, 20, 2000));
+
+        // Bytes on our disk and a bill from the object store.
+        RateLimiter::for('widget-upload', fn (Request $request) => $perVisitorAndApp($request, 5, 300));
     }
 
     /**

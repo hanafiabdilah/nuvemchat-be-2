@@ -127,6 +127,33 @@ class FlowExecutor
     /**
      * Start a flow for a conversation
      */
+    /**
+     * Whether the flow this connection points at belongs to the same workspace.
+     *
+     * A cross-tenant `flow_id` is refused rather than repaired: the connection
+     * is somebody's live inbox and quietly detaching its automation would be a
+     * second outage on top of the first. It is logged loudly instead, because a
+     * hit here means a row got written before the validation was scoped and
+     * somebody has to look at it.
+     */
+    protected function flowBelongsToConnection(Connection $connection): bool
+    {
+        $flowTenantId = Flow::whereKey($connection->flow_id)->value('tenant_id');
+
+        if ($flowTenantId !== null && (int) $flowTenantId === (int) $connection->tenant_id) {
+            return true;
+        }
+
+        Log::error('FlowExecutor: refused a flow that belongs to another workspace', [
+            'connection_id' => $connection->id,
+            'connection_tenant_id' => $connection->tenant_id,
+            'flow_id' => $connection->flow_id,
+            'flow_tenant_id' => $flowTenantId,
+        ]);
+
+        return false;
+    }
+
     public function startFlow(Conversation $conversation): void
     {
         // Automation flows are 1:1 only — never run in group conversations.
@@ -137,6 +164,16 @@ class FlowExecutor
         $connection = $conversation->connection;
 
         if (! $connection->flow_id) {
+            return;
+        }
+
+        // ⚠️ Whose flow this is, checked at the point it runs rather than only
+        // where it was chosen. Validation now scopes `flow_id` to the caller's
+        // workspace, but rows written before that may already point elsewhere,
+        // and a flow belonging to another tenant must not execute here whatever
+        // put it there — it would read that workspace's script out to this
+        // inbox and raise charges on their payment integration.
+        if (! $this->flowBelongsToConnection($connection)) {
             return;
         }
 

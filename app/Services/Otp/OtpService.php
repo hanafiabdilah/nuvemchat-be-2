@@ -57,6 +57,19 @@ class OtpService
     }
 
     /**
+     * The full resend window.
+     *
+     * Public because the recovery endpoint has to answer with a figure that is
+     * the same for everyone — the *remaining* seconds differ between an account
+     * that exists and one that does not, which is an answer to a question
+     * nobody asked it.
+     */
+    public static function resendCooldownSeconds(): int
+    {
+        return self::RESEND_COOLDOWN_SECONDS;
+    }
+
+    /**
      * Generate, persist and dispatch a fresh OTP for the user's WhatsApp number.
      * Enforces a resend cooldown. Returns the created Otp.
      */

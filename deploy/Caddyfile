@@ -62,9 +62,45 @@
     file_server
 }
 
+# Security headers, for every site.
+#
+# There were none at all — no CSP, no frame protection, no HSTS, no nosniff —
+# on an origin that serves the tenant dashboard at `/`, the Back Office at
+# `/webmin`, and customer-uploaded files at `/storage`, with session tokens in
+# localStorage. That combination is what turned an unrestricted upload into a
+# platform takeover rather than a defaced page.
+#
+# ⚠️ The CSP is REPORT-ONLY on purpose, and must stay that way until its
+# reports have been watched for a while. Two things this app loads are chosen
+# at runtime and cannot be read off the source: the card-tokenisation SDK, whose
+# host depends on which gateway minted the session, and Meta's SDK, injected
+# only when somebody opens the WhatsApp signup popup. Enforcing a policy that
+# has never seen either would break checkout and channel onboarding — silently,
+# for the customers unlucky enough to be the first to try.
+#
+# ⚠️ `microphone=(self)` is not decoration: the composer records voice notes.
+# Dropping it to `()` would disable that with no error anyone can see.
+(security_headers) {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "DENY"
+        Referrer-Policy           "strict-origin-when-cross-origin"
+        Permissions-Policy        "geolocation=(), camera=(), microphone=(self), payment=()"
+
+        # Observed, not enforced. Promote to Content-Security-Policy once the
+        # reports are quiet — see docs/security-headers.md.
+        Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://sdk.mercadopago.com https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' wss://ws.pingly.com.br https://ewr1.vultrobjects.com https://sdk.mercadopago.com https://connect.facebook.net; frame-src https://connect.facebook.net https://www.facebook.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+
+        # Nothing is served that needs to advertise what serves it.
+        -Server
+    }
+}
+
 # A country domain: the tenant dashboard and its API, nothing else.
 (country_site) {
     encode gzip
+    import security_headers
 
     # Platform-only, and kept that way: webhooks and OAuth callbacks are
     # registered on the platform host, signed links are signed for it, media is
@@ -95,6 +131,7 @@
 
 chat.pingly.com.br {
     encode gzip
+    import security_headers
 
     # The embeddable chat widget, pasted into sites we do not own. Two files
     # with opposite caching, which is the whole reason they are two files:

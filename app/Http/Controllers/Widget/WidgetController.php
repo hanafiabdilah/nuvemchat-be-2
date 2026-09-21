@@ -15,6 +15,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\LiveChatSession;
+use App\Services\Contact\WidgetVisitorId;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowExecutor;
 use App\Services\Media\MediaStorage;
@@ -61,16 +62,31 @@ class WidgetController extends Controller
             'email' => ['nullable', 'email', 'max:255'],
             'visitor_id' => ['nullable', 'string', 'max:255'],
             'page_url' => ['nullable', 'string', 'max:2048'],
-            'meta' => ['nullable', 'array'],
+            // ⚠️ Bounded. `array` alone put no ceiling on what goes into
+            // live_chat_sessions.meta, so one anonymous request could store
+            // megabytes of JSON — and the endpoint that accepts it is public.
+            'meta' => ['nullable', 'array', 'max:30'],
+            'meta.*' => ['nullable', 'string', 'max:500'],
         ]);
 
         $connection = $this->resolveConnectionByAppId($appId);
 
         $name = $data['name'] ?? 'Visitor';
-        $externalId = $data['visitor_id'] ?? (string) Str::uuid();
+
+        // ⚠️ Namespaced, because `visitor_id` is the only contact id on this
+        // platform that the person on the other side chooses. Unscoped, an
+        // anonymous caller who knew this workspace's widget app_id — published
+        // in the HTML of the customer's own site — could send one of the
+        // workspace's WhatsApp numbers here, land on that customer's real
+        // contact record and rename it. See WidgetVisitorId.
+        $externalId = WidgetVisitorId::scoped($connection, $data['visitor_id'] ?? (string) Str::uuid());
 
         $session = DB::transaction(function () use ($connection, $data, $name, $externalId, $request) {
-            $contact = Contact::createFromExternalData($connection, $externalId, $name, $data['email'] ?? null);
+            // ⚠️ `updateProfile: false`. Even inside the widget's own id space,
+            // nothing arriving here is attributable to anyone, so it may create
+            // a contact but never rewrite the name or e-mail of one that
+            // already exists.
+            $contact = Contact::createFromExternalData($connection, $externalId, $name, $data['email'] ?? null, updateProfile: false);
 
             $conversation = Conversation::create([
                 'contact_id' => $contact->id,
@@ -128,7 +144,11 @@ class WidgetController extends Controller
         $session = $this->resolveSession($sessionToken);
 
         $file = $request->file('file');
-        $ext = $file->getClientOriginalExtension();
+
+        // ⚠️ The extension comes from the detected type, not from the name the
+        // browser sent. These bytes are served back from our own domain, and a
+        // client-chosen extension is what decides the Content-Type there.
+        $ext = strtolower($file->guessExtension() ?: $file->getClientOriginalExtension());
         $messageType = $this->inferMessageTypeFromMime($file->getClientMimeType(), $ext);
 
         $path = sprintf(
@@ -138,7 +158,11 @@ class WidgetController extends Controller
             $ext,
         );
 
-        MediaStorage::disk()->put($path, file_get_contents($file->getRealPath()));
+        // ⚠️ Streamed, not read into a string. `file_get_contents()` on a 50 MB
+        // upload put the whole file in PHP's memory before writing it, so a
+        // handful of concurrent uploads — from an endpoint anyone can call —
+        // was an out-of-memory rather than a slow request.
+        MediaStorage::disk()->putFileAs(dirname($path), $file, basename($path));
 
         $expiresAt = Carbon::now()->addHours(6);
 

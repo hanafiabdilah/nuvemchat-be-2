@@ -227,7 +227,18 @@ class ConnectionController extends Controller
             'channel' => ['required', Rule::enum(Channel::class)],
             'name' => ['required', 'string', 'max:100'],
             'color' => ['nullable', 'hex_color', 'max:7'],
-            'flow_id' => ['nullable', 'exists:flows,id'],
+            // ⚠️ Scoped to the caller's workspace. Unscoped, a tenant could
+            // point their own connection at somebody else's flow and run it:
+            // every message node in it would be delivered to their inbox (so
+            // the whole script reads out), its payment node would raise real
+            // charges on the other workspace's gateway, and its AI and HTTP
+            // nodes would run on their behalf. FlowExecutor::startFlow() loads
+            // the flow straight off connections.flow_id and never asked whose
+            // it was.
+            'flow_id' => [
+                'nullable',
+                Rule::exists('flows', 'id')->where('tenant_id', $request->user()->tenant_id),
+            ],
         ]);
 
         $tenant = $request->user()->tenant;
@@ -516,7 +527,18 @@ class ConnectionController extends Controller
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:100'],
             'color' => ['nullable', 'hex_color', 'max:7'],
-            'flow_id' => ['nullable', 'exists:flows,id'],
+            // ⚠️ Scoped to the caller's workspace. Unscoped, a tenant could
+            // point their own connection at somebody else's flow and run it:
+            // every message node in it would be delivered to their inbox (so
+            // the whole script reads out), its payment node would raise real
+            // charges on the other workspace's gateway, and its AI and HTTP
+            // nodes would run on their behalf. FlowExecutor::startFlow() loads
+            // the flow straight off connections.flow_id and never asked whose
+            // it was.
+            'flow_id' => [
+                'nullable',
+                Rule::exists('flows', 'id')->where('tenant_id', $request->user()->tenant_id),
+            ],
             // Both `sometimes`: a client that predates the setting must not
             // switch it off by omitting it.
             'return_to_last_agent' => ['sometimes', 'boolean'],

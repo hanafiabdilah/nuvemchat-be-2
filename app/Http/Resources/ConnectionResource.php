@@ -11,44 +11,34 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class ConnectionResource extends JsonResource
 {
     /**
+     * Credential keys that never leave the server, whatever channel wrote them.
+     *
+     * `token` is here for the channels that use it as a secret (API Way's
+     * instance token authorizes the entire core API); Telegram and Discord get
+     * it back under a permission check — see scrubCredentials().
+     */
+    private const SECRET_KEYS = [
+        'access_token',
+        'user_access_token',
+        'refresh_token',
+        'password',
+        'app_secret',
+        'client_secret',
+        'secret',
+        'api_key',
+        'private_key',
+        'token',
+        ChatWebhookSecret::CREDENTIAL_KEY,
+    ];
+
+    /**
      * Transform the resource into an array.
      *
      * @return array<string, mixed>
      */
     public function toArray(Request $request): array
     {
-        $credentials = $this->credentials;
-
-        if (is_array($credentials)) {
-            // The inbound-webhook secret is what proves a delivery to
-            // /webhook/chat/{id} really came from Telegram or the API Way core.
-            // Unlike the channel tokens below it is not a credential the
-            // workspace ever needs to see, and it is stripped for every channel
-            // rather than per channel so a new one cannot leak it by omission.
-            unset($credentials[ChatWebhookSecret::CREDENTIAL_KEY]);
-        }
-
-        if ($this->channel === Channel::Email && is_array($credentials)) {
-            unset($credentials['password']);
-        }
-
-        // The SPA only needs the account identity (username/display_name);
-        // OAuth tokens stay server-side.
-        if ($this->channel === Channel::TikTok && is_array($credentials)) {
-            unset($credentials['access_token'], $credentials['refresh_token']);
-        }
-
-        // Messenger: the SPA only needs the Page identity and the pending page
-        // list for the picker; page/user tokens stay server-side.
-        if ($this->channel === Channel::Messenger && is_array($credentials)) {
-            unset($credentials['access_token'], $credentials['user_access_token']);
-        }
-
-        // The instance API token authorizes the whole core /v1 surface — the
-        // SPA never needs it (token reveal is a dedicated, audited endpoint).
-        if ($this->channel === Channel::WhatsappApiway && is_array($credentials)) {
-            unset($credentials['token']);
-        }
+        $credentials = $this->scrubCredentials($request);
 
         return [
             'id' => $this->id,
@@ -100,5 +90,54 @@ class ConnectionResource extends JsonResource
                     : null
             ),
         ];
+    }
+
+    /**
+     * Channel credentials, with the secrets taken out.
+     *
+     * ⚠️ This payload goes to EVERY signed-in member of the workspace. The
+     * connection list is what the inbox renders its channel rail and its
+     * filters from, so it cannot be put behind a permission without taking the
+     * inbox away from ordinary agents — which means the filtering has to happen
+     * here, not on the route.
+     *
+     * It used to strip secrets per channel, and only for four of them. WhatsApp
+     * Official and Instagram were not among them, so their `access_token` — a
+     * credential that sends messages as the business, reads the whole WABA and
+     * survives the agent leaving the company — was handed to anybody who could
+     * open the dashboard.
+     *
+     * ⚠️ A deny-list by key name, applied to every channel, rather than four
+     * per-channel blocks. The blocks were the shape that let two channels be
+     * forgotten; a name like `access_token` means the same thing wherever it
+     * appears, and a channel added next year is covered without anybody
+     * remembering to come back here.
+     */
+    private function scrubCredentials(Request $request): mixed
+    {
+        $credentials = $this->credentials;
+
+        if (! is_array($credentials)) {
+            return $credentials;
+        }
+
+        $deny = self::SECRET_KEYS;
+
+        // The Telegram and Discord bot token is the one exception, and not a
+        // grudging one: the connect wizard shows it in the field it was typed
+        // into, so reconnecting does not mean going to find it again. Gated on
+        // the permission that governs connecting rather than removed outright,
+        // so an agent who only answers messages no longer receives it — a bot
+        // token is total control of the bot.
+        if (in_array($this->channel, [Channel::Telegram, Channel::Discord], true)
+            && $request->user()?->can('connections.connect')) {
+            $deny = array_diff($deny, ['token']);
+        }
+
+        foreach ($deny as $key) {
+            unset($credentials[$key]);
+        }
+
+        return $credentials;
     }
 }

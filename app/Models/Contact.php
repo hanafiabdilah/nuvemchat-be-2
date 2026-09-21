@@ -27,7 +27,14 @@ class Contact extends Model
         'meta'
     ];
 
-    public static function createFromExternalData(Connection $connection, string $externalId, string $name, ?string $username = null): self
+    /**
+     * @param  bool  $updateProfile  Whether a name/username on an EXISTING contact
+     *                               may be overwritten. False for callers whose
+     *                               input is not attributable to anyone — see
+     *                               WidgetController: an anonymous visitor must
+     *                               not be able to rename a customer's contact.
+     */
+    public static function createFromExternalData(Connection $connection, string $externalId, string $name, ?string $username = null, bool $updateProfile = true): self
     {
         $contact = self::firstOrCreate([
             'external_id' => $externalId,
@@ -38,7 +45,7 @@ class Contact extends Model
             'channel' => $connection->channel,
         ]);
 
-        if (!$contact->wasRecentlyCreated) {
+        if (!$contact->wasRecentlyCreated && $updateProfile) {
             $updates = [];
 
             // Update name hanya jika belum di-lock oleh admin, data baru valid (bukan placeholder), dan berbeda.

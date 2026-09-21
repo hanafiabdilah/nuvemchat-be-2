@@ -26,7 +26,7 @@ function chatHookConnection(Channel $channel = Channel::Telegram, ?string $secre
     $user = User::factory()->create();
     $tenant = Tenant::create(['user_id' => $user->id]);
 
-    $credentials = ['token' => 'bot-token'];
+    $credentials = ['token' => 'bot-token', 'username' => 'loja_bot'];
 
     if ($secret !== null) {
         $credentials[ChatWebhookSecret::CREDENTIAL_KEY] = $secret;
@@ -150,5 +150,10 @@ it('keeps the webhook secret out of whatever the dashboard is served', function 
 
     expect($connection->credentials)->toHaveKey(ChatWebhookSecret::CREDENTIAL_KEY)
         ->and($payload['credentials'])->not->toHaveKey(ChatWebhookSecret::CREDENTIAL_KEY)
-        ->and($payload['credentials'])->toHaveKey('token'); // the rest still goes out
+        // The identity still goes out — the scrub is by key name and must not
+        // take the whole block with it.
+        ->and($payload['credentials'])->toHaveKey('username')
+        // And the bot token does not, for a caller with no permission to
+        // connect. See ConnectionCredentialLeakTest.
+        ->and($payload['credentials'])->not->toHaveKey('token');
 });
