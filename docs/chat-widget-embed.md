@@ -6,7 +6,7 @@ React dan proses build. Mayoritas situs pelanggan tidak punya keduanya, dan
 manual pun menyatakannya terang-terangan: *"Esta tela não mostra código para
 colar no site."*
 
-Sekarang ada jalur kedua, dan jalur inilah yang ditawarkan dashboard:
+Sekarang ada jalur kedua, dan dashboard menawarkan **keduanya** (tab `Embed code` / `npm (React)` di laci koneksi). Yang baru:
 
 ```html
 <script src="https://chat.pingly.com.br/widget.js" data-app-id="APP_ID" async></script>
