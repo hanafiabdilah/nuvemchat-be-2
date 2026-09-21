@@ -336,6 +336,19 @@ class AgentController extends Controller
             'permissions.*.exists' => 'One of the selected permissions does not exist.',
         ]);
 
+        // ⚠️ Nobody hands out what they do not hold themselves.
+        //
+        // This endpoint could grant ANY workspace permission, and there was no
+        // check that the target was somebody other than the caller — so one
+        // permission, `agents.assign-permissions`, was quietly equivalent to
+        // all of them. A supervisor could give themselves `billing.manage` and
+        // spend the workspace's prepaid balance, or `webhooks.manage` and point
+        // every lead at an endpoint of their own.
+        //
+        // The owner is exempt because the owner already holds everything;
+        // subtracting a set from itself would be a no-op with extra steps.
+        $this->assertMayGrant($request->user(), $validated['permissions']);
+
         $user->syncPermissions($validated['permissions']);
 
         return response()->json([
@@ -343,4 +356,31 @@ class AgentController extends Controller
             'data' => $user->load('permissions'),
         ]);
     }
+
+    /**
+     * Refuse to grant a permission the caller does not hold.
+     *
+     * @param  list<string>  $permissions
+     */
+    private function assertMayGrant(User $actor, array $permissions): void
+    {
+        if ($actor->hasRole('owner')) {
+            return;
+        }
+
+        $beyond = collect($permissions)
+            ->reject(fn (string $permission) => $actor->can($permission))
+            ->values();
+
+        if ($beyond->isEmpty()) {
+            return;
+        }
+
+        throw ValidationException::withMessages([
+            'permissions' => [
+                'You can only grant permissions you have yourself: '.$beyond->implode(', '),
+            ],
+        ]);
+    }
+
 }

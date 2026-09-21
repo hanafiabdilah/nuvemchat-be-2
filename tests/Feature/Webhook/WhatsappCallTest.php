@@ -18,6 +18,7 @@ use App\Services\Webhook\Handlers\Chat\WhatsappApiwayHandler;
 use App\Services\Webhook\Handlers\Chat\WhatsappCallHandler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
+use Tests\Support\MetaWebhook;
 
 uses(RefreshDatabase::class);
 
@@ -231,7 +232,10 @@ test('the WABA webhook routes the calls field away from the chat handler', funct
     Event::fake();
     $connection = callConnection();
 
-    $this->postJson('/webhook/whatsapp', [
+    // Signed, because verification refuses an unsigned body now — see
+    // MetaSignatureVerifier. Tests/Support/MetaWebhook signs it the way Meta
+    // does, so this still covers the path production runs.
+    MetaWebhook::post($this, [
         'object' => 'whatsapp_business_account',
         'entry' => [[
             'id' => CALL_WABA_ID,

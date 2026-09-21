@@ -48,6 +48,7 @@ class AdminHealthController extends Controller
                 $this->emailSync(),
                 $this->brokenConnections(),
                 $this->chatWebhookSecrets(),
+                $this->metaWebhookSecrets(),
                 $this->adminTwoFactor(),
                 $this->platformUrl(),
             ],
@@ -394,6 +395,68 @@ class AdminHealthController extends Controller
                     'name' => $connection->name,
                 ])->values()->all(),
             ],
+        );
+    }
+
+    /**
+     * The app secrets Meta's webhooks are verified against.
+     *
+     * Signature verification refuses when the secret is missing, so an empty
+     * one is not a weakness any more — it is an outage, and a silent one:
+     * WhatsApp, Instagram or Messenger simply stop delivering. That is the
+     * right failure mode and exactly why it has to be visible here.
+     *
+     * Only counted against channels the platform actually runs. A workspace
+     * with no Instagram connection does not need an Instagram secret, and a
+     * check that stays red for a channel nobody uses teaches operators to
+     * ignore this page.
+     */
+    private function metaWebhookSecrets(): array
+    {
+        $inUse = Connection::query()
+            ->where('status', ConnectionStatus::Active->value)
+            ->whereIn('channel', [
+                Channel::WhatsappOfficial->value,
+                Channel::Messenger->value,
+                Channel::Instagram->value,
+            ])
+            ->pluck('channel')
+            ->map(fn ($channel) => $channel instanceof Channel ? $channel->value : (string) $channel)
+            ->unique();
+
+        $missing = [];
+
+        $needsFacebook = $inUse->contains(Channel::WhatsappOfficial->value)
+            || $inUse->contains(Channel::Messenger->value);
+
+        if ($needsFacebook && empty(\App\Services\Connection\Meta\FacebookConfig::appSecret())) {
+            $missing[] = 'facebook.app_secret (WhatsApp Official, Messenger)';
+        }
+
+        if ($inUse->contains(Channel::Instagram->value)
+            && empty(\App\Services\Connection\Meta\InstagramConfig::clientSecret())) {
+            $missing[] = 'instagram.client_secret';
+        }
+
+        if ($missing === []) {
+            return $this->check(
+                'webhooks:meta',
+                'Channels',
+                'Meta webhook secrets',
+                'ok',
+                $inUse->isEmpty() ? 'No Meta channels' : 'Configured',
+                'Inbound WhatsApp, Instagram and Messenger deliveries are checked against the app secret before anything is read from them.',
+            );
+        }
+
+        return $this->check(
+            'webhooks:meta',
+            'Channels',
+            'Meta webhook secrets',
+            'down',
+            (string) count($missing),
+            'Signature verification refuses without a secret, so these channels are not receiving messages at all. Set them in Integrations.',
+            ['rows' => $missing],
         );
     }
 

@@ -375,11 +375,15 @@ class WidgetController extends Controller
 
         $lastSeenAt = $session->last_seen_at;
         $unreadCount = $conversation->messages()
+            ->where('message_type', '!=', MessageType::Info)
             ->where('sender_type', SenderType::Outgoing)
             ->when($lastSeenAt, fn($q) => $q->where('created_at', '>', $lastSeenAt))
             ->count();
 
         $lastMessage = $conversation->messages()
+            // Same reason as history(): a note saying "Ana assumiu esta
+            // conversa" is not the last thing anybody said to this visitor.
+            ->where('message_type', '!=', MessageType::Info)
             ->latest('created_at')
             ->latest('id')
             ->first();
@@ -431,7 +435,13 @@ class WidgetController extends Controller
     {
         $session = $this->resolveSession($sessionToken);
 
+        // ⚠️ Info messages are excluded. They are the workspace's own notes —
+        // written as Outgoing but never sent to any channel — and they carry
+        // agent names, handoff reasons, payment amounts and the metadata a
+        // partner posted with an API lead. The visitor is the one person in
+        // this conversation who is not part of the workspace.
         $messages = $session->conversation->messages()
+            ->where('message_type', '!=', MessageType::Info)
             ->orderBy('sent_at')
             ->orderBy('id')
             ->limit(200)

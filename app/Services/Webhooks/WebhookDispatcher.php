@@ -5,6 +5,7 @@ namespace App\Services\Webhooks;
 use App\Jobs\DeliverWebhook;
 use App\Models\WebhookDelivery;
 use App\Models\WebhookEndpoint;
+use App\Support\OutboundHttp;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -120,7 +121,13 @@ final class WebhookDispatcher
         $timestamp = now()->getTimestamp();
 
         try {
-            $response = Http::timeout(self::TIMEOUT_SECONDS)
+            // ⚠️ Pinned to the address the check above vetted. Without this
+            // there are two lookups — one to decide the host is public, one by
+            // curl to open the socket — and a record with a one-second TTL can
+            // answer differently for each. Redirects stay off entirely here:
+            // unlike the flow engine, nothing legitimate about delivering a
+            // signed payload needs to follow one.
+            $response = OutboundHttp::pinHost(Http::timeout(self::TIMEOUT_SECONDS), $endpoint->url)
                 ->connectTimeout(5)
                 ->withOptions(['allow_redirects' => false])
                 ->withHeaders([

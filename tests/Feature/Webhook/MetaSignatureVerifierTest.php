@@ -50,9 +50,15 @@ test('rejects a request with a malformed signature header', function () {
     expect(MetaSignatureVerifier::verify($request, 'app-secret', 'whatsapp'))->toBeFalse();
 });
 
-test('skips verification when no secret is configured', function () {
+test('refuses when no secret is configured', function () {
+    // ⚠️ This used to return true — "degrade to the previous, unverified
+    // behaviour" — which turned one missing settings row into an open door on
+    // every Meta channel at once. A misconfiguration should look like an
+    // outage, which somebody fixes, not like silence, which nobody notices.
+    // It is visible before it bites: Back Office → Health, "Meta webhook
+    // secrets".
     $request = Request::create('/webhook/whatsapp', 'POST', [], [], [], [], '{}');
 
-    expect(MetaSignatureVerifier::verify($request, null, 'whatsapp'))->toBeTrue();
-    expect(MetaSignatureVerifier::verify($request, '', 'whatsapp'))->toBeTrue();
+    expect(MetaSignatureVerifier::verify($request, null, 'whatsapp'))->toBeFalse();
+    expect(MetaSignatureVerifier::verify($request, '', 'whatsapp'))->toBeFalse();
 });

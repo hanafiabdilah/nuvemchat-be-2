@@ -231,7 +231,12 @@ class BillingController extends Controller
             'payer_email' => ['required', 'email'],
         ]);
 
-        $plan = Plan::active()->findOrFail($validated['plan_id']);
+        // ⚠️ `->public()` as well, matching plans() above. Without it the
+        // catalogue filtered and the checkout did not, so a tenant could
+        // count plan ids and subscribe to one deliberately kept off the
+        // shelf — an internal, legacy or partner plan, which is exactly the
+        // kind with better quotas or a lower price.
+        $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
         $method = PaymentMethod::from($validated['method']);
 
         try {

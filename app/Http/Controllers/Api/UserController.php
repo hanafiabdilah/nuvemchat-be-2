@@ -59,9 +59,14 @@ class UserController extends Controller
             'password' => 'nullable|string|min:8|confirmed',
         ]);
 
-        // Verify current password if password is being changed
-        if (!empty($validated['password'])) {
-            if (!Hash::check($validated['current_password'] ?? '', $user->password)) {
+        // ⚠️ Changing the address the account is reachable at is a change of
+        // ownership, so it costs the password too. It used to be free: anyone
+        // holding a session — a stolen token, a laptop left open — could point
+        // the account at their own address and keep it.
+        $changingEmail = mb_strtolower(trim($validated['email'])) !== mb_strtolower((string) $user->email);
+
+        if ($changingEmail || ! empty($validated['password'])) {
+            if (! Hash::check($validated['current_password'] ?? '', $user->password)) {
                 return response()->json([
                     'message' => 'Current password is incorrect',
                     'errors' => [
@@ -81,6 +86,22 @@ class UserController extends Controller
         }
 
         $user->save();
+
+        // ⚠️ Every other session this account had is now somebody else's,
+        // whether that somebody is an attacker or a shared machine. A password
+        // change that does not end them is a control that only looks like one —
+        // the victim believes they have locked the door.
+        //
+        // The same applies to an e-mail change: if it was not the owner who
+        // made it, the owner needs whatever sessions the other party holds to
+        // stop working.
+        if ($changingEmail || ! empty($validated['password'])) {
+            $current = $request->user()?->currentAccessToken();
+
+            $user->tokens()
+                ->when($current, fn ($q) => $q->where('id', '!=', $current->id))
+                ->delete();
+        }
 
         return response()->json([
             'message' => 'Profile updated successfully',

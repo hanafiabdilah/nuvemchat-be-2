@@ -51,13 +51,17 @@ Route::post('/webhook/tiktok', [TikTokController::class, 'handle'])->name('webho
 // gateway took the money is decided over there and never reaches us. Signed
 // with HMAC-SHA256 over "{timestamp}.{raw body}" (X-Payment-Signature).
 // CSRF-exempt via the `/webhook/*` glob in bootstrap/app.php.
-Route::post('/webhook/payments', [PaymentServiceWebhookController::class, 'handle'])->name('webhook.payments');
+Route::post('/webhook/payments', [PaymentServiceWebhookController::class, 'handle'])
+    ->middleware('throttle:webhook-inbound')
+    ->name('webhook.payments');
 
 // API Way pushes every SMS received on a rented virtual number here. One
 // webhook per account, and the platform has one account, so this single route
 // carries every tenant's codes; the payload's `number_id` is what routes it.
 // Signed with HMAC-SHA256 over the raw body (X-ApiWay-Signature).
-Route::post('/webhook/apiway-numbers', [ApiwayNumbersController::class, 'handle'])->name('webhook.apiway-numbers');
+Route::post('/webhook/apiway-numbers', [ApiwayNumbersController::class, 'handle'])
+    ->middleware('throttle:webhook-inbound')
+    ->name('webhook.apiway-numbers');
 
 // A workspace's own payment gateway (OpenPix, Mercado Pago) telling us a charge
 // a flow issued moved. `{token}` is random per integration and is the only
@@ -65,4 +69,5 @@ Route::post('/webhook/apiway-numbers', [ApiwayNumbersController::class, 'handle'
 // charge is read back from the gateway before anything changes.
 Route::post('/webhook/integrations/{provider}/{token}', [IntegrationWebhookController::class, 'handle'])
     ->where('token', '[A-Za-z0-9]+')
+    ->middleware('throttle:webhook-inbound')
     ->name('webhook.integrations');

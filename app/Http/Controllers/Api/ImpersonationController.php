@@ -92,13 +92,33 @@ class ImpersonationController extends Controller
             ], 404);
         }
 
-        $token = $user->createToken('impersonation', ['*'])->plainTextToken;
+        // ⚠️ Expires in an hour, and used to expire in seven days.
+        //
+        // `sanctum.expiration` is a week, which is right for somebody signing
+        // in to do their job and wrong for an operator opening a customer's
+        // workspace to look at one thing. Every impersonation minted a
+        // full-ability token on the customer's account that outlived the
+        // session by six and a half days, with no way to end it — there is no
+        // "stop impersonating" that revokes anything.
+        //
+        // An hour is longer than any support call and short enough that a
+        // forgotten tab is not a standing key to somebody's business.
+        $token = $user->createToken('impersonation', ['*'], now()->addHour())->plainTextToken;
         $user->load('roles', 'permissions');
 
         Log::info('Back office impersonation redeemed', [
             'admin_id' => $payload['by_admin_id'],
             'target_user_id' => $user->id,
         ]);
+
+        // Recorded where the other half is. `impersonate.start` was already
+        // audited, but starting is only an intention — this is the moment
+        // somebody actually got in, and the trail should say so.
+        AuditLog::record(
+            'impersonate.redeem',
+            "Signed in as {$user->name} ({$user->email})",
+            ['target_user_id' => $user->id, 'tenant_id' => $user->tenant_id, 'by_admin_id' => $payload['by_admin_id']],
+        );
 
         return response()->json([
             'access_token' => $token,

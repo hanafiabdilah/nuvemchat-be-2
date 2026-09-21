@@ -55,6 +55,13 @@ class PaymentServiceWebhookController extends Controller
             return response()->json(['status' => 'duplicate'], 200);
         }
 
+        // ⚠️ A forged delivery is recorded, deliberately — somebody guessing at
+        // this endpoint is worth being able to see afterwards. What made that a
+        // problem was not the recording but the absence of any bound on it:
+        // this route is public, unauthenticated and, until now, unthrottled, so
+        // the row and the verbatim body it stores were both the caller's to
+        // choose as often as they liked. The bound lives on the route
+        // (`throttle:webhook-inbound`); the trail stays here.
         $event = WebhookEvent::updateOrCreate(
             ['dedupe_key' => $eventId],
             [
@@ -67,7 +74,11 @@ class PaymentServiceWebhookController extends Controller
         );
 
         if (! $signatureValid) {
-            Log::warning('Payment webhook with invalid signature', ['event_id' => $eventId, 'type' => $type]);
+            Log::warning('Payment webhook with invalid signature', [
+                'event_id' => $eventId,
+                'type' => $type,
+                'ip' => $request->ip(),
+            ]);
 
             return response()->json(['status' => 'invalid-signature'], 200);
         }

@@ -197,6 +197,20 @@ chat.pingly.com.br {
     handle_path /storage* {
         root * /var/www/html/storage/app/public
 
+        # ⚠️ Everything below this line is served WITHOUT a signature — the
+        # signed half is the @signed_media matcher above, which sends anything
+        # carrying ?signature= to Laravel. That split is deliberate (public
+        # media has to be fetchable by Meta and Telegram, which carry no
+        # credential) but it means the only thing between a path and the bytes
+        # is knowing the path. Names here are random, which is why it holds —
+        # and why nothing whose secrecy matters may be written to this disk.
+        # Private media lives on MEDIA_DISK and is reached through the signed
+        # route, never through here.
+        #
+        # The proxy at the bottom is scoped to one bucket prefix on purpose:
+        # `/pingly-media/public{path}` and nothing else, so it cannot be walked
+        # into the private prefix beside it.
+
         # These bytes were uploaded by customers and are served from the same
         # origin as the dashboard and /webmin, so they are served as data and
         # never as a document. Upload validation (App\Services\Media\
@@ -236,6 +250,17 @@ chat.pingly.com.br {
 }
 
 ws.pingly.com.br {
+    # ⚠️ The connection ceiling is NOT here, and cannot be: stock Caddy has no
+    # connection limiter, and adding one means a plugin build. It is set on
+    # Reverb itself — REVERB_APP_MAX_CONNECTIONS in the backend .env — which is
+    # the right place anyway, since Reverb is what holds the file descriptors.
+    #
+    # Worth bounding because the Reverb app key is public by necessity: the
+    # widget is handed it by GET /widget-api/config, because the widget's own
+    # channel is public. Private channels still require an authorised
+    # subscription, so an open connection reads nothing — it just occupies a
+    # descriptor, and exhausting them takes realtime away from every dashboard
+    # at once.
     reverse_proxy reverb:8080
 }
 

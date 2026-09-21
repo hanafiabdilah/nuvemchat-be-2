@@ -97,6 +97,14 @@ class StatsScope
         $this->scope = $scope;
     }
 
+    /**
+     * The longest span a single query may cover.
+     *
+     * Comfortably past a year, so year-on-year comparisons still work, while
+     * keeping one request from scanning an entire workspace's history.
+     */
+    public const MAX_RANGE_DAYS = 400;
+
     public static function fromRequest(Request $request, int $tenantId): self
     {
         $validated = $request->validate([
@@ -130,6 +138,17 @@ class StatsScope
 
         if ($from->greaterThan($to)) {
             [$from, $to] = [$to->copy()->startOfDay(), $from->copy()->endOfDay()];
+        }
+
+        // ⚠️ A ceiling on the span, because every section of this page is a
+        // multi-join aggregate over `messages` and the range was unbounded —
+        // one signed-in user refreshing a ten-year window in a loop was enough
+        // to put the database under load, and the database shares a host with
+        // everything else. Clamped rather than refused: somebody who asked for
+        // more history than exists should get what exists, not an error about
+        // a number they did not think about.
+        if ($from->diffInDays($to) > self::MAX_RANGE_DAYS) {
+            $from = $to->copy()->subDays(self::MAX_RANGE_DAYS)->startOfDay();
         }
 
         return new self(

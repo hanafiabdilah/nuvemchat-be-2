@@ -81,6 +81,36 @@ class AppServiceProvider extends ServiceProvider
             return Limit::perMinute(20)->by('sign-in:'.$request->ip());
         });
 
+        // Inbound webhooks from the group's payment service, the API Way number
+        // portal and a workspace's own gateway. Low-volume by nature — one
+        // sender each, a handful of events a minute — so a generous per-address
+        // ceiling never touches real traffic while bounding what an anonymous
+        // caller can make these endpoints write.
+        //
+        // ⚠️ Deliberately NOT applied to the Meta webhooks: those carry every
+        // tenant's traffic from a handful of Meta addresses, and an IP budget
+        // there would start dropping real customer messages the moment the
+        // platform got busy. They are protected by refusing an unsigned body
+        // instead, which costs nothing to evaluate.
+        // Signup. Deliberately tight: each one writes a user and a tenant and
+        // sends a WhatsApp message the platform is billed for, so the ceiling
+        // is set for a person who mistyped their number a few times, not for a
+        // script. Counted per address and per destination number, because the
+        // abuse worth stopping is not "many accounts" but "many messages to one
+        // number" — this platform must not become somebody's SMS bomber.
+        RateLimiter::for('register', function (Request $request) {
+            $number = preg_replace('/\D+/', '', (string) $request->input('whatsapp_number')) ?: 'none';
+
+            return [
+                Limit::perMinute(5)->by('register-ip:'.$request->ip()),
+                Limit::perHour(5)->by('register-number:'.$number),
+            ];
+        });
+
+        RateLimiter::for('webhook-inbound', function (Request $request) {
+            return Limit::perMinute(120)->by('webhook-inbound:'.$request->ip());
+        });
+
         $this->registerWidgetLimiters();
     }
 

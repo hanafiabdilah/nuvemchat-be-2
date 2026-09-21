@@ -32,6 +32,48 @@ final class OutboundHttp
     private const MAX_REDIRECTS = 3;
 
     /**
+     * Pin a host to the address it was checked at.
+     *
+     * ⚠️ Closes the gap between checking and connecting. `PublicUrl` resolves
+     * the name to decide whether it is public, and Guzzle then resolves it
+     * again to open the socket — so a record with a one-second TTL can answer
+     * publicly for the check and privately for the request. Nothing about the
+     * first lookup constrains the second.
+     *
+     * Passing CURLOPT_RESOLVE removes the second lookup: curl uses the address
+     * we already vetted. Returns the request unchanged when the host is a
+     * literal IP (nothing to resolve) or does not resolve at all (the request
+     * will simply fail, which is the honest outcome for a name that is down).
+     */
+    public static function pinHost(PendingRequest $request, string $url): PendingRequest
+    {
+        $parts = parse_url($url);
+        $host = strtolower(trim((string) ($parts['host'] ?? ''), '[]'));
+        $scheme = strtolower((string) ($parts['scheme'] ?? 'https'));
+
+        if ($host === '' || filter_var($host, FILTER_VALIDATE_IP)) {
+            return $request;
+        }
+
+        $addresses = array_values(array_filter(
+            gethostbynamel($host) ?: [],
+            static fn (string $ip) => PublicUrl::isPublicIp($ip),
+        ));
+
+        if ($addresses === []) {
+            return $request;
+        }
+
+        $port = (int) ($parts['port'] ?? ($scheme === 'https' ? 443 : 80));
+
+        return $request->withOptions([
+            'curl' => [
+                CURLOPT_RESOLVE => ["{$host}:{$port}:".implode(',', $addresses)],
+            ],
+        ]);
+    }
+
+    /**
      * Apply the redirect guard, and optionally a ceiling on how much will be
      * read.
      *

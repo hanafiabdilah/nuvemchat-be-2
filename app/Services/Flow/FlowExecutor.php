@@ -1404,9 +1404,12 @@ class FlowExecutor
             // check meaningful, since a public host may answer 302 with a
             // private one and the client would follow it.
             $request = OutboundHttp::guard(
-                Http::withHeaders($headers)
-                    ->timeout($timeout)
-                    ->connectTimeout(min($timeout, 10)),
+                OutboundHttp::pinHost(
+                    Http::withHeaders($headers)
+                        ->timeout($timeout)
+                        ->connectTimeout(min($timeout, 10)),
+                    $url,
+                ),
             );
 
             // Prepare the body for write verbs. If it parses as JSON we send it

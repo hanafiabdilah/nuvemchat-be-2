@@ -26,13 +26,24 @@ class MetaSignatureVerifier
      */
     public static function verify(Request $request, ?string $appSecret, string $channelLabel): bool
     {
-        // No secret configured → degrade to the previous (unverified) behavior
-        // instead of dropping every webhook, but make the gap loud in the logs.
+        // ⚠️ An empty secret REFUSES, and used to wave everything through.
+        //
+        // The old behaviour was defensible on the day it was written — it kept
+        // live traffic flowing while the secret was being configured — but it
+        // turned one missing settings row into the same hole /webhook/chat had:
+        // every WhatsApp, Instagram and Messenger delivery accepted unsigned,
+        // from anyone. A misconfiguration should look like an outage, which
+        // somebody fixes, not like silence, which nobody notices.
+        //
+        // What makes this safe to flip is that the gap is now visible before it
+        // bites: AdminHealthController reports it (see the `webhooks:meta`
+        // check) instead of leaving it to a log line nobody greps for.
         if (empty($appSecret)) {
-            Log::warning('Meta webhook signature check skipped: no app secret configured', [
+            Log::error('Meta webhook rejected: no app secret configured', [
                 'channel' => $channelLabel,
             ]);
-            return true;
+
+            return false;
         }
 
         $header = $request->header('X-Hub-Signature-256');

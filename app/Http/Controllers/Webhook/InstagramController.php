@@ -25,7 +25,11 @@ class InstagramController extends Controller
         $verifyToken = $request->query('hub_verify_token');
         $mode = $request->query('hub_mode');
 
-        if($verifyToken !== InstagramConfig::webhookVerifyToken()) {
+        // hash_equals, not !==: the same comparison every other secret on
+        // this platform gets. The practical risk over a network is small,
+        // but a string compare that returns early on the first wrong byte
+        // is a habit worth not having in a file about verifying secrets.
+        if (! hash_equals((string) InstagramConfig::webhookVerifyToken(), (string) $verifyToken)) {
             return response('Invalid verification token', 403);
         }
 

@@ -112,15 +112,23 @@ Route::middleware('throttle:sign-in')->group(function () {
     Route::post('/auth/two-factor-challenge', [AuthController::class, 'twoFactorChallenge']);
 });
 
-// ⚠️ Still unthrottled beyond the group above, and it creates a tenant AND
-// sends a paid WhatsApp message on every call. Tracked as P2-11.
-Route::post('/auth/register', [AuthController::class, 'register']);
+// ⚠️ Throttled hard, because a signup is not a cheap request: it creates a
+// user and a tenant, and it sends a WhatsApp message that the platform pays
+// for. Unlimited, it was both a way to fill the database with workspaces and a
+// way to have this platform deliver unsolicited messages to a number of the
+// caller's choosing — which costs money and spends the sender's reputation.
+Route::post('/auth/register', [AuthController::class, 'register'])
+    ->middleware('throttle:register');
+
+// Public: tenant app exchanges a one-time Back Office code for a session.
+// Throttled even though the code is 64 random characters: an endpoint that
+// takes a bearer-equivalent secret should not also be an unlimited oracle for
+// guessing it.
+Route::post('/impersonate/redeem', [ImpersonationController::class, 'redeem'])
+    ->middleware('throttle:sign-in');
 
 // Public: which market this domain sells in, for pages shown before sign-in.
 Route::get('/public/bootstrap', [PublicBootstrapController::class, 'show'])->middleware('throttle:60,1');
-
-// Public: tenant app exchanges a one-time Back Office code for a session.
-Route::post('/impersonate/redeem', [ImpersonationController::class, 'redeem']);
 
 // Forgotten-password recovery via WhatsApp OTP. Public by necessity (the user cannot
 // log in), so throttled per IP on top of the service's own resend cooldown and
@@ -595,7 +603,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
 
     // Statistics - gated by the `statistics` plan feature. One route per
     // section of the page; all of them take the same filter set.
-    Route::middleware('feature:statistics')->group(function () {
+    // ⚠️ Throttled: each of these is a multi-join aggregate over `messages`,
+    // and they were the one authenticated surface where a single user could
+    // put real load on a database that shares its host with the application.
+    // Generous for a person reading a dashboard, useless as a loop.
+    Route::middleware(['feature:statistics', 'throttle:30,1'])->group(function () {
         Route::middleware('permission:statistics.tenant.view')->group(function () {
             Route::get('/statistics/filters', [StatisticsController::class, 'filters']);
             Route::get('/statistics/overview', [StatisticsController::class, 'overview']);
@@ -760,7 +772,12 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         // Available to any Back Office admin
         Route::get('/auth/me', [AdminAuthController::class, 'me']);
         Route::post('/auth/logout', [AdminAuthController::class, 'logout']);
-        Route::get('/stats', [AdminStatsController::class, 'index']);
+        // Platform-wide totals. Behind the same permission the statistics
+        // page uses — it was the only non-account Back Office route with no
+        // gate at all, so an admin stripped down to one narrow role still
+        // saw every customer's numbers.
+        Route::get('/stats', [AdminStatsController::class, 'index'])
+            ->middleware('permission:bo.statistics.view');
         Route::get('/statistics', [AdminStatisticsController::class, 'index'])
             ->middleware('permission:bo.statistics.view');
         Route::put('/account', [AdminAccountController::class, 'updateProfile']);

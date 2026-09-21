@@ -30,7 +30,11 @@ class WhatsAppController extends Controller
         $verifyToken = $request->query('hub_verify_token');
         $mode = $request->query('hub_mode');
 
-        if($verifyToken !== FacebookConfig::webhookVerifyToken()) {
+        // hash_equals, not !==: the same comparison every other secret on
+        // this platform gets. The practical risk over a network is small,
+        // but a string compare that returns early on the first wrong byte
+        // is a habit worth not having in a file about verifying secrets.
+        if (! hash_equals((string) FacebookConfig::webhookVerifyToken(), (string) $verifyToken)) {
             return response('Invalid verification token', 403);
         }
 
@@ -43,7 +47,13 @@ class WhatsAppController extends Controller
             return response()->json(['message' => 'Invalid signature'], 401);
         }
 
-        Log::info('WhatsApp webhook received', $request->all());
+        // ⚠️ Was `Log::info('WhatsApp webhook received', $request->all())` —
+        // every customer message body, name and phone number, written to a log
+        // nobody purges. See ChatService for the rest of the reasoning.
+        Log::debug('WhatsApp webhook received', [
+            'entries' => count((array) $request->input('entry', [])),
+            'bytes' => strlen($request->getContent()),
+        ]);
 
         $object = $request->input('object');
 

@@ -129,7 +129,10 @@ class OutboundMedia
             // whole response in PHP's memory first, so a `media_url` pointing
             // at something large was an out-of-memory in one request — and
             // pointing at something large is free.
-            $response = OutboundHttp::guard(Http::timeout(30), self::MAX_DOWNLOAD_BYTES)
+            $response = OutboundHttp::guard(
+                OutboundHttp::pinHost(Http::timeout(30), $this->url),
+                self::MAX_DOWNLOAD_BYTES,
+            )
                 ->sink($tempPath)
                 ->get($this->url);
 
