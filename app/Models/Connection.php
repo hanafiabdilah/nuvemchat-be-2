@@ -40,7 +40,10 @@ class Connection extends Model
     protected $casts = [
         'channel' => Channel::class,
         'status' => Status::class,
-        'credentials' => 'array',
+        // Not 'array', and not 'encrypted:array' either — the secret
+        // values inside are encrypted while the identity keys stay queryable.
+        // App\Services\Connection\ConnectionCredentials explains why.
+        'credentials' => \App\Casts\EncryptedCredentials::class,
         'last_seen_uid' => 'integer',
         'sync_window_days' => 'integer',
         'backfill_uid' => 'integer',

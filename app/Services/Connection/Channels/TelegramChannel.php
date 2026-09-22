@@ -11,7 +11,6 @@ use App\Services\Webhook\ChatWebhookSecret;
 use Exception;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
-use InvalidArgumentException;
 use Telegram\Bot\Api;
 use Telegram\Bot\Exceptions\TelegramResponseException;
 use Telegram\Bot\Laravel\Facades\Telegram;
@@ -32,13 +31,39 @@ class TelegramChannel implements ChannelInterface
             'token' => ['required', 'string'],
         ])->validate();
 
-        if(Connection::where('id', '!=', $connection->id)->where('channel', Channel::Telegram)->where('credentials->token', $data['token'])->exists()) {
+        try {
+            $telegram = new Api($data['token']);
+            $response = $telegram->getMe();
+        } catch (TelegramResponseException $th) {
+            throw new Exception('Invalid Telegram Bot Token provided.');
+        } catch (\Throwable $th) {
+            throw new Exception('An error occurred while connecting to Telegram.');
+        }
+
+        // ⚠️ Matched on the BOT, not on the token string. This used to be
+        // `where('credentials->token', …)`, which stopped working the moment
+        // that value started being encrypted at rest — ciphertext differs per
+        // row, so the comparison silently matched nothing and the guard
+        // quietly did nothing at all.
+        //
+        // The bot id is the better question anyway: it also catches the same
+        // bot being added again under a token regenerated at BotFather, which
+        // the string comparison never did. It costs one getMe() before the
+        // check, which had to happen regardless.
+        //
+        // Thrown outside the catch-all above on purpose — inside it, the
+        // catch (\Throwable) would flatten this into "an error occurred" and
+        // the person would never learn the bot is already connected.
+        $exists = Connection::where('id', '!=', $connection->id)
+            ->where('channel', Channel::Telegram)
+            ->where('credentials->id', $response->getId())
+            ->exists();
+
+        if ($exists) {
             throw ValidationException::withMessages(['token' => 'The provided token is already in use for another connection.']);
         }
 
         try {
-            $telegram = new Api($data['token']);
-            $response = $telegram->getMe();
 
             // Minted fresh on every connect, because connect is also what
             // re-registers the webhook — the two have to agree, and the only
@@ -67,7 +92,7 @@ class TelegramChannel implements ChannelInterface
                     ChatWebhookSecret::CREDENTIAL_KEY => $secret,
                 ],
             ]);
-        } catch(TelegramResponseException $th){
+        } catch (TelegramResponseException $th) {
             throw new Exception('Invalid Telegram Bot Token provided.');
         } catch (\Throwable $th) {
             throw new Exception('An error occurred while connecting to Telegram.');
@@ -111,12 +136,12 @@ class TelegramChannel implements ChannelInterface
         } catch (TelegramResponseException $th) {
             Log::warning('Failed to delete Telegram webhook, but will update status to inactive anyway', [
                 'connection' => $connection,
-                'error' => $th->getMessage()
+                'error' => $th->getMessage(),
             ]);
         } catch (\Throwable $th) {
             Log::warning('An error occurred while disconnecting from Telegram, but will update status to inactive anyway', [
                 'connection' => $connection,
-                'error' => $th->getMessage()
+                'error' => $th->getMessage(),
             ]);
         }
 
@@ -135,7 +160,7 @@ class TelegramChannel implements ChannelInterface
             $connection->update([
                 'status' => Status::Active,
             ]);
-        } catch(TelegramResponseException $th){
+        } catch (TelegramResponseException $th) {
             $connection->update([
                 'status' => Status::Inactive,
             ]);

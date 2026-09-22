@@ -62,13 +62,13 @@ use App\Services\Lead\LeadResolver;
 use App\Services\Lead\TemperatureScorer;
 use App\Services\Live\LiveActivity;
 use App\Services\Message\MessageService;
+use App\Support\OutboundHttp;
+use App\Support\PublicUrl;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use App\Support\OutboundHttp;
-use App\Support\PublicUrl;
 
 class FlowExecutor
 {
@@ -1395,10 +1395,16 @@ class FlowExecutor
                 $headers[$key] = $this->interpolateVariables((string) ($header['value'] ?? ''), $flowState);
             }
 
+            // ⚠️ Clamped at RUNTIME, not only at save. FlowBlueprint validates
+            // 1–120, but rows written before that rule existed carry whatever
+            // was in them, and this number is how long a worker — a PHP-FPM
+            // one while flows still run inline — is held by an endpoint that
+            // never answers.
             $timeout = (int) ($data['timeout'] ?? 15);
             if ($timeout <= 0) {
                 $timeout = 15;
             }
+            $timeout = min($timeout, (int) config('flow.http_max_timeout', 120));
 
             // The URL was checked above; the redirect guard is what keeps that
             // check meaningful, since a public host may answer 302 with a

@@ -15,7 +15,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\TikTok\TikTokMessagingClient;
 use App\Services\Conversation\LastAgentRouter;
-use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaStorage;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -133,19 +133,20 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $contactName = $this->getContactName($payload);
         $isOutgoing = $this->isEcho($payload);
 
-        if (!$conversationId || !$messageId || !$contactExternalId) {
+        if (! $conversationId || ! $messageId || ! $contactExternalId) {
             Log::warning('TikTokHandler: Missing required data in payload', [
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
                 'contact_external_id' => $contactExternalId,
             ]);
+
             return;
         }
 
         $isNewConversation = false;
         $conversationForWelcome = null;
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
+        $message = DB::transaction(function () use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName ?: $contactExternalId, $this->getContactUsername($payload));
 
             $conversation = Conversation::where('external_id', $conversationId)
@@ -154,12 +155,12 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
-            if (!$conversation) {
+            if (! $conversation) {
                 $conversation = Conversation::create([
-                    'contact_id'    => $contact->id,
+                    'contact_id' => $contact->id,
                     'connection_id' => $connection->id,
-                    'external_id'   => $conversationId,
-                    'status'        => Status::Pending,
+                    'external_id' => $conversationId,
+                    'status' => Status::Pending,
                 ]);
                 $isNewConversation = true;
                 $conversationForWelcome = $conversation;
@@ -167,7 +168,9 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
             // Echoes of messages our own send handler already saved arrive a
             // moment later with the same message_id — skip them here.
-            if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
+            if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
+                return;
+            }
 
             // Lookup replied message if exists
             $repliedMessageId = null;
@@ -200,8 +203,8 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
             ]);
         });
 
-        if($message){
-            if($messageType === MessageType::Image) {
+        if ($message) {
+            if ($messageType === MessageType::Image) {
                 DownloadInboundMedia::dispatchFor($message);
             }
 
@@ -213,8 +216,6 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 return;
             }
 
-            $flowExecutor = new FlowExecutor();
-
             // Handle new conversation - start flow
             if ($isNewConversation && $conversationForWelcome) {
                 // A contact who came straight back reaches the agent who was
@@ -223,7 +224,7 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
                 if (! $returnedToAgent && $connection->flow_id) {
                     try {
-                        $flowExecutor->startFlow($conversationForWelcome);
+                        FlowRunner::start($conversationForWelcome);
                     } catch (\Throwable $th) {
                         Log::error('TikTokHandler: Failed to start flow', [
                             'conversation_id' => $conversationForWelcome->id,
@@ -235,7 +236,7 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
             } else {
                 // Resume flow if there's an active flow state
                 try {
-                    $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($payload) ?? '');
+                    FlowRunner::resume($message->conversation, $this->getMessageBody($payload) ?? '');
                 } catch (\Throwable $th) {
                     Log::error('TikTokHandler: Failed to resume flow', [
                         'conversation_id' => $message->conversation->id,
@@ -259,7 +260,7 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $businessId = $connection->credentials['business_id'] ?? null;
 
         // Ignore our own read events — only the user's reads matter here.
-        if (!$conversationId || !$lastReadTimestamp || ($fromUserId && $fromUserId === $businessId)) {
+        if (! $conversationId || ! $lastReadTimestamp || ($fromUserId && $fromUserId === $businessId)) {
             return;
         }
 
@@ -268,10 +269,11 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
             ->orderByDesc('id')
             ->first();
 
-        if (!$conversation) {
+        if (! $conversation) {
             Log::warning('TikTokHandler: Conversation not found for read status', [
                 'external_id' => $conversationId,
             ]);
+
             return;
         }
 
@@ -310,10 +312,11 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $content = $this->content($payload);
             $mediaId = $content['image']['media_id'] ?? null;
 
-            if (!$mediaId) {
+            if (! $mediaId) {
                 Log::warning('TikTokHandler: Missing media_id in image payload', [
                     'message_id' => $message->id,
                 ]);
+
                 return;
             }
 
@@ -329,13 +332,14 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
             if ($response->failed()) {
                 $message->update([
-                    'error' => 'Failed to download TikTok media (HTTP ' . $response->status() . ')',
+                    'error' => 'Failed to download TikTok media (HTTP '.$response->status().')',
                 ]);
+
                 return;
             }
 
             $extension = $this->getExtensionFromContentType($response->header('Content-Type'));
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
 
             MediaStorage::disk()->put($mediaPath, $response->body());
 

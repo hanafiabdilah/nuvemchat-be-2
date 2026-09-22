@@ -17,7 +17,7 @@ use App\Models\Conversation;
 use App\Models\LiveChatSession;
 use App\Services\Contact\WidgetVisitorId;
 use App\Services\Conversation\LastAgentRouter;
-use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaStorage;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -198,10 +198,10 @@ class WidgetController extends Controller
         $messageType = MessageType::Text;
         $meta = null;
 
-        if (!empty($data['attachment_url'])) {
+        if (! empty($data['attachment_url'])) {
             $attachmentPath = $this->resolveAttachmentPath($data['attachment_url'], $session->session_token);
 
-            if (!$attachmentPath) {
+            if (! $attachmentPath) {
                 throw ValidationException::withMessages([
                     'attachment_url' => 'Invalid or expired attachment URL.',
                 ]);
@@ -299,20 +299,18 @@ class WidgetController extends Controller
      */
     private function triggerFlow(Conversation $conversation, $message): void
     {
-        if (!$conversation->connection->flow_id) {
+        if (! $conversation->connection->flow_id) {
             return;
         }
 
         $userInput = $message->body ?? '';
-        $isNewFlow = !$conversation->flowState()->exists();
-
-        $flowExecutor = new FlowExecutor();
+        $isNewFlow = ! $conversation->flowState()->exists();
 
         try {
             if ($isNewFlow) {
-                $flowExecutor->startFlow($conversation);
+                FlowRunner::start($conversation);
             } else {
-                $flowExecutor->resumeFlow($conversation, $userInput);
+                FlowRunner::resume($conversation, $userInput);
             }
         } catch (\Throwable $th) {
             Log::error('WidgetController: Failed to execute flow', [
@@ -334,24 +332,36 @@ class WidgetController extends Controller
     private function resolveAttachmentPath(string $url, string $sessionToken): ?string
     {
         $urlPath = parse_url($url, PHP_URL_PATH);
-        if (!$urlPath) return null;
+        if (! $urlPath) {
+            return null;
+        }
 
         $marker = "widget-uploads/{$sessionToken}/";
         $pos = strpos($urlPath, $marker);
-        if ($pos === false) return null;
+        if ($pos === false) {
+            return null;
+        }
 
         $storagePath = ltrim(substr($urlPath, $pos), '/');
 
-        if (!MediaStorage::disk()->exists($storagePath)) return null;
+        if (! MediaStorage::disk()->exists($storagePath)) {
+            return null;
+        }
 
         return $storagePath;
     }
 
     private function inferMessageTypeFromMime(string $mime, string $ext): MessageType
     {
-        if (str_starts_with($mime, 'image/')) return MessageType::Image;
-        if (str_starts_with($mime, 'audio/')) return MessageType::Audio;
-        if (str_starts_with($mime, 'video/')) return MessageType::Video;
+        if (str_starts_with($mime, 'image/')) {
+            return MessageType::Image;
+        }
+        if (str_starts_with($mime, 'audio/')) {
+            return MessageType::Audio;
+        }
+        if (str_starts_with($mime, 'video/')) {
+            return MessageType::Video;
+        }
 
         return MessageType::Document;
     }
@@ -359,6 +369,7 @@ class WidgetController extends Controller
     private function inferMessageTypeFromPath(string $path): MessageType
     {
         $mime = MediaStorage::disk()->mimeType($path) ?: '';
+
         return $this->inferMessageTypeFromMime($mime, pathinfo($path, PATHINFO_EXTENSION));
     }
 
@@ -377,7 +388,7 @@ class WidgetController extends Controller
         $unreadCount = $conversation->messages()
             ->where('message_type', '!=', MessageType::Info)
             ->where('sender_type', SenderType::Outgoing)
-            ->when($lastSeenAt, fn($q) => $q->where('created_at', '>', $lastSeenAt))
+            ->when($lastSeenAt, fn ($q) => $q->where('created_at', '>', $lastSeenAt))
             ->count();
 
         $lastMessage = $conversation->messages()
@@ -458,7 +469,7 @@ class WidgetController extends Controller
             ->where('credentials->app_id', $appId)
             ->first();
 
-        if (!$connection) {
+        if (! $connection) {
             throw ValidationException::withMessages([
                 'app_id' => 'Unknown Live Chat Widget app_id.',
             ]);
@@ -490,11 +501,11 @@ class WidgetController extends Controller
         $publicPort = env('REVERB_PUBLIC_PORT');
         $publicScheme = env('REVERB_PUBLIC_SCHEME');
 
-        if (!$publicHost) {
+        if (! $publicHost) {
             $appUrl = (string) config('app.url');
             $parsed = $appUrl ? parse_url($appUrl) : false;
 
-            if (is_array($parsed) && !empty($parsed['host'])) {
+            if (is_array($parsed) && ! empty($parsed['host'])) {
                 $publicHost = $parsed['host'];
                 $publicScheme = $publicScheme ?: ($parsed['scheme'] ?? null);
             }
@@ -525,7 +536,7 @@ class WidgetController extends Controller
     {
         $session = LiveChatSession::where('session_token', $sessionToken)->first();
 
-        if (!$session || !$session->conversation_id) {
+        if (! $session || ! $session->conversation_id) {
             abort(404, 'Session not found.');
         }
 

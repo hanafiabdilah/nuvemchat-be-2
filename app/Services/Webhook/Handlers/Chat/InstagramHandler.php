@@ -17,9 +17,8 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Services\Conversation\LastAgentRouter;
-use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaStorage;
-use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
@@ -174,13 +173,13 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
     {
         $url = $attachment['payload']['url'] ?? null;
 
-        if (!is_string($url) || $url === '') {
+        if (! is_string($url) || $url === '') {
             return null;
         }
 
         $host = parse_url($url, PHP_URL_HOST);
 
-        if (!is_string($host)) {
+        if (! is_string($host)) {
             return null;
         }
 
@@ -209,7 +208,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
         // Check attachments
         if (isset($message['attachments'][0]['type'])) {
-            return match($message['attachments'][0]['type']) {
+            return match ($message['attachments'][0]['type']) {
                 'image' => MessageType::Image,
                 'video' => MessageType::Video,
                 'audio' => MessageType::Audio,
@@ -269,6 +268,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
     public function isOutgoingMessage(array $payload): bool
     {
         $messaging = $payload['messaging'][0] ?? [];
+
         return $messaging['message']['is_echo'] ?? false;
     }
 
@@ -331,19 +331,20 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $contactUsername = $this->getContactUsername($payload);
         $isOutgoing = $this->isOutgoingMessage($payload);
 
-        if (!$conversationId || !$messageId || !$contactExternalId){
+        if (! $conversationId || ! $messageId || ! $contactExternalId) {
             Log::warning('InstagramHandler: Missing required data in payload', [
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
                 'contact_external_id' => $contactExternalId,
             ]);
+
             return;
         }
 
         $isNewConversation = false;
         $conversationForWelcome = null;
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
+        $message = DB::transaction(function () use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
 
             // Resolve the scoped id into a real name. Not gated on
@@ -361,18 +362,20 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
-            if (!$conversation) {
+            if (! $conversation) {
                 $conversation = Conversation::create([
-                    'contact_id'    => $contact->id,
+                    'contact_id' => $contact->id,
                     'connection_id' => $connection->id,
-                    'external_id'   => $conversationId,
-                    'status'        => Status::Pending,
+                    'external_id' => $conversationId,
+                    'status' => Status::Pending,
                 ]);
                 $isNewConversation = true;
                 $conversationForWelcome = $conversation;
             }
 
-            if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
+            if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
+                return;
+            }
 
             // Lookup replied message if exists
             $repliedMessageId = null;
@@ -405,10 +408,10 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             ]);
         });
 
-        if($message){
+        if ($message) {
             // The download is a CDN round-trip; it runs off the queue so the
             // bubble (and its caption) reaches the dashboard first.
-            if(in_array($messageType, self::MEDIA_TYPES)) {
+            if (in_array($messageType, self::MEDIA_TYPES)) {
                 DownloadInboundMedia::dispatchFor($message);
             }
 
@@ -420,8 +423,6 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 return;
             }
 
-            $flowExecutor = new FlowExecutor();
-
             // Handle new conversation - start flow
             if ($isNewConversation && $conversationForWelcome) {
                 // A contact who came straight back reaches the agent who was
@@ -430,7 +431,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
                 if (! $returnedToAgent && $connection->flow_id) {
                     try {
-                        $flowExecutor->startFlow($conversationForWelcome);
+                        FlowRunner::start($conversationForWelcome);
                     } catch (\Throwable $th) {
                         Log::error('InstagramHandler: Failed to start flow', [
                             'conversation_id' => $conversationForWelcome->id,
@@ -442,7 +443,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             } else {
                 // Resume flow if there's an active flow state
                 try {
-                    $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($payload) ?? '');
+                    FlowRunner::resume($message->conversation, $this->getMessageBody($payload) ?? '');
                 } catch (\Throwable $th) {
                     Log::error('InstagramHandler: Failed to resume flow', [
                         'conversation_id' => $message->conversation->id,
@@ -463,10 +464,11 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $emoji = $reaction['emoji'] ?? null;
         $isEcho = $messaging['sender']['id'] === $payload['id']; // Check if it's from the page (outgoing)
 
-        if (!$targetMessageExternalId || !$action) {
+        if (! $targetMessageExternalId || ! $action) {
             Log::warning('InstagramHandler: Missing reaction data', [
                 'reaction' => $reaction,
             ]);
+
             return;
         }
 
@@ -475,15 +477,16 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         try {
             // Find the message that was reacted to
             $targetMessage = Message::where('external_id', $targetMessageExternalId)
-                ->whereHas('conversation', function($query) use ($connection) {
+                ->whereHas('conversation', function ($query) use ($connection) {
                     $query->where('connection_id', $connection->id);
                 })
                 ->first();
 
-            if (!$targetMessage) {
+            if (! $targetMessage) {
                 Log::warning('InstagramHandler: Target message not found for reaction', [
                     'external_id' => $targetMessageExternalId,
                 ]);
+
                 return;
             }
 
@@ -537,27 +540,29 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $timestamp = $messaging['timestamp'] ?? null;
         $numEdit = $messaging['message_edit']['num_edit'] ?? null;
 
-        if($numEdit === 0) {
+        if ($numEdit === 0) {
             Log::warning('InstagramHandler: Edit event received with num_edit = 0, ignoring', [
                 'payload' => $payload,
             ]);
+
             return;
         }
 
-        if (!$messageId) {
+        if (! $messageId) {
             Log::warning('InstagramHandler: Missing message ID in edit payload', [
                 'payload' => $payload,
             ]);
+
             return;
         }
 
         try {
             // Find the message
-            $message = Message::whereHas('conversation', function($query) use ($connection) {
+            $message = Message::whereHas('conversation', function ($query) use ($connection) {
                 $query->where('connection_id', $connection->id);
             })
-            ->where('external_id', $messageId)
-            ->first();
+                ->where('external_id', $messageId)
+                ->first();
 
             if ($message) {
                 $editedAt = $timestamp ? Carbon::createFromTimestampMs($timestamp) : Carbon::now();
@@ -583,7 +588,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 broadcast(new MessageUpdated($message));
 
                 // Update conversation if this is the last message
-                if($message->conversation->last_message->id == $message->id) {
+                if ($message->conversation->last_message->id == $message->id) {
                     broadcast(new ConversationUpdated($message->conversation));
                 }
             } else {
@@ -606,20 +611,21 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $messageId = $message['mid'] ?? null;
         $timestamp = $messaging['timestamp'] ?? null;
 
-        if (!$messageId || !($message['is_deleted'] ?? false)) {
+        if (! $messageId || ! ($message['is_deleted'] ?? false)) {
             Log::warning('InstagramHandler: Invalid delete message payload', [
                 'payload' => $payload,
             ]);
+
             return;
         }
 
         try {
             // Find the message
-            $messageModel = Message::whereHas('conversation', function($query) use ($connection) {
+            $messageModel = Message::whereHas('conversation', function ($query) use ($connection) {
                 $query->where('connection_id', $connection->id);
             })
-            ->where('external_id', $messageId)
-            ->first();
+                ->where('external_id', $messageId)
+                ->first();
 
             if ($messageModel) {
                 $unsendAt = $timestamp ? Carbon::createFromTimestampMs($timestamp) : Carbon::now();
@@ -642,7 +648,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 broadcast(new MessageUpdated($messageModel));
 
                 // Update conversation if this is the last message
-                if($messageModel->conversation->last_message->id == $messageModel->id) {
+                if ($messageModel->conversation->last_message->id == $messageModel->id) {
                     broadcast(new ConversationUpdated($messageModel->conversation));
                 }
             } else {
@@ -665,20 +671,21 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $messageId = $read['mid'] ?? null;
         $timestamp = $messaging['timestamp'] ?? null;
 
-        if (!$messageId) {
+        if (! $messageId) {
             Log::warning('InstagramHandler: Missing message ID in read status payload', [
                 'payload' => $payload,
             ]);
+
             return;
         }
 
         try {
             // Find the message and update read status
-            $message = Message::whereHas('conversation', function($query) use ($connection) {
+            $message = Message::whereHas('conversation', function ($query) use ($connection) {
                 $query->where('connection_id', $connection->id);
             })
-            ->where('external_id', $messageId)
-            ->first();
+                ->where('external_id', $messageId)
+                ->first();
 
             if ($message) {
                 $readAt = $timestamp ? Carbon::createFromTimestampMs($timestamp) : Carbon::now();
@@ -696,7 +703,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 // Broadcast the message update
                 broadcast(new MessageUpdated($message));
 
-                if($message->conversation->last_message->id == $message->id) {
+                if ($message->conversation->last_message->id == $message->id) {
                     broadcast(new ConversationUpdated($message->conversation));
                 }
             } else {
@@ -737,11 +744,12 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $attachment = $attachments[0];
         $mediaUrl = $attachment['payload']['url'] ?? null;
 
-        if (!$mediaUrl) {
+        if (! $mediaUrl) {
             Log::warning('InstagramHandler: No media URL found in attachment', [
                 'message_id' => $message->id,
                 'attachment' => $attachment,
             ]);
+
             return;
         }
 
@@ -749,22 +757,24 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $connection = $message->conversation->connection;
             $accessToken = $connection->credentials['access_token'] ?? null;
 
-            if (!$accessToken) {
+            if (! $accessToken) {
                 Log::error('InstagramHandler: Missing access token', [
                     'connection_id' => $connection->id,
                 ]);
+
                 return;
             }
 
             // Download media from Instagram
             $response = Http::withToken($accessToken)->get($mediaUrl);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 Log::error('InstagramHandler: Failed to download media', [
                     'message_id' => $message->id,
                     'url' => $mediaUrl,
                     'status' => $response->status(),
                 ]);
+
                 return;
             }
 
@@ -773,7 +783,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $extension = $this->getExtensionFromMimeType($mimeType) ?? 'bin';
 
             // Save media file
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
             MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([
@@ -798,7 +808,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         // Clean mime type (remove charset or other parameters)
         $cleanMimeType = explode(';', $mimeType)[0];
 
-        return match($cleanMimeType) {
+        return match ($cleanMimeType) {
             'image/jpeg' => 'jpg',
             'image/jpg' => 'jpg',
             'image/png' => 'png',
@@ -820,5 +830,4 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             default => 'bin',
         };
     }
-
 }

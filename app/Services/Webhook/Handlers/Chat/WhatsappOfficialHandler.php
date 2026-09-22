@@ -15,10 +15,9 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Services\Conversation\LastAgentRouter;
-use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\FlowRunner;
 use App\Services\Flow\InteractiveNodes;
 use App\Services\Media\MediaStorage;
-use App\Services\Message\MessageService;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -57,7 +56,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
         $messageType = $this->getMessageType($payload);
 
         // Handle different message types
-        return match($messageType) {
+        return match ($messageType) {
             MessageType::Text => $messages['text']['body'] ?? null,
             MessageType::Image => $messages['image']['caption'] ?? null,
             MessageType::Video => $messages['video']['caption'] ?? null,
@@ -91,7 +90,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
 
     public function getMessageType(array $payload): MessageType
     {
-        return match($payload['changes'][0]['value']['messages'][0]['type'] ?? null) {
+        return match ($payload['changes'][0]['value']['messages'][0]['type'] ?? null) {
             'text' => MessageType::Text,
             'image' => MessageType::Image,
             'video' => MessageType::Video,
@@ -199,6 +198,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                 'message_id' => $this->getMessageId($payload),
                 'errors' => $payload['changes'][0]['value']['messages'][0]['errors'] ?? null,
             ]);
+
             return;
         }
 
@@ -210,23 +210,24 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
         $contactUsername = $this->getContactUsername($payload);
         $isOutgoing = $this->isOutgoingMessage($payload);
 
-        if (!$conversationId || !$messageId || !$contactExternalId){
+        if (! $conversationId || ! $messageId || ! $contactExternalId) {
             Log::warning('WhatsappOfficialHandler: Missing required data in payload', [
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
                 'contact_external_id' => $contactExternalId,
             ]);
+
             return;
         }
 
         $isNewConversation = false;
         $conversationForWelcome = null;
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
+        $message = DB::transaction(function () use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
 
             // Save profile photo for new contacts
-            if($contact->wasRecentlyCreated) {
+            if ($contact->wasRecentlyCreated) {
                 $this->savePhotoProfile($contact, $connection, $payload);
             }
 
@@ -236,23 +237,24 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
-            if (!$conversation) {
+            if (! $conversation) {
                 $conversation = Conversation::create([
-                    'contact_id'    => $contact->id,
+                    'contact_id' => $contact->id,
                     'connection_id' => $connection->id,
-                    'external_id'   => $conversationId,
-                    'status'        => Status::Pending,
+                    'external_id' => $conversationId,
+                    'status' => Status::Pending,
                 ]);
                 $isNewConversation = true;
                 $conversationForWelcome = $conversation;
             }
 
             // Check if message already exists (prevent duplicates)
-            if($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
+            if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
                 Log::info('WhatsappOfficialHandler: Duplicate message detected', [
                     'message_id' => $messageId,
                     'conversation_id' => $conversation->id,
                 ]);
+
                 return null;
             }
 
@@ -287,10 +289,10 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             ]);
         });
 
-        if($message){
+        if ($message) {
             // Media is fetched off the queue: the caption and the bubble reach
             // the dashboard now, the file follows over message-updated.
-            if(in_array($messageType, self::MEDIA_TYPES)) {
+            if (in_array($messageType, self::MEDIA_TYPES)) {
                 DownloadInboundMedia::dispatchFor($message);
             }
 
@@ -309,8 +311,6 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                 return;
             }
 
-            $flowExecutor = new FlowExecutor();
-
             // Handle new conversation - start flow
             if ($isNewConversation && $conversationForWelcome) {
                 // A contact who came straight back reaches the agent who was
@@ -319,7 +319,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
 
                 if (! $returnedToAgent && $connection->flow_id) {
                     try {
-                        $flowExecutor->startFlow($conversationForWelcome);
+                        FlowRunner::start($conversationForWelcome);
                     } catch (\Throwable $th) {
                         Log::error('WhatsappOfficialHandler: Failed to start flow', [
                             'conversation_id' => $conversationForWelcome->id,
@@ -331,7 +331,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             } else {
                 // Resume flow if there's an active flow state
                 try {
-                    $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($payload) ?? '');
+                    FlowRunner::resume($message->conversation, $this->getMessageBody($payload) ?? '');
                 } catch (\Throwable $th) {
                     Log::error('WhatsappOfficialHandler: Failed to resume flow', [
                         'conversation_id' => $message->conversation->id,
@@ -353,10 +353,11 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
         $targetMessageExternalId = $reaction['message_id'] ?? null;
         $emoji = $reaction['emoji'] ?? null;
 
-        if (!$targetMessageExternalId) {
+        if (! $targetMessageExternalId) {
             Log::warning('WhatsappOfficialHandler: Missing target message_id in reaction', [
                 'payload' => $payload,
             ]);
+
             return;
         }
 
@@ -365,15 +366,16 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
 
         try {
             $targetMessage = Message::where('external_id', $targetMessageExternalId)
-                ->whereHas('conversation', function($query) use ($connection) {
+                ->whereHas('conversation', function ($query) use ($connection) {
                     $query->where('connection_id', $connection->id);
                 })
                 ->first();
 
-            if (!$targetMessage) {
+            if (! $targetMessage) {
                 Log::warning('WhatsappOfficialHandler: Target message not found for reaction', [
                     'external_id' => $targetMessageExternalId,
                 ]);
+
                 return;
             }
 
@@ -420,26 +422,28 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             $statusType = $status['status'] ?? null;
             $timestamp = $status['timestamp'] ?? null;
 
-            if (!$messageId) {
+            if (! $messageId) {
                 Log::warning('WhatsappOfficialHandler: Missing message ID in status update', [
                     'status' => $status,
                 ]);
+
                 continue;
             }
 
             try {
                 // Find the message
-                $message = Message::whereHas('conversation', function($query) use ($connection) {
+                $message = Message::whereHas('conversation', function ($query) use ($connection) {
                     $query->where('connection_id', $connection->id);
                 })
-                ->where('external_id', $messageId)
-                ->first();
+                    ->where('external_id', $messageId)
+                    ->first();
 
-                if (!$message) {
+                if (! $message) {
                     Log::warning('WhatsappOfficialHandler: Message not found for status update', [
                         'external_id' => $messageId,
                         'status' => $statusType,
                     ]);
+
                     continue;
                 }
 
@@ -450,7 +454,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                 switch ($statusType) {
                     case 'sent':
                         // Message sent confirmation
-                        if (!$message->delivery_at) {
+                        if (! $message->delivery_at) {
                             $message->update(['delivery_at' => $updatedAt]);
                             $wasUpdated = true;
                         }
@@ -493,7 +497,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                     broadcast(new MessageUpdated($message));
 
                     // Update conversation if this is the last message
-                    if($message->conversation->last_message->id == $message->id) {
+                    if ($message->conversation->last_message->id == $message->id) {
                         broadcast(new ConversationUpdated($message->conversation));
                     }
                 }
@@ -521,7 +525,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
     {
-        $mediaKey = match($messageType) {
+        $mediaKey = match ($messageType) {
             MessageType::Image => 'image',
             MessageType::Video => 'video',
             MessageType::Document => 'document',
@@ -540,11 +544,12 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             }
         }
 
-        if(!$mediaKey) {
+        if (! $mediaKey) {
             Log::warning('WhatsappOfficialHandler: Unsupported media type', [
                 'message_id' => $message->id,
                 'message_type' => $messageType->value,
             ]);
+
             return;
         }
 
@@ -552,12 +557,13 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
         $mediaId = $mediaData['id'] ?? null;
         $mimeType = $mediaData['mime_type'] ?? null;
 
-        if(!$mediaId || !$mimeType) {
+        if (! $mediaId || ! $mimeType) {
             Log::warning('WhatsappOfficialHandler: Missing media ID or MIME type', [
                 'message_id' => $message->id,
                 'media_key' => $mediaKey,
                 'media_data' => $mediaData,
             ]);
+
             return;
         }
 
@@ -566,11 +572,12 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             $connectionCredentials = $connection->credentials;
             $accessToken = $connectionCredentials['access_token'] ?? null;
 
-            if(!$accessToken) {
+            if (! $accessToken) {
                 Log::error('WhatsappOfficialHandler: Missing access token', [
                     'message_id' => $message->id,
                     'connection_id' => $connection->id,
                 ]);
+
                 return;
             }
 
@@ -578,43 +585,46 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             $mediaUrlResponse = Http::withToken($accessToken)
                 ->get("https://graph.facebook.com/v25.0/{$mediaId}");
 
-            if(!$mediaUrlResponse->successful()) {
+            if (! $mediaUrlResponse->successful()) {
                 Log::error('WhatsappOfficialHandler: Failed to get media URL', [
                     'message_id' => $message->id,
                     'media_id' => $mediaId,
                     'status' => $mediaUrlResponse->status(),
                     'response' => $mediaUrlResponse->json(),
                 ]);
+
                 return;
             }
 
             $mediaUrl = $mediaUrlResponse->json()['url'] ?? null;
 
-            if(!$mediaUrl) {
+            if (! $mediaUrl) {
                 Log::error('WhatsappOfficialHandler: Media URL not found in response', [
                     'message_id' => $message->id,
                     'media_id' => $mediaId,
                     'response' => $mediaUrlResponse->json(),
                 ]);
+
                 return;
             }
 
             // Step 2: Download media from URL
             $mediaResponse = Http::withToken($accessToken)->get($mediaUrl);
 
-            if(!$mediaResponse->successful()) {
+            if (! $mediaResponse->successful()) {
                 Log::error('WhatsappOfficialHandler: Failed to download media', [
                     'message_id' => $message->id,
                     'media_url' => $mediaUrl,
                     'status' => $mediaResponse->status(),
                 ]);
+
                 return;
             }
 
             // Determine extension from MIME type
             $extension = $this->getExtensionFromMimeType($mimeType);
 
-            if(!$extension) {
+            if (! $extension) {
                 Log::warning('WhatsappOfficialHandler: Unknown MIME type, using bin', [
                     'message_id' => $message->id,
                     'mime_type' => $mimeType,
@@ -623,7 +633,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             }
 
             // Save media file
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
             MediaStorage::disk()->put($mediaPath, $mediaResponse->body());
 
             $message->update([
@@ -653,12 +663,12 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
         // WhatsApp Cloud API doesn't provide profile photo URL in webhook
         // Would need to make separate API call to get profile photo
         // TODO: Implement if needed
-        return;
+
     }
 
     private function getExtensionFromMimeType(string $mimeType): ?string
     {
-        return match($mimeType) {
+        return match ($mimeType) {
             // Images
             'image/jpeg' => 'jpg',
             'image/png' => 'png',

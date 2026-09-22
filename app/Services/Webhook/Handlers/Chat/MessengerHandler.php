@@ -16,7 +16,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Services\Conversation\LastAgentRouter;
-use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaStorage;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -87,7 +87,7 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 $title = $attachment['title'] ?? null;
                 $url = $attachment['payload']['url'] ?? ($attachment['url'] ?? null);
 
-                return trim(($title ? $title . "\n" : '') . ($url ?? '')) ?: null;
+                return trim(($title ? $title."\n" : '').($url ?? '')) ?: null;
             }
 
             if (($attachment['type'] ?? null) === 'location') {
@@ -225,12 +225,13 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $contactName = $this->getContactName($payload);
         $isOutgoing = $this->isOutgoingMessage($payload);
 
-        if (!$conversationId || !$messageId || !$contactExternalId) {
+        if (! $conversationId || ! $messageId || ! $contactExternalId) {
             Log::warning('MessengerHandler: Missing required data in payload', [
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
                 'contact_external_id' => $contactExternalId,
             ]);
+
             return;
         }
 
@@ -252,12 +253,12 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
-            if (!$conversation) {
+            if (! $conversation) {
                 $conversation = Conversation::create([
-                    'contact_id'    => $contact->id,
+                    'contact_id' => $contact->id,
                     'connection_id' => $connection->id,
-                    'external_id'   => $conversationId,
-                    'status'        => Status::Pending,
+                    'external_id' => $conversationId,
+                    'status' => Status::Pending,
                 ]);
                 $isNewConversation = true;
                 $conversationForWelcome = $conversation;
@@ -265,7 +266,9 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
             // Echoes of messages the dashboard itself sent come back with the
             // same mid the send handler already stored — skip those.
-            if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
+            if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
+                return;
+            }
 
             $repliedMessageId = null;
             $repliedMessageExternalId = $this->getRepliedMessageId($payload);
@@ -305,8 +308,6 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 return;
             }
 
-            $flowExecutor = new FlowExecutor();
-
             if ($isNewConversation && $conversationForWelcome) {
                 // A contact who came straight back reaches the agent who was
                 // already helping them; the bot is for strangers.
@@ -314,7 +315,7 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
                 if (! $returnedToAgent && $connection->flow_id) {
                     try {
-                        $flowExecutor->startFlow($conversationForWelcome);
+                        FlowRunner::start($conversationForWelcome);
                     } catch (\Throwable $th) {
                         Log::error('MessengerHandler: Failed to start flow', [
                             'conversation_id' => $conversationForWelcome->id,
@@ -325,7 +326,7 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 }
             } else {
                 try {
-                    $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($payload) ?? '');
+                    FlowRunner::resume($message->conversation, $this->getMessageBody($payload) ?? '');
                 } catch (\Throwable $th) {
                     Log::error('MessengerHandler: Failed to resume flow', [
                         'conversation_id' => $message->conversation->id,
@@ -347,10 +348,11 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
         // Reactions from the page itself echo with the page id as sender.
         $isEcho = ($messaging['sender']['id'] ?? null) === ($payload['id'] ?? null);
 
-        if (!$targetMessageExternalId || !$action) {
+        if (! $targetMessageExternalId || ! $action) {
             Log::warning('MessengerHandler: Missing reaction data', [
                 'reaction' => $reaction,
             ]);
+
             return;
         }
 
@@ -363,10 +365,11 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 })
                 ->first();
 
-            if (!$targetMessage) {
+            if (! $targetMessage) {
                 Log::warning('MessengerHandler: Target message not found for reaction', [
                     'external_id' => $targetMessageExternalId,
                 ]);
+
                 return;
             }
 
@@ -405,10 +408,11 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $watermark = $messaging['read']['watermark'] ?? null;
         $senderId = $messaging['sender']['id'] ?? null;
 
-        if (!$watermark || !$senderId) {
+        if (! $watermark || ! $senderId) {
             Log::warning('MessengerHandler: Missing watermark or sender in read payload', [
                 'payload' => $payload,
             ]);
+
             return;
         }
 
@@ -421,7 +425,7 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $watermark = $messaging['delivery']['watermark'] ?? null;
         $senderId = $messaging['sender']['id'] ?? null;
 
-        if (!$watermark || !$senderId) {
+        if (! $watermark || ! $senderId) {
             return;
         }
 
@@ -436,7 +440,7 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 ->orderByDesc('id')
                 ->first();
 
-            if (!$conversation) {
+            if (! $conversation) {
                 return;
             }
 
@@ -488,11 +492,12 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
         $mediaUrl = $attachments[0]['payload']['url'] ?? null;
 
-        if (!$mediaUrl) {
+        if (! $mediaUrl) {
             Log::warning('MessengerHandler: No media URL found in attachment', [
                 'message_id' => $message->id,
                 'attachment' => $attachments[0],
             ]);
+
             return;
         }
 
@@ -501,19 +506,20 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
             // header would be ignored and can break some CDN edges).
             $response = Http::get($mediaUrl);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 Log::error('MessengerHandler: Failed to download media', [
                     'message_id' => $message->id,
                     'url' => $mediaUrl,
                     'status' => $response->status(),
                 ]);
+
                 return;
             }
 
             $mimeType = $response->header('Content-Type');
             $extension = $this->getExtensionFromMimeType($mimeType);
 
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
             MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([
@@ -532,16 +538,17 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
         try {
             $accessToken = $connection->credentials['access_token'] ?? null;
 
-            if (!$accessToken) {
+            if (! $accessToken) {
                 Log::warning('MessengerHandler: Missing access token for updating contact info', [
                     'contact_id' => $contact->id,
                     'connection_id' => $connection->id,
                 ]);
+
                 return;
             }
 
             // PSIDs only expose the basic profile fields to the page token.
-            $response = Http::get(self::GRAPH_BASE . "/{$psid}", [
+            $response = Http::get(self::GRAPH_BASE."/{$psid}", [
                 'fields' => 'first_name,last_name,name',
                 'access_token' => $accessToken,
             ]);
@@ -550,7 +557,7 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 $userInfo = $response->json();
 
                 $name = $userInfo['name']
-                    ?? trim(($userInfo['first_name'] ?? '') . ' ' . ($userInfo['last_name'] ?? ''));
+                    ?? trim(($userInfo['first_name'] ?? '').' '.($userInfo['last_name'] ?? ''));
 
                 $contact->update([
                     'name' => $name ?: $psid,

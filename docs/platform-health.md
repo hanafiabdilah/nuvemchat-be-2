@@ -76,6 +76,7 @@ yang tak punya gejala sampai seseorang memanfaatkannya:
 | `webhook:chat-secrets` | koneksi Telegram/API Way yang webhook-nya masih bisa dipanggil siapa pun |
 | `webhook:meta-secrets` | app secret Meta kosong → verifier fail-closed akan menghentikan webhook |
 | `admin:two-factor` | akun Back Office tanpa faktor kedua |
+| `connections:credentials-at-rest` | koneksi yang token kanalnya masih plaintext di DB — **warn, tak pernah down**: tak ada yang rusak, paparannya ada di *backup*, dan menyebutnya outage melatih orang mengabaikan halaman ini. Dibereskan `php artisan connections:encrypt-credentials` (lihat `docs/credentials-at-rest.md`) |
 | `platform:debug` | **lihat di bawah** |
 
 ### ⚠️ `platform:debug`

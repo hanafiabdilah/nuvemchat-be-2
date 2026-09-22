@@ -13,6 +13,7 @@ use App\Models\Broadcast;
 use App\Models\Connection;
 use App\Models\SystemHeartbeat;
 use App\Services\Connection\Apiway\ApiwayService;
+use App\Services\Connection\ConnectionCredentials;
 use App\Services\Webhook\ChatWebhookSecret;
 use App\Support\Heartbeat;
 use App\Support\PlatformUrl;
@@ -50,6 +51,7 @@ class AdminHealthController extends Controller
                 $this->chatWebhookSecrets(),
                 $this->metaWebhookSecrets(),
                 $this->adminTwoFactor(),
+                $this->credentialsAtRest(),
                 $this->productionSettings(),
                 $this->platformUrl(),
             ],
@@ -523,6 +525,58 @@ class AdminHealthController extends Controller
      * teaches operators to ignore this page. What is worth a warning is a value
      * that isn't doing what it looks like it does.
      */
+    /**
+     * Channel secrets still sitting in plaintext in `connections.credentials`.
+     *
+     * The column holds the token that sends WhatsApp messages as a customer's
+     * business and the bot token that is total control of their Telegram bot,
+     * and it is the part of the database that gets copied around — into a
+     * backup, onto a laptop, into staging. Encryption is applied by the cast
+     * from now on; this counts the rows written before that and never
+     * re-saved, which `connections:encrypt-credentials` finishes.
+     *
+     * ⚠️ `warn`, never `down`: nothing is broken while this is non-zero. A
+     * plaintext row works exactly as it always did — the exposure is in the
+     * backup, not in the running platform — and calling that an outage would
+     * teach operators that red on this page does not mean red.
+     */
+    private function credentialsAtRest(): array
+    {
+        $plaintext = Connection::query()
+            ->whereNotNull('credentials')
+            ->get(['id', 'name', 'channel', 'credentials'])
+            ->filter(fn (Connection $connection) => ConnectionCredentials::needsProtecting(
+                json_decode((string) $connection->getRawOriginal('credentials'), true),
+            ));
+
+        if ($plaintext->isEmpty()) {
+            return $this->check(
+                'connections:credentials-at-rest',
+                'Platform',
+                'Channel secrets at rest',
+                'ok',
+                'Encrypted',
+                'Every stored channel credential is encrypted, so a database backup no longer carries them in the clear.',
+            );
+        }
+
+        return $this->check(
+            'connections:credentials-at-rest',
+            'Platform',
+            'Channel secrets at rest',
+            'warn',
+            (string) $plaintext->count(),
+            'These connections still hold their channel tokens in plaintext. Nothing is broken — they work as they always did — but a database backup carries them readable. Run `php artisan connections:encrypt-credentials`.',
+            [
+                'rows' => $plaintext->take(25)->map(fn (Connection $connection) => [
+                    'connection_id' => $connection->id,
+                    'channel' => $connection->channel?->value,
+                    'name' => $connection->name,
+                ])->values()->all(),
+            ],
+        );
+    }
+
     /**
      * Two settings that are harmless everywhere except here.
      *

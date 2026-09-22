@@ -20,7 +20,7 @@ use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\CallLog;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Conversation\LastAgentRouter;
-use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -295,8 +295,6 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         broadcast(new MessageReceived($message));
         broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
-        $flowExecutor = new FlowExecutor;
-
         if ($isNewConversation && $conversationForWelcome) {
             // A contact who came straight back reaches the agent who was
             // already helping them; the bot is for strangers.
@@ -304,14 +302,14 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
 
             if (! $returnedToAgent && $connection->flow_id) {
                 try {
-                    $flowExecutor->startFlow($conversationForWelcome);
+                    FlowRunner::start($conversationForWelcome);
                 } catch (\Throwable $th) {
                     Log::error('WhatsappApiwayHandler: failed to start flow', ['error' => $th->getMessage()]);
                 }
             }
         } else {
             try {
-                $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($event) ?? '');
+                FlowRunner::resume($message->conversation, $this->getMessageBody($event) ?? '');
             } catch (\Throwable $th) {
                 Log::error('WhatsappApiwayHandler: failed to resume flow', ['error' => $th->getMessage()]);
             }

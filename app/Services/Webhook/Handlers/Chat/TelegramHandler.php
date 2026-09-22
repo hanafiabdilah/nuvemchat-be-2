@@ -14,13 +14,11 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
-use App\Services\AutomatedMessageService;
 use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Conversation\LastAgentRouter;
-use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaStorage;
-use App\Services\Message\MessageService;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
@@ -61,9 +59,9 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             return MessageType::Audio;
         } elseif (isset($payload['message']['photo'])) {
             return MessageType::Image;
-        } elseif(isset($payload['message']['video'])) {
+        } elseif (isset($payload['message']['video'])) {
             return MessageType::Video;
-        } elseif(isset($payload['message']['document'])) {
+        } elseif (isset($payload['message']['document'])) {
             return MessageType::Document;
         }
 
@@ -72,7 +70,9 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
     public function getMessageSentAt(array $payload): Carbon
     {
-        if (isset($payload['message']['date'])) return Carbon::createFromTimestamp($payload['message']['date']);
+        if (isset($payload['message']['date'])) {
+            return Carbon::createFromTimestamp($payload['message']['date']);
+        }
 
         return Carbon::now();
     }
@@ -80,7 +80,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
     public function getContactName(array $payload): ?string
     {
         if (isset($payload['message']['from']['first_name']) && isset($payload['message']['from']['last_name'])) {
-            return $payload['message']['from']['first_name'] . ' ' . $payload['message']['from']['last_name'];
+            return $payload['message']['from']['first_name'].' '.$payload['message']['from']['last_name'];
         }
 
         return $payload['message']['from']['first_name'] ?? '';
@@ -105,9 +105,9 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
     {
         $event = null;
 
-        if(isset($payload['message'])){
+        if (isset($payload['message'])) {
             $event = 'received';
-        }elseif(isset($payload['edited_message'])){
+        } elseif (isset($payload['edited_message'])) {
             $event = 'edited';
         }
 
@@ -138,6 +138,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
         if (in_array($chatType, ['group', 'supergroup'], true)) {
             $this->handleGroupReceived($connection, $payload);
+
             return;
         }
 
@@ -152,7 +153,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $contactName = $this->getContactName($payload);
         $contactUsername = $this->getContactUsername($payload);
 
-        if (!$conversationId || !$messageId || !$contactExternalId || !$contactName){
+        if (! $conversationId || ! $messageId || ! $contactExternalId || ! $contactName) {
             Log::warning('TelegramHandler: Missing required data in payload', [
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
@@ -166,7 +167,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $isNewConversation = false;
         $conversationForWelcome = null;
 
-        $message = DB::transaction(function() use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, &$isNewConversation, &$conversationForWelcome) {
+        $message = DB::transaction(function () use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
             SyncContactPhoto::dispatchIfStale($contact, $connection);
 
@@ -176,12 +177,12 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
-            if (!$conversation) {
+            if (! $conversation) {
                 $conversation = Conversation::create([
-                    'contact_id'    => $contact->id,
+                    'contact_id' => $contact->id,
                     'connection_id' => $connection->id,
-                    'external_id'   => $conversationId,
-                    'status'        => Status::Pending,
+                    'external_id' => $conversationId,
+                    'status' => Status::Pending,
                 ]);
                 $isNewConversation = true;
                 $conversationForWelcome = $conversation;
@@ -219,8 +220,8 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             ]);
         });
 
-        if($message){
-            if(in_array($messageType, self::MEDIA_TYPES)) {
+        if ($message) {
+            if (in_array($messageType, self::MEDIA_TYPES)) {
                 DownloadInboundMedia::dispatchFor($message);
             }
 
@@ -232,8 +233,6 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 return;
             }
 
-            $flowExecutor = new FlowExecutor();
-
             // Handle new conversation - start flow
             if ($isNewConversation && $conversationForWelcome) {
                 // A contact who came straight back reaches the agent who was
@@ -242,7 +241,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
                 if (! $returnedToAgent && $connection->flow_id) {
                     try {
-                        $flowExecutor->startFlow($conversationForWelcome);
+                        FlowRunner::start($conversationForWelcome);
                     } catch (\Throwable $th) {
                         Log::error('TelegramHandler: Failed to start flow', [
                             'conversation_id' => $conversationForWelcome->id,
@@ -254,7 +253,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             } else {
                 // Resume flow if there's an active flow state
                 try {
-                    $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($payload) ?? '');
+                    FlowRunner::resume($message->conversation, $this->getMessageBody($payload) ?? '');
                 } catch (\Throwable $th) {
                     Log::error('TelegramHandler: Failed to resume flow', [
                         'conversation_id' => $message->conversation->id,
@@ -291,7 +290,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $senderChat = $payload['message']['sender_chat'] ?? null;
         $senderExternalId = $senderChat['id'] ?? $this->getContactExternalId($payload);
 
-        if (!$chatId || !$messageId || !$senderExternalId) {
+        if (! $chatId || ! $messageId || ! $senderExternalId) {
             Log::warning('TelegramHandler: Missing required data in group payload', [
                 'chat_id' => $chatId,
                 'message_id' => $messageId,
@@ -379,14 +378,18 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $chatId = (string) ($message['chat']['id'] ?? '');
 
         // Group upgraded to supergroup: Telegram switches to a new chat id.
-        if (!empty($message['migrate_to_chat_id'])) {
+        if (! empty($message['migrate_to_chat_id'])) {
             GroupConversationService::migrateExternalId($connection, $chatId, (string) $message['migrate_to_chat_id']);
+
             return true;
         }
 
-        if (!empty($message['new_chat_title'])) {
+        if (! empty($message['new_chat_title'])) {
             $conversation = GroupConversationService::rename($connection, $chatId, $message['new_chat_title']);
-            if ($conversation) broadcast(new ConversationUpdated($conversation->load('contact')));
+            if ($conversation) {
+                broadcast(new ConversationUpdated($conversation->load('contact')));
+            }
+
             return true;
         }
 
@@ -394,15 +397,17 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         // a file the group contact can be keyed to — re-read it through getChat
         // instead of trusting the payload, which keeps one code path for both
         // this event and the TTL refresh.
-        if (!empty($message['new_chat_photo'])) {
+        if (! empty($message['new_chat_photo'])) {
             $group = GroupConversationService::resolveGroupContact($connection, $chatId, $message['chat']['title'] ?? null);
             SyncContactPhoto::dispatchForced($group, $connection);
+
             return true;
         }
 
-        if (!empty($message['delete_chat_photo'])) {
+        if (! empty($message['delete_chat_photo'])) {
             $group = GroupConversationService::resolveGroupContact($connection, $chatId, $message['chat']['title'] ?? null);
             app(ContactPhotoSyncer::class)->clear($group);
+
             return true;
         }
 
@@ -429,7 +434,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $chatId = $payload['edited_message']['chat']['id'] ?? null;
         $date = Carbon::createFromTimestamp($payload['edited_message']['edit_date'] ?? time());
 
-        if (!$messageId || !$messageBody){
+        if (! $messageId || ! $messageBody) {
             Log::warning('TelegramHandler: Missing required data in payload', [
                 'message_id' => $messageId,
                 'message_body' => $messageBody,
@@ -441,13 +446,15 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         // Telegram message_ids are only unique per chat — scope by chat id so a
         // group edit can never hit a same-numbered message from another chat.
         $message = Message::where('external_id', $messageId)
-            ->whereHas('conversation', function($query) use ($connection, $chatId) {
+            ->whereHas('conversation', function ($query) use ($connection, $chatId) {
                 $query->where('connection_id', $connection->id);
-                if ($chatId) $query->where('external_id', (string) $chatId);
+                if ($chatId) {
+                    $query->where('external_id', (string) $chatId);
+                }
             })
             ->first();
 
-        if(!$message){
+        if (! $message) {
             Log::warning('TelegramHandler: Edited message not found in database', [
                 'message_id' => $messageId,
             ]);
@@ -463,7 +470,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
         broadcast(new MessageUpdated($message));
 
-        if($message->conversation->last_message->id == $message->id) {
+        if ($message->conversation->last_message->id == $message->id) {
             broadcast(new ConversationUpdated($message->conversation));
         }
     }
@@ -479,7 +486,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
     private function handleMediaMessage(Message $message, array $payload, MessageType $messageType)
     {
-        $mediaKey = match($messageType) {
+        $mediaKey = match ($messageType) {
             MessageType::Audio => 'voice',
             MessageType::Image => 'photo',
             MessageType::Video => 'video',
@@ -489,7 +496,7 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
         $media = $payload['message'][$mediaKey];
 
-        if(isset($media[0])) {
+        if (isset($media[0])) {
             $media = $payload['message'][$mediaKey][count($payload['message'][$mediaKey]) - 1];
         }
 
@@ -497,8 +504,8 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             'file_id' => $media['file_id'],
         ]);
 
-        if ($response->failed()){
-            if($response->status() === 400) {
+        if ($response->failed()) {
+            if ($response->status() === 400) {
                 $message->update([
                     'error' => $response->json('description'),
                 ]);
@@ -511,9 +518,11 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $fileUrl = "https://api.telegram.org/file/bot{$message->conversation->connection->credentials['token']}/{$filePath}";
         $extension = $this->getExtensionFromFilePath($filePath);
 
-        if(!$fileUrl || !$extension) return;
+        if (! $fileUrl || ! $extension) {
+            return;
+        }
 
-        $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+        $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
 
         MediaStorage::disk()->put($mediaPath, Http::get($fileUrl)->body());
 

@@ -7,15 +7,15 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
-use App\Jobs\DownloadInboundMedia;
 use App\Events\MessageUpdated;
+use App\Jobs\DownloadInboundMedia;
 use App\Jobs\SyncContactPhoto;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Conversation\LastAgentRouter;
-use App\Services\Flow\FlowExecutor;
+use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaStorage;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -63,11 +63,11 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
     {
         $data = $payload['d'] ?? [];
 
-        if (!empty($data['sticker_items'])) {
+        if (! empty($data['sticker_items'])) {
             return MessageType::Sticker;
         }
 
-        if (!empty($data['attachments'][0])) {
+        if (! empty($data['attachments'][0])) {
             $contentType = (string) ($data['attachments'][0]['content_type'] ?? '');
 
             return match (true) {
@@ -138,7 +138,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
         // Defensive: the daemon only subscribes to DMs, but never ingest guild
         // traffic or webhook-authored messages if any slips through.
-        if (!empty($data['guild_id']) || !empty($data['webhook_id'])) {
+        if (! empty($data['guild_id']) || ! empty($data['webhook_id'])) {
             return;
         }
 
@@ -171,7 +171,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $isOutgoing = $authorId !== null && $authorId === $botUserId;
 
         // Ignore other bots entirely — only our own messages count as echoes.
-        if (!$isOutgoing && !empty($data['author']['bot'])) {
+        if (! $isOutgoing && ! empty($data['author']['bot'])) {
             return;
         }
 
@@ -179,12 +179,13 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $messageId = $this->getMessageId($payload);
         $messageType = $this->getMessageType($payload);
 
-        if (!$conversationId || !$messageId || !$authorId) {
+        if (! $conversationId || ! $messageId || ! $authorId) {
             Log::warning('DiscordHandler: Missing required data in payload', [
                 'conversation_id' => $conversationId,
                 'message_id' => $messageId,
                 'author_id' => $authorId,
             ]);
+
             return;
         }
 
@@ -201,7 +202,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
-            if (!$conversation) {
+            if (! $conversation) {
                 return;
             }
 
@@ -248,18 +249,20 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
-            if (!$conversation) {
+            if (! $conversation) {
                 $conversation = Conversation::create([
-                    'contact_id'    => $contact->id,
+                    'contact_id' => $contact->id,
                     'connection_id' => $connection->id,
-                    'external_id'   => $conversationId,
-                    'status'        => Status::Pending,
+                    'external_id' => $conversationId,
+                    'status' => Status::Pending,
                 ]);
                 $isNewConversation = true;
                 $conversationForWelcome = $conversation;
             }
 
-            if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) return;
+            if ($conversation->messages()->where('external_id', $messageId)->lockForUpdate()->exists()) {
+                return;
+            }
 
             $repliedMessageId = null;
             $repliedMessageExternalId = $this->getRepliedMessageId($payload);
@@ -294,8 +297,6 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation->load('contact')));
 
-            $flowExecutor = new FlowExecutor();
-
             if ($isNewConversation && $conversationForWelcome) {
                 // A contact who came straight back reaches the agent who was
                 // already helping them; the bot is for strangers.
@@ -303,7 +304,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
                 if (! $returnedToAgent && $connection->flow_id) {
                     try {
-                        $flowExecutor->startFlow($conversationForWelcome);
+                        FlowRunner::start($conversationForWelcome);
                     } catch (\Throwable $th) {
                         Log::error('DiscordHandler: Failed to start flow', [
                             'conversation_id' => $conversationForWelcome->id,
@@ -314,7 +315,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 }
             } else {
                 try {
-                    $flowExecutor->resumeFlow($message->conversation, $this->getMessageBody($payload) ?? '');
+                    FlowRunner::resume($message->conversation, $this->getMessageBody($payload) ?? '');
                 } catch (\Throwable $th) {
                     Log::error('DiscordHandler: Failed to resume flow', [
                         'conversation_id' => $message->conversation->id,
@@ -330,7 +331,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $data = $payload['d'] ?? [];
         $messageId = isset($data['id']) ? (string) $data['id'] : null;
 
-        if (!$messageId || !array_key_exists('content', $data)) {
+        if (! $messageId || ! array_key_exists('content', $data)) {
             return; // embed-only updates (link previews) don't change the body
         }
 
@@ -338,10 +339,10 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $message = Message::whereHas('conversation', function ($query) use ($connection) {
                 $query->where('connection_id', $connection->id);
             })
-            ->where('external_id', $messageId)
-            ->first();
+                ->where('external_id', $messageId)
+                ->first();
 
-            if (!$message) {
+            if (! $message) {
                 return;
             }
 
@@ -375,7 +376,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $data = $payload['d'] ?? [];
         $messageId = isset($data['id']) ? (string) $data['id'] : null;
 
-        if (!$messageId) {
+        if (! $messageId) {
             return;
         }
 
@@ -383,10 +384,10 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $message = Message::whereHas('conversation', function ($query) use ($connection) {
                 $query->where('connection_id', $connection->id);
             })
-            ->where('external_id', $messageId)
-            ->first();
+                ->where('external_id', $messageId)
+                ->first();
 
-            if (!$message) {
+            if (! $message) {
                 return;
             }
 
@@ -424,7 +425,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
         $attachment = $payload['d']['attachments'][0] ?? null;
         $mediaUrl = $attachment['url'] ?? null;
 
-        if (!$mediaUrl) {
+        if (! $mediaUrl) {
             return;
         }
 
@@ -432,19 +433,20 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
             // Attachment URLs are pre-signed CDN links — plain GET, no auth.
             $response = Http::get($mediaUrl);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 Log::error('DiscordHandler: Failed to download media', [
                     'message_id' => $message->id,
                     'url' => $mediaUrl,
                     'status' => $response->status(),
                 ]);
+
                 return;
             }
 
             $filename = $attachment['filename'] ?? 'attachment.bin';
             $extension = pathinfo($filename, PATHINFO_EXTENSION) ?: 'bin';
 
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
             MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([

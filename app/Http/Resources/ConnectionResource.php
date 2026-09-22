@@ -3,7 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Enums\Connection\Channel;
-use App\Services\Webhook\ChatWebhookSecret;
+use App\Services\Connection\ConnectionCredentials;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -16,20 +16,13 @@ class ConnectionResource extends JsonResource
      * `token` is here for the channels that use it as a secret (API Way's
      * instance token authorizes the entire core API); Telegram and Discord get
      * it back under a permission check — see scrubCredentials().
+     *
+     * ⚠️ The same list that decides what is encrypted at rest — deliberately
+     * one list rather than two. "Must not be readable in the database" and
+     * "must not be readable in the browser" have never once disagreed here,
+     * and a second copy would drift on the first channel somebody adds.
      */
-    private const SECRET_KEYS = [
-        'access_token',
-        'user_access_token',
-        'refresh_token',
-        'password',
-        'app_secret',
-        'client_secret',
-        'secret',
-        'api_key',
-        'private_key',
-        'token',
-        ChatWebhookSecret::CREDENTIAL_KEY,
-    ];
+    private const SECRET_KEYS = ConnectionCredentials::SECRET_KEYS;
 
     /**
      * Transform the resource into an array.

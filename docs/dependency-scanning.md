@@ -66,10 +66,20 @@ mengabaikan job ini.
 
 ## Yang belum dikerjakan
 
-- **Kedua SPA tidak tercakup.** `nuvemchat-fe-2` dan `nuvemchat-bo` adalah repo
-  Git terpisah dan **tak punya `.github/` sama sekali** — tak ada CI apa pun di
-  sana, bukan hanya tak ada audit. Menyalin workflow ini ke keduanya (tanpa
-  langkah PHP) adalah pekerjaan berikutnya yang paling murah.
+- ~~Kedua SPA tidak tercakup.~~ **Sudah** (Set 2026): masing-masing punya
+  `.github/workflows/ci.yml` sendiri. Saat akhirnya ditanya, keduanya juga
+  merah — `nuvemchat-fe-2` **13 advisory (8 high)** termasuk **axios**
+  (seluruh lapisan API SPA, yang membawa token sesi) dan **DOMPurify** (yang
+  membersihkan HTML e-mail pelanggan di Webmail); `nuvemchat-bo` 2 high di
+  `react-router`. Keduanya dibereskan `npm audit fix` tanpa menyentuh
+  `package.json`, dan build keduanya tetap lolos.
+  ⚠️ Hanya BO yang dapat langkah **typecheck** — di sanalah `tsc` sudah pernah
+  menangkap bug nyata yang lolos ke produksi (`axios.isAxiosError` di 15 catch
+  block). `nuvemchat-fe-2` masih punya ~196 error `tsc`, mayoritas dari
+  boilerplate Figma tak terpakai di `src/components/ui/` yang meng-import
+  modul dengan spesifier ber-versi (`"@radix-ui/react-dialog@1.1.6"`) yang tak
+  resolve untuk siapa pun; membersihkannya pekerjaan tersendiri, dan langkah
+  typecheck yang merah tiap run hanya melatih semua orang mengabaikan job ini.
 - **Tidak ada Dependabot/Renovate.** Scan memberi tahu; ia tidak membuka PR.
   Selama tak ada, pemutakhiran tetap pekerjaan manual dan akan tertunda persis
   seperti yang sudah terjadi.
