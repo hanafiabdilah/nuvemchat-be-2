@@ -1,0 +1,62 @@
+# Known-vulnerable dependencies.
+#
+# This repository ships 96 PHP packages and their transitive tree, and until now
+# nothing ever asked whether any of them had a published advisory. A CVE in a
+# dependency is not a theoretical risk here: the backend parses webhook bodies
+# from six external platforms, renders e-mail HTML, and handles uploaded files —
+# most of it through libraries rather than our own code.
+#
+# ⚠️ Scheduled as well as run on push, and that is the point. A lockfile that
+# was clean when it was merged does not stay clean; the advisory is published
+# later, against code nobody has touched since. A scan that only runs on change
+# never sees that, which is the whole class of problem it exists to catch.
+name: security
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+  schedule:
+    # Monday morning, BRT.
+    - cron: '0 11 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: 8.4
+          tools: composer:v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Reads composer.lock against the Packagist advisory database. No install
+      # step: the lockfile is what is deployed, so it is what should be asked
+      # about, and skipping the install keeps this job fast enough to stay on
+      # every pull request.
+      - name: Composer advisories
+        run: composer audit --locked --no-interaction
+
+      # Production dependencies only. The dev tree here is build tooling that
+      # never reaches a browser, and its advisories are noisy enough that
+      # including them would train everyone to ignore this job.
+      - name: npm advisories
+        run: npm audit --omit=dev --audit-level=high

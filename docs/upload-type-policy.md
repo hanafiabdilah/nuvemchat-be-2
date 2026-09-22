@@ -117,6 +117,34 @@ bisa melihat otomasi tersebut.
 4. Kalau tidak berbahaya: minta pelanggan mengunggah ulang dalam format yang
    didukung (SVG → PNG), baru hapus.
 
+## Ekstensi yang disimpan ≠ nama yang dikirim browser (Set 2026)
+
+Galeri dulu menulis berkas ke disk dengan ekstensi **dari nama yang dikirim
+browser** (`getClientOriginalExtension()`), dan di sana itu bukan kosmetik:
+ekstensi tersebut masuk ke path penyimpanan, ikut **ditandatangani** ke dalam
+`public_filename`, lalu dibaca balik `OutboundMedia` sebagai tipe MIME yang
+diumumkan ke WhatsApp.
+
+Jadi PNG bernama `.pdf` menjadi berkas yang kita deklarasikan sebagai
+`application/pdf` ke kanal yang kemudian menolaknya — dan di sisi penyajian,
+ekstensi yang tak sesuai isinya persis ketidakcocokan yang `nosniff` ada untuk
+menahannya, bukan sesuatu yang perlu kita ciptakan sendiri.
+
+`UploadPolicy::storedExtension()` sekarang memutuskannya:
+
+- ejaan dari browser **dipertahankan bila ia menamai tipe yang sama dengan yang
+  terdeteksi dari isinya** — `.m4a` vs `.mp4` adalah satu tipe MIME dengan dua
+  ejaan yang platform ini benar-benar bedakan (lihat aturan audio di handler
+  WhatsApp), begitu pula `.ogg` vs `.oga`; menimpanya dengan apa pun yang
+  dipilih Symfony akan mengubah perilaku yang bekerja tanpa memperbaiki apa pun;
+- kalau keduanya berbeda, **isinya yang menang**.
+
+`WidgetController` dan `AvatarStorage` sudah mendahulukan `guessExtension()`
+sejak sebelumnya. Handler kanal di `app/Services/Message/Handlers/` masih
+memakai nama dari klien, dan itu dibiarkan: berkas di sana adalah berkas
+sementara dari composer agen yang sudah terautentikasi, dikirim lalu dibuang —
+bukan aset yang disimpan dan disajikan kembali dari origin kita.
+
 ## Menambah tipe baru
 
 Tambahkan ke `UploadPolicy::EXTENSIONS`. Sebelum itu, pastikan tipe tersebut

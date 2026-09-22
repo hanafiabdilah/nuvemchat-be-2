@@ -57,6 +57,48 @@ it('does not mistake a port on our own host for our own address', function () {
     expect(PublicUrl::isFetchable('http://localhost:6379/'))->toBeFalse();
 });
 
+// ── The same address, written another way ──
+//
+// ⚠️ These are regressions, not hypotheticals. The first version of this guard
+// asked `filter_var(..., NO_PRIV_RANGE | NO_RES_RANGE)` and nothing else, and
+// every URL below passed it — `http://[::ffff:169.254.169.254]/` reached the
+// cloud metadata service through a guard written to stop exactly that. An
+// IPv4-mapped IPv6 address, a 6to4 address and a NAT64 address are all an IPv4
+// destination in a notation those flags do not recognise, and the socket layer
+// connects to the IPv4 host regardless of how it was spelled.
+
+dataset('addresses in disguise', [
+    'IPv4-mapped metadata service' => 'http://[::ffff:169.254.169.254]/latest/meta-data/',
+    'IPv4-mapped loopback' => 'http://[::ffff:127.0.0.1]:6379/',
+    'IPv4-compatible loopback' => 'http://[::127.0.0.1]/',
+    '6to4 wrapping loopback' => 'http://[2002:7f00:1::]/',
+    'NAT64 wrapping the metadata service' => 'http://[64:ff9b::a9fe:a9fe]/',
+    'IPv6 loopback' => 'http://[::1]:6379/',
+    'IPv6 unique local' => 'http://[fd00::1]/',
+    'IPv6 link-local' => 'http://[fe80::1]/',
+    'Teredo' => 'http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/',
+    'carrier NAT' => 'http://100.64.0.1/',
+    'benchmarking range' => 'http://198.18.0.1/',
+    'IETF protocol assignments' => 'http://192.0.0.1/',
+    'multicast' => 'http://224.0.0.1/',
+    'broadcast' => 'http://255.255.255.255/',
+]);
+
+it('refuses a private address written in another notation', function (string $url) {
+    expect(PublicUrl::isFetchable($url))->toBeFalse();
+})->with('addresses in disguise');
+
+it('still allows a public address that happens to be IPv6', function (string $url) {
+    // The unwrapping judges what the address will actually reach, so a wrapper
+    // around a public IPv4 host stays allowed. Refusing the whole notation
+    // would have been the easy fix and would have broken real endpoints.
+    expect(PublicUrl::isFetchable($url))->toBeTrue();
+})->with([
+    'plain IPv6' => 'https://[2606:4700:4700::1111]/hook',
+    'IPv4-mapped public host' => 'https://[::ffff:8.8.8.8]/hook',
+    '6to4 wrapping a public host' => 'https://[2002:0808:0808::]/hook',
+]);
+
 // ── media_url, on every send endpoint ──
 
 it('refuses a media_url pointing inside the network', function (string $url) {

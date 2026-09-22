@@ -9,6 +9,7 @@ use App\Services\Notification\NotificationService;
 use App\Services\Otp\OtpService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -100,7 +101,7 @@ class PasswordResetController extends Controller
         $validated = $request->validate([
             'email' => ['required', 'email', 'max:255'],
             'code' => ['required', 'string', 'min:4', 'max:10'],
-            'password' => ['required', 'string', 'min:8', 'confirmed'],
+            'password' => ['required', 'string', Password::defaults(), 'confirmed'],
         ]);
 
         $user = $this->userOrFail($validated['email']);

@@ -55,8 +55,11 @@ final class OutboundHttp
             return $request;
         }
 
+        // A and AAAA both — pinning only the IPv4 answers would leave an
+        // AAAA-only host unpinned, which is the case with no second lookup to
+        // constrain at all. See PublicUrl::addressesFor().
         $addresses = array_values(array_filter(
-            gethostbynamel($host) ?: [],
+            PublicUrl::addressesFor($host),
             static fn (string $ip) => PublicUrl::isPublicIp($ip),
         ));
 

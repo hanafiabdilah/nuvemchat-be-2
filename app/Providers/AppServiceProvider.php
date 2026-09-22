@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rules\Password;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -47,6 +48,7 @@ class AppServiceProvider extends ServiceProvider
         \App\Services\Webhooks\LeadWebhooks::register();
 
         $this->registerQueueHeartbeat();
+        $this->registerPasswordPolicy();
 
         // Public API. Counted per key, not per IP: the callers are servers, and
         // two integrations behind one NAT must not share a budget. Runs after
@@ -112,6 +114,46 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->registerWidgetLimiters();
+    }
+
+    /**
+     * One password policy, defined once.
+     *
+     * Every place a password is set used to say `min:8` on its own — six of
+     * them, in six controllers — which is both the weakest rule anyone writes
+     * down and a rule that cannot be changed without finding all six. `min:8`
+     * also allows `12345678`, which is not a hypothetical: it is at the top of
+     * every breach corpus there is, and this platform's accounts reach whole
+     * workspaces of customer conversations.
+     *
+     * ⚠️ Length plus a breach check, deliberately WITHOUT composition rules
+     * (`->mixedCase()->symbols()`). Composition rules do not produce stronger
+     * passwords, they produce `Senha@123` — and they refuse the long
+     * all-lowercase passphrase that is actually strong. Current NIST guidance
+     * says the same thing.
+     *
+     * ⚠️ `uncompromised()` only in production, and that is not laziness: it
+     * makes a live HTTP call to api.pwnedpasswords.com, so having it on in the
+     * test suite would make hundreds of tests depend on the network. It fails
+     * open by design (Laravel reports the exception and treats the password as
+     * clean), so an outage at Have I Been Pwned delays a signup, it does not
+     * block one — and the timeout below is what bounds that delay, since the
+     * framework default of 30 seconds would be felt as a broken form.
+     */
+    private function registerPasswordPolicy(): void
+    {
+        $this->app->bind(
+            \Illuminate\Contracts\Validation\UncompromisedVerifier::class,
+            fn ($app) => new \Illuminate\Validation\NotPwnedVerifier($app[\Illuminate\Http\Client\Factory::class], 4),
+        );
+
+        Password::defaults(function () {
+            if (! $this->app->isProduction()) {
+                return Password::min(8);
+            }
+
+            return Password::min(10)->uncompromised();
+        });
     }
 
     /**

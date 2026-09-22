@@ -108,8 +108,15 @@ class StatsScope
     public static function fromRequest(Request $request, int $tenantId): self
     {
         $validated = $request->validate([
-            'from' => ['nullable', 'date'],
-            'to' => ['nullable', 'date'],
+            // ⚠️ `date_format`, not `date`. Laravel's `date` rule is
+            // `strtotime() !== false`, which accepts relative expressions —
+            // `+50 years`, `last monday`, `now` — so the value that reached
+            // Carbon::parse() below was an arbitrary date *expression*, not a
+            // day. The dashboard has only ever sent calendar days (toYMD in
+            // StatsFilterBar), so narrowing this takes nothing away and leaves
+            // the parse below with a shape it cannot throw on.
+            'from' => ['nullable', 'date_format:Y-m-d'],
+            'to' => ['nullable', 'date_format:Y-m-d'],
             'timezone' => ['nullable', 'string', 'timezone'],
             'channels' => ['nullable', 'array'],
             'channels.*' => ['string'],
@@ -120,7 +127,7 @@ class StatsScope
             'tag_ids' => ['nullable', 'array'],
             'tag_ids.*' => ['integer'],
             'include_groups' => ['nullable', 'boolean'],
-            'scope' => ['nullable', 'string', 'in:' . self::SCOPE_ALL . ',' . self::SCOPE_CHAT . ',' . self::SCOPE_EMAIL],
+            'scope' => ['nullable', 'string', 'in:'.self::SCOPE_ALL.','.self::SCOPE_CHAT.','.self::SCOPE_EMAIL],
         ]);
 
         $timezone = $validated['timezone'] ?? config('app.timezone', 'UTC');
@@ -128,13 +135,11 @@ class StatsScope
         // The dates arrive as calendar days in the viewer's zone; the database
         // stores UTC. Parsing in the viewer's zone first is what keeps "today"
         // from starting three hours late in São Paulo.
-        $from = isset($validated['from'])
-            ? Carbon::parse($validated['from'], $timezone)->startOfDay()
-            : Carbon::now($timezone)->subDays(29)->startOfDay();
+        $from = self::day($validated['from'] ?? null, $timezone)
+            ?? Carbon::now($timezone)->subDays(29)->startOfDay();
 
-        $to = isset($validated['to'])
-            ? Carbon::parse($validated['to'], $timezone)->endOfDay()
-            : Carbon::now($timezone)->endOfDay();
+        $to = (self::day($validated['to'] ?? null, $timezone)?->endOfDay())
+            ?? Carbon::now($timezone)->endOfDay();
 
         if ($from->greaterThan($to)) {
             [$from, $to] = [$to->copy()->startOfDay(), $from->copy()->endOfDay()];
@@ -163,6 +168,33 @@ class StatsScope
             includeGroups: (bool) ($validated['include_groups'] ?? false),
             scope: $validated['scope'] ?? self::SCOPE_ALL,
         );
+    }
+
+    /**
+     * One validated calendar day, at the start of it, in the viewer's zone.
+     *
+     * The format is already guaranteed by validation, so this cannot normally
+     * fail — but `timezone` is also caller-supplied, and a parse that throws
+     * here would be a 500 on a page anybody with `statistics.tenant.view` can
+     * open. Falling back to the default window is the honest answer to a date
+     * we could not read: the page still works, and the range it shows is the
+     * one it shows when no range is asked for.
+     */
+    private static function day(?string $value, string $timezone): ?Carbon
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        try {
+            $day = Carbon::createFromFormat('Y-m-d', $value, $timezone);
+        } catch (\Throwable $e) {
+            return null;
+        }
+
+        // Carbon throws on a bad format, but the underlying DateTime returns
+        // false — cover both rather than pick one.
+        return $day instanceof Carbon ? $day->startOfDay() : null;
     }
 
     /**

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
 use App\Services\Access\TenantRoles;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -56,6 +57,8 @@ class RoleController extends Controller
             $role->syncPermissions($validated['permissions']);
         }
 
+        $this->audit('role.created', $role, $tenantId, $validated['permissions'] ?? []);
+
         return response()->json([
             'message' => 'Role created successfully',
             'data' => $role->load('permissions'),
@@ -81,12 +84,22 @@ class RoleController extends Controller
 
         $validated = $request->validate($this->rules($tenantId, (int) $role->id), $this->messages());
 
+        $before = $role->permissions()->pluck('name')->sort()->values()->all();
+
         $role->update(['name' => $validated['name']]);
 
         if (isset($validated['permissions'])) {
             $this->assertMayGrant($request->user(), $validated['permissions']);
             $role->syncPermissions($validated['permissions']);
         }
+
+        $this->audit(
+            'role.updated',
+            $role,
+            $tenantId,
+            $role->permissions()->pluck('name')->sort()->values()->all(),
+            $before,
+        );
 
         return response()->json([
             'message' => 'Role updated successfully',
@@ -110,11 +123,52 @@ class RoleController extends Controller
             ], 403);
         }
 
+        $this->audit(
+            'role.deleted',
+            $role,
+            (int) $request->user()->tenant_id,
+            $role->permissions()->pluck('name')->sort()->values()->all(),
+        );
+
         $role->delete();
 
         return response()->json([
             'message' => 'Role deleted successfully',
         ]);
+    }
+
+    /**
+     * Record a change to who can do what.
+     *
+     * ⚠️ A role is the only thing in a workspace that hands out access to other
+     * people's conversations, and until now editing one left no trace at all —
+     * a permission could be added on Monday and removed on Friday and nothing
+     * anywhere would say it had ever been there. That is the one question an
+     * incident actually asks, so the permission list travels with the row, and
+     * on an edit so does the list it replaced: "who has access now" can be read
+     * off the database, "what changed" cannot.
+     *
+     * Written to the same trail as the Back Office's own actions. That table is
+     * already the platform's audit log rather than the Back Office's — revealing
+     * an API Way token is a tenant user's action and lands there too — and one
+     * timeline that answers "what happened to this workspace" beats two.
+     *
+     * @param  list<string>  $permissions
+     * @param  list<string>|null  $previous
+     */
+    private function audit(string $action, Role $role, int $tenantId, array $permissions, ?array $previous = null): void
+    {
+        AuditLog::record(
+            $action,
+            "Role \"{$role->name}\" in workspace #{$tenantId}",
+            array_filter([
+                'tenant_id' => $tenantId,
+                'role_id' => $role->id,
+                'role' => $role->name,
+                'permissions' => $permissions,
+                'previous_permissions' => $previous,
+            ], fn ($value) => $value !== null),
+        );
     }
 
     /**
@@ -191,5 +245,4 @@ class RoleController extends Controller
             ]);
         }
     }
-
 }

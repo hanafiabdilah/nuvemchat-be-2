@@ -68,6 +68,41 @@ dari DB: kedalaman antrean, `failed_jobs` 24 jam terakhir, kampanye yang macet
 yang berhenti disinkronkan, dan koneksi yang memegang kredensial tapi tidak
 aktif (biasanya token dicabut).
 
+Ditambah empat pemeriksaan **konfigurasi** — bukan proses, melainkan setelan
+yang tak punya gejala sampai seseorang memanfaatkannya:
+
+| Pemeriksaan | Kapan merah |
+|---|---|
+| `webhook:chat-secrets` | koneksi Telegram/API Way yang webhook-nya masih bisa dipanggil siapa pun |
+| `webhook:meta-secrets` | app secret Meta kosong → verifier fail-closed akan menghentikan webhook |
+| `admin:two-factor` | akun Back Office tanpa faktor kedua |
+| `platform:debug` | **lihat di bawah** |
+
+### ⚠️ `platform:debug`
+
+Dua setelan yang tak berbahaya di mana pun kecuali di produksi:
+
+- **`APP_DEBUG=true` → `down`.** Ini bukan setelan verbositas, ini penyingkapan:
+  halaman debug Laravel mencetak stack, query yang gagal beserta bindings-nya,
+  dan **seluruh environment** — kata sandi database, `APP_KEY`, tiap kredensial
+  kanal, kunci payment service. Siapa pun yang bisa membuat aplikasi ini
+  melempar bisa membacanya, dan membuat aplikasi web melempar itu tidak sulit.
+- **`LOG_LEVEL=debug` → `warn`.** Versi yang lebih kecil dari masalah yang sama,
+  dan mudah tercapai tanpa sengaja karena **default di `config/logging.php`
+  memang `debug`**: jalur pesan masuk mencatat payload webhook lengkap di level
+  itu, jadi isi pesan dan nomor telepon pelanggan mendarat di berkas yang panel
+  ini bisa mengunduhnya.
+
+Keduanya dibaca dari config yang **sedang hidup**, bukan dari berkas `.env` di
+disk: yang penting adalah dengan apa proses ini boot, dan `.env` diedit di
+server tanpa ada yang di sini menyadarinya.
+
+⚠️ Di luar produksi (`APP_ENV` bukan `production`) pemeriksaan ini **diam
+hijau**, bukan kuning. Instalasi lokal dan staging memang seharusnya jalan
+dengan debug menyala, dan peringatan permanen di semuanya persis cara halaman
+ini mulai diabaikan di kotak yang benar-benar penting — alasan yang sama dengan
+`unknown` vs `down` pada proses.
+
 ## Prasyarat ops
 
 Tak ada yang baru. Halaman ini hanya **membaca** — kalau supervisor sudah

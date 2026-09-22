@@ -12,10 +12,12 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 
 class UserController extends Controller
 {
-    public function index (Request $request) {
+    public function index(Request $request)
+    {
         $user = $request->user();
         $user->load(['roles', 'permissions']);
         $tenant = $user->tenant;
@@ -56,7 +58,7 @@ class UserController extends Controller
                 Rule::unique('users', 'email')->ignore($user->id),
             ],
             'current_password' => 'required_with:password|string',
-            'password' => 'nullable|string|min:8|confirmed',
+            'password' => ['nullable', 'string', Password::defaults(), 'confirmed'],
         ]);
 
         // ⚠️ Changing the address the account is reachable at is a change of
@@ -70,8 +72,8 @@ class UserController extends Controller
                 return response()->json([
                     'message' => 'Current password is incorrect',
                     'errors' => [
-                        'current_password' => ['The current password is incorrect.']
-                    ]
+                        'current_password' => ['The current password is incorrect.'],
+                    ],
                 ], 422);
             }
         }
@@ -81,7 +83,7 @@ class UserController extends Controller
         $user->email = $validated['email'];
 
         // Update password only if provided
-        if (!empty($validated['password'])) {
+        if (! empty($validated['password'])) {
             $user->password = Hash::make($validated['password']);
         }
 

@@ -10,6 +10,7 @@ use App\Services\Auth\TwoFactor;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 class AccountController extends Controller
@@ -43,7 +44,7 @@ class AccountController extends Controller
 
         $data = $request->validate([
             'current_password' => ['required'],
-            'password' => ['required', 'min:8', 'confirmed'],
+            'password' => ['required', 'string', Password::defaults(), 'confirmed'],
         ]);
 
         if (! Hash::check($data['current_password'], $admin->password)) {

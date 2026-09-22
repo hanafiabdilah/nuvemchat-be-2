@@ -50,6 +50,7 @@ class AdminHealthController extends Controller
                 $this->chatWebhookSecrets(),
                 $this->metaWebhookSecrets(),
                 $this->adminTwoFactor(),
+                $this->productionSettings(),
                 $this->platformUrl(),
             ],
         );
@@ -522,6 +523,85 @@ class AdminHealthController extends Controller
      * teaches operators to ignore this page. What is worth a warning is a value
      * that isn't doing what it looks like it does.
      */
+    /**
+     * Two settings that are harmless everywhere except here.
+     *
+     * ⚠️ `APP_DEBUG=true` in production is not a verbosity setting — it is a
+     * disclosure. Laravel's debug page prints the stack, the query that failed
+     * with its bindings, and the whole environment: database password, app key,
+     * every channel credential, the payment-service key. Anyone who can make
+     * this application throw can read them, and making a web application throw
+     * is not hard. It is the single highest-value misconfiguration on the box,
+     * so it reads `down` rather than `warn`.
+     *
+     * `LOG_LEVEL=debug` is a smaller version of the same problem and easy to
+     * arrive at by accident, since the config default is `debug`: the inbound
+     * message paths log full webhook payloads at that level (see ChatService
+     * and WhatsAppController), which puts customer message bodies and phone
+     * numbers into a file the Back Office can download.
+     *
+     * Both are read from live config rather than from the file on disk — what
+     * matters is what this process booted with, and env files are edited on the
+     * server without anything here noticing.
+     */
+    private function productionSettings(): array
+    {
+        $env = (string) config('app.env');
+        $production = $env === 'production';
+        $debug = (bool) config('app.debug');
+        $logLevel = strtolower((string) config('logging.channels.'.config('logging.default').'.level', 'debug'));
+
+        if ($production && $debug) {
+            return $this->check(
+                'platform:debug',
+                'Platform',
+                'Debug mode',
+                'down',
+                'APP_DEBUG=true',
+                'Any unhandled error prints the environment — database password, app key, channel and payment credentials — to whoever triggered it. Set APP_DEBUG=false and restart the PHP containers.',
+                ['env' => $env, 'log_level' => $logLevel],
+            );
+        }
+
+        if ($production && $logLevel === 'debug') {
+            return $this->check(
+                'platform:debug',
+                'Platform',
+                'Debug mode',
+                'warn',
+                'LOG_LEVEL=debug',
+                'Debug mode is off, but the log level still records full webhook payloads — customer message bodies and phone numbers — in a file this panel can download. Set LOG_LEVEL=info.',
+                ['env' => $env, 'log_level' => $logLevel],
+            );
+        }
+
+        if (! $production) {
+            // Quiet rather than yellow. Local and staging installs are meant to
+            // run with debug on, and a permanent warning on every one of them is
+            // how this page gets ignored on the box where it matters — the same
+            // reason a process that has never checked in reads `unknown`.
+            return $this->check(
+                'platform:debug',
+                'Platform',
+                'Debug mode',
+                'ok',
+                "APP_ENV={$env}",
+                'Only checked on a production install; debug output is expected here.',
+                ['env' => $env, 'log_level' => $logLevel],
+            );
+        }
+
+        return $this->check(
+            'platform:debug',
+            'Platform',
+            'Debug mode',
+            'ok',
+            'Off',
+            'Errors are not shown to callers and the log level is not recording payloads.',
+            ['env' => $env, 'log_level' => $logLevel],
+        );
+    }
+
     private function platformUrl(): array
     {
         if (! PlatformUrl::isConfigured()) {

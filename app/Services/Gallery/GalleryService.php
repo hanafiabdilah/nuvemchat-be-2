@@ -7,6 +7,7 @@ use App\Exceptions\Gallery\GalleryQuotaExceededException;
 use App\Models\GalleryAsset;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\Media\UploadPolicy;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -82,11 +83,18 @@ class GalleryService
             }
 
             $original = $file->getClientOriginalName() ?: 'arquivo';
-            $extension = strtolower($file->getClientOriginalExtension() ?: $file->guessExtension() ?: '');
+
+            // ⚠️ Derived from the bytes, not from the name the browser sent.
+            // This extension is written into the storage path, signed into the
+            // public filename, and read back by OutboundMedia as the MIME type
+            // to announce — so taking the uploader's word for it let a file
+            // claim to be something it is not, all the way out to the channel.
+            // See UploadPolicy::storedExtension().
+            $extension = UploadPolicy::storedExtension($file);
             $mime = $file->getMimeType() ?: 'application/octet-stream';
             $uuid = (string) Str::uuid();
 
-            $path = "gallery/{$tenant->id}/{$uuid}" . ($extension !== '' ? ".{$extension}" : '');
+            $path = "gallery/{$tenant->id}/{$uuid}".($extension !== '' ? ".{$extension}" : '');
 
             Storage::disk($this->disk())->putFileAs(
                 dirname($path),

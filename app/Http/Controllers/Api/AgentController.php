@@ -5,8 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Enums\Conversation\Status;
 use App\Events\ConnectionAccessUpdated;
 use App\Http\Controllers\Controller;
-use App\Http\Resources\ConnectionResource;
 use App\Http\Resources\UserResource;
+use App\Models\AuditLog;
 use App\Models\Conversation;
 use App\Models\User;
 use App\Services\Access\TenantRoles;
@@ -15,6 +15,7 @@ use App\Services\User\AvatarStorage;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 class AgentController extends Controller
@@ -35,7 +36,7 @@ class AgentController extends Controller
             ->pluck('aggregate', 'user_id')
             ->map(fn ($count) => (int) $count);
 
-         return response()->json([
+        return response()->json([
             'data' => $users->toResourceCollection(UserResource::class),
             'open_conversations' => (object) $open->all(),
         ]);
@@ -46,7 +47,7 @@ class AgentController extends Controller
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'email', 'max:255', 'unique:users'],
-            'password' => ['required', 'string', 'min:8'],
+            'password' => ['required', 'string', Password::defaults()],
             'roles' => ['nullable', 'array'],
             'roles.*' => ['string'],
         ]);
@@ -93,7 +94,7 @@ class AgentController extends Controller
     {
         $user = request()->user()->tenant->users()->findOrFail($request->id);
 
-        if($user->hasRole('owner')){
+        if ($user->hasRole('owner')) {
             return response()->json([
                 'message' => 'Owner cannot be updated',
             ], 403);
@@ -101,8 +102,8 @@ class AgentController extends Controller
 
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email,' . $user->id],
-            'password' => ['nullable', 'string', 'min:8'],
+            'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email,'.$user->id],
+            'password' => ['nullable', 'string', Password::defaults()],
         ]);
 
         $user->update([
@@ -200,7 +201,7 @@ class AgentController extends Controller
         $actor = $request->user();
         $user = $actor->tenant->users()->findOrFail($id);
 
-        if($user->hasRole('owner')){
+        if ($user->hasRole('owner')) {
             return response()->json([
                 'message' => 'Owner cannot be deleted',
             ], 403);
@@ -237,7 +238,7 @@ class AgentController extends Controller
     {
         $agent = request()->user()->tenant->users()->findOrFail($id);
 
-        if($agent->hasRole('owner')){
+        if ($agent->hasRole('owner')) {
             return response()->json([
                 'message' => 'Cannot assign connections to owner. Owners have access to all connections.',
             ], 400);
@@ -296,9 +297,16 @@ class AgentController extends Controller
             ], 403);
         }
 
+        $before = $user->roles()->pluck('name')->sort()->values()->all();
+
         // Only this workspace's roles, as models: a name shared with another
         // workspace must not resolve to theirs.
         $user->syncRoles(TenantRoles::resolve($user->tenant_id, $validated['roles']));
+
+        $this->auditAccess('agent.roles_assigned', $user, [
+            'roles' => $user->roles()->pluck('name')->sort()->values()->all(),
+            'previous_roles' => $before,
+        ]);
 
         return response()->json([
             'message' => 'Roles assigned successfully',
@@ -349,12 +357,44 @@ class AgentController extends Controller
         // subtracting a set from itself would be a no-op with extra steps.
         $this->assertMayGrant($request->user(), $validated['permissions']);
 
+        $before = $user->permissions()->pluck('name')->sort()->values()->all();
+
         $user->syncPermissions($validated['permissions']);
+
+        $this->auditAccess('agent.permissions_assigned', $user, [
+            'permissions' => $user->permissions()->pluck('name')->sort()->values()->all(),
+            'previous_permissions' => $before,
+        ]);
 
         return response()->json([
             'message' => 'Permissions assigned successfully',
             'data' => $user->load('permissions'),
         ]);
+    }
+
+    /**
+     * Record that somebody's access changed.
+     *
+     * ⚠️ These two endpoints are how a person's reach into a workspace grows,
+     * and neither left a trace — an account could be given `billing.manage`
+     * for an afternoon and handed back, and nothing would say so afterwards.
+     * The lists before and after both travel with the row because the database
+     * can already answer "what can they do now"; only the trail can answer
+     * "what were they given, by whom, and when".
+     *
+     * @param  array<string, mixed>  $metadata
+     */
+    private function auditAccess(string $action, User $target, array $metadata): void
+    {
+        AuditLog::record(
+            $action,
+            "Access for {$target->name} in workspace #{$target->tenant_id}",
+            array_merge([
+                'tenant_id' => $target->tenant_id,
+                'user_id' => $target->id,
+                'user' => $target->name,
+            ], $metadata),
+        );
     }
 
     /**
@@ -382,5 +422,4 @@ class AgentController extends Controller
             ],
         ]);
     }
-
 }

@@ -250,17 +250,25 @@ chat.pingly.com.br {
 }
 
 ws.pingly.com.br {
-    # ⚠️ The connection ceiling is NOT here, and cannot be: stock Caddy has no
-    # connection limiter, and adding one means a plugin build. It is set on
-    # Reverb itself — REVERB_APP_MAX_CONNECTIONS in the backend .env — which is
-    # the right place anyway, since Reverb is what holds the file descriptors.
+    # ⚠️ There is no connection ceiling here, and stock Caddy cannot provide
+    # one — a limiter means a plugin build.
     #
-    # Worth bounding because the Reverb app key is public by necessity: the
-    # widget is handed it by GET /widget-api/config, because the widget's own
-    # channel is public. Private channels still require an authorised
-    # subscription, so an open connection reads nothing — it just occupies a
-    # descriptor, and exhausting them takes realtime away from every dashboard
-    # at once.
+    # ⚠️⚠️ And REVERB_APP_MAX_CONNECTIONS does not cover this either, which is
+    # easy to assume and wrong. Reverb checks it in Server::open(), against
+    # `$channels->for($app)->connections()` — the connections registered in a
+    # CHANNEL. A socket that connects and never sends `pusher:subscribe` is
+    # counted by neither that check nor PruneStaleConnections, which walks the
+    # same list: it is invisible to both and lives until the TCP connection
+    # dies. The setting bounds clients that behave like clients; it does not
+    # bound a silent socket flood.
+    #
+    # The real ceiling for raw sockets is the file-descriptor limit of the
+    # reverb container (`ulimits` in docker-compose) and, if it is ever put
+    # behind one, the edge. Worth caring about because the Reverb app key is
+    # public by necessity — the widget is handed it by GET /widget-api/config,
+    # since the widget's own channel is public. An unsubscribed socket reads
+    # nothing; it just occupies a descriptor, and exhausting them takes
+    # realtime away from every dashboard at once.
     reverse_proxy reverb:8080
 }
 

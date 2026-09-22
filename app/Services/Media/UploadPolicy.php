@@ -112,6 +112,45 @@ final class UploadPolicy
         return 'Tipo de arquivo não suportado. Envie imagem, vídeo, áudio, PDF, documento do Office, texto ou arquivo compactado.';
     }
 
+    /**
+     * The extension a stored file should be written under.
+     *
+     * ⚠️ The name the browser sent is the one thing about an upload that the
+     * uploader fully controls, and in the gallery it does not stay cosmetic:
+     * it is written into the storage path, signed into the public filename,
+     * and read back by OutboundMedia to decide the MIME type announced to
+     * WhatsApp. So a PDF named `.png` becomes a file we declare as an image to
+     * a channel that then refuses it — and, on the serving side, an extension
+     * that disagrees with the bytes is exactly the mismatch `nosniff` exists to
+     * contain rather than a mismatch anybody wants to create on purpose.
+     *
+     * The client's spelling is kept only when it names the same type the
+     * content was detected as. That is not pedantry: `.m4a` and `.mp4` are one
+     * MIME type with two spellings this platform genuinely distinguishes (see
+     * the audio rules in the WhatsApp handlers), as are `.ogg` and `.oga`, and
+     * overwriting them with whatever Symfony picks first would change working
+     * behaviour to fix nothing. When they disagree, the content wins.
+     */
+    public static function storedExtension(\Symfony\Component\HttpFoundation\File\UploadedFile $file): string
+    {
+        $detected = strtolower((string) $file->guessExtension());
+        $claimed = strtolower(preg_replace('/[^a-z0-9]/i', '', (string) $file->getClientOriginalExtension()) ?? '');
+
+        if ($claimed !== '' && in_array($claimed, self::EXTENSIONS, true)) {
+            $mime = strtolower(trim(explode(';', (string) $file->getMimeType())[0]));
+            $forClaimed = array_map(
+                'strtolower',
+                \Symfony\Component\Mime\MimeTypes::getDefault()->getMimeTypes($claimed),
+            );
+
+            if ($mime !== '' && in_array($mime, $forClaimed, true)) {
+                return $claimed;
+            }
+        }
+
+        return $detected !== '' ? $detected : '';
+    }
+
     /** Whether this file's content type is one a browser would run. */
     public static function isRenderable(?string $mime): bool
     {

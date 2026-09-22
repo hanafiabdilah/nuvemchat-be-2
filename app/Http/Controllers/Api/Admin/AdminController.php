@@ -8,6 +8,7 @@ use App\Models\Admin;
 use App\Models\AuditLog;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
 
 class AdminController extends Controller
 {
@@ -36,7 +37,7 @@ class AdminController extends Controller
             // workspace with the same address is a different account in a
             // different table, and always was in every sense but this one.
             'email' => ['required', 'email', 'unique:admins,email'],
-            'password' => ['required', 'min:8'],
+            'password' => ['required', 'string', Password::defaults()],
             'role' => ['required', 'string', Rule::exists('roles', 'name')->where('is_platform', true)],
         ]);
 

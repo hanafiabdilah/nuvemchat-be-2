@@ -76,6 +76,7 @@
             <span class="meta">
                 {{ number_format($shown) }} / {{ number_format($total) }} entries
                 @if ($total > $shown) (newest {{ number_format($shown) }} shown) @endif
+                @if (!empty($truncated)) — only the end of this file was read; use Download for the whole of it @endif
             </span>
         </form>
     </header>

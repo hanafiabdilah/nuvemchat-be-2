@@ -62,6 +62,64 @@ dirinya sendiri — QR Pix, berkas galeri, PDF nota fiscal — tak bisa diambil.
 gagal saja, dan memperlakukan gangguan DNS sebagai serangan mengubah setiap
 outage di endpoint pelanggan jadi penolakan yang tak bisa mereka diagnosis.
 
+### ⚠️⚠️ Alamat yang sama, ditulis dengan cara lain (Set 2026)
+
+Versi pertama `isPublicIp()` bertanya satu hal saja:
+
+```php
+filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)
+```
+
+Itu cara yang paling jelas untuk menanyakannya, dan **tidak cukup**. Semua URL
+di bawah ini lolos gerbang yang dibangun persis untuk menghentikannya — diuji
+pada kode yang sudah terpasang:
+
+```
+http://[::ffff:169.254.169.254]/latest/meta-data/   → DITERIMA  (metadata cloud)
+http://[::ffff:127.0.0.1]:6379/                     → DITERIMA
+http://[2002:7f00:1::]/                             → DITERIMA  (6to4 → 127.0.0.1)
+http://[64:ff9b::a9fe:a9fe]/                        → DITERIMA  (NAT64 → 169.254.169.254)
+http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/      → DITERIMA  (Teredo)
+http://100.64.0.1/                                  → DITERIMA  (CGNAT)
+http://198.18.0.1/                                  → DITERIMA  (benchmarking)
+```
+
+Sebabnya satu kalimat: **alamat IPv6 yang membungkus alamat IPv4 tetap
+menghubungi host IPv4 itu**, dan bendera di atas tak mengenali notasinya.
+`::ffff:127.0.0.1` *adalah* 127.0.0.1. Sisi IPv4-nya punya masalah kedua yang
+lebih kecil: bendera itu hanya tahu rentang yang semua orang ingat (10/8,
+127/8, 169.254/16) dan melewatkan *shared address space* CGNAT, blok IETF dan
+benchmarking, serta multicast — yang semuanya me-rute ke infrastruktur nyata di
+dalam jaringan penyedia.
+
+Sekarang `isPublicIp()`:
+
+1. **membuka bungkusnya** — IPv4-mapped (`::ffff:a.b.c.d`), IPv4-compatible
+   (`::a.b.c.d`), 6to4 (`2002::/16`) dan NAT64 (`64:ff9b::/96`) dinilai sebagai
+   alamat IPv4 yang benar-benar akan dihubungi, **bukan** sebagai notasinya;
+2. mencocokkan sisanya ke daftar prefiks eksplisit (`RESERVED_V4`,
+   `RESERVED_V6`), bukan ke bendera `filter_var`.
+
+⚠️ **Dibuka, bukan ditolak seluruhnya.** Menolak notasi IPv6 apa pun adalah
+perbaikan yang lebih mudah dan akan merusak endpoint yang sah:
+`https://[2606:4700:4700::1111]/` dan `https://[::ffff:8.8.8.8]/` tetap boleh.
+
+Ini kelas yang sama dengan **CVE-2026-48736** terhadap `IpUtils` Symfony —
+penting diketahui, karena di situlah siapa pun yang memilih memakai pustaka
+alih-alih menulis sendiri akan mendarat.
+
+### ⚠️ AAAA juga dicari, bukan hanya A
+
+`gethostbynamel()` **hanya mengembalikan IPv4**. Nama yang satu-satunya
+record-nya AAAA resolve ke *tak ada*, "tak ada" terbaca sebagai "bukan privat",
+dan permintaannya berangkat lewat IPv6 ke apa pun yang ditunjuknya. Siapa pun
+yang menerbitkan record AAAA untuk `::1` punya jalan masuk.
+
+`PublicUrl::addressesFor()` sekarang menggabungkan A + AAAA, dan dipakai
+`resolvesToPrivate()` **maupun** `OutboundHttp::pinHost()` — yang tanpa itu
+diam-diam tak menyematkan apa pun untuk host AAAA-only, yaitu kasus tanpa
+pemeriksaan kedua sama sekali.
+
 ### `OutboundHttp::guard()` — separuh yang soal redirect
 
 Memeriksa URL yang diketik pelanggan itu perlu dan **tidak cukup**: host yang
@@ -116,9 +174,9 @@ menolaknya — dengan benar.
   Lapisan yang lebih kuat adalah memblokir `169.254.169.254` dan rentang privat
   di tingkat jaringan kontainer aplikasi, sehingga sebuah bug di sini tidak
   cukup untuk menjangkau apa pun.
-- **Jendela DNS rebinding masih ada** (P2-13): `resolvesToPrivate()` melakukan
-  resolusi, lalu Guzzle melakukan resolusinya sendiri. Perbaikan yang benar
-  adalah resolve sekali lalu menyambung ke IP yang sudah diverifikasi lewat
-  `CURLOPT_RESOLVE`.
+- ~~Jendela DNS rebinding~~ **sudah ditutup** (Set 2026):
+  `OutboundHttp::pinHost()` meneruskan alamat yang sudah diverifikasi lewat
+  `CURLOPT_RESOLVE`, sehingga curl tak melakukan resolusi kedua. Dipasang di
+  `WebhookDispatcher`, `FlowExecutor` dan `OutboundMedia`.
 
 Tes: `tests/Feature/Security/SsrfGuardTest.php`.
