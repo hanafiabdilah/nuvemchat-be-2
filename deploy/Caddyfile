@@ -23,9 +23,74 @@
 # ── Snippets ─────────────────────────────────────────────────────────────────
 
 # Laravel's front controller.
+#
+# Two PHP-FPM containers, load balanced, because a deploy replaces them one at
+# a time: while one is being recreated the other keeps accepting FastCGI, so the
+# outage shrinks from seconds to a single request (see the measured note below).
+# Before this it named a single container, and
+# recreating that container removed the name from Docker's DNS entirely --
+# Caddy answered `lookup app: no such host` with a 502 for 2-14 seconds on
+# every deploy. 336 inbound webhooks were rejected that way, and the senders
+# that do not retry (the API Way core) lost those messages for good.
+#
+# fail_duration takes a container out of rotation after one failed dial, so the
+# next request goes straight to its sibling instead of paying the same failure
+# again. It counts transport failures only, never HTTP status, so a 500 from PHP
+# never removes a container -- otherwise one application bug would empty the pool.
+#
+# ⚠️⚠️ WHAT DOES NOT WORK, so nobody spends another evening on it: Caddy cannot
+# retry a non-GET request over the FastCGI transport. Not with lb_try_duration,
+# not with lb_retry_match (any matcher, including one that matches everything),
+# not with request_buffers. All three were measured in an isolated lab, one
+# upstream stopped, 40 POSTs each: 3 of 40 still returned 502 and the slowest
+# took 0.005s -- no retry was ever attempted. The documented rule ("a dial
+# failure is always retried, regardless of method") holds for the HTTP transport,
+# whose dial errors are wrapped in a `DialError`; the FastCGI transport dials
+# inside its own RoundTrip and returns a plain error, so `tryAgain` falls through
+# to the guard that only retries GET.
+#
+# The consequence is honest and small: when a container is recreated, the FIRST
+# request that happens to pick it fails. `fail_duration` then parks it and every
+# following request goes to its sibling, so that is roughly one failed POST per
+# container replaced -- about two per deploy, against 2-14 whole seconds of them
+# before. GET/HEAD/OPTIONS are covered, because those Caddy does retry.
+#
+# Closing that last gap belongs to the sender, not here: Meta and Telegram retry
+# a 502 on their own, and for the API Way core (which does not) the fix is a
+# retry on their side. See docs/zero-downtime-deploy.md.
+#
+# `app` keeps its name (rather than becoming app-a/app-b) so that every runbook
+# and every one-off `docker compose exec app php artisan ...` still works.
 (laravel) {
     root * /var/www/html/public
-    php_fastcgi app:9000
+    php_fastcgi app:9000 app-2:9000 {
+        # round_robin, NOT least_conn: on a retry Caddy picks an upstream again
+        # through this policy, and a container that is down holds zero
+        # connections -- so least_conn keeps choosing the dead one and the retry
+        # never escapes. round_robin moves to the sibling on the next attempt.
+        lb_policy round_robin
+
+        # Short on purpose, both of them. fail_duration parks a container after
+        # a failed dial so the next request skips it; lb_try_duration bounds how
+        # long a request is held while Caddy looks for a live one.
+        #
+        # ⚠️ Keep these SMALL. `errNoUpstream` -- every upstream parked at once --
+        # is retried with no method guard at all, so a long try_duration turns a
+        # brief double-fault into every request hanging for that full duration.
+        # Measured at 20s: requests were held 20.08s and then 503, which is far
+        # worse than one fast 502. The window this has to cover is a container
+        # restart, and a container is back in ~2s.
+        fail_duration 3s
+        lb_try_duration 5s
+        lb_try_interval 150ms
+
+        # Restores Caddy's default (retry safe methods). Defining any
+        # lb_retry_match REPLACES the default rather than adding to it: without
+        # this set, even a GET would stop being retried.
+        lb_retry_match {
+            method GET HEAD OPTIONS
+        }
+    }
 }
 
 # A built single-page app served from {args[0]}.
