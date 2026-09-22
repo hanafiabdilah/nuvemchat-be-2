@@ -60,10 +60,16 @@ class InstagramPostController extends Controller
                 PostStatus::Publishing,
                 PostStatus::Failed,
             ])
-            // Soonest first, drafts (no date) last: the top of the grid should
-            // be what happens next.
-            ->orderByRaw('scheduled_at is null')
-            ->orderBy('scheduled_at')
+            // The whole grid is one timeline reading downward from the future
+            // into the past, so the schedules have to run the same direction as
+            // the published feed below them (which Instagram always returns
+            // newest first): furthest out at the top, and the tile immediately
+            // above the most recent published post is the one going out next.
+            // Ascending here reversed that at the seam, which is what made the
+            // dates read backwards. Drafts carry no date at all, so they sit
+            // above the timeline rather than wedged into the middle of it.
+            ->orderByRaw('scheduled_at is not null')
+            ->orderByDesc('scheduled_at')
             ->orderByDesc('id')
             ->get();
 

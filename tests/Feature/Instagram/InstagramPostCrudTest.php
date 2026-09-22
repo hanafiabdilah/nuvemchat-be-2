@@ -4,6 +4,7 @@ use App\Enums\Instagram\PostStatus;
 use App\Jobs\PublishInstagramPost;
 use App\Models\InstagramPost;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Tests\Support\InstagramFixtures;
 
@@ -302,4 +303,39 @@ test('editing a failed post clears the container it was going to reuse', functio
         ->and($post->attempts)->toBe(0)
         ->and($post->error)->toBeNull()
         ->and($post->status)->toBe(PostStatus::Draft);
+});
+
+test('the grid runs future to past: latest schedule first, drafts above the timeline', function () {
+    // The Graph edges the grid reads. Empty is enough — this test is about the
+    // rows we order ourselves, and the published half is Instagram's order.
+    Http::fake(['*' => Http::response(['data' => []])]);
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $pendingPost = function (?string $at) use ($user, $connection) {
+        return InstagramPost::create([
+            'tenant_id' => $user->tenant_id,
+            'connection_id' => $connection->id,
+            'created_by' => $user->id,
+            'status' => $at ? PostStatus::Scheduled : PostStatus::Draft,
+            'media_type' => 'image',
+            'scheduled_at' => $at ? now()->parse($at) : null,
+        ]);
+    };
+
+    // Created out of order on purpose: insertion order must not decide this.
+    $soon = $pendingPost('+2 hours');
+    $draft = $pendingPost(null);
+    $late = $pendingPost('+5 days');
+    $middle = $pendingPost('+2 days');
+
+    $ids = $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$connection->id}/posts")
+        ->assertOk()
+        ->json('pending.*.id');
+
+    // Undated first, then the schedules descending into the published feed, so
+    // the tile just above the newest published post is the one going out next.
+    expect($ids)->toBe([$draft->id, $late->id, $middle->id, $soon->id]);
 });

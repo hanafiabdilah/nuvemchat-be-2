@@ -309,6 +309,33 @@ chat.pingly.com.br {
         import spa /srv/web/admin
     }
 
+    # A temporary preview of the marketing site (nuvemchat-lp), published here
+    # because this host already has the certificate and the deploy path. Built
+    # with LP_BASE=/temp/preview/, so every asset URL and every link the page
+    # writes for itself already carries the prefix.
+    #
+    # ⚠️ `handle`, NOT `handle_path`: the prefix must not be stripped. The
+    # preview is four real directories (/, /en/, /es/, /id/), and file_server
+    # answers a missing trailing slash with a canonical redirect — computed
+    # from the request path. With the prefix stripped that redirect points at
+    # /en/ on this host, which is the dashboard, not the English page.
+    #
+    # ⚠️ noindex twice over. The header covers anything that never parses the
+    # HTML; the pages carry <meta name="robots"> from the same build flag. This
+    # is the live marketing copy at a second address, and one of the two has to
+    # be invisible to search or they compete with each other.
+    #
+    # no-store because it is a preview: a redeploy has to be visible on the
+    # next reload, and nobody is serving enough of it for caching to matter.
+    handle /temp/preview* {
+        root * /srv/web
+        header {
+            X-Robots-Tag  "noindex, nofollow"
+            Cache-Control "no-store"
+        }
+        file_server
+    }
+
     handle {
         import spa /srv/web/client
     }
