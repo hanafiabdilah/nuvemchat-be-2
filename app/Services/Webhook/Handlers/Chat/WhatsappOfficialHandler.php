@@ -21,6 +21,8 @@ use App\Services\Media\MediaStorage;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
+use App\Support\Errors\UpstreamError;
+use App\Support\Errors\UpstreamProvider;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -413,6 +415,32 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
         }
     }
 
+    /**
+     * Why a delivery failed, in words the agent can act on.
+     *
+     * Meta's own text names shapes the person never saw ("Downloading media
+     * from weblink failed with http code 403"), so it goes through the same
+     * dictionary every other upstream failure does — the raw body stays in the
+     * log above, under the same `ref`.
+     *
+     * @param  array<int, array<string, mixed>>  $errors
+     */
+    private function deliveryFailureReason(array $errors): string
+    {
+        $first = $errors[0] ?? [];
+        $raw = $first['error_data']['details']
+            ?? $first['message']
+            ?? $first['title']
+            ?? null;
+
+        return UpstreamError::message(
+            UpstreamProvider::Meta,
+            $raw,
+            upstreamCode: isset($first['code']) ? (string) $first['code'] : null,
+            context: ['operation' => 'message.delivery'],
+        );
+    }
+
     private function handleStatus(Connection $connection, array $payload)
     {
         $statuses = $payload['changes'][0]['value']['statuses'] ?? [];
@@ -476,13 +504,30 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                         break;
 
                     case 'failed':
-                        // Message failed to send
+                        // ⚠️ Recorded on the message, not only in the log.
+                        //
+                        // Meta accepts a send (HTTP 200) and only then tries to
+                        // deliver it, so a refusal arrives here — minutes later,
+                        // through a different door. This used to be a Log::error
+                        // and nothing else, which meant the bubble kept the
+                        // ticks it was given at send time and the agent had no
+                        // way of knowing the customer never got it.
                         $errors = $status['errors'] ?? [];
+
                         Log::error('WhatsappOfficialHandler: Message delivery failed', [
                             'message_id' => $message->id,
                             'external_id' => $messageId,
                             'errors' => $errors,
                         ]);
+
+                        $message->update([
+                            'error' => $this->deliveryFailureReason($errors),
+                            // Whatever was assumed about delivery is now known
+                            // to be untrue; leaving it would keep the ticks.
+                            'delivery_at' => null,
+                            'read_at' => null,
+                        ]);
+                        $wasUpdated = true;
                         break;
                 }
 

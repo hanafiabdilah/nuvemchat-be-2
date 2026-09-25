@@ -371,3 +371,56 @@ test('a template the panel cannot name still carries its buttons', function () {
         ->and($message->meta['interactive'])->not->toHaveKey('body')
         ->and($message->meta['interactive']['action']['buttons'][0]['reply']['title'])->toBe('Falar com atendente');
 });
+
+test('a media header is recorded from the send, never from the approval sample', function () {
+    // The template carries the sample Meta approved — a signed URL of theirs
+    // that has expired. What the customer saw is the link this send supplied.
+    templateBodyFake([[
+        'name' => 'chamado',
+        'language' => 'pt_BR',
+        'status' => 'APPROVED',
+        'components' => [
+            ['type' => 'HEADER', 'format' => 'IMAGE', 'example' => ['header_handle' => ['https://scontent.whatsapp.net/expired-sample.jpg']]],
+            ['type' => 'BODY', 'text' => 'Sua oferta chegou.'],
+        ],
+    ]]);
+
+    $connection = templateBodyConnection();
+
+    $message = (new MessageService())->sendTemplate(templateBodyConversation($connection), [
+        'template_name' => 'chamado',
+        'language' => 'pt_BR',
+        'components' => [
+            ['type' => 'header', 'parameters' => [['type' => 'image', 'image' => ['link' => 'https://cdn.example.com/oferta.jpg']]]],
+        ],
+    ]);
+
+    $header = $message->meta['interactive']['header'];
+
+    expect($header['type'])->toBe('image')
+        ->and($header['image']['link'])->toBe('https://cdn.example.com/oferta.jpg');
+});
+
+test('a media header with no link supplied is left out rather than guessed', function () {
+    templateBodyFake([[
+        'name' => 'chamado',
+        'language' => 'pt_BR',
+        'status' => 'APPROVED',
+        'components' => [
+            ['type' => 'HEADER', 'format' => 'IMAGE', 'example' => ['header_handle' => ['https://scontent.whatsapp.net/expired-sample.jpg']]],
+            ['type' => 'BODY', 'text' => 'Sua oferta chegou.'],
+        ],
+    ]]);
+
+    $connection = templateBodyConnection();
+
+    $message = (new MessageService())->sendTemplate(templateBodyConversation($connection), [
+        'template_name' => 'chamado',
+        'language' => 'pt_BR',
+    ]);
+
+    // Nothing but body text left, so no second shape is kept — and the sample
+    // is never passed off as what went out.
+    expect($message->body)->toBe('Sua oferta chegou.')
+        ->and($message->meta)->not->toHaveKey('interactive');
+});

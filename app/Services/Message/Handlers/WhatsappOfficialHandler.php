@@ -32,9 +32,21 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
         return $payload['messages'][0]['id'];
     }
 
+    /**
+     * When we handed the message over. The Cloud API returns no timestamp on
+     * send, so this is our own clock.
+     *
+     * ⚠️ Only `sent_at` is written from it. A 200 here means Meta *accepted*
+     * the message, not that anybody received it — delivery is decided minutes
+     * later and reported through the status webhook, which may well say
+     * `failed`. These paths used to stamp `delivery_at` as well, so every
+     * outgoing message wore delivered ticks from the moment it left, and a
+     * refusal (a media link Meta could not fetch, a number that does not exist)
+     * was invisible to the agent forever.
+     */
     public function getMessageSentAt(array $payload): Carbon
     {
-        return Carbon::now(); // Cloud API returns no timestamp on send
+        return Carbon::now();
     }
 
     public function handleSendMessage(Conversation $conversation, array $data): ?Message
@@ -76,7 +88,6 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 'message_type' => MessageType::Text,
                 'body' => $data['message'],
                 'sent_at' => $this->getMessageSentAt($responseArray),
-                'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
 
@@ -155,7 +166,6 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 'message_type' => MessageType::Template,
                 'body' => $sent['body'] ?? $data['template_name'],
                 'sent_at' => $this->getMessageSentAt($responseArray),
-                'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => array_merge($responseArray, array_filter([
                     // The payload as sent, for the record…
                     'template' => $template,
@@ -216,7 +226,6 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 'message_type' => MessageType::Interactive,
                 'body' => $data['body'],
                 'sent_at' => $this->getMessageSentAt($responseArray),
-                'delivery_at' => $this->getMessageSentAt($responseArray),
                 'meta' => array_merge($responseArray, ['interactive' => $interactive]),
             ]);
         } catch (\Throwable $th) {
@@ -888,7 +897,6 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
             'message_type' => $messageTypeEnum,
             'body' => $body,
             'sent_at' => $this->getMessageSentAt($responseArray),
-            'delivery_at' => $this->getMessageSentAt($responseArray),
             'meta' => array_merge($responseArray, $extraMeta),
         ]);
 

@@ -100,13 +100,27 @@ class TemplateBody
         foreach ($template['components'] ?? [] as $component) {
             switch (strtoupper((string) ($component['type'] ?? ''))) {
                 case 'HEADER':
-                    // Only a text header has something to print here; media
-                    // headers are the attachment, not a line of the bubble.
-                    if (strtoupper((string) ($component['format'] ?? 'TEXT')) === 'TEXT' && ($component['text'] ?? '') !== '') {
-                        $header = [
-                            'type' => 'text',
-                            'text' => $this->fill((string) $component['text'], $this->textValues($components, 'header')),
-                        ];
+                    $format = strtoupper((string) ($component['format'] ?? 'TEXT'));
+
+                    if ($format === 'TEXT') {
+                        if (($component['text'] ?? '') !== '') {
+                            $header = [
+                                'type' => 'text',
+                                'text' => $this->fill((string) $component['text'], $this->textValues($components, 'header')),
+                            ];
+                        }
+
+                        break;
+                    }
+
+                    // A media header is the picture at the top of the bubble.
+                    // Its address comes from the send, never from the
+                    // template: what the template carries is the sample Meta
+                    // approved, a signed URL of theirs that has since expired.
+                    $link = $this->mediaLink($components, $format);
+
+                    if ($link !== null) {
+                        $header = ['type' => strtolower($format), strtolower($format) => ['link' => $link]];
                     }
                     break;
 
@@ -261,6 +275,32 @@ class TemplateBody
         }
 
         return $values;
+    }
+
+    /**
+     * The media address this send supplied for its header, if any.
+     *
+     * @param  array<int, array<string, mixed>>|null  $components
+     */
+    private function mediaLink(?array $components, string $format): ?string
+    {
+        $key = strtolower($format);
+
+        foreach ($components ?? [] as $component) {
+            if (strtolower((string) ($component['type'] ?? '')) !== 'header') {
+                continue;
+            }
+
+            foreach ($component['parameters'] ?? [] as $parameter) {
+                $link = $parameter[$key]['link'] ?? null;
+
+                if (is_string($link) && $link !== '') {
+                    return $link;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

@@ -69,6 +69,9 @@ class MessageResource extends JsonResource
             'sent_at' => $this->sent_at,
             'delivery_at' => $this->delivery_at,
             'read_at' => $this->read_at,
+            // Why the channel refused to deliver it, when it did. Null is the
+            // ordinary case; anything here means the customer never got this.
+            'error' => $this->error,
             'edited_at' => $this->edited_at,
             'unsend_at' => $this->unsend_at,
             'starred_at' => $this->starred_at,
