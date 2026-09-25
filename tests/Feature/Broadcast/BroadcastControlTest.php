@@ -71,8 +71,9 @@ test('a paused campaign resumes from where it stopped', function () {
 
     expect($broadcast->status)->toBe(Status::Completed)
         ->and($broadcast->sent_count)->toBe(4)
-        // Only the two that were still pending were actually sent to.
-        ->and(Http::recorded())->toHaveCount(2);
+        // Only the two that were still pending were actually sent to. Counted
+        // by payload: a send also reads the WABA's template list (TemplateBody).
+        ->and(collect(Http::recorded())->filter(fn ($pair) => isset($pair[0]->data()['template']))->count())->toBe(2);
 });
 
 test('resuming is refused unless the campaign is paused', function () {
@@ -155,7 +156,7 @@ test('retrying failures re-queues only the failures', function () {
         ->and($broadcast->sent_count)->toBe(2)
         ->and($broadcast->failed_count)->toBe(0)
         ->and($broadcast->skipped_count)->toBe(1)
-        ->and(Http::recorded())->toHaveCount(1);
+        ->and(collect(Http::recorded())->filter(fn ($pair) => isset($pair[0]->data()['template']))->count())->toBe(1);
 
     expect($recipients[2]->fresh()->status)->toBe(RecipientStatus::Skipped);
 });

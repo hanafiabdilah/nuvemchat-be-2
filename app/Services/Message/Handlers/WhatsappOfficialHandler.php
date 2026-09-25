@@ -16,6 +16,7 @@ use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
+use App\Services\Message\TemplateBody;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Collection;
@@ -136,14 +137,31 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 throw new Exception($responseArray['error']['message'] ?? 'Failed to send WhatsApp template');
             }
 
+            // What the customer actually read, not the template's internal
+            // name — plus the buttons they saw, when it has any. Resolved after
+            // the send so a failure to read the wording can never cost the
+            // message; the body falls back to the name, which is what this
+            // always used to store.
+            $sent = app(TemplateBody::class)->describe(
+                $connection,
+                $data['template_name'],
+                $data['language'],
+                $data['components'] ?? null,
+            );
+
             $message = $conversation->messages()->create([
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Template,
-                'body' => $data['template_name'],
+                'body' => $sent['body'] ?? $data['template_name'],
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'delivery_at' => $this->getMessageSentAt($responseArray),
-                'meta' => array_merge($responseArray, ['template' => $template]),
+                'meta' => array_merge($responseArray, array_filter([
+                    // The payload as sent, for the record…
+                    'template' => $template,
+                    // …and the same message as a bubble, for the panel.
+                    'interactive' => $sent['interactive'],
+                ], fn ($value) => $value !== null)),
             ]);
 
             return $message;

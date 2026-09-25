@@ -131,6 +131,13 @@ test('a carousel template is sent with its card components intact', function () 
 
     Http::assertSent(function ($request) {
         $body = $request->data();
+
+        // A send also reads the WABA's templates, to record what the customer
+        // actually read (see TemplateBody) — that GET carries no payload.
+        if (! isset($body['template'])) {
+            return false;
+        }
+
         $carousel = collect($body['template']['components'])->firstWhere('type', 'carousel');
 
         return ($body['type'] ?? null) === 'template'

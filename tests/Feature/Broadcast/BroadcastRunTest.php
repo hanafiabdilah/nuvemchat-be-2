@@ -111,6 +111,8 @@ test('per-recipient variables are resolved from the recipient, not the campaign'
     ]), $user);
 
     $greetings = collect(Http::recorded())
+        // Sends only: a send also reads the WABA's template list (TemplateBody).
+        ->filter(fn ($pair) => isset($pair[0]->data()['template']))
         ->map(fn ($pair) => $pair[0]->data()['template']['components'][0]['parameters'][0]['text'])
         ->sort()
         ->values()
@@ -138,7 +140,13 @@ test('an existing open thread is continued instead of forked', function () {
 test('one refused recipient is recorded and the rest still go out', function () {
     $calls = 0;
 
-    Http::fake(['graph.facebook.com/*' => function () use (&$calls) {
+    Http::fake(['graph.facebook.com/*' => function ($request) use (&$calls) {
+        // Count sends, not the template-list read a send now also makes:
+        // otherwise the refusal lands on the wrong request.
+        if (str_contains($request->url(), 'message_templates')) {
+            return Http::response(['data' => []]);
+        }
+
         $calls++;
 
         return $calls === 2

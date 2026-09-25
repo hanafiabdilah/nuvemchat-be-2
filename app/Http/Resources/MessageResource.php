@@ -300,6 +300,9 @@ class MessageResource extends JsonResource
     {
         return match($this->message_type) {
             MessageType::Interactive => $this->getWhatsappOfficialInteractiveData(),
+            // A template carrying buttons is recorded in the interactive shape
+            // too (see TemplateBody), because that is what the customer saw.
+            MessageType::Template => $this->getWhatsappOfficialInteractiveData(),
             MessageType::Contact => $this->getWhatsappOfficialContactData(),
             default => null,
         };
