@@ -14,6 +14,7 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
+use App\Services\Broadcast\BroadcastDelivery;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowRunner;
 use App\Services\Flow\InteractiveNodes;
@@ -520,13 +521,20 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                             'errors' => $errors,
                         ]);
 
+                        $reason = $this->deliveryFailureReason($errors);
+
                         $message->update([
-                            'error' => $this->deliveryFailureReason($errors),
+                            'error' => $reason,
                             // Whatever was assumed about delivery is now known
                             // to be untrue; leaving it would keep the ticks.
                             'delivery_at' => null,
                             'read_at' => null,
                         ]);
+
+                        // A campaign counted this as sent the moment Meta took
+                        // it, so the tally has to hear about the refusal too.
+                        BroadcastDelivery::markFailed($message, $reason);
+
                         $wasUpdated = true;
                         break;
                 }

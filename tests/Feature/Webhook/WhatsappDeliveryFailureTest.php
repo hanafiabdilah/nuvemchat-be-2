@@ -1,11 +1,16 @@
 <?php
 
+use App\Enums\Broadcast\ContentType;
+use App\Enums\Broadcast\RecipientStatus;
+use App\Enums\Broadcast\Status as BroadcastStatus;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\MessageUpdated;
+use App\Models\Broadcast;
+use App\Models\BroadcastRecipient;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -154,4 +159,103 @@ test('a delivery that succeeds leaves no failure behind', function () {
 
     expect($message->read_at)->not->toBeNull()
         ->and($message->error)->toBeNull();
+});
+
+test('a campaign stops counting a refused message as sent', function () {
+    $connection = deliveryTestConnection();
+    $conversation = deliveryTestConversation($connection);
+
+    $message = Message::create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid.E',
+        'sender_type' => SenderType::Outgoing,
+        'message_type' => MessageType::Template,
+        'body' => 'Sua oferta chegou.',
+        'sent_at' => now(),
+        'delivery_at' => now(),
+    ]);
+
+    $broadcast = Broadcast::create([
+        'tenant_id' => $connection->tenant_id,
+        'connection_id' => $connection->id,
+        'name' => 'Oferta',
+        'content_type' => ContentType::Template,
+        'payload' => ['template_name' => 'chamado', 'language' => 'pt_BR'],
+        'status' => BroadcastStatus::Completed,
+        'rate_per_minute' => 60,
+        'total_count' => 2,
+        'sent_count' => 2,
+        'failed_count' => 0,
+    ]);
+
+    $recipient = BroadcastRecipient::create([
+        'broadcast_id' => $broadcast->id,
+        'conversation_id' => $conversation->id,
+        'message_id' => $message->id,
+        'address' => '5511999999999',
+        'status' => RecipientStatus::Sent,
+        'sent_at' => now(),
+    ]);
+
+    (new WhatsappOfficialHandler)->handle($connection, deliveryTestStatus('wamid.E', 'failed', [[
+        'code' => 131053,
+        'title' => 'Media upload error',
+        'error_data' => ['details' => 'Downloading media from weblink failed with http code 403, status message Forbidden'],
+    ]]));
+
+    $recipient->refresh();
+    $broadcast->refresh();
+
+    expect($recipient->status)->toBe(RecipientStatus::Failed)
+        ->and($recipient->error)->not->toBeNull()
+        // We did hand it over; when is a fact the report keeps.
+        ->and($recipient->sent_at)->not->toBeNull()
+        ->and($broadcast->sent_count)->toBe(1)
+        ->and($broadcast->failed_count)->toBe(1);
+});
+
+test('the same refusal arriving twice moves the tally once', function () {
+    $connection = deliveryTestConnection();
+    $conversation = deliveryTestConversation($connection);
+
+    $message = Message::create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid.F',
+        'sender_type' => SenderType::Outgoing,
+        'message_type' => MessageType::Template,
+        'body' => 'Sua oferta chegou.',
+        'sent_at' => now(),
+    ]);
+
+    $broadcast = Broadcast::create([
+        'tenant_id' => $connection->tenant_id,
+        'connection_id' => $connection->id,
+        'name' => 'Oferta',
+        'content_type' => ContentType::Template,
+        'payload' => ['template_name' => 'chamado', 'language' => 'pt_BR'],
+        'status' => BroadcastStatus::Completed,
+        'rate_per_minute' => 60,
+        'total_count' => 1,
+        'sent_count' => 1,
+        'failed_count' => 0,
+    ]);
+
+    BroadcastRecipient::create([
+        'broadcast_id' => $broadcast->id,
+        'conversation_id' => $conversation->id,
+        'message_id' => $message->id,
+        'address' => '5511999999999',
+        'status' => RecipientStatus::Sent,
+        'sent_at' => now(),
+    ]);
+
+    $payload = deliveryTestStatus('wamid.F', 'failed', [['code' => 131053, 'title' => 'Media upload error']]);
+
+    (new WhatsappOfficialHandler)->handle($connection, $payload);
+    (new WhatsappOfficialHandler)->handle($connection, $payload);
+
+    $broadcast->refresh();
+
+    expect($broadcast->sent_count)->toBe(0)
+        ->and($broadcast->failed_count)->toBe(1);
 });
