@@ -2,7 +2,6 @@
 
 namespace App\Http\Resources;
 
-use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -27,6 +26,13 @@ class ConversationResource extends JsonResource
             'needs_human' => (bool) $this->needs_human,
             'handoff_reason' => $this->handoff_reason,
             'handoff_at' => $this->handoff_at?->timestamp,
+            // When this thread was closed. Sent so the dashboard can draw the
+            // Reopen button's window without a second request — the tolerance
+            // itself already rides on the connection. Null on rows closed
+            // before the column existed (never backfilled: a guess would
+            // invent resolution times), where the client falls back the same
+            // way ConversationReopen::closedAt() does.
+            'resolved_at' => $this->resolved_at?->timestamp,
             // Muted threads keep syncing and keep their unread badge; they just
             // raise no toast and play no sound.
             'muted' => $this->muted_at !== null,

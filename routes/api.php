@@ -357,6 +357,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // someone else. Gated on connection access only — the caller is not the
         // assignee, which is the whole point of the action.
         Route::post('/conversations/{id}/take-over', [ConversationController::class, 'takeOver']);
+        // Open a closed thread again. Same gate as take-over (connection
+        // access, not assignee) and the same window as the automatic
+        // return-to-last-agent routing — the connection decides how long a
+        // closed conversation is still the same visit.
+        Route::post('/conversations/{id}/reopen', [ConversationController::class, 'reopen']);
         // Suggestions run on the tenant's AI Hub agents, so the plan must
         // include the hub feature.
         Route::post('/conversations/{id}/ai-suggest', [AiSuggestController::class, 'suggest'])->middleware(['feature:ai_agent_hub', 'throttle:15,1']);

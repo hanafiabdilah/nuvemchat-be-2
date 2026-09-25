@@ -76,10 +76,14 @@ class LastAgentRouter
             return false;
         }
 
+        // The same window the Reopen button obeys, measured from the same
+        // instant — see ConversationReopen. One rule decides how long a closed
+        // conversation is still "the same visit"; the customer's message and
+        // the agent's button are two doors into it.
         $minutes = $connection->returnToLastAgentMinutes();
-        $closedAt = self::closedAt($previous);
+        $deadline = ConversationReopen::deadline($previous, $connection);
 
-        if ($closedAt === null || $closedAt->lt(now()->subMinutes($minutes))) {
+        if ($deadline === null || $deadline->isPast()) {
             return false;
         }
 
@@ -114,7 +118,7 @@ class LastAgentRouter
             'tenant_id' => $connection->tenant_id,
             'agent_id' => $agent->id,
             // Ids, not names: names change and only the id joins back.
-            'minutes_since_close' => (int) $closedAt->diffInMinutes(now()),
+            'minutes_since_close' => (int) ConversationReopen::closedAt($previous)?->diffInMinutes(now()),
             'tolerance_minutes' => $minutes,
         ]);
 
@@ -143,24 +147,6 @@ class LastAgentRouter
             ->with('agent')
             ->orderByDesc('id')
             ->first();
-    }
-
-    /**
-     * When the previous visit ended.
-     *
-     * `resolved_at` is the honest answer but only exists for threads closed
-     * after it was added, so the last message is the fallback: for a thread
-     * that is over, "when did anyone last say anything" is the same instant
-     * within seconds. `updated_at` is the last resort and the least trustworthy
-     * — tagging or muting a closed thread moves it — but it can only ever make
-     * the window look *more* recent, and the worst case is one customer
-     * reaching an agent who is online and already knows them.
-     */
-    private static function closedAt(Conversation $previous): ?\Illuminate\Support\Carbon
-    {
-        return $previous->resolved_at
-            ?? $previous->last_message_at
-            ?? $previous->updated_at;
     }
 
     private static function agentIsAvailable(?User $agent, Connection $connection): bool

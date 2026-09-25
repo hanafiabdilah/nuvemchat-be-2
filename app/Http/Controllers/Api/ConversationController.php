@@ -28,6 +28,7 @@ use App\Models\Conversation;
 use App\Models\Tag;
 use App\Observers\ConversationObserver;
 use App\Services\AutomatedMessageService;
+use App\Services\Conversation\ConversationReopen;
 use App\Services\Conversation\ConversationResolver;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Conversation\SystemMessage;
@@ -56,6 +57,19 @@ class ConversationController extends Controller
     public const INFO_TAKEN_OVER = 'conversation_taken_over';
 
     public const INFO_ASSIGNED = 'conversation_assigned';
+
+    /**
+     * English fallbacks for a refused reopen. The SPA words every one of these
+     * from the `code` beside them (lib/reopenWindow.ts); these are what an API
+     * caller reads.
+     */
+    private const REOPEN_REFUSALS = [
+        ConversationReopen::BLOCKED_DISABLED => 'This connection does not reopen closed conversations.',
+        ConversationReopen::BLOCKED_CHANNEL => 'This conversation has no assignee to return it to.',
+        ConversationReopen::BLOCKED_NOT_RESOLVED => 'This conversation is not resolved.',
+        ConversationReopen::BLOCKED_EXPIRED => 'This conversation was closed too long ago to be reopened.',
+        ConversationReopen::BLOCKED_ALREADY_OPEN => 'This contact already has an open conversation on this connection.',
+    ];
 
     /**
      * Cache key prefix for the per-conversation gate on forwarding "typing" to
@@ -1352,6 +1366,59 @@ class ConversationController extends Controller
             'message' => 'Conversation taken over',
             'data' => new ConversationResource($conversation),
         ]);
+    }
+
+    /**
+     * Open a closed conversation again and hand it to whoever asked.
+     *
+     * The counterpart of the automatic routing a returning customer gets
+     * (LastAgentRouter): same connection switch, same tolerance, measured from
+     * the same instant — see ConversationReopen for why the two share one rule
+     * instead of having one each.
+     *
+     * Gated on connection access only, exactly like take-over: the agent doing
+     * this is very often *not* the one who closed the thread, which is the
+     * whole point of the action. When the thread was somebody else's it also
+     * changes hands, and the thread carries a note for each half of that.
+     */
+    public function reopen(int $id)
+    {
+        $conversation = Conversation::visibleTo(Auth::user())
+            ->with(['connection', 'contact', 'agent'])
+            ->findOrFail($id);
+
+        $check = ConversationReopen::reopen($conversation, Auth::user());
+
+        if (! $check->allowed) {
+            // Stable `code`, worded by the SPA; the English below is for API
+            // callers. `conversation_id` points at the thread that is already
+            // live with this contact, so the dashboard can offer to open it
+            // rather than leave the agent guessing where their customer went.
+            return response()->json(array_filter([
+                'message' => self::REOPEN_REFUSALS[$check->reason] ?? 'This conversation cannot be reopened.',
+                'code' => $check->reason,
+                'conversation_id' => $check->openThread?->id,
+            ], fn ($value) => $value !== null), self::reopenRefusalStatus($check->reason));
+        }
+
+        return response()->json([
+            'message' => 'Conversation reopened',
+            'data' => new ConversationResource($conversation),
+        ]);
+    }
+
+    /**
+     * 409 for the two refusals that mean "the world moved while you were
+     * looking at it" — somebody opened a thread with this contact, or this one
+     * is not closed any more — and 422 for the ones that are a property of the
+     * connection and will read the same however many times it is retried.
+     */
+    private static function reopenRefusalStatus(?string $reason): int
+    {
+        return in_array($reason, [
+            ConversationReopen::BLOCKED_ALREADY_OPEN,
+            ConversationReopen::BLOCKED_NOT_RESOLVED,
+        ], true) ? 409 : 422;
     }
 
     /**
