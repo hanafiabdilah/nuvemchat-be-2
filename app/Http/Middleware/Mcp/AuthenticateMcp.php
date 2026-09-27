@@ -3,6 +3,7 @@
 namespace App\Http\Middleware\Mcp;
 
 use App\Enums\Billing\Feature;
+use App\Models\McpConnection;
 use App\Models\McpToken;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Mcp\McpUrls;
@@ -10,6 +11,7 @@ use App\Services\Mcp\Scopes;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -70,11 +72,11 @@ class AuthenticateMcp
         // not keep working from an editor.
         if (config('services.billing.enforce')) {
             if (! $this->gate->usable($tenant)) {
-                return $this->forbidden('subscription_suspended', 'This workspace\'s subscription is suspended.');
+                return $this->forbidden($connection, 'subscription_suspended', 'This workspace\'s subscription is suspended.');
             }
 
             if (! $this->gate->feature($tenant, Feature::Mcp->value)) {
-                return $this->forbidden('feature_not_in_plan', 'This workspace\'s plan does not include MCP access.');
+                return $this->forbidden($connection, 'feature_not_in_plan', 'This workspace\'s plan does not include MCP access.');
             }
         }
 
@@ -106,8 +108,25 @@ class AuthenticateMcp
         ));
     }
 
-    private function forbidden(string $code, string $description): Response
+    /**
+     * ⚠️ Logged, unlike the 401s above.
+     *
+     * A 401 is the normal opening move of every MCP client — it is how they
+     * discover where to authorize — so logging those would be noise. A 403 here
+     * is the opposite: the caller holds a token this server issued, and is
+     * being turned away for a reason on our side of the account. That happened
+     * in production on the first day, silently, and the editor reported it to
+     * the person as a problem with their credentials.
+     */
+    private function forbidden(McpConnection $connection, string $code, string $description): Response
     {
+        Log::warning('MCP: refused a valid token', [
+            'code' => $code,
+            'tenant_id' => $connection->tenant_id,
+            'mcp_connection_id' => $connection->id,
+            'client_name' => $connection->client_name,
+        ]);
+
         return response()->json([
             'error' => 'access_denied',
             'error_description' => $description,

@@ -2,8 +2,10 @@
 
 namespace App\Http\Controllers\Api\Mcp;
 
+use App\Enums\Billing\Feature;
 use App\Http\Controllers\Controller;
 use App\Models\McpClient;
+use App\Services\Billing\SubscriptionGate;
 use App\Services\Mcp\McpUrls;
 use App\Services\Mcp\OAuth\AuthorizationService;
 use App\Services\Mcp\OAuth\ClientRegistrar;
@@ -33,6 +35,7 @@ class AuthorizeController extends Controller
     public function __construct(
         private AuthorizationService $authorization,
         private ClientRegistrar $registrar,
+        private SubscriptionGate $gate,
     ) {}
 
     /** What the person is being asked to approve. */
@@ -102,6 +105,24 @@ class AuthorizeController extends Controller
      */
     private function resolve(Request $request): array
     {
+        // ⚠️ The plan is checked HERE, before the person is asked to approve
+        // anything — not only at the endpoint the token is later used on.
+        //
+        // It was only checked there once, and the result was a failure nobody
+        // could diagnose: the authorization completed, a connection was stored,
+        // and the editor's first call came back 403. What the person read was
+        // their editor saying to check their credentials — which were perfect.
+        // A gate that lets somebody finish a thing that cannot work has not
+        // gated anything; it has just moved the failure somewhere with less
+        // context.
+        if (config('services.billing.enforce')
+            && ! $this->gate->feature($request->user()->tenant, Feature::Mcp->value)) {
+            $this->refuse(
+                'This workspace\'s plan does not include connecting AI tools. Ask the account owner to upgrade.',
+                'feature_not_in_plan',
+            );
+        }
+
         $validated = $request->validate([
             'client_id' => ['required', 'string', 'max:512'],
             'redirect_uri' => ['required', 'string', 'max:2048'],
