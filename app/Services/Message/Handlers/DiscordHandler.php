@@ -6,6 +6,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
@@ -256,7 +257,7 @@ class DiscordHandler implements MessageHandlerInterface, SendsTypingIndicator
             ]);
 
             $extension = pathinfo($filename, PATHINFO_EXTENSION) ?: 'bin';
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/' . MediaFilename::build($filename, $extension, (string) $message->id);
             MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update([

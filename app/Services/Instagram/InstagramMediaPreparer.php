@@ -3,9 +3,10 @@
 namespace App\Services\Instagram;
 
 use App\Exceptions\InstagramApiException;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
+use App\Services\Media\UploadPolicy;
 use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Str;
 
 /**
  * Turns whatever the user dragged in into something Instagram will accept.
@@ -88,7 +89,15 @@ class InstagramMediaPreparer
         // Published, not outbound: the URL is stored on the post item and read
         // by the publisher when a scheduled post goes out — possibly days later,
         // long after a presigned address would have died.
-        $path = $file->store($this->directory($tenantId), MediaStorage::publishedDiskName());
+        // Named after the upload, not hashed: the post library lists these by
+        // path, and a marketing team that uploaded `lancamento-outubro.mp4`
+        // should be able to tell their own files apart.
+        $path = $this->directory($tenantId).'/'.MediaFilename::build(
+            $file->getClientOriginalName(),
+            UploadPolicy::storedExtension($file),
+        );
+
+        MediaStorage::published()->putFileAs(dirname($path), $file, basename($path));
 
         return [
             'media_type' => 'video',
@@ -105,7 +114,12 @@ class InstagramMediaPreparer
             $canvas = $this->normalize($source, $fit);
 
             try {
-                $path = $this->directory($tenantId) . '/' . Str::uuid() . '.jpg';
+                // Re-encoded to JPEG, so the extension is ours — but the base
+                // name is still the one the person recognises.
+                $path = $this->directory($tenantId) . '/' . MediaFilename::build(
+                    $file->getClientOriginalName(),
+                    'jpg',
+                );
 
                 // Published for the same reason as video: a scheduled post reads
                 // this URL when it publishes.

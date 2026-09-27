@@ -16,6 +16,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowRunner;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -446,7 +447,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $filename = $attachment['filename'] ?? 'attachment.bin';
             $extension = pathinfo($filename, PATHINFO_EXTENSION) ?: 'bin';
 
-            $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
+            $mediaPath = 'media/'.MediaFilename::build($filename, $extension, (string) $message->id);
             MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([

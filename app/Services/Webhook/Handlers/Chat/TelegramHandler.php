@@ -18,6 +18,7 @@ use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowRunner;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -522,13 +523,27 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             return;
         }
 
-        $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
+        // Telegram reports `file_name` for documents, audio and video (never
+        // for photos, which have no name on either side).
+        $originalName = $media['file_name'] ?? null;
+
+        $mediaPath = 'media/'.MediaFilename::build(
+            $originalName,
+            $extension,
+            (string) $message->id,
+            $messageType->value,
+        );
 
         MediaStorage::disk()->put($mediaPath, Http::get($fileUrl)->body());
 
-        $message->update([
-            'attachment' => $mediaPath,
-        ]);
+        $updates = ['attachment' => $mediaPath];
+
+        // The pristine name travels in meta; the path carries the ASCII copy.
+        if (is_string($originalName) && trim($originalName) !== '') {
+            $updates['meta'] = array_merge($message->meta ?? [], ['filename' => $originalName]);
+        }
+
+        $message->update($updates);
     }
 
     private function getExtensionFromFilePath(string $filePath): ?string

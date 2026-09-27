@@ -14,6 +14,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -556,8 +557,8 @@ class EmailInboxSynchronizer
 
         $stored = [];
 
-        foreach ($attachments as $attachment) {
-            $path = $this->storeAttachment($message, $attachment);
+        foreach ($attachments as $index => $attachment) {
+            $path = $this->storeAttachment($message, $attachment, (int) $index);
             $stored[] = [
                 // The name lands in the meta JSON cast, which refuses to
                 // encode invalid UTF-8 just like the body column does.
@@ -576,16 +577,26 @@ class EmailInboxSynchronizer
         ]);
     }
 
-    private function storeAttachment(Message $message, InboundEmailAttachment $attachment): string
+    /**
+     * The sender's name was already kept here, but behind the message id and a
+     * `uniqid()` — so an agent saving the file got
+     * `4812_68d1a2f3b4c5d_nota-fiscal.pdf`. Readable part first now.
+     *
+     * One mail carries several attachments, so the message id alone would
+     * collide; the position within the mail completes it, and keeping both
+     * makes a re-sync of the same mail overwrite its own files rather than
+     * accumulate a second copy of each.
+     */
+    private function storeAttachment(Message $message, InboundEmailAttachment $attachment, int $index): string
     {
         $filename = basename(str_replace('\\', '/', $attachment->filename));
-        $extension = pathinfo($filename, PATHINFO_EXTENSION);
-        $safeName = Str::slug(pathinfo($filename, PATHINFO_FILENAME)) ?: 'attachment';
-        $path = 'media/'.$message->id.'_'.uniqid().'_'.$safeName;
 
-        if ($extension) {
-            $path .= '.'.strtolower($extension);
-        }
+        $path = 'media/'.MediaFilename::build(
+            $filename,
+            pathinfo($filename, PATHINFO_EXTENSION),
+            $message->id.'-'.$index,
+            'attachment',
+        );
 
         MediaStorage::disk()->put($path, $attachment->content);
 

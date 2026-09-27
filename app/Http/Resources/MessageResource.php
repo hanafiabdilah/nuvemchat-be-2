@@ -11,6 +11,7 @@ use App\Services\Media\MediaRetention;
 use App\Services\Message\VCard;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Str;
 
 class MessageResource extends JsonResource
 {
@@ -233,7 +234,42 @@ class MessageResource extends JsonResource
             $meta = array_merge($meta ?? [], $transcription);
         }
 
+        // Merged out here for the same reason: a file's name belongs to the
+        // file, not to the channel that carried it, and every channel that can
+        // attach one records it the same way.
+        $filename = $this->getFilenameMeta();
+
+        if ($filename !== null) {
+            $meta = array_merge($meta ?? [], $filename);
+        }
+
         return $meta;
+    }
+
+    /**
+     * The name the file actually arrived with — accents, spaces and capitals
+     * intact.
+     *
+     * ⚠️ This is the only pristine copy. The stored path also carries the name
+     * (see MediaFilename), but transliterated to ASCII and with a uniqueness
+     * suffix, because it is interpolated into paths and URLs and read back as
+     * a MIME type. So the path is the durable fallback and this is the label:
+     * the SPA prints this when it is here and falls back to the path when it is
+     * not, which is what rows written before any of this had a name at all do.
+     */
+    private function getFilenameMeta(): ?array
+    {
+        $name = $this->meta['filename'] ?? null;
+
+        if (! is_string($name) || trim($name) === '') {
+            return null;
+        }
+
+        // basename() because this string reaches a download attribute: a name
+        // carrying a path would be the sender choosing where it lands.
+        $name = basename(str_replace('\\', '/', trim($name)));
+
+        return $name !== '' ? ['filename' => Str::limit($name, 255, '')] : null;
     }
 
     /**

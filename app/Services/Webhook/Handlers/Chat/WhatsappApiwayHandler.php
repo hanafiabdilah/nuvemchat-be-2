@@ -21,6 +21,7 @@ use App\Services\Conversation\CallLog;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowRunner;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -1204,9 +1205,24 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
                 return;
             }
 
-            $path = 'media/'.$message->id.'_'.uniqid().'.'.$this->extensionFromMime($mimetype);
+            $originalName = $node['fileName'] ?? $node['FileName'] ?? $node['title'] ?? $node['Title'] ?? null;
+
+            $path = 'media/'.MediaFilename::build(
+                $originalName,
+                $this->extensionFromMime($mimetype),
+                (string) $message->id,
+                $type->value,
+            );
             MediaStorage::disk()->put($path, $plain);
-            $message->update(['attachment' => $path]);
+
+            $updates = ['attachment' => $path];
+
+            // The pristine name travels in meta; the path carries the ASCII copy.
+            if (is_string($originalName) && trim($originalName) !== '') {
+                $updates['meta'] = array_merge($message->meta ?? [], ['filename' => $originalName]);
+            }
+
+            $message->update($updates);
 
             Log::info('WhatsappApiwayHandler: media downloaded', ['message_id' => $message->id, 'path' => $path]);
         } catch (\Throwable $e) {

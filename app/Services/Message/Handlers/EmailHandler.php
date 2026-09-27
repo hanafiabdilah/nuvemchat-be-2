@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\EmailSmtpTransportFactory;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\MessageHandlerInterface;
@@ -457,22 +458,28 @@ class EmailHandler implements MessageHandlerInterface, MarksMessagesAsRead
             $stored[] = [
                 'name' => $file->getClientOriginalName(),
                 'content_type' => $file->getClientMimeType(),
-                'path' => $this->storeAttachment($messageId, $file),
+                'path' => $this->storeAttachment($file),
             ];
         }
 
         return $stored;
     }
 
-    private function storeAttachment(string $messageId, UploadedFile $file): string
+    /**
+     * This path already kept the sender's name — but behind the message id and
+     * a `uniqid()`, so what the recipient's mail client showed was
+     * `4812_68d1a2f3b4c5d_nota-fiscal.pdf`. The readable part comes first now
+     * and the machine part trails it. A mail can carry several attachments, so
+     * the message id alone is not unique here and a random suffix is used.
+     */
+    private function storeAttachment(UploadedFile $file): string
     {
-        $extension = $file->getClientOriginalExtension();
-        $safeName = Str::slug(pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME)) ?: 'attachment';
-        $path = 'media/' . Str::before($messageId, '@') . '_' . uniqid() . '_' . $safeName;
-
-        if ($extension) {
-            $path .= '.' . strtolower($extension);
-        }
+        $path = 'media/' . MediaFilename::build(
+            $file->getClientOriginalName(),
+            $file->getClientOriginalExtension(),
+            null,
+            'attachment',
+        );
 
         MediaStorage::disk()->put($path, file_get_contents($file->getRealPath()));
 

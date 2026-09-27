@@ -18,6 +18,7 @@ use App\Models\LiveChatSession;
 use App\Services\Contact\WidgetVisitorId;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowRunner;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -151,11 +152,16 @@ class WidgetController extends Controller
         $ext = strtolower($file->guessExtension() ?: $file->getClientOriginalExtension());
         $messageType = $this->inferMessageTypeFromMime($file->getClientMimeType(), $ext);
 
+        // The visitor's own name for the file, kept: an agent opening this
+        // attachment reads the bubble label and the download name off this path
+        // (see MediaFilename), and `boleto-vencido.pdf` tells them what the
+        // conversation is about before they click. The session token already
+        // scopes the directory, so a short random suffix is enough to keep two
+        // uploads of the same name apart.
         $path = sprintf(
-            'widget-uploads/%s/%s.%s',
+            'widget-uploads/%s/%s',
             $session->session_token,
-            (string) Str::uuid(),
-            $ext,
+            MediaFilename::build($file->getClientOriginalName(), $ext),
         );
 
         // ⚠️ Streamed, not read into a string. `file_get_contents()` on a 50 MB

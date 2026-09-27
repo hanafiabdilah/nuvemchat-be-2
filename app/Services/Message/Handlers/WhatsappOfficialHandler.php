@@ -10,6 +10,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\AudioNormalizer;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
@@ -802,7 +803,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 $extraMeta,
             );
 
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/' . MediaFilename::build($filename, $extension, (string) $message->id);
             MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update(['attachment' => $mediaPath]);

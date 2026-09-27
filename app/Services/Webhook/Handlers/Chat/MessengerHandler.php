@@ -17,6 +17,7 @@ use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowRunner;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
@@ -519,7 +520,7 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $mimeType = $response->header('Content-Type');
             $extension = $this->getExtensionFromMimeType($mimeType);
 
-            $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
+            $mediaPath = 'media/'.MediaFilename::build(null, $extension, (string) $message->id, $messageType->value);
             MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([

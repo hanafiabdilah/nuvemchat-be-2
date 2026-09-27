@@ -8,6 +8,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
@@ -173,7 +174,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
         try {
             $content = file_get_contents($data[$fileKey]->getRealPath());
             $extension = $data[$fileKey]->getClientOriginalExtension();
-            $tempPublicPath = $fbType . 's/temp_' . uniqid() . '.' . $extension;
+            $tempPublicPath = $fbType . 's/' . MediaFilename::build($data[$fileKey]->getClientOriginalName(), $extension);
 
             MediaStorage::outbound()->put($tempPublicPath, $content);
 
@@ -186,7 +187,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
             $message = $this->sendAttachmentByUrl($conversation, $publicUrl, $fbType, $messageTypeEnum, $extraMeta);
 
             // Keep the original bytes privately for the dashboard preview.
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/' . MediaFilename::build($data[$fileKey]->getClientOriginalName(), $extension, (string) $message->id);
             MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update([

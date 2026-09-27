@@ -10,6 +10,7 @@ use App\Events\Widget\WidgetMessagesRead;
 use App\Events\Widget\WidgetTyping;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
@@ -158,7 +159,7 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
                 ],
             ]);
 
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $file->getClientOriginalExtension();
+            $mediaPath = 'media/' . MediaFilename::build($file->getClientOriginalName(), $file->getClientOriginalExtension(), (string) $message->id);
             MediaStorage::disk()->put($mediaPath, file_get_contents($file->getRealPath()));
 
             $message->update(['attachment' => $mediaPath]);

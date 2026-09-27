@@ -18,6 +18,7 @@ use App\Services\Broadcast\BroadcastDelivery;
 use App\Services\Conversation\LastAgentRouter;
 use App\Services\Flow\FlowRunner;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
@@ -686,12 +687,32 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             }
 
             // Save media file
-            $mediaPath = 'media/'.$message->id.'_'.uniqid().'.'.$extension;
+            // ⚠️ `filename` is only present for documents, and it is the one
+            // Meta was given by the sender — the name the customer sees on
+            // their own phone. Keeping it means the agent's bubble, their
+            // download and the customer's screen all say the same thing.
+            $originalName = $mediaData['filename'] ?? null;
+
+            $mediaPath = 'media/'.MediaFilename::build(
+                $originalName,
+                $extension,
+                (string) $message->id,
+                $messageType->value,
+            );
             MediaStorage::disk()->put($mediaPath, $mediaResponse->body());
 
-            $message->update([
-                'attachment' => $mediaPath,
-            ]);
+            $updates = ['attachment' => $mediaPath];
+
+            // Kept verbatim alongside the payload, because the stored path is
+            // transliterated and suffixed. MessageResource hands this to the
+            // SPA, so the bubble and the download say what the customer called
+            // the file. Harmless next to the raw payload: everything here reads
+            // it by its own nested keys.
+            if (is_string($originalName) && trim($originalName) !== '') {
+                $updates['meta'] = array_merge($message->meta ?? [], ['filename' => $originalName]);
+            }
+
+            $message->update($updates);
 
             Log::info('WhatsappOfficialHandler: Media downloaded successfully', [
                 'message_id' => $message->id,

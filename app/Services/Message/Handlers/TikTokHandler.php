@@ -10,6 +10,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\TikTok\TikTokMessagingClient;
 use App\Services\Connection\TikTok\TikTokReplyWindow;
+use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
@@ -113,7 +114,7 @@ class TikTokHandler implements MessageHandlerInterface
                 'meta' => ['message_id' => $messageId, 'media_id' => $mediaId],
             ]);
 
-            $mediaPath = 'media/' . $message->id . '_' . uniqid() . '.' . $extension;
+            $mediaPath = 'media/' . MediaFilename::build($file->getClientOriginalName(), $extension, (string) $message->id);
             MediaStorage::disk()->put($mediaPath, $contents);
 
             $message->update([
