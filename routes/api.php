@@ -76,6 +76,8 @@ use App\Http\Controllers\Api\LeadController;
 use App\Http\Controllers\Api\LeadPipelineController;
 use App\Http\Controllers\Api\LeadSettingsController;
 use App\Http\Controllers\Api\LiveController;
+use App\Http\Controllers\Api\Mcp\AuthorizeController as McpAuthorizeController;
+use App\Http\Controllers\Api\Mcp\ConnectionController as McpConnectionController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\MessageTemplateController;
 use App\Http\Controllers\Api\Numbers\VirtualNumberController;
@@ -288,6 +290,28 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::get('/', [ApiKeyController::class, 'index'])->name('index');
         Route::post('/', [ApiKeyController::class, 'store'])->name('store');
         Route::delete('/{id}', [ApiKeyController::class, 'destroy'])->whereNumber('id')->name('destroy');
+    });
+
+    // MCP — connecting an LLM client (Claude, Codex) to this workspace.
+    //
+    // ⚠️ The consent screen these serve is a route in the SPA, not a page here:
+    // the dashboard holds a bearer token and sends no cookies, so a
+    // server-rendered page would have no session to read. See
+    // App\Services\Mcp\McpUrls::authorizationEndpoint().
+    //
+    // Listing and disconnecting need no `mcp.connect` — somebody who can see a
+    // connection they think is wrong should not need a second permission to end
+    // it, and the safe direction is always off.
+    Route::prefix('mcp')->name('mcp.')->group(function () {
+        Route::get('/authorize', [McpAuthorizeController::class, 'show'])
+            ->middleware(['permission:mcp.connect', 'throttle:30,1'])->name('authorize.show');
+        Route::post('/authorize', [McpAuthorizeController::class, 'store'])
+            ->middleware(['permission:mcp.connect', 'throttle:30,1'])->name('authorize.store');
+
+        Route::get('/connections', [McpConnectionController::class, 'index'])->name('connections.index');
+        Route::delete('/connections/{id}', [McpConnectionController::class, 'destroy'])
+            ->whereNumber('id')->name('connections.destroy');
+        Route::get('/scopes', [McpConnectionController::class, 'scopes'])->name('scopes');
     });
 
     // Outbound webhooks (lead events → the workspace's own systems).

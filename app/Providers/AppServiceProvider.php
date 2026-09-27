@@ -66,6 +66,28 @@ class AppServiceProvider extends ServiceProvider
         // messages the moment the platform got busy. Ten a second is far above
         // any single inbox's real rate and still bounds what one connection can
         // be made to absorb before the secret check even runs.
+        // The MCP endpoint. Counted per connection, like the public API is
+        // counted per key: the callers are programs, and two people driving
+        // Claude from the same office must not share a budget. Generous,
+        // because a model exploring a workspace makes a burst of small reads
+        // and then stops — what this is bounding is a runaway loop, not work.
+        RateLimiter::for('mcp', function (Request $request) {
+            $connection = $request->attributes->get('mcp_connection');
+
+            return Limit::perMinute(300)->by($connection ? 'mcp:'.$connection->id : 'ip:'.$request->ip());
+        });
+
+        // ⚠️ Registration writes a row and needs no credential — that is what
+        // "dynamic" means and it is correct — so this is the only thing between
+        // the endpoint and a table full of clients. Per address, because there
+        // is nothing else to count by yet.
+        RateLimiter::for('mcp-register', fn (Request $request) => Limit::perMinute(10)->by('mcp-register:'.$request->ip()));
+
+        // Token exchange and refresh. A client refreshes once an hour; anything
+        // near this limit is a loop or a guess, and guessing is already
+        // hopeless against a 48-character secret.
+        RateLimiter::for('mcp-token', fn (Request $request) => Limit::perMinute(60)->by('mcp-token:'.$request->ip()));
+
         RateLimiter::for('webhook-chat', function (Request $request) {
             return Limit::perMinute(600)->by('webhook-chat:'.$request->route('id'));
         });

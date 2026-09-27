@@ -30,6 +30,28 @@ return Application::configure(basePath: dirname(__DIR__))
                 \App\Http\Middleware\SanitizeUpstreamErrors::class,
             ])->group(__DIR__.'/../routes/widget.php');
 
+            // The MCP endpoint and its OAuth 2.1 server. Same shape as the
+            // widget group and for the same reasons: called by programs on
+            // other people's machines, no session, no cookies, no CSRF. The
+            // discovery documents have to live at /.well-known/*, which cannot
+            // be under /api, so the whole surface is registered at the root.
+            // Platform-only — a country domain answers 404.
+            //
+            // ⚠️ Deliberately WITHOUT SanitizeUpstreamErrors, for the same
+            // reason api/admin/* is exempt from it: there is no customer in
+            // front of these endpoints. `invalid_grant` and `invalid_client`
+            // are on that middleware's fingerprint list — they were put there
+            // because other systems' OAuth errors used to leak through — and
+            // here they are our own protocol vocabulary, the field a client
+            // branches on. Rewriting them into a friendly sentence breaks the
+            // protocol. Nothing upstream is called on this surface anyway, and
+            // Server::handle() already replaces any exception message with our
+            // own before it leaves.
+            \Illuminate\Support\Facades\Route::middleware([
+                \App\Http\Middleware\EnsurePlatformHost::class,
+                \Illuminate\Routing\Middleware\SubstituteBindings::class,
+            ])->group(__DIR__.'/../routes/mcp.php');
+
             // Private media behind signed links. Replaces Laravel's built-in
             // storage.local route (serve => false on the local disk) at the same
             // address and signature, so links cached in dashboards survive the

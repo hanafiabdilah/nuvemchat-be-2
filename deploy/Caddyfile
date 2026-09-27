@@ -175,7 +175,7 @@
     # the widget they install talks to the origin that served them, and that
     # API answers 404 on this domain. Handing out a widget that cannot reach
     # its backend is worse than not handing one out.
-    @platform_only path /webmin /webmin/* /api/admin /api/admin/* /webhook /webhook/* /widget-api /widget-api/* /widget.js /widget/* /oauth/instagram/* /oauth/facebook/* /oauth/tiktok/* /instagram/deletion-status /broadcasting /broadcasting/* /storage /storage/* /gallery/* /flow-payments/* /flow-invoices/*
+    @platform_only path /webmin /webmin/* /api/admin /api/admin/* /webhook /webhook/* /widget-api /widget-api/* /widget.js /widget/* /oauth/instagram/* /oauth/facebook/* /oauth/tiktok/* /instagram/deletion-status /broadcasting /broadcasting/* /storage /storage/* /gallery/* /flow-payments/* /flow-invoices/* /mcp /mcp/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/* /.well-known/oauth-authorization-server
     handle @platform_only {
         header Cache-Control "no-store"
         respond 404
@@ -235,7 +235,7 @@ chat.pingly.com.br {
     # SPA and answers index.html with a 200 — how every webhook once failed
     # silently, and how the TikTok OAuth callback did until Sep 2026. A new
     # top-level Laravel web route needs its prefix added here.
-    @backend path /api /api/* /gallery/* /flow-payments/* /flow-invoices/* /webhook /webhook/* /widget-api /widget-api/* /oauth/instagram/* /oauth/facebook/* /oauth/tiktok/* /instagram/deletion-status /broadcasting /broadcasting/* /up
+    @backend path /api /api/* /gallery/* /flow-payments/* /flow-invoices/* /webhook /webhook/* /widget-api /widget-api/* /oauth/instagram/* /oauth/facebook/* /oauth/tiktok/* /instagram/deletion-status /broadcasting /broadcasting/* /up /mcp /mcp/* /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/* /.well-known/oauth-authorization-server
     handle @backend {
         import laravel
         file_server

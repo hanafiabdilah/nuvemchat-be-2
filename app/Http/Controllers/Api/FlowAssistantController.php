@@ -2,20 +2,14 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Enums\Integration\IntegrationCategory;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
-use App\Models\AiHubAgent;
 use App\Models\Flow;
 use App\Models\FlowAssistantMessage;
 use App\Models\FlowEdge;
 use App\Models\GalleryAsset;
-use App\Models\Integration;
-use App\Models\LeadPipeline;
-use App\Models\LeadStage;
-use App\Models\Tag;
-use App\Models\User;
 use App\Services\Flow\FlowBlueprint;
+use App\Services\Flow\FlowVocabulary;
 use App\Services\FlowAssistant\FlowAssistantConfig;
 use App\Services\FlowAssistant\FlowAssistantService;
 use Illuminate\Http\JsonResponse;
@@ -294,42 +288,9 @@ class FlowAssistantController extends Controller
     {
         $tenantId = auth()->user()->tenant_id;
 
-        return [
+        return FlowVocabulary::forTenant($tenantId, $flow->id) + [
             'flow' => $this->exportFlow($flow),
-            'tags' => Tag::where('tenant_id', $tenantId)
-                ->orderBy('name')
-                ->get(['id', 'name'])
-                ->map(fn (Tag $tag) => ['id' => $tag->id, 'name' => $tag->name])
-                ->all(),
-            'agents' => User::where('tenant_id', $tenantId)
-                ->orderBy('name')
-                ->get(['id', 'name'])
-                ->map(fn (User $user) => ['id' => $user->id, 'name' => $user->name])
-                ->all(),
-            'ai_agents' => AiHubAgent::query()
-                ->whereIn('ai_hub_tenant_id', fn ($query) => $query
-                    ->select('id')
-                    ->from('ai_hub_tenants')
-                    ->where('tenant_id', $tenantId))
-                ->where('status', 'ACTIVE')
-                ->orderBy('name')
-                ->get(['id', 'name'])
-                ->map(fn (AiHubAgent $agent) => ['id' => $agent->id, 'name' => $agent->name])
-                ->all(),
             'gallery' => $this->galleryContext($tenantId, $galleryAssetIds),
-            // The accounts a payment or pixel node may point at, and the flows a
-            // go-to-flow node may continue in. This is the only place the model
-            // can learn a valid id, and an invented one is refused on save.
-            'payment_integrations' => $this->integrationContext($tenantId, IntegrationCategory::Payment),
-            'invoice_integrations' => $this->integrationContext($tenantId, IntegrationCategory::Invoice),
-            'pixel_integrations' => $this->integrationContext($tenantId, IntegrationCategory::Pixel),
-            'flows' => Flow::where('tenant_id', $tenantId)
-                ->whereKeyNot($flow->id)
-                ->orderBy('name')
-                ->get(['id', 'name'])
-                ->map(fn (Flow $other) => ['id' => $other->id, 'name' => $other->name])
-                ->all(),
-            'lead_stages' => $this->leadStageContext($tenantId),
             // Which channels this flow actually drives. It decides whether the
             // interactive node is on the table at all — a WhatsApp button block
             // proposed for a Telegram flow is refused by the save endpoint, and
@@ -341,55 +302,6 @@ class FlowAssistantController extends Controller
                 ->values()
                 ->all(),
         ];
-    }
-
-    /**
-     * The funnel's columns, for the lead node. Read, never provisioned: a
-     * workspace that has not opened its board has no pipeline yet, and asking
-     * the assistant about a flow is not a reason to create one.
-     *
-     * @return list<array<string, mixed>>
-     */
-    private function leadStageContext(int $tenantId): array
-    {
-        return LeadPipeline::where('tenant_id', $tenantId)
-            ->with('stages')
-            ->orderByDesc('is_default')
-            ->orderBy('position')
-            ->get()
-            ->flatMap(fn (LeadPipeline $pipeline) => $pipeline->stages->map(fn (LeadStage $stage) => [
-                'id' => $stage->id,
-                'name' => $stage->name,
-                'kind' => $stage->kind->value,
-                'pipeline' => $pipeline->name,
-            ]))
-            ->values()
-            ->all();
-    }
-
-    /**
-     * Enabled integrations of one kind, named the way the person knows them.
-     * `payment_methods` rides along because whether "checkout" exists depends
-     * on the provider, and a node asking OpenPix for a card link fails at the
-     * moment a customer is waiting to pay.
-     *
-     * @return list<array<string, mixed>>
-     */
-    private function integrationContext(int $tenantId, IntegrationCategory $category): array
-    {
-        return Integration::forTenant($tenantId)
-            ->inCategory($category)
-            ->where('enabled', true)
-            ->orderBy('name')
-            ->get()
-            ->map(fn (Integration $integration) => array_filter([
-                'id' => $integration->id,
-                'name' => $integration->name,
-                'provider' => $integration->provider->label(),
-                'payment_methods' => $integration->provider->paymentMethods() ?: null,
-            ]))
-            ->values()
-            ->all();
     }
 
     /**

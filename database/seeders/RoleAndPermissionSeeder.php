@@ -66,6 +66,10 @@ class RoleAndPermissionSeeder extends Seeder
             'flows.update',
             'flows.delete',
 
+            // MCP — connect an LLM client that then acts as the person who
+            // approved it, with that person's own permissions.
+            'mcp.connect',
+
             // AI Agents
             'ai-agents.view',
             'ai-agents.create',

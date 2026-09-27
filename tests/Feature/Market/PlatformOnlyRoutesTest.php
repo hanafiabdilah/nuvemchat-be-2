@@ -28,6 +28,11 @@ const PLATFORM_ONLY_PREFIXES = [
     'flow-payments/',
     'flow-invoices/',
     'storage/',
+    // The MCP endpoint and its OAuth server. These addresses are written into
+    // an editor's stored configuration and into token audiences, so they must
+    // name the host that cannot be retired.
+    'mcp',
+    '.well-known/',
 ];
 
 function registerCountryDomain(): void

@@ -26,6 +26,12 @@ use Symfony\Component\HttpFoundation\Response;
  *  - a short list of high-signal fingerprints (UpstreamError::looksExternal),
  *    not a general "looks technical" heuristic.
  *
+ * ⚠️ The MCP surface (`/mcp`, `/mcp/oauth/*`) is not in this middleware's
+ * group at all, and must not be added back: `invalid_grant` and
+ * `invalid_client` are on the fingerprint list below, and on an OAuth server of
+ * our own they are the protocol field a client branches on rather than someone
+ * else's prose.
+ *
  * ⚠️ Back Office (`api/admin/*`) is exempt on purpose. Platform operators are
  * the people who fix integrations, and the upstream's exact words are the only
  * thing that tells them which one broke — hiding it there would remove the

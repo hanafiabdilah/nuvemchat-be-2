@@ -10,6 +10,7 @@ use App\Models\Flow;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
 use App\Services\Flow\FlowBlueprint;
+use App\Services\Flow\FlowGraph;
 use App\Services\Flow\LegacyWaitUpgrade;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -181,86 +182,7 @@ class FlowController extends Controller
             ]);
         }
 
-        DB::transaction(function () use ($flow, $validated) {
-            // Get all existing nodes for this flow
-            $existingNodes = FlowNode::where('flow_id', $flow->id)->get()->keyBy('id');
-
-            // Track which nodes are in the new request (by database ID)
-            $requestedNodeIds = [];
-
-            // Map frontend node IDs to database IDs
-            $nodeIdMap = [];
-
-            // Update or create nodes
-            foreach ($validated['nodes'] as $nodeData) {
-                $frontendId = $nodeData['id'] ?? null;
-
-                // Check if this is an existing node (numeric ID) or new node (UUID/string)
-                $isExistingNode = $frontendId && is_numeric($frontendId) && $existingNodes->has((int)$frontendId);
-
-                if ($isExistingNode) {
-                    // UPDATE existing node (preserve ID)
-                    $nodeId = (int)$frontendId;
-                    $existingNodes->get($nodeId)->update([
-                        'type' => $nodeData['type'],
-                        'data' => $nodeData['data'] ?? null,
-                        'position_x' => $nodeData['position_x'],
-                        'position_y' => $nodeData['position_y'],
-                    ]);
-
-                    $requestedNodeIds[] = $nodeId;
-                    $nodeIdMap[$frontendId] = $nodeId;
-                } else {
-                    // CREATE new node
-                    $node = FlowNode::create([
-                        'flow_id' => $flow->id,
-                        'type' => $nodeData['type'],
-                        'data' => $nodeData['data'] ?? null,
-                        'position_x' => $nodeData['position_x'],
-                        'position_y' => $nodeData['position_y'],
-                    ]);
-
-                    $requestedNodeIds[] = $node->id;
-                    if ($frontendId) {
-                        $nodeIdMap[$frontendId] = $node->id;
-                    }
-                }
-            }
-
-            // Delete nodes that are no longer in the request
-            $nodesToDelete = $existingNodes->keys()->diff($requestedNodeIds);
-            if ($nodesToDelete->isNotEmpty()) {
-                // Delete edges associated with deleted nodes
-                FlowEdge::whereIn('source_node_id', $nodesToDelete)
-                    ->orWhereIn('target_node_id', $nodesToDelete)
-                    ->delete();
-
-                // Delete the nodes
-                FlowNode::whereIn('id', $nodesToDelete)->delete();
-            }
-
-            // Recreate all edges (simpler than diffing)
-            // First, delete all edges for remaining nodes
-            if (!empty($requestedNodeIds)) {
-                FlowEdge::whereIn('source_node_id', $requestedNodeIds)
-                    ->orWhereIn('target_node_id', $requestedNodeIds)
-                    ->delete();
-            }
-
-            // Create edges with mapped node IDs
-            foreach ($validated['edges'] as $edgeData) {
-                $sourceId = $nodeIdMap[$edgeData['source_node_id']] ?? null;
-                $targetId = $nodeIdMap[$edgeData['target_node_id']] ?? null;
-
-                if ($sourceId && $targetId) {
-                    FlowEdge::create([
-                        'source_node_id' => $sourceId,
-                        'target_node_id' => $targetId,
-                        'condition_value' => $edgeData['condition_value'] ?? null,
-                    ]);
-                }
-            }
-        });
+        $nodeIdMap = FlowGraph::replace($flow, $validated['nodes'], $validated['edges']);
 
         // Load nodes and manually get edges for this flow's nodes
         $flow->load('nodes');
@@ -277,6 +199,12 @@ class FlowController extends Controller
             'message' => 'Flow saved successfully',
             'data' => new FlowResource($flow),
             'dropped_edges' => self::echoDroppedEdges($deduped['dropped']),
+            // The caller's node ids mapped to the stored ones. A client that
+            // sends its own ids for new nodes — the builder does, and so does
+            // every MCP client — has to adopt these, or the next save creates
+            // the same nodes again and deletes the rows any running
+            // conversation is standing on.
+            'node_ids' => $nodeIdMap,
         ]);
     }
 
@@ -310,30 +238,10 @@ class FlowController extends Controller
     {
         $flow = Flow::with('nodes')->where('tenant_id', auth()->user()->tenant_id)->findOrFail($id);
 
-        $nodeIds = $flow->nodes->pluck('id');
-        $edges = FlowEdge::whereIn('source_node_id', $nodeIds)
-            ->whereIn('target_node_id', $nodeIds)
-            ->orderBy('id')
-            ->get();
-
         return response()->json([
             'format' => self::EXPORT_FORMAT,
             'version' => self::EXPORT_VERSION,
-            'flow' => [
-                'name' => $flow->name,
-                'nodes' => $flow->nodes->map(fn (FlowNode $node) => [
-                    'key' => (string) $node->id,
-                    'type' => $node->type->value,
-                    'data' => $node->data,
-                    'position_x' => $node->position_x,
-                    'position_y' => $node->position_y,
-                ])->values(),
-                'edges' => $edges->map(fn (FlowEdge $edge) => [
-                    'source_key' => (string) $edge->source_node_id,
-                    'target_key' => (string) $edge->target_node_id,
-                    'condition_value' => $edge->condition_value,
-                ])->values(),
-            ],
+            'flow' => FlowGraph::export($flow),
         ]);
     }
 
