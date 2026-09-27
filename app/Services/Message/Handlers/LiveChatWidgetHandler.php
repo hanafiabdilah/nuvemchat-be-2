@@ -66,7 +66,7 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
                 'conversation_id' => $conversation->id,
             ]);
 
-            throw new Exception('Failed to send Live Chat Widget message');
+            throw new Exception('Failed to send Live Chat Widget message', 0, $th);
         }
     }
 
@@ -173,7 +173,7 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
                 'type' => $type->value,
             ]);
 
-            throw new Exception('Failed to send Live Chat Widget media message');
+            throw new Exception('Failed to send Live Chat Widget media message', 0, $th);
         }
     }
 

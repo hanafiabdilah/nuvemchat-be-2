@@ -33,12 +33,41 @@ class RunFlowMessageNode implements ShouldQueue
      */
     public int $tries = 1;
 
+    /**
+     * Bound on one bubble, so the worker default never has to be.
+     *
+     * ⚠️ A job that has no timeout of its own inherits the worker's, and a job
+     * that outlives it does not merely fail — the `queue:work` process exits, so
+     * everything queued behind it waits for the container to come back. A media
+     * bubble can legitimately take a while (a URL send that times out, then a
+     * download and re-upload), which is close enough to the worker's 60s default
+     * to be worth stating here rather than inheriting.
+     *
+     * Two minutes is also the point past which a bubble is not worth delivering:
+     * the customer has moved on.
+     */
+    public int $timeout = 120;
+
+    /**
+     * How many sends of this bubble have already failed.
+     *
+     * ⚠️ Declared with a default instead of promoted into the constructor, and
+     * that is load-bearing: a job serialised by the previous release carries no
+     * such property, and a promoted one would come back from the queue
+     * uninitialised — every bubble already waiting out a pause across the deploy
+     * would die on first access. A property default is applied by unserialize.
+     */
+    public int $attempt = 0;
+
     public function __construct(
         public int $flowStateId,
         public int $nodeId,
         public int $index,
         public string $token,
-    ) {}
+        int $attempt = 0,
+    ) {
+        $this->attempt = $attempt;
+    }
 
     public function handle(): void
     {
@@ -47,6 +76,7 @@ class RunFlowMessageNode implements ShouldQueue
             $this->nodeId,
             $this->index,
             $this->token,
+            $this->attempt,
         );
     }
 
@@ -60,6 +90,7 @@ class RunFlowMessageNode implements ShouldQueue
             'flow_state_id' => $this->flowStateId,
             'node_id' => $this->nodeId,
             'index' => $this->index,
+            'attempt' => $this->attempt,
             'error' => $exception?->getMessage(),
         ]);
     }

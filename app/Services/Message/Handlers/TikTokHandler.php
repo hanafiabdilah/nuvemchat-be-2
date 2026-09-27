@@ -67,7 +67,7 @@ class TikTokHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
-            throw new Exception('Failed to send TikTok message: ' . $th->getMessage());
+            throw new Exception('Failed to send TikTok message: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -129,7 +129,7 @@ class TikTokHandler implements MessageHandlerInterface
                 'conversation_id' => $conversation->id,
             ]);
 
-            throw new Exception('Failed to send TikTok image: ' . $th->getMessage());
+            throw new Exception('Failed to send TikTok image: ' . $th->getMessage(), 0, $th);
         }
     }
 

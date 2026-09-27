@@ -6,7 +6,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Services\Contact\Photo\PhotoResolver;
 use App\Services\Contact\Photo\PhotoSource;
-use Illuminate\Support\Facades\Http;
+use App\Services\Contact\Photo\PhotoHttp;
 use RuntimeException;
 
 /**
@@ -34,7 +34,7 @@ class TelegramPhotoResolver implements PhotoResolver
             return null;
         }
 
-        $response = Http::timeout(20)->get("https://api.telegram.org/bot{$token}/getFile", [
+        $response = PhotoHttp::lookup()->get("https://api.telegram.org/bot{$token}/getFile", [
             'file_id' => $fileId,
         ]);
 
@@ -56,7 +56,7 @@ class TelegramPhotoResolver implements PhotoResolver
 
     private function userPhotoFileId(string $token, string $userId): ?string
     {
-        $response = Http::timeout(20)->get("https://api.telegram.org/bot{$token}/getUserProfilePhotos", [
+        $response = PhotoHttp::lookup()->get("https://api.telegram.org/bot{$token}/getUserProfilePhotos", [
             'user_id' => $userId,
             'limit' => 1,
         ]);
@@ -80,7 +80,7 @@ class TelegramPhotoResolver implements PhotoResolver
 
     private function groupPhotoFileId(string $token, string $chatId): ?string
     {
-        $response = Http::timeout(20)->get("https://api.telegram.org/bot{$token}/getChat", [
+        $response = PhotoHttp::lookup()->get("https://api.telegram.org/bot{$token}/getChat", [
             'chat_id' => $chatId,
         ]);
 

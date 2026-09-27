@@ -141,14 +141,6 @@ class MessageNodes
         return false;
     }
 
-    /**
-     * @param  array<int, array<string, mixed>>  $items
-     */
-    public static function totalDelay(array $items): int
-    {
-        return array_sum(array_map(fn ($item) => (int) ($item['delay'] ?? 0), $items));
-    }
-
     public static function clampDelay(mixed $delay): int
     {
         $seconds = (int) $delay;

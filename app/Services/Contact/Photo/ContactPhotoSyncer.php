@@ -8,7 +8,6 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Services\Media\MediaStorage;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -83,7 +82,7 @@ class ContactPhotoSyncer
         }
 
         try {
-            $response = Http::timeout(30)->get($source->url);
+            $response = PhotoHttp::download()->get($source->url);
         } catch (Throwable $e) {
             Log::warning('ContactPhotoSyncer: download failed', [
                 'contact_id' => $contact->id,

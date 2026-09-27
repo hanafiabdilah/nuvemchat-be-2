@@ -1,12 +1,28 @@
-# Worker antrean `media` (opsional, tapi dianjurkan)
+# Worker antrean `media` (TERPASANG di produksi, 27 Sep 2026)
 
 Media pesan masuk **tidak lagi** di-download di dalam request webhook. Alurnya
 sekarang: simpan teks → `broadcast(MessageReceived)` → job
 `App\Jobs\DownloadInboundMedia` mengambil file-nya → `broadcast(MessageUpdated)`.
 Agen melihat bubble + caption seketika, gambar/vídeo/áudio menyusul.
 
-Secara default job itu jatuh ke antrean `default`, jadi **rilis ini tidak butuh
-langkah ops apa pun** — worker `queue` yang sudah ada langsung mengerjakannya.
+Secara default job itu jatuh ke antrean `default`, jadi rilis media aslinya tak
+butuh langkah ops apa pun — worker `queue` yang sudah ada langsung
+mengerjakannya. **Sejak 27 Sep 2026 pemisahannya sudah terpasang**: service
+`queue-media` ada di `/opt/pingly/docker-compose.yml` dan `MEDIA_QUEUE=media`
+ada di `/opt/pingly/.env`. Bagian di bawah ini tetap ada sebagai catatan cara
+memasangnya (mis. di environment baru) dan cara rollback.
+
+## Apa saja yang naik antrean ini
+
+- `App\Jobs\DownloadInboundMedia` — unduhan media pesan masuk (16 MB itu wajar).
+- `App\Jobs\PublishInstagramPost` — post terjadwal.
+- `App\Jobs\SyncContactPhoto` — foto profil kontak.
+
+Yang ketiga ditambahkan setelah ia membunuh worker `default` dua kali pada 26 Sep
+2026 dan membuat jeda 3 detik sebuah node Message mendarat 63 detik terlambat.
+Lihat `docs/flow-message-delivery.md`; ringkasnya: foto profil layak dimiliki dan
+tak urgen sama sekali, sedangkan `default` adalah tempat bubble flow berikutnya
+menunggu.
 
 ## Kenapa tetap sebaiknya dipisah
 
@@ -31,8 +47,16 @@ ganti nama dan antreannya:
       - db
 ```
 
-`--timeout=300` harus ≥ `DownloadInboundMedia::$timeout` (180). `--tries` di
-sini hanya batas atas; jumlah percobaan sebenarnya diambil dari `$tries` job.
+`--timeout=300` harus ≥ `$timeout` job terpanjang di antrean ini
+(`DownloadInboundMedia` 180). `--tries` di sini hanya batas atas; jumlah
+percobaan sebenarnya diambil dari `$tries` job.
+
+⚠️ Angka itu bukan tuning. Job yang melewati timeout-nya tidak sekadar gagal:
+Laravel tak bisa melanjutkan proses dengan aman setelah alarm, jadi seluruh
+`queue:work` keluar dan semua job di belakangnya menunggu container hidup lagi.
+Worker tanpa `--timeout` memakai default 60 s, yang lebih kecil dari `$timeout`
+tiga job di `default` — itu yang dibiarkan selama berbulan-bulan sampai 27 Sep
+2026.
 
 ## 2. Arahkan job ke antrean itu
 

@@ -62,6 +62,7 @@ use App\Services\Lead\LeadResolver;
 use App\Services\Lead\TemperatureScorer;
 use App\Services\Live\LiveActivity;
 use App\Services\Message\MessageService;
+use App\Support\Errors\TransportFailure;
 use App\Support\OutboundHttp;
 use App\Support\PublicUrl;
 use Illuminate\Support\Collection;
@@ -78,6 +79,30 @@ class FlowExecutor
      * never fires.
      */
     protected const AI_MAX_TURNS = 20;
+
+    /**
+     * How many times one bubble of a Message node is sent before the sequence
+     * gives up.
+     *
+     * Only failures that provably never reached the channel are retried (see
+     * TransportFailure), so this cannot duplicate a bubble. Three attempts
+     * across the backoff below spans about a minute of a channel being
+     * unreachable, which is the shape of the outage this exists for: the one
+     * that lost a greeting and an offer image on 27 Sep 2026 lasted ~40s.
+     */
+    protected const MESSAGE_MAX_ATTEMPTS = 3;
+
+    /** Seconds to wait before the 2nd and 3rd attempt at the same bubble. */
+    protected const MESSAGE_RETRY_BACKOFF = [5, 20];
+
+    /**
+     * Slack on top of a chain's own pauses before its claim on the node is
+     * treated as abandoned. It is a floor under a chain whose worker died
+     * mid-sequence: without it the node stays marked busy forever and never
+     * sends again, which is the one failure a customer cannot recover from by
+     * writing back.
+     */
+    protected const MESSAGE_CHAIN_GRACE = 300;
 
     /**
      * Most incoming messages folded into a single AI turn.
@@ -371,7 +396,34 @@ class FlowExecutor
 
             if (! MessageNodes::hasDelay($items)) {
                 foreach ($items as $index => $item) {
-                    $this->sendMessageItem($flowState, $node, $item, $index);
+                    $delivery = $this->sendMessageItem($flowState, $node, $item, $index);
+
+                    if ($delivery->sent) {
+                        continue;
+                    }
+
+                    if ($delivery->retriable) {
+                        // Waiting here is not an option: this runs inside the
+                        // webhook that delivered the customer's message, and a
+                        // webhook that sleeps is a webhook the channel retries.
+                        // So the rest of the sequence — starting with the bubble
+                        // that just failed — is handed to the chain, which is
+                        // already built to pause between bubbles.
+                        $this->startMessageChain(
+                            $flowState,
+                            $node,
+                            $items,
+                            $index,
+                            self::MESSAGE_RETRY_BACKOFF[0],
+                            1,
+                        );
+
+                        return;
+                    }
+
+                    $this->failMessageNode($flowState, $node, $index, $delivery->reason);
+
+                    return;
                 }
 
                 $this->finishMessageNode($flowState, $node);
@@ -389,15 +441,20 @@ class FlowExecutor
     }
 
     /**
-     * Send one bubble of a Message node.
+     * Send one bubble of a Message node and say what happened to it.
      *
-     * A failed send is logged and swallowed: the rest of the sequence is still
-     * worth sending, and the alternative — throwing — would let a retry deliver
-     * the bubbles before it a second time.
+     * ⚠️ This used to log a failure and return, and the caller walked on to the
+     * next bubble. That is what produced the failure this method was rewritten
+     * for: on 27 Sep 2026 a WhatsApp instance was unreachable for ~40s, a
+     * greeting and the offer image were dropped, no row was ever written for
+     * either — so nothing in the dashboard showed it — and the customer got the
+     * third bubble first. From their seat the sequence had arrived scrambled,
+     * and the funnel went on to ask "posso enviar?" about material that never
+     * left the building.
      *
      * @param  array<string, mixed>  $item
      */
-    protected function sendMessageItem(FlowState $flowState, FlowNode $node, array $item, int $index): void
+    protected function sendMessageItem(FlowState $flowState, FlowNode $node, array $item, int $index): BubbleDelivery
     {
         $conversation = $flowState->conversation;
 
@@ -405,13 +462,15 @@ class FlowExecutor
             $message = $this->sendByMessageType($conversation, $item, $flowState);
 
             if (! $message) {
+                // A handler that answers null rather than throwing: it decided
+                // there was nothing to send. Not worth another attempt.
                 Log::error('FlowExecutor: Failed to send message', [
                     'node_id' => $node->id,
                     'index' => $index,
                     'conversation_id' => $conversation->id,
                 ]);
 
-                return;
+                return BubbleDelivery::failed(null);
             }
 
             Log::info('FlowExecutor: Message sent', [
@@ -422,12 +481,22 @@ class FlowExecutor
             ]);
 
             broadcast(new MessageReceived($message));
+
+            return BubbleDelivery::sent();
         } catch (\Throwable $th) {
+            $retriable = TransportFailure::undelivered($th);
+
             Log::error('FlowExecutor: Error sending message node bubble', [
                 'node_id' => $node->id,
                 'index' => $index,
+                'conversation_id' => $conversation->id,
+                'retriable' => $retriable,
                 'error' => $th->getMessage(),
             ]);
+
+            return $retriable
+                ? BubbleDelivery::retriable($th->getMessage())
+                : BubbleDelivery::failed($th->getMessage());
         }
     }
 
@@ -456,38 +525,163 @@ class FlowExecutor
     }
 
     /**
-     * Hand a delayed sequence to the queue, starting with the first bubble.
+     * Hand a sequence to the queue, starting at one bubble.
+     *
+     * Normally that is the first one, and the pause is its own. The other caller
+     * is the inline path recovering from an unreachable channel: it starts part
+     * way in, on the bubble that just failed, with a retry backoff instead.
      *
      * @param  array<int, array<string, mixed>>  $items
+     * @param  int  $index  First bubble this chain is responsible for.
+     * @param  int|null  $delay  Pause before it; its own when null.
+     * @param  int  $attempt  Sends of that bubble already failed.
      */
-    protected function startMessageChain(FlowState $flowState, FlowNode $node, array $items): void
-    {
+    protected function startMessageChain(
+        FlowState $flowState,
+        FlowNode $node,
+        array $items,
+        int $index = 0,
+        ?int $delay = null,
+        int $attempt = 0,
+    ): void {
         $token = (string) Str::uuid();
+        $delay ??= (int) ($items[$index]['delay'] ?? 0);
         $stateData = $flowState->state_data ?? [];
 
-        // The expiry is a floor under a chain whose worker died mid-sequence:
-        // without it the node would stay marked "busy" forever and never send
-        // again, which is the one failure a customer cannot recover from by
-        // writing back.
         $stateData[$this->messageChainKey($node->id)] = [
             'token' => $token,
-            'expires_at' => now()->addSeconds(MessageNodes::totalDelay($items) + 300)->timestamp,
+            'expires_at' => $this->messageChainExpiry($items, $index, $delay),
         ];
 
         $flowState->update(['state_data' => $stateData]);
 
-        $firstDelay = (int) ($items[0]['delay'] ?? 0);
+        RunFlowMessageNode::dispatch($flowState->id, $node->id, $index, $token, $attempt)
+            ->delay(now()->addSeconds($delay));
 
-        RunFlowMessageNode::dispatch($flowState->id, $node->id, 0, $token)
-            ->delay(now()->addSeconds($firstDelay));
-
-        LiveActivity::flowDelay($flowState->conversation, $node, $firstDelay, 0, count($items));
+        LiveActivity::flowDelay($flowState->conversation, $node, $delay, $index, count($items));
 
         Log::info('FlowExecutor: Message sequence queued', [
             'node_id' => $node->id,
             'conversation_id' => $flowState->conversation_id,
             'items' => count($items),
+            'from_index' => $index,
+            'attempt' => $attempt,
         ]);
+    }
+
+    /**
+     * When this chain's claim on the node stops being believed.
+     *
+     * Measured from the work still ahead of it rather than from the whole node,
+     * so a chain that starts part way in — or is waiting out a retry backoff —
+     * does not claim a longer window than it needs. A chain that died is then
+     * forgotten sooner, and the node can send again.
+     *
+     * @param  array<int, array<string, mixed>>  $items
+     * @param  int  $index  Bubble about to run.
+     * @param  int  $waitBefore  Seconds until it does — its own pause, or a
+     *         retry backoff, which is not the same number.
+     */
+    protected function messageChainExpiry(array $items, int $index, int $waitBefore): int
+    {
+        $remaining = $waitBefore;
+
+        // From the *next* bubble on: the wait before this one is $waitBefore,
+        // and counting its own pause as well would charge it twice.
+        for ($i = $index + 1; $i < count($items); $i++) {
+            $remaining += (int) ($items[$i]['delay'] ?? 0);
+        }
+
+        return now()->addSeconds($remaining + self::MESSAGE_CHAIN_GRACE)->timestamp;
+    }
+
+    /**
+     * Send the same bubble again, after a pause.
+     *
+     * Deliberately a fresh delayed job rather than a sleep inside this one: the
+     * `default` worker this runs on is shared with every other tenant's bubbles,
+     * and holding it through a backoff plus another connect timeout is how one
+     * unreachable instance becomes everybody's delay. The chain token is kept,
+     * so ownership of the node does not change hands.
+     *
+     * The expiry is pushed out to cover the wait. Without that the chain can
+     * outlive its own claim while it is still working, and the next job steps
+     * aside as a stale one — the sequence would stop silently, which is the
+     * failure this whole path exists to end.
+     *
+     * @param  array<int, array<string, mixed>>  $items
+     */
+    protected function retryMessageItem(
+        FlowState $flowState,
+        FlowNode $node,
+        array $items,
+        int $index,
+        string $token,
+        int $attempt,
+    ): void {
+        $backoff = self::MESSAGE_RETRY_BACKOFF[$attempt - 1]
+            ?? self::MESSAGE_RETRY_BACKOFF[count(self::MESSAGE_RETRY_BACKOFF) - 1];
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[$this->messageChainKey($node->id)] = [
+            'token' => $token,
+            'expires_at' => $this->messageChainExpiry($items, $index, $backoff),
+        ];
+
+        $flowState->update(['state_data' => $stateData]);
+
+        RunFlowMessageNode::dispatch($flowState->id, $node->id, $index, $token, $attempt)
+            ->delay(now()->addSeconds($backoff));
+
+        LiveActivity::flowDelay($flowState->conversation, $node, $backoff, $index, count($items));
+
+        Log::warning('FlowExecutor: retrying a message node bubble the channel never received', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'index' => $index,
+            'attempt' => $attempt,
+            'backoff_seconds' => $backoff,
+        ]);
+    }
+
+    /**
+     * A bubble could not be delivered — stop here and say so.
+     *
+     * Walking on was the old behaviour and it is the wrong one: the rest of a
+     * sequence is written on the assumption that what came before it arrived,
+     * so continuing sends a script that talks about material the customer never
+     * received. Stopping leaves the conversation Pending, which is the queue
+     * everybody watches, and the note is what tells the agent who picks it up
+     * why the thread ends mid-sentence.
+     *
+     * Failed rather than Stopped: Stopped means a human took the conversation
+     * off the bot, and these two should not read the same in the Live board.
+     */
+    protected function failMessageNode(FlowState $flowState, FlowNode $node, int $index, ?string $reason): void
+    {
+        $position = $index + 1;
+
+        Log::error('FlowExecutor: message sequence stopped, a bubble could not be delivered', [
+            'flow_state_id' => $flowState->id,
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'index' => $index,
+            'reason' => $reason,
+        ]);
+
+        // `reason` is already our own copy — MessageService::guard() translated
+        // whatever the channel said before it ever got here — so it is safe to
+        // put in front of an agent.
+        SystemMessage::info(
+            $flowState->conversation,
+            $reason
+                ? "The flow stopped: message {$position} could not be delivered. {$reason}"
+                : "The flow stopped: message {$position} could not be delivered.",
+            $reason ? 'flow_message_failed_reason' : 'flow_message_failed',
+            array_filter(['position' => $position, 'reason' => $reason]),
+        );
+
+        $this->endFlowHere($flowState, FlowStateStatus::Failed);
     }
 
     /**
@@ -497,7 +691,7 @@ class FlowExecutor
      * longer owns the node: a newer one took over, an agent took the
      * conversation, or the flow left this node by some other path.
      */
-    public function runScheduledMessageItem(int $flowStateId, int $nodeId, int $index, string $token): void
+    public function runScheduledMessageItem(int $flowStateId, int $nodeId, int $index, string $token, int $attempt = 0): void
     {
         $flowState = FlowState::find($flowStateId);
 
@@ -533,7 +727,20 @@ class FlowExecutor
             return;
         }
 
-        $this->sendMessageItem($flowState, $node, $item, $index);
+        $delivery = $this->sendMessageItem($flowState, $node, $item, $index);
+
+        if (! $delivery->sent) {
+            if ($delivery->retriable && $attempt + 1 < self::MESSAGE_MAX_ATTEMPTS) {
+                $this->retryMessageItem($flowState, $node, $items, $index, $token, $attempt + 1);
+
+                return;
+            }
+
+            $this->clearMessageChain($flowState, $nodeId);
+            $this->failMessageNode($flowState, $node, $index, $delivery->reason);
+
+            return;
+        }
 
         $next = $items[$index + 1] ?? null;
 

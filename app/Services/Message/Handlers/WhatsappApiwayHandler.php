@@ -237,7 +237,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp message');
+            throw new Exception('Failed to send WhatsApp message', 0, $th);
         }
     }
 
@@ -273,7 +273,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send WhatsApp image by URL and download fallback failed');
+                    throw new Exception('Failed to send WhatsApp image by URL and download fallback failed', 0, $th);
                 }
                 $data['image'] = $file;
             }
@@ -338,7 +338,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp image message');
+            throw new Exception('Failed to send WhatsApp image message', 0, $th);
         }
     }
 
@@ -370,7 +370,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send WhatsApp audio by URL and download fallback failed');
+                    throw new Exception('Failed to send WhatsApp audio by URL and download fallback failed', 0, $th);
                 }
                 $data['audio'] = $file;
             }
@@ -477,7 +477,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp audio message');
+            throw new Exception('Failed to send WhatsApp audio message', 0, $th);
         }
     }
 
@@ -514,7 +514,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send WhatsApp video by URL and download fallback failed');
+                    throw new Exception('Failed to send WhatsApp video by URL and download fallback failed', 0, $th);
                 }
                 $data['video'] = $file;
             }
@@ -595,7 +595,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp video message');
+            throw new Exception('Failed to send WhatsApp video message', 0, $th);
         }
     }
 
@@ -636,7 +636,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send WhatsApp document by URL and download fallback failed');
+                    throw new Exception('Failed to send WhatsApp document by URL and download fallback failed', 0, $th);
                 }
                 $data['document'] = $file;
             }
@@ -725,7 +725,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp document message');
+            throw new Exception('Failed to send WhatsApp document message', 0, $th);
         }
     }
 
@@ -789,7 +789,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to edit WhatsApp message: ' . $th->getMessage());
+            throw new Exception('Failed to edit WhatsApp message: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -848,7 +848,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to delete WhatsApp message: ' . $th->getMessage());
+            throw new Exception('Failed to delete WhatsApp message: ' . $th->getMessage(), 0, $th);
         }
     }
 

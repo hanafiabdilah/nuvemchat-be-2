@@ -6,7 +6,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Services\Contact\Photo\PhotoResolver;
 use App\Services\Contact\Photo\PhotoSource;
-use Illuminate\Support\Facades\Http;
+use App\Services\Contact\Photo\PhotoHttp;
 use RuntimeException;
 
 /**
@@ -26,7 +26,7 @@ class DiscordPhotoResolver implements PhotoResolver
             throw new RuntimeException('Discord connection has no bot token');
         }
 
-        $response = Http::timeout(20)
+        $response = PhotoHttp::lookup()
             ->withHeaders(['Authorization' => 'Bot ' . $token])
             ->get(self::API_BASE . '/users/' . $contact->external_id);
 

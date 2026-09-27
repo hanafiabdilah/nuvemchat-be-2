@@ -136,6 +136,11 @@ seperti sebelumnya.
   beberapa detik dari jendela debounce dikirim **andal, tanpa langkah ops**.
   Hanya ambang yang jauh lebih panjang yang jatuh ke job berjadwal — dan hanya di
   situ `AI_PRESENCE_QUEUE` dgn worker sendiri berarti sesuatu.
+  **Sejak 27 Sep 2026 worker itu ada**: service `queue-presence` di
+  `/opt/pingly/docker-compose.yml` (`--queue=presence --sleep=1`) dan
+  `AI_PRESENCE_QUEUE=presence` di `.env`, jadi ambang panjang pun terkirim.
+  Dipasang bersama `queue-media` saat mengurai kenapa jeda sebuah node Message
+  melar 61 detik — lihat `docs/flow-message-delivery.md`.
 - Balasan yang datang cepat tetap tak pernah didahului permintaan maaf atas
   keterlambatan yang tak terjadi: ambangnya tetap dihormati, hanya diukur lebih
   awal. Node yang ambangnya belum terjangkau tetap diam.
@@ -162,7 +167,7 @@ seperti sebelumnya.
 | `.env` / `config/ai.php` | `AI_TYPING_MAX_SECONDS` | 180 detik (plafon keras 600) |
 | `.env` / `config/ai.php` | `AI_HOLDING_MESSAGES_ENABLED` | `true` (kill switch platform) |
 | `.env` / `config/ai.php` | `AI_HOLDING_AFTER_SECONDS` | 8 detik |
-| `.env` / `config/ai.php` | `AI_PRESENCE_QUEUE` | `default` (antrean untuk typing + pesan tunggu) |
+| `.env` / `config/ai.php` | `AI_PRESENCE_QUEUE` | default kode `default`; **produksi `presence`** (worker `queue-presence`) |
 | Flow builder → node AIAgent | `holding_message.{messages,media_messages,after_seconds,enabled}` | kosong = diam |
 
 ### ⚠️ Ops

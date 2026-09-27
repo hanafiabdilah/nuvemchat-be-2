@@ -95,7 +95,7 @@ class DiscordHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Discord message: ' . $th->getMessage());
+            throw new Exception('Failed to send Discord message: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -271,7 +271,7 @@ class DiscordHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception("Failed to send Discord {$fileKey}: " . $th->getMessage());
+            throw new Exception("Failed to send Discord {$fileKey}: " . $th->getMessage(), 0, $th);
         }
     }
 

@@ -6,7 +6,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Services\Contact\Photo\PhotoResolver;
 use App\Services\Contact\Photo\PhotoSource;
-use Illuminate\Support\Facades\Http;
+use App\Services\Contact\Photo\PhotoHttp;
 use RuntimeException;
 
 class MessengerPhotoResolver implements PhotoResolver
@@ -23,7 +23,7 @@ class MessengerPhotoResolver implements PhotoResolver
 
         // A PSID only exposes the basic profile fields, and only to the page
         // token that the person messaged.
-        $response = Http::timeout(20)->get(self::GRAPH_BASE . '/' . $contact->external_id, [
+        $response = PhotoHttp::lookup()->get(self::GRAPH_BASE . '/' . $contact->external_id, [
             'fields' => 'profile_pic',
             'access_token' => $accessToken,
         ]);

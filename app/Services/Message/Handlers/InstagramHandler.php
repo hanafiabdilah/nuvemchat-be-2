@@ -136,7 +136,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Instagram message: ' . $th->getMessage());
+            throw new Exception('Failed to send Instagram message: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -161,7 +161,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send Instagram image by URL and download fallback failed');
+                    throw new Exception('Failed to send Instagram image by URL and download fallback failed', 0, $th);
                 }
                 $data['image'] = $file;
             }
@@ -248,7 +248,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Instagram image: ' . $th->getMessage());
+            throw new Exception('Failed to send Instagram image: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -274,7 +274,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send Instagram audio by URL and download fallback failed');
+                    throw new Exception('Failed to send Instagram audio by URL and download fallback failed', 0, $th);
                 }
                 $data['audio'] = $file;
             }
@@ -470,7 +470,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Instagram audio: ' . $th->getMessage());
+            throw new Exception('Failed to send Instagram audio: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -495,7 +495,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send Instagram video by URL and download fallback failed');
+                    throw new Exception('Failed to send Instagram video by URL and download fallback failed', 0, $th);
                 }
                 $data['video'] = $file;
             }
@@ -582,7 +582,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Instagram video: ' . $th->getMessage());
+            throw new Exception('Failed to send Instagram video: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -613,7 +613,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send Instagram document by URL and download fallback failed');
+                    throw new Exception('Failed to send Instagram document by URL and download fallback failed', 0, $th);
                 }
                 $data['document'] = $file;
             }
@@ -704,7 +704,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Instagram document: ' . $th->getMessage());
+            throw new Exception('Failed to send Instagram document: ' . $th->getMessage(), 0, $th);
         }
     }
 

@@ -7,7 +7,7 @@ use App\Models\Contact;
 use App\Services\Connection\Proxy\ApiwayConfig;
 use App\Services\Contact\Photo\PhotoResolver;
 use App\Services\Contact\Photo\PhotoSource;
-use Illuminate\Support\Facades\Http;
+use App\Services\Contact\Photo\PhotoHttp;
 use RuntimeException;
 
 /**
@@ -39,7 +39,7 @@ class WhatsappApiwayPhotoResolver implements PhotoResolver
             throw new RuntimeException('API Way connection has no linked instance');
         }
 
-        $response = Http::timeout(20)
+        $response = PhotoHttp::lookup()
             ->withHeaders(['Authorization' => 'Bearer ' . $token])
             ->get(ApiwayConfig::baseUrl() . '/v1/contacts/profile-picture', [
                 'instanceId' => $instanceId,

@@ -84,7 +84,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Messenger message: ' . $th->getMessage());
+            throw new Exception('Failed to send Messenger message: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -164,7 +164,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception("Failed to send Messenger {$fbType} by URL and download fallback failed");
+                    throw new Exception("Failed to send Messenger {$fbType} by URL and download fallback failed", 0, $th);
                 }
                 $data[$fileKey] = $file;
             }
@@ -205,7 +205,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception("Failed to send Messenger {$fbType}: " . $th->getMessage());
+            throw new Exception("Failed to send Messenger {$fbType}: " . $th->getMessage(), 0, $th);
         }
     }
 

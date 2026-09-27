@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Services\Contact\Photo\ContactPhotoSyncer;
+use App\Services\Contact\Photo\PhotoHttp;
 use App\Services\Contact\Photo\PhotoResolverFactory;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -22,7 +23,18 @@ class SyncContactPhoto implements ShouldBeUnique, ShouldQueue
 
     public int $tries = 2;
 
-    public int $timeout = 60;
+    /**
+     * Derived from the network budget, never written by hand.
+     *
+     * ⚠️ A job that hits its timeout takes the whole `queue:work` process with
+     * it — Laravel cannot safely resume past the alarm — so every job still
+     * waiting behind it is stalled until the container comes back, about a
+     * minute. This job did exactly that twice on 26 Sep 2026, and what it
+     * stalled was a flow's 3-second pause, which then arrived 63 seconds late.
+     * The cause was arithmetic: the lookups and the download could add up to
+     * 90s against a hand-written 60. Keep the two tied together.
+     */
+    public int $timeout = PhotoHttp::BUDGET + PhotoHttp::OVERHEAD;
 
     /**
      * NB: the channel connection cannot be called $connection — the Queueable
@@ -32,7 +44,15 @@ class SyncContactPhoto implements ShouldBeUnique, ShouldQueue
     public function __construct(
         public Contact $contact,
         public Connection $channelConnection,
-    ) {}
+    ) {
+        // Off the default queue. A profile picture is worth having and worth
+        // nothing urgently, while `default` is where a flow's next bubble and an
+        // AI turn wait — and this job is network-bound against whichever channel
+        // is slow today. It belongs with the other heavy, patient, non-urgent
+        // media work; with MEDIA_QUEUE unset that is still `default`, so this
+        // needs no deployment step to be correct.
+        $this->onQueue(config('queue.media'));
+    }
 
     /** One in-flight lookup per contact; bursts from a busy group collapse into it. */
     public function uniqueId(): string

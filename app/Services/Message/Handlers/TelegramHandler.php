@@ -151,7 +151,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Telegram message');
+            throw new Exception('Failed to send Telegram message', 0, $th);
         }
     }
 
@@ -177,7 +177,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send Telegram image by URL and download fallback failed');
+                    throw new Exception('Failed to send Telegram image by URL and download fallback failed', 0, $th);
                 }
                 $data['image'] = $file;
             }
@@ -228,7 +228,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Telegram image message');
+            throw new Exception('Failed to send Telegram image message', 0, $th);
         }
     }
 
@@ -253,7 +253,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send Telegram audio by URL and download fallback failed');
+                    throw new Exception('Failed to send Telegram audio by URL and download fallback failed', 0, $th);
                 }
                 $data['audio'] = $file;
             }
@@ -303,7 +303,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Telegram audio message');
+            throw new Exception('Failed to send Telegram audio message', 0, $th);
         }
     }
 
@@ -329,7 +329,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send Telegram video by URL and download fallback failed');
+                    throw new Exception('Failed to send Telegram video by URL and download fallback failed', 0, $th);
                 }
                 $data['video'] = $file;
             }
@@ -380,7 +380,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Telegram video message');
+            throw new Exception('Failed to send Telegram video message', 0, $th);
         }
     }
 
@@ -406,7 +406,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 ]);
                 $file = $media->toUploadedFile();
                 if (!$file) {
-                    throw new Exception('Failed to send Telegram document by URL and download fallback failed');
+                    throw new Exception('Failed to send Telegram document by URL and download fallback failed', 0, $th);
                 }
                 $data['document'] = $file;
             }
@@ -460,7 +460,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Telegram document message');
+            throw new Exception('Failed to send Telegram document message', 0, $th);
         }
     }
 
@@ -509,7 +509,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to edit Telegram message: ' . $th->getMessage());
+            throw new Exception('Failed to edit Telegram message: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -544,7 +544,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to delete Telegram message: ' . $th->getMessage());
+            throw new Exception('Failed to delete Telegram message: ' . $th->getMessage(), 0, $th);
         }
     }
 

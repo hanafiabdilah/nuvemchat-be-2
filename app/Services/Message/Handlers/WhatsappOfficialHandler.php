@@ -99,7 +99,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp message: ' . $th->getMessage());
+            throw new Exception('Failed to send WhatsApp message: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -182,7 +182,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp template: ' . $th->getMessage());
+            throw new Exception('Failed to send WhatsApp template: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -235,7 +235,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp interactive message: ' . $th->getMessage());
+            throw new Exception('Failed to send WhatsApp interactive message: ' . $th->getMessage(), 0, $th);
         }
     }
 
@@ -774,7 +774,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
 
                 $downloaded = $media->toUploadedFile();
                 if (!$downloaded) {
-                    throw new Exception("Failed to send WhatsApp {$mediaType} by URL and download fallback failed");
+                    throw new Exception("Failed to send WhatsApp {$mediaType} by URL and download fallback failed", 0, $th);
                 }
                 $media = OutboundMedia::fromFile($downloaded);
             }
@@ -816,7 +816,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception("Failed to send WhatsApp {$mediaType}: " . $th->getMessage());
+            throw new Exception("Failed to send WhatsApp {$mediaType}: " . $th->getMessage(), 0, $th);
         }
     }
 
