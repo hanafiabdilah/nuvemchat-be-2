@@ -3,6 +3,7 @@
 namespace App\Services\Message\Handlers;
 
 use App\Enums\Message\MessageType;
+use App\Enums\Message\PresenceKind;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -307,8 +308,11 @@ class DiscordHandler implements MessageHandlerInterface, SendsTypingIndicator
      * clear it early, so a withdrawal has no call to make — the agent stopping
      * simply means the next refresh never comes. Returns 204 with no body.
      */
-    public function handleTyping(Conversation $conversation, bool $typing = true): bool
-    {
+    public function handleTyping(
+        Conversation $conversation,
+        bool $typing = true,
+        PresenceKind $kind = PresenceKind::Typing,
+    ): bool {
         if (!$typing) {
             return false;
         }

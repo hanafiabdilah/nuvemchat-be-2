@@ -4,6 +4,7 @@ namespace App\Services\Message\Handlers;
 
 use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
+use App\Enums\Message\PresenceKind;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -262,8 +263,11 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
      * the recipient and nothing else — no messaging_type, no message body —
      * or it is rejected. typing_off exists here, unlike on Cloud API.
      */
-    public function handleTyping(Conversation $conversation, bool $typing = true): bool
-    {
+    public function handleTyping(
+        Conversation $conversation,
+        bool $typing = true,
+        PresenceKind $kind = PresenceKind::Typing,
+    ): bool {
         return $this->senderAction($conversation, $typing ? 'typing_on' : 'typing_off');
     }
 

@@ -4,6 +4,7 @@ namespace App\Services\Message\Handlers;
 
 use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
+use App\Enums\Message\PresenceKind;
 use App\Enums\Message\SenderType;
 use App\Models\Connection;
 use App\Models\Conversation;
@@ -705,8 +706,11 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
      * a second endpoint. Meta also offers no way to turn it off — it clears
      * itself when the reply lands, or after 25s — so withdrawing is a no-op.
      */
-    public function handleTyping(Conversation $conversation, bool $typing = true): bool
-    {
+    public function handleTyping(
+        Conversation $conversation,
+        bool $typing = true,
+        PresenceKind $kind = PresenceKind::Typing,
+    ): bool {
         return $typing ? $this->sendReadReceipt($conversation, typing: true) : false;
     }
 

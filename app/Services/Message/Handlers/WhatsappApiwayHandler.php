@@ -5,6 +5,7 @@ namespace App\Services\Message\Handlers;
 use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Conversation\Type as ConversationType;
 use App\Enums\Message\MessageType;
+use App\Enums\Message\PresenceKind;
 use App\Enums\Message\SenderType;
 use App\Events\MessageReceived;
 use App\Models\Conversation;
@@ -860,8 +861,11 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
      * type forever. Media is always `text`; "recording audio" would be a
      * different, and false, claim about what the agent is doing.
      */
-    public function handleTyping(Conversation $conversation, bool $typing = true): bool
-    {
+    public function handleTyping(
+        Conversation $conversation,
+        bool $typing = true,
+        PresenceKind $kind = PresenceKind::Typing,
+    ): bool {
         $connection = $conversation->connection;
         $instanceId = $connection->credentials['instance_id'] ?? null;
         $token = $connection->credentials['token'] ?? null;
@@ -876,7 +880,14 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             ->post($this->base() . '/v1/chats/send-presence?instanceId=' . $instanceId, [
                 'phone' => $conversation->external_id,
                 'presence' => $typing ? 'composing' : 'paused',
-                'media' => 'text',
+                // whatsmeow carries the kind as an attribute on the composing
+                // state rather than as a state of its own: `audio` is what
+                // makes WhatsApp write "gravando áudio…" instead of
+                // "digitando…". Unverified against this core's own docs — the
+                // field was already being sent as `text`, and the whole call is
+                // best-effort, so the worst case is a decoration the core
+                // ignores.
+                'media' => $kind->whatsmeowMedia(),
             ]);
 
         return $response->successful();

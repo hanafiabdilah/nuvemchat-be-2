@@ -4,6 +4,7 @@ namespace App\Services\Message\Handlers;
 
 use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
+use App\Enums\Message\PresenceKind;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -555,15 +556,22 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
      * interval is per-channel rather than one number for everyone. There is no
      * "stop" action; the countdown is the stop.
      */
-    public function handleTyping(Conversation $conversation, bool $typing = true): bool
-    {
+    public function handleTyping(
+        Conversation $conversation,
+        bool $typing = true,
+        PresenceKind $kind = PresenceKind::Typing,
+    ): bool {
         if (!$typing) {
             return false;
         }
 
         return (new Api($conversation->connection->credentials['token']))->sendChatAction([
             'chat_id' => $conversation->external_id,
-            'action' => 'typing',
+            // The one channel that draws all three states, so it gets the one
+            // the bubble deserves: "gravando mensagem de voz" ahead of a voice
+            // note is a promise about what is coming, and "digitando" there is
+            // the wrong promise.
+            'action' => $kind->telegramAction(),
         ]);
     }
 }

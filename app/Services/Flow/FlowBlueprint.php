@@ -37,9 +37,9 @@ class FlowBlueprint
 {
     /** Allowed node types. The frontend palette must stay in sync. */
     public const NODE_TYPES = [
-        'start', 'message', 'response', 'wait_response', 'status', 'tagging',
-        'condition', 'action', 'ai_agent', 'http_request', 'interactive',
-        'payment', 'invoice', 'pixel', 'go_to_flow', 'lead',
+        'start', 'message', 'interval', 'response', 'wait_response', 'status',
+        'tagging', 'condition', 'action', 'ai_agent', 'http_request',
+        'interactive', 'payment', 'invoice', 'pixel', 'go_to_flow', 'lead',
     ];
 
     /**
@@ -108,6 +108,17 @@ class FlowBlueprint
                 'messages.*.message_type' => ['nullable', 'string', Rule::in(MessageNodes::MESSAGE_TYPES)],
                 'messages.*.attachment_url' => ['nullable', 'string'],
                 'messages.*.delay' => ['nullable', 'integer', 'min:0', 'max:'.MessageNodes::MAX_DELAY_SECONDS],
+                'presence' => ['nullable', 'boolean'],
+                'messages.*.presence' => ['nullable', 'boolean'],
+            ],
+            // Waits for the clock and carries on. Every field optional: with
+            // nothing set it is the five-second beat a new node starts as.
+            // `unit` is how the builder shows the wait; the engine only reads
+            // the seconds.
+            'interval' => [
+                'seconds' => ['nullable', 'integer', 'min:0', 'max:'.IntervalNodes::MAX_SECONDS],
+                'unit' => ['nullable', 'string', Rule::in(array_keys(IntervalNodes::UNITS))],
+                'presence' => ['nullable', 'boolean'],
             ],
             'response' => [
                 'body' => ['required', 'string'],
@@ -810,6 +821,7 @@ class FlowBlueprint
         $messageTypes = self::quoted(MessageNodes::MESSAGE_TYPES);
         $maxItems = MessageNodes::MAX_ITEMS;
         $maxDelay = MessageNodes::MAX_DELAY_SECONDS;
+        $maxInterval = IntervalNodes::MAX_SECONDS;
         $maxWaitSeconds = WaitResponseNodes::MAX_TIMEOUT_SECONDS;
         $maxWaitDays = intdiv(WaitResponseNodes::MAX_TIMEOUT_SECONDS, 86400);
         $maxBuffer = WaitResponseNodes::MAX_BUFFER_SECONDS;
@@ -895,7 +907,29 @@ class FlowBlueprint
           user supplied a URL.
         - Never waits: the next node runs right after the last bubble. To stop until
           the customer writes, follow it with a wait_response node.
+        - `presence` (per bubble, default true): show "digitando…" — or "gravando
+          áudio…" before an audio bubble — for that bubble's pause. Only set it to
+          false where the silence is deliberate.
         - One output.
+
+        ### interval — wait a while, then carry on
+        {
+          "seconds": 30,
+          "unit": "seconds",
+          "presence": false
+        }
+        - `seconds`: 1–{$maxInterval} (24h). `unit` is display only — always write the
+          value in `seconds`.
+        - Use it BETWEEN nodes: to let a long message be read, or to space out a
+          step that follows something else. Inside one message node, a bubble's own
+          `delay` does the same job with less wiring — prefer that.
+        - Ends on the clock, NOT on the customer. A message arriving during the wait
+          changes nothing. When the customer should be able to end it, the node you
+          want is wait_response.
+        - `presence` (default false): show "digitando…" for the wait. Leave it off
+          unless the interval is short and a message follows straight after — on a
+          long one it hurries a customer who was being given room.
+        - Sends nothing. One output.
 
         ### response — ask a question and store a valid answer
         {

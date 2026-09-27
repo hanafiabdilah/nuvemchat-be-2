@@ -121,6 +121,25 @@ final class LiveActivity
     }
 
     /**
+     * An Interval node, waiting out the clock.
+     *
+     * Rides the same phase as a Message node's pause because to anybody reading
+     * the panel it is the same fact — the flow is holding, and here is when it
+     * resumes. It carries no bubble position, though: "message 2 of 3" is true
+     * of a sequence and meaningless of a node that sends nothing, so the
+     * `interval` marker is what lets the client word it as a step rather than a
+     * message.
+     */
+    public static function flowInterval(Conversation $conversation, FlowNode $node, int $seconds): void
+    {
+        self::emit($conversation, self::FLOW_DELAY, $node, [
+            'resume_at' => now()->addSeconds($seconds)->timestamp,
+            'seconds' => $seconds,
+            'interval' => true,
+        ], $seconds + 5);
+    }
+
+    /**
      * @param  int|null  $timeoutSeconds  0/null when the author wired no
      *                                    no-reply branch — the node then waits
      *                                    indefinitely and there is no clock to

@@ -2,6 +2,8 @@
 
 namespace App\Services\Flow;
 
+use App\Enums\Message\PresenceKind;
+
 /**
  * The Message node's shape.
  *
@@ -43,10 +45,13 @@ class MessageNodes
 
     /**
      * The bubbles this node sends, in order, each as
-     * ['message_type', 'body', 'attachment_url', 'delay'].
+     * ['message_type', 'body', 'attachment_url', 'delay', 'presence'].
      *
      * `delay` is the pause *before* that bubble — which is what the single
      * legacy `delay` always meant, so an old node keeps its exact timing.
+     *
+     * `presence` is whether that pause is filled with "digitando…" (or
+     * "gravando áudio…" before an audio bubble) instead of silence.
      *
      * @param  array<string, mixed>  $data
      * @return array<int, array<string, mixed>>
@@ -61,6 +66,7 @@ class MessageNodes
                 'body' => $data['body'] ?? '',
                 'attachment_url' => $data['attachment_url'] ?? null,
                 'delay' => $data['delay'] ?? 0,
+                'presence' => $data['presence'] ?? null,
             ]];
         }
 
@@ -99,7 +105,43 @@ class MessageNodes
             'body' => (string) ($entry['body'] ?? ''),
             'attachment_url' => is_string($url) && trim($url) !== '' ? $url : null,
             'delay' => self::clampDelay($entry['delay'] ?? 0),
+            'presence' => self::presenceEnabled($entry),
         ];
+    }
+
+    /**
+     * Whether this bubble's pause is shown to the customer.
+     *
+     * ⚠️ Absent reads as **on**, and that is a considered choice rather than a
+     * convenience. Every node written before this key existed still has a pause
+     * its author typed into a field labelled "wait before sending" — a request
+     * for a sequence that reads like somebody writing, which is precisely what
+     * the indicator delivers and what its absence has been quietly withholding.
+     * Reading the missing key as "off" would have shipped the feature switched
+     * off for every flow that already wanted it.
+     *
+     * The platform-wide way back is config('flow.presence.enabled'); this is
+     * the per-bubble one, for the pause that is a beat of silence on purpose.
+     *
+     * @param  array<string, mixed>  $entry
+     */
+    public static function presenceEnabled(array $entry): bool
+    {
+        $value = $entry['presence'] ?? null;
+
+        return $value === null ? true : (bool) $value;
+    }
+
+    /**
+     * What the customer should be told is being prepared — which follows from
+     * the bubble's own type, not from anything the author has to pick. A node
+     * that sends a voice note is recording one.
+     *
+     * @param  array<string, mixed>  $item
+     */
+    public static function presenceKind(array $item): PresenceKind
+    {
+        return PresenceKind::forMessageType($item['message_type'] ?? 'text');
     }
 
     /**

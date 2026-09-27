@@ -22,6 +22,7 @@ use App\Exceptions\Billing\CreditExhaustedException;
 use App\Jobs\ExpireFlowPayment;
 use App\Jobs\ReleaseFlowInvoice;
 use App\Jobs\RunAiAgentTurn;
+use App\Jobs\RunFlowIntervalNode;
 use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowWaitResponseBuffer;
 use App\Jobs\RunFlowWaitResponseTimeout;
@@ -288,6 +289,10 @@ class FlowExecutor
 
             case NodeType::Message:
                 $this->executeMessageNode($flowState, $node);
+                break;
+
+            case NodeType::Interval:
+                $this->executeIntervalNode($flowState, $node);
                 break;
 
             case NodeType::Response:
@@ -558,6 +563,14 @@ class FlowExecutor
         RunFlowMessageNode::dispatch($flowState->id, $node->id, $index, $token, $attempt)
             ->delay(now()->addSeconds($delay));
 
+        // Only for a pause the author asked for. $attempt > 0 means this is a
+        // retry backoff after an unreachable channel — telling the customer we
+        // are typing while we are in fact failing to reach WhatsApp is the one
+        // thing worse than the silence.
+        if ($attempt === 0) {
+            $this->fillPause($flowState, $node, $items, $index, $token, $delay);
+        }
+
         LiveActivity::flowDelay($flowState->conversation, $node, $delay, $index, count($items));
 
         Log::info('FlowExecutor: Message sequence queued', [
@@ -661,6 +674,9 @@ class FlowExecutor
     {
         $position = $index + 1;
 
+        // The bubble this indicator was promising is never arriving.
+        FlowPresence::stop($flowState->conversation);
+
         Log::error('FlowExecutor: message sequence stopped, a bubble could not be delivered', [
             'flow_state_id' => $flowState->id,
             'node_id' => $node->id,
@@ -714,6 +730,11 @@ class FlowExecutor
             // would block the node if the flow ever came back round to it.
             $this->clearMessageChain($flowState, $nodeId);
 
+            // No message is coming to clear the indicator, and on API Way
+            // nothing expires it either — so this call is the difference
+            // between a stopped sequence and a bot that types forever.
+            FlowPresence::stop($conversation);
+
             return;
         }
 
@@ -756,7 +777,50 @@ class FlowExecutor
         RunFlowMessageNode::dispatch($flowStateId, $nodeId, $index + 1, $token)
             ->delay(now()->addSeconds($nextDelay));
 
+        $this->fillPause($flowState, $node, $items, $index + 1, $token, $nextDelay);
+
         LiveActivity::flowDelay($conversation, $node, $nextDelay, $index + 1, count($items));
+    }
+
+    /**
+     * Show the customer that the next bubble is being prepared, for as long as
+     * the flow is pausing before it.
+     *
+     * The pause is why this exists at all: a Message node's delay is written to
+     * make a sequence read like somebody typing, and until now it read like a
+     * number that had stopped answering. The kind follows the bubble — an audio
+     * bubble is a voice note being recorded, and WhatsApp draws that
+     * differently from typing, which is exactly the point.
+     *
+     * Wrapped, because a pause must happen whether or not it can be dressed up.
+     *
+     * @param  array<int, array<string, mixed>>  $items
+     */
+    protected function fillPause(
+        FlowState $flowState,
+        FlowNode $node,
+        array $items,
+        int $index,
+        string $token,
+        int $delay,
+    ): void {
+        $item = $items[$index] ?? null;
+
+        if ($delay <= 0 || $item === null || ! MessageNodes::presenceEnabled($item)) {
+            return;
+        }
+
+        try {
+            FlowPresence::start(
+                $flowState,
+                $this->messageChainKey($node->id),
+                $token,
+                $delay,
+                MessageNodes::presenceKind($item),
+            );
+        } catch (\Throwable $th) {
+            FlowPresence::reportFailure($th, $flowState->id, $this->messageChainKey($node->id));
+        }
     }
 
     protected function messageChainKey(int $nodeId): string
@@ -799,6 +863,167 @@ class FlowExecutor
         }
 
         unset($stateData[$this->messageChainKey($nodeId)]);
+        $flowState->update(['state_data' => $stateData]);
+    }
+
+    /**
+     * Execute an Interval node — hold the flow for a while, then carry on.
+     *
+     * The pause a Message node's delay could never be: that one is attached to
+     * a bubble and only ever paces a sequence, so a wait *between* two nodes
+     * had to be faked with an empty Message node — which does not work, because
+     * a bubble with nothing in it is skipped at send time.
+     *
+     * Parked on the queue rather than slept through, for the reason every pause
+     * in this class is: this can run inside the webhook that delivered the
+     * customer's message, and a webhook that sleeps is a webhook the channel
+     * retries.
+     */
+    protected function executeIntervalNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $seconds = IntervalNodes::seconds($data);
+        $conversation = $flowState->conversation;
+
+        if ($seconds <= 0) {
+            // A node that waits for nothing. Stepping over it beats queueing a
+            // job that would come straight back — and an author who has not
+            // filled the field in yet should not have their flow stall on it.
+            $this->moveToNextNode($flowState, $node);
+
+            return;
+        }
+
+        if ($this->intervalToken($flowState, $node->id) !== null) {
+            // Already counting down. Re-arming would restart the wait, so a
+            // second pass through here would keep pushing the end away.
+            Log::info('FlowExecutor: Interval already running, leaving it alone', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+            ]);
+
+            return;
+        }
+
+        $token = (string) Str::uuid();
+        $stateData = $flowState->state_data ?? [];
+
+        $stateData[IntervalNodes::claimKey($node->id)] = [
+            'token' => $token,
+            'resume_at' => now()->addSeconds($seconds)->timestamp,
+            // Outlives the wait by a margin, so a job that never ran eventually
+            // stops blocking a node the flow may come back round to.
+            'expires_at' => now()->addSeconds($seconds + IntervalNodes::CLAIM_GRACE_SECONDS)->timestamp,
+        ];
+
+        $flowState->update(['state_data' => $stateData]);
+
+        RunFlowIntervalNode::dispatch($flowState->id, $node->id, $token)
+            ->delay(now()->addSeconds($seconds));
+
+        if (IntervalNodes::presenceEnabled($data)) {
+            try {
+                FlowPresence::start($flowState, IntervalNodes::claimKey($node->id), $token, $seconds);
+            } catch (\Throwable $th) {
+                FlowPresence::reportFailure($th, $flowState->id, IntervalNodes::claimKey($node->id));
+            }
+        }
+
+        LiveActivity::flowInterval($conversation, $node, $seconds);
+
+        Log::info('FlowExecutor: Interval started', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'seconds' => $seconds,
+        ]);
+    }
+
+    /**
+     * The interval elapsed — move the flow on.
+     *
+     * Called by RunFlowIntervalNode, and the only thing that ends this wait: a
+     * customer who writes during it is answered by nobody and moves nothing,
+     * which is the whole difference between this node and Wait for reply.
+     *
+     * Every early return is a wait that is no longer anybody's: a newer run
+     * took the node, a person took the conversation, or the flow left by some
+     * other path.
+     */
+    public function runIntervalElapsed(int $flowStateId, int $nodeId, string $token): void
+    {
+        $flowState = FlowState::find($flowStateId);
+
+        if (! $flowState || $this->intervalToken($flowState, $nodeId) !== $token) {
+            return;
+        }
+
+        $node = FlowNode::find($nodeId);
+        $conversation = $flowState->conversation;
+
+        $stillOurs = $flowState->status === FlowStateStatus::Running
+            && $flowState->current_node_id === $nodeId
+            && $node
+            && $node->type === NodeType::Interval
+            && $conversation
+            && in_array($conversation->status, ConversationStatus::flowEligible(), true);
+
+        // Ours to clear either way: nobody else holds this token, and leaving
+        // it set would block the node if the flow came back round to it.
+        $this->clearIntervalClaim($flowState, $nodeId);
+
+        if (! $stillOurs) {
+            // No message is coming to clear an indicator this node may have
+            // lit, and on API Way nothing expires it either.
+            FlowPresence::stop($conversation);
+
+            return;
+        }
+
+        if (! $node->outgoingEdges()->exists()) {
+            Log::info('FlowExecutor: Flow completed after its last interval', [
+                'flow_state_id' => $flowState->id,
+                'node_id' => $node->id,
+            ]);
+
+            FlowPresence::stop($conversation);
+            $this->endFlowHere($flowState, FlowStateStatus::Completed);
+
+            return;
+        }
+
+        $this->moveToNextNode($flowState, $node);
+    }
+
+    /**
+     * The token of the run currently waiting on this node, if it is still
+     * within its expiry.
+     */
+    protected function intervalToken(FlowState $flowState, int $nodeId): ?string
+    {
+        $claim = ($flowState->state_data ?? [])[IntervalNodes::claimKey($nodeId)] ?? null;
+
+        if (! is_array($claim)) {
+            return null;
+        }
+
+        if ((int) ($claim['expires_at'] ?? 0) < now()->timestamp) {
+            return null;
+        }
+
+        $token = $claim['token'] ?? null;
+
+        return is_string($token) ? $token : null;
+    }
+
+    protected function clearIntervalClaim(FlowState $flowState, int $nodeId): void
+    {
+        $stateData = $flowState->state_data ?? [];
+
+        if (! array_key_exists(IntervalNodes::claimKey($nodeId), $stateData)) {
+            return;
+        }
+
+        unset($stateData[IntervalNodes::claimKey($nodeId)]);
         $flowState->update(['state_data' => $stateData]);
     }
 
@@ -2503,6 +2728,21 @@ class FlowExecutor
         // would issue a second charge for the same step.
         if ($currentNode->type === NodeType::Payment && $this->pendingPaymentId($flowState, $currentNode) !== null) {
             Log::info('FlowExecutor: Customer wrote while a payment is pending, still waiting on the gateway', [
+                'conversation_id' => $conversation->id,
+                'node_id' => $currentNode->id,
+            ]);
+
+            return;
+        }
+
+        // An interval waits for the clock, not for the customer. Writing "?"
+        // into it moves nothing — and re-running the node here would restart
+        // the wait, so somebody who wrote twice would never reach the end of
+        // it. This is the one behaviour that keeps it distinct from Wait for
+        // reply, which is the node an author wants when the customer *should*
+        // be able to end the wait.
+        if ($currentNode->type === NodeType::Interval && $this->intervalToken($flowState, $currentNode->id) !== null) {
+            Log::info('FlowExecutor: Customer wrote during an interval, still waiting on the clock', [
                 'conversation_id' => $conversation->id,
                 'node_id' => $currentNode->id,
             ]);

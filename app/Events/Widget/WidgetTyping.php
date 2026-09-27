@@ -30,6 +30,15 @@ class WidgetTyping implements ShouldBroadcastNow
         public int $conversationId,
         public bool $typing,
         public ?string $agentName = null,
+        /**
+         * What is being prepared — `typing`, `recording` or `uploading` (see
+         * App\Enums\Message\PresenceKind). Today's widget renders a typing
+         * bubble whatever this says; it is here because the widget ships from
+         * another repo on its own cadence, and a field already in the payload
+         * is what lets it start telling a voice note apart from a sentence
+         * without a change on this side.
+         */
+        public string $kind = 'typing',
     ) {
         //
     }
@@ -58,6 +67,7 @@ class WidgetTyping implements ShouldBroadcastNow
             'conversation_id' => $this->conversationId,
             'typing' => $this->typing,
             'agent' => $this->agentName,
+            'kind' => $this->kind,
         ];
     }
 }

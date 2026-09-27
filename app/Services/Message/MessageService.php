@@ -2,6 +2,7 @@
 
 namespace App\Services\Message;
 
+use App\Enums\Message\PresenceKind;
 use App\Exceptions\ChannelCapabilityException;
 use App\Models\Conversation;
 use App\Models\Message;
@@ -90,16 +91,23 @@ class MessageService
     }
 
     /**
-     * Show (or withdraw) "typing…" to the customer on the channel.
+     * Show (or withdraw) "digitando…" — or "gravando áudio…" — to the customer
+     * on the channel.
      *
      * Called from the composer while an agent writes, so it runs far more often
      * than anything else here and must never cost the agent anything: a channel
      * that cannot do it is a silent false, and a channel that can but fails is a
      * logged warning, never an exception. A dropped indicator is invisible; a
      * composer that throws is not.
+     *
+     * `$kind` says what is being prepared. Channels that cannot draw the
+     * distinction show typing rather than nothing — see {@see PresenceKind}.
      */
-    public function sendTyping(Conversation $conversation, bool $typing = true): bool
-    {
+    public function sendTyping(
+        Conversation $conversation,
+        bool $typing = true,
+        PresenceKind $kind = PresenceKind::Typing,
+    ): bool {
         $handler = MessageFactory::make($conversation->connection->channel);
 
         if (! $handler instanceof SendsTypingIndicator) {
@@ -107,12 +115,13 @@ class MessageService
         }
 
         try {
-            return $handler->handleTyping($conversation, $typing);
+            return $handler->handleTyping($conversation, $typing, $kind);
         } catch (\Throwable $th) {
             Log::warning('MessageService: typing indicator failed', [
                 'conversation_id' => $conversation->id,
                 'channel' => $conversation->connection->channel->value,
                 'typing' => $typing,
+                'kind' => $kind->value,
                 'error' => $th->getMessage(),
             ]);
 

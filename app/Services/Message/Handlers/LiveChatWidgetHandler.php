@@ -4,6 +4,7 @@ namespace App\Services\Message\Handlers;
 
 use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
+use App\Enums\Message\PresenceKind;
 use App\Enums\Message\SenderType;
 use App\Events\Widget\WidgetMessageReceived;
 use App\Events\Widget\WidgetMessagesRead;
@@ -214,12 +215,20 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
      * beside an avatar it already chose from the assignee, and two different
      * names on one row would read as two different people.
      */
-    public function handleTyping(Conversation $conversation, bool $typing = true): bool
-    {
+    public function handleTyping(
+        Conversation $conversation,
+        bool $typing = true,
+        PresenceKind $kind = PresenceKind::Typing,
+    ): bool {
+        // The kind rides along even though today's widget only draws a typing
+        // bubble: the widget ships from another repo on its own cadence, and a
+        // field already in the payload is what lets it start drawing
+        // "gravando áudio…" without a change on this side.
         broadcast(new WidgetTyping(
             $conversation->id,
             $typing,
             $conversation->agent?->name,
+            $kind->value,
         ));
 
         return true;

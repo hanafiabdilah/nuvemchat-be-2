@@ -6,6 +6,7 @@ enum NodeType: string
 {
     case Start = 'start';
     case Message = 'message';
+    case Interval = 'interval';
     case Response = 'response';
     case WaitResponse = 'wait_response';
     case Tagging = 'tagging';
@@ -30,6 +31,22 @@ enum NodeType: string
                 'attachment' => null, // for non-text messages
                 'delay' => 0, // delay in seconds before sending the message
                 // Never waits: pausing for the customer is the WaitResponse node's job.
+            ],
+            // Waits for the clock, then carries on. One output, nothing sent.
+            //
+            // ⚠️ Not the same waiting as WaitResponse below, which ends when the
+            // *customer* writes. This one ends whether they write or not, and
+            // a message that arrives during it does not move the flow.
+            //
+            // `presence` is off by default here and on for a Message node's
+            // delay: a bubble's pause paces a sequence that is about to land,
+            // so "digitando…" is the point of it, while an interval is usually
+            // room for the customer to read or go and look something up, where
+            // typing at them is hurrying them. See App\Services\Flow\IntervalNodes.
+            self::Interval => [
+                'seconds' => 5,
+                'unit' => 'seconds', // display only: seconds | minutes | hours
+                'presence' => false, // show "digitando…" for the wait
             ],
             // Asks, waits indefinitely for a valid answer, stores it. One output.
             self::Response => [

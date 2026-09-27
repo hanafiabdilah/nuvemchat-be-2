@@ -4,6 +4,7 @@ use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Message\MessageType;
+use App\Enums\Message\PresenceKind;
 use App\Enums\Message\SenderType;
 use App\Events\Widget\WidgetTyping;
 use App\Models\Connection;
@@ -250,4 +251,95 @@ test('state=paused is what turns the request into a withdrawal', function () {
         ->assertOk();
 
     Http::assertSent(fn ($request) => $request['presence'] === 'paused');
+});
+
+test('the indicator a bubble deserves follows from its own type', function () {
+    expect(PresenceKind::forMessageType('audio'))->toBe(PresenceKind::Recording)
+        ->and(PresenceKind::forMessageType('image'))->toBe(PresenceKind::Uploading)
+        ->and(PresenceKind::forMessageType('video'))->toBe(PresenceKind::Uploading)
+        ->and(PresenceKind::forMessageType('document'))->toBe(PresenceKind::Uploading)
+        ->and(PresenceKind::forMessageType('text'))->toBe(PresenceKind::Typing)
+        // Nothing an author can type into node data should be able to produce
+        // an action no channel understands.
+        ->and(PresenceKind::forMessageType('nonsense'))->toBe(PresenceKind::Typing)
+        ->and(PresenceKind::forMessageType(null))->toBe(PresenceKind::Typing);
+});
+
+test('API Way says gravando áudio through the media attribute, not a new state', function () {
+    Http::fake(['*' => Http::response(['success' => true])]);
+
+    $conversation = typingConversation(Channel::WhatsappApiway, [
+        'instance_id' => 'INST-1',
+        'token' => 'tok',
+    ]);
+
+    (new MessageService)->sendTyping($conversation, true, PresenceKind::Recording);
+
+    // whatsmeow has one composing state and an attribute that says what is
+    // being composed — `audio` is the whole difference between "digitando…"
+    // and "gravando áudio…" on the handset.
+    Http::assertSent(fn ($request) => $request['presence'] === 'composing'
+        && $request['media'] === 'audio');
+});
+
+test('API Way treats an upload as plain composing, because whatsmeow has nothing else', function () {
+    Http::fake(['*' => Http::response(['success' => true])]);
+
+    $conversation = typingConversation(Channel::WhatsappApiway, [
+        'instance_id' => 'INST-1',
+        'token' => 'tok',
+    ]);
+
+    (new MessageService)->sendTyping($conversation, true, PresenceKind::Uploading);
+
+    Http::assertSent(fn ($request) => $request['media'] === 'text');
+});
+
+test('Telegram is the one channel that draws all three', function () {
+    // Tested on the mapping rather than over the wire: the Telegram SDK brings
+    // its own HTTP client, which Http::fake does not intercept.
+    expect(PresenceKind::Typing->telegramAction())->toBe('typing')
+        ->and(PresenceKind::Recording->telegramAction())->toBe('record_voice')
+        ->and(PresenceKind::Uploading->telegramAction())->toBe('upload_document');
+});
+
+test('WhatsApp Cloud API keeps sending text whatever is being prepared', function () {
+    Http::fake(['*' => Http::response(['success' => true])]);
+
+    $conversation = typingConversation(Channel::WhatsappOfficial, [
+        'access_token' => 'tok',
+        'phone_number_id' => '1083508778182246',
+    ]);
+
+    $conversation->messages()->create([
+        'external_id' => 'wamid.INBOUND',
+        'sender_type' => SenderType::Incoming,
+        'message_type' => MessageType::Text,
+        'body' => 'oi',
+        'sent_at' => now(),
+    ]);
+
+    (new MessageService)->sendTyping($conversation, true, PresenceKind::Recording);
+
+    // Meta's typing_indicator accepts `text` and nothing else, so asking for a
+    // recording here must still produce a valid call rather than a rejected
+    // one: showing typing beats showing nothing.
+    Http::assertSent(fn ($request) => $request['typing_indicator'] === ['type' => 'text']);
+});
+
+test('the widget carries the kind so it can learn to draw it', function () {
+    Event::fake();
+
+    $conversation = typingConversation(Channel::LiveChatWidget);
+    LiveChatSession::create([
+        'connection_id' => $conversation->connection_id,
+        'conversation_id' => $conversation->id,
+        'session_token' => (string) \Illuminate\Support\Str::uuid(),
+    ]);
+
+    (new MessageService)->sendTyping($conversation, true, PresenceKind::Recording);
+
+    // The widget ships from another repo on its own cadence; the field is here
+    // so that side can start rendering it without a change on this one.
+    Event::assertDispatched(WidgetTyping::class, fn ($event) => $event->broadcastWith()['kind'] === 'recording');
 });
