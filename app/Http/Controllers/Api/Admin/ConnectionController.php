@@ -24,14 +24,10 @@ class ConnectionController extends Controller
         $connections = Connection::query()
             ->with('tenant.user')
             ->withCount('conversations')
-            ->when($request->filled('tenant_id'), fn ($q) =>
-                $q->where('tenant_id', $request->integer('tenant_id')))
-            ->when($request->filled('channel'), fn ($q) =>
-                $q->where('channel', $request->query('channel')))
-            ->when($request->filled('status'), fn ($q) =>
-                $q->where('status', $request->query('status')))
-            ->when($search !== '', fn ($q) =>
-                $q->where('name', 'like', "%{$search}%"))
+            ->when($request->filled('tenant_id'), fn ($q) => $q->where('tenant_id', $request->integer('tenant_id')))
+            ->when($request->filled('channel'), fn ($q) => $q->where('channel', $request->query('channel')))
+            ->when($request->filled('status'), fn ($q) => $q->where('status', $request->query('status')))
+            ->when($search !== '', fn ($q) => $q->where('name', 'like', "%{$search}%"))
             ->orderBy('id', $sort)
             ->paginate($perPage)
             ->withQueryString();

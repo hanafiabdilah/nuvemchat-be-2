@@ -15,9 +15,7 @@ class AgentKnowledgeController extends Controller
 {
     use ResolvesAiHubTenant;
 
-    public function __construct(protected AiAgentHubTenantService $tenantService)
-    {
-    }
+    public function __construct(protected AiAgentHubTenantService $tenantService) {}
 
     public function index(int $agentId): JsonResponse
     {
@@ -54,7 +52,7 @@ class AgentKnowledgeController extends Controller
 
         $updated = $this->tenantService->updateAgentKnowledge($knowledge, $validated);
 
-        if (!$updated) {
+        if (! $updated) {
             return response()->json([
                 'message' => 'Knowledge disabled and removed',
             ]);

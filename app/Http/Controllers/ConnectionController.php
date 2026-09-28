@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
 use App\Events\ConnectionUpdated;
+use App\Exceptions\UserFacingException;
 use App\Jobs\DeauthorizeRevokedWhatsAppConnections;
 use App\Jobs\SyncCoexistenceSmbData;
 use App\Models\Connection;
@@ -14,7 +15,6 @@ use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\TikTok\TikTokAuthClient;
-use App\Exceptions\UserFacingException;
 use App\Services\Connection\WhatsAppTokenValidator;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
@@ -35,7 +35,7 @@ class ConnectionController extends Controller
     public function __construct(
         protected ConnectionService $connectionService,
         protected WhatsAppTokenValidator $whatsAppTokenValidator,
-    ){
+    ) {
         //
     }
 
@@ -59,13 +59,14 @@ class ConnectionController extends Controller
                 'error_description' => $errorDescription,
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Instagram OAuth error: ' . $errorDescription));
+            return redirect(config('app.frontend_url').'/oauth/result'.'?status=error&message='.urlencode('Instagram OAuth error: '.$errorDescription));
         }
 
         // Validate required parameters
-        if (!$code || !$state) {
+        if (! $code || ! $state) {
             Log::error('Missing code or state parameter in Instagram callback');
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Invalid Instagram callback: missing code or state parameter'));
+
+            return redirect(config('app.frontend_url').'/oauth/result'.'?status=error&message='.urlencode('Invalid Instagram callback: missing code or state parameter'));
         }
 
         // Decode state to get connection_id
@@ -73,7 +74,7 @@ class ConnectionController extends Controller
             $stateData = json_decode(base64_decode($state), true);
             $connectionId = $stateData['connection_id'] ?? null;
 
-            if (!$connectionId) {
+            if (! $connectionId) {
                 throw new \Exception('Invalid state parameter');
             }
 
@@ -89,19 +90,19 @@ class ConnectionController extends Controller
                 'code' => $code,
             ]);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 Log::error('Failed to exchange Instagram code for token', [
                     'response' => $response->json(),
                     'status' => $response->status(),
                 ]);
-                throw new \Exception('Failed to obtain access token from Instagram: ' . ($response->json()['error_message'] ?? 'Unknown error'));
+                throw new \Exception('Failed to obtain access token from Instagram: '.($response->json()['error_message'] ?? 'Unknown error'));
             }
 
             $data = $response->json();
             $shortLivedToken = $data['access_token'] ?? null;
             $userId = $data['user_id'] ?? null;
 
-            if (!$shortLivedToken || !$userId) {
+            if (! $shortLivedToken || ! $userId) {
                 throw new \Exception('Invalid response from Instagram OAuth.');
             }
 
@@ -130,7 +131,7 @@ class ConnectionController extends Controller
             }
 
             // Get Instagram Business Account info
-            $accountResponse = Http::get("https://graph.instagram.com/v25.0/me", [
+            $accountResponse = Http::get('https://graph.instagram.com/v25.0/me', [
                 'fields' => 'id,username,user_id,name,profile_picture_url',
                 'access_token' => $accessToken,
             ]);
@@ -159,7 +160,7 @@ class ConnectionController extends Controller
                 'instagram_account_id' => $accountInfo['id'] ?? $userId,
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=success&message=' . urlencode('Instagram account connected successfully!'));
+            return redirect(config('app.frontend_url').'/oauth/result'.'?status=success&message='.urlencode('Instagram account connected successfully!'));
 
         } catch (\Throwable $th) {
             Log::error('Error processing Instagram callback', [
@@ -167,7 +168,7 @@ class ConnectionController extends Controller
                 'trace' => $th->getTraceAsString(),
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode(UpstreamError::messageFrom(
+            return redirect(config('app.frontend_url').'/oauth/result'.'?status=error&message='.urlencode(UpstreamError::messageFrom(
                 UpstreamProvider::Meta,
                 $th,
                 ['operation' => 'instagram.oauth_callback'],
@@ -192,19 +193,20 @@ class ConnectionController extends Controller
                 'error_description' => $request->query('error_description'),
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('TikTok OAuth error: ' . ($request->query('error_description') ?: $error)));
+            return redirect(config('app.frontend_url').'/oauth/result'.'?status=error&message='.urlencode('TikTok OAuth error: '.($request->query('error_description') ?: $error)));
         }
 
-        if (!$code || !$state) {
+        if (! $code || ! $state) {
             Log::error('Missing code or state parameter in TikTok callback');
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode('Invalid TikTok callback: missing code or state parameter'));
+
+            return redirect(config('app.frontend_url').'/oauth/result'.'?status=error&message='.urlencode('Invalid TikTok callback: missing code or state parameter'));
         }
 
         try {
             $stateData = json_decode(base64_decode($state), true);
             $connectionId = $stateData['connection_id'] ?? null;
 
-            if (!$connectionId) {
+            if (! $connectionId) {
                 throw new \Exception('Invalid state parameter');
             }
 
@@ -216,8 +218,8 @@ class ConnectionController extends Controller
             // otherwise only surface later as failing sends or silent webhooks.
             $granted = array_filter(explode(',', (string) ($tokens['scope'] ?? '')));
             $missing = array_diff(TikTokAuthClient::REQUIRED_SCOPES, $granted);
-            if (!empty($missing)) {
-                throw new \Exception('User did not grant all required TikTok permissions: ' . implode(', ', $missing));
+            if (! empty($missing)) {
+                throw new \Exception('User did not grant all required TikTok permissions: '.implode(', ', $missing));
             }
 
             $this->connectionService->connect($connection, [
@@ -236,7 +238,7 @@ class ConnectionController extends Controller
                 'business_id' => $tokens['business_id'],
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=success&message=' . urlencode('TikTok account connected successfully!'));
+            return redirect(config('app.frontend_url').'/oauth/result'.'?status=success&message='.urlencode('TikTok account connected successfully!'));
 
         } catch (\Throwable $th) {
             Log::error('Error processing TikTok callback', [
@@ -244,7 +246,7 @@ class ConnectionController extends Controller
                 'trace' => $th->getTraceAsString(),
             ]);
 
-            return redirect(config('app.frontend_url') . '/oauth/result' . '?status=error&message=' . urlencode(UpstreamError::messageFrom(
+            return redirect(config('app.frontend_url').'/oauth/result'.'?status=error&message='.urlencode(UpstreamError::messageFrom(
                 UpstreamProvider::TikTok,
                 $th,
                 ['operation' => 'tiktok.oauth_callback'],
@@ -257,16 +259,18 @@ class ConnectionController extends Controller
         try {
             $signedRequest = $request->input('signed_request');
 
-            if (!$signedRequest) {
+            if (! $signedRequest) {
                 Log::warning('Instagram deauthorization: missing signed_request');
+
                 return response()->json(['error' => 'Missing signed_request'], 400);
             }
 
             // Parse signed request
             $data = $this->parseSignedRequest($signedRequest);
 
-            if (!$data || !isset($data['user_id'])) {
+            if (! $data || ! isset($data['user_id'])) {
                 Log::error('Instagram deauthorization: invalid signed_request');
+
                 return response()->json(['error' => 'Invalid signed_request'], 400);
             }
 
@@ -280,8 +284,8 @@ class ConnectionController extends Controller
             $connections = Connection::where('channel', 'instagram')
                 ->where(function ($query) use ($instagramUserId) {
                     $query->whereJsonContains('credentials->user_id', $instagramUserId)
-                          ->orWhereJsonContains('credentials->instagram_account_id', $instagramUserId)
-                          ->orWhereJsonContains('credentials->page_id', $instagramUserId);
+                        ->orWhereJsonContains('credentials->instagram_account_id', $instagramUserId)
+                        ->orWhereJsonContains('credentials->page_id', $instagramUserId);
                 })
                 ->get();
 
@@ -320,16 +324,18 @@ class ConnectionController extends Controller
         try {
             $signedRequest = $request->input('signed_request');
 
-            if (!$signedRequest) {
+            if (! $signedRequest) {
                 Log::warning('Instagram data deletion: missing signed_request');
+
                 return response()->json(['error' => 'Missing signed_request'], 400);
             }
 
             // Parse signed request
             $data = $this->parseSignedRequest($signedRequest);
 
-            if (!$data || !isset($data['user_id'])) {
+            if (! $data || ! isset($data['user_id'])) {
                 Log::error('Instagram data deletion: invalid signed_request');
+
                 return response()->json(['error' => 'Invalid signed_request'], 400);
             }
 
@@ -340,7 +346,7 @@ class ConnectionController extends Controller
             // the original confirmation without wiping data again.
             $issuedAt = $data['issued_at'] ?? null;
             $dedupeKey = $issuedAt !== null
-                ? hash('sha256', $instagramUserId . '|' . $issuedAt)
+                ? hash('sha256', $instagramUserId.'|'.$issuedAt)
                 : null;
 
             if ($dedupeKey !== null) {
@@ -362,7 +368,7 @@ class ConnectionController extends Controller
             }
 
             // Generate confirmation code
-            $confirmationCode = hash('sha256', $instagramUserId . time() . uniqid());
+            $confirmationCode = hash('sha256', $instagramUserId.time().uniqid());
             $statusUrl = route('instagram.deletion-status', ['code' => $confirmationCode]);
 
             Log::info('Instagram data deletion processing', [
@@ -380,8 +386,8 @@ class ConnectionController extends Controller
             $connections = Connection::where('channel', 'instagram')
                 ->where(function ($query) use ($instagramUserId) {
                     $query->whereJsonContains('credentials->user_id', $instagramUserId)
-                          ->orWhereJsonContains('credentials->instagram_account_id', $instagramUserId)
-                          ->orWhereJsonContains('credentials->page_id', $instagramUserId);
+                        ->orWhereJsonContains('credentials->instagram_account_id', $instagramUserId)
+                        ->orWhereJsonContains('credentials->page_id', $instagramUserId);
                 })
                 ->get();
 
@@ -474,7 +480,7 @@ class ConnectionController extends Controller
     {
         $code = $request->query('code');
 
-        if (!$code) {
+        if (! $code) {
             return response()->view('instagram.deletion-status-error', [
                 'error' => 'Missing confirmation code',
             ], 400);
@@ -486,7 +492,7 @@ class ConnectionController extends Controller
                 ->where('confirmation_code', $code)
                 ->first();
 
-            if (!$log) {
+            if (! $log) {
                 return response()->view('instagram.deletion-status-error', [
                     'error' => 'Invalid confirmation code',
                 ], 404);
@@ -539,12 +545,12 @@ class ConnectionController extends Controller
 
             return response()->json([
                 'status' => 'error',
-                'message' => 'Facebook OAuth error: ' . $request->input('error_description'),
+                'message' => 'Facebook OAuth error: '.$request->input('error_description'),
             ], 400);
         }
 
         $code = $request->input('code');
-        if (!$code) {
+        if (! $code) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Invalid Facebook callback: missing code',
@@ -574,17 +580,17 @@ class ConnectionController extends Controller
         // number just arrived from elsewhere", hence a caller-supplied flag.
         $isMigration = filter_var($request->input('is_migration', false), FILTER_VALIDATE_BOOLEAN);
 
-        if (!$connectionId && $state = $request->input('state')) {
+        if (! $connectionId && $state = $request->input('state')) {
             $stateData = json_decode(base64_decode($state), true) ?: [];
             $connectionId = $stateData['connection_id'] ?? null;
             $wabaId = $wabaId ?: ($stateData['waba_id'] ?? null);
             $phoneNumberId = $phoneNumberId ?: ($stateData['phone_number_id'] ?? null);
             $fbUserId = $fbUserId ?: ($stateData['fb_user_id'] ?? null);
-            $isCoexistence = $isCoexistence || !empty($stateData['is_coexistence']);
-            $isMigration = $isMigration || !empty($stateData['is_migration']);
+            $isCoexistence = $isCoexistence || ! empty($stateData['is_coexistence']);
+            $isMigration = $isMigration || ! empty($stateData['is_migration']);
         }
 
-        if (!$connectionId) {
+        if (! $connectionId) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Missing connection_id',
@@ -605,16 +611,16 @@ class ConnectionController extends Controller
 
             $response = Http::asForm()->post('https://graph.facebook.com/v25.0/oauth/access_token', $tokenRequestData);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 Log::error('Failed to exchange Facebook code for token', [
                     'response' => $response->json(),
                     'status' => $response->status(),
                 ]);
-                throw new \Exception('Failed to obtain access token: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+                throw new \Exception('Failed to obtain access token: '.($response->json()['error']['message'] ?? 'Unknown error'));
             }
 
             $accessToken = $response->json()['access_token'] ?? null;
-            if (!$accessToken) {
+            if (! $accessToken) {
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
@@ -649,7 +655,7 @@ class ConnectionController extends Controller
             // `business_management` permission, which the Embedded Signup
             // SYSTEM_USER token does not hold (it returned (#100) Missing
             // Permission on every connect). The app does not need that permission.
-            if (!$wabaId) {
+            if (! $wabaId) {
                 throw new \Exception('Could not retrieve WhatsApp Business Account ID. Frontend must send waba_id from the WA_EMBEDDED_SIGNUP "FINISH" message event.');
             }
 
@@ -673,7 +679,7 @@ class ConnectionController extends Controller
                 }
             }
 
-            if (!$primaryPhone) {
+            if (! $primaryPhone) {
                 $phoneNumbersResponse = Http::get("https://graph.facebook.com/v25.0/{$wabaId}/phone_numbers", [
                     'access_token' => $accessToken,
                     'fields' => $phoneFields,
@@ -751,7 +757,7 @@ class ConnectionController extends Controller
             // it. The call is safe to attempt — registerPhoneNumber() treats
             // "already registered" as success.
             $alreadyRegistered = $isCoexistence
-                || (!$isMigration && ($platformType === 'CLOUD_API') && ($codeVerificationStatus === 'VERIFIED'));
+                || (! $isMigration && ($platformType === 'CLOUD_API') && ($codeVerificationStatus === 'VERIFIED'));
 
             // Credentials may be null here — e.g. re-authorizing a connection
             // that was wiped by a Meta data-deletion callback. Normalize to an
@@ -764,14 +770,14 @@ class ConnectionController extends Controller
             // this check Meta answers the register call with a PIN mismatch,
             // which reads like our bug; named here, it is a two-minute fix in
             // the other provider's WhatsApp Manager.
-            if ($isMigration && $isPinEnabled && !$pin) {
+            if ($isMigration && $isPinEnabled && ! $pin) {
                 // UserFacingException: this sentence is the entire value of the
                 // pre-check, and the callback's catch-all replaces anything it
                 // cannot recognise as ours.
                 throw new UserFacingException(
                     'Two-step verification is still enabled on this number. '
-                    . 'Disable it in your current provider\'s WhatsApp Manager (Settings → Two-step verification), '
-                    . 'then run the migration again.'
+                    .'Disable it in your current provider\'s WhatsApp Manager (Settings → Two-step verification), '
+                    .'then run the migration again.'
                 );
             }
 
@@ -869,7 +875,7 @@ class ConnectionController extends Controller
      */
     private function messengerCallback(Request $request, array $stateData)
     {
-        $resultUrl = config('app.frontend_url') . '/oauth/result';
+        $resultUrl = config('app.frontend_url').'/oauth/result';
 
         if ($error = $request->input('error')) {
             Log::error('Messenger OAuth error', [
@@ -878,16 +884,16 @@ class ConnectionController extends Controller
                 'error_description' => $request->input('error_description'),
             ]);
 
-            return redirect($resultUrl . '?status=error&message=' . urlencode('Facebook OAuth error: ' . ($request->input('error_description') ?: $error)));
+            return redirect($resultUrl.'?status=error&message='.urlencode('Facebook OAuth error: '.($request->input('error_description') ?: $error)));
         }
 
         $code = $request->input('code');
         $connectionId = $stateData['connection_id'] ?? null;
 
-        if (!$code || !$connectionId) {
+        if (! $code || ! $connectionId) {
             Log::error('Missing code or connection_id in Messenger callback');
 
-            return redirect($resultUrl . '?status=error&message=' . urlencode('Invalid Facebook callback: missing code or state parameter'));
+            return redirect($resultUrl.'?status=error&message='.urlencode('Invalid Facebook callback: missing code or state parameter'));
         }
 
         try {
@@ -902,16 +908,16 @@ class ConnectionController extends Controller
                 'code' => $code,
             ]);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 Log::error('Failed to exchange Messenger code for token', [
                     'response' => $response->json(),
                     'status' => $response->status(),
                 ]);
-                throw new \Exception('Failed to obtain access token: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+                throw new \Exception('Failed to obtain access token: '.($response->json()['error']['message'] ?? 'Unknown error'));
             }
 
             $accessToken = $response->json()['access_token'] ?? null;
-            if (!$accessToken) {
+            if (! $accessToken) {
                 throw new \Exception('Invalid response from Facebook OAuth.');
             }
 
@@ -922,7 +928,7 @@ class ConnectionController extends Controller
                 'trace' => $th->getTraceAsString(),
             ]);
 
-            return redirect($resultUrl . '?status=error&message=' . urlencode(UpstreamError::messageFrom(
+            return redirect($resultUrl.'?status=error&message='.urlencode(UpstreamError::messageFrom(
                 UpstreamProvider::Meta,
                 $th,
                 ['operation' => 'messenger.oauth_callback'],
@@ -932,7 +938,7 @@ class ConnectionController extends Controller
 
     private function handleMessengerCallback(Connection $connection, string $accessToken)
     {
-        $resultUrl = config('app.frontend_url') . '/oauth/result';
+        $resultUrl = config('app.frontend_url').'/oauth/result';
 
         // Long-lived user token (~60 days). Page tokens minted from it do not
         // expire, so nothing needs a refresh scheduler afterwards.
@@ -966,8 +972,8 @@ class ConnectionController extends Controller
             'access_token' => $userToken,
         ]);
 
-        if (!$pagesResponse->successful()) {
-            throw new \Exception('Failed to list Facebook Pages: ' . ($pagesResponse->json()['error']['message'] ?? 'Unknown error'));
+        if (! $pagesResponse->successful()) {
+            throw new \Exception('Failed to list Facebook Pages: '.($pagesResponse->json()['error']['message'] ?? 'Unknown error'));
         }
 
         $pages = $pagesResponse->json()['data'] ?? [];
@@ -987,7 +993,7 @@ class ConnectionController extends Controller
             // means Graph is filtering the response (app role / access level).
             $debugToken = Http::get('https://graph.facebook.com/v25.0/debug_token', [
                 'input_token' => $userToken,
-                'access_token' => FacebookConfig::appId() . '|' . FacebookConfig::appSecret(),
+                'access_token' => FacebookConfig::appId().'|'.FacebookConfig::appSecret(),
             ]);
 
             $debugData = $debugToken->json()['data'] ?? [];
@@ -1009,7 +1015,7 @@ class ConnectionController extends Controller
         }
 
         if (empty($pages)) {
-            return redirect($resultUrl . '?status=error&message=' . urlencode('Facebook authorized the app but returned no usable Page. If the Pages were selected on the Facebook screen, the app most likely still has Standard Access for Page permissions — it can then only read Pages owned by the business portfolio that owns the app. Check the server log for the exact Graph response.'));
+            return redirect($resultUrl.'?status=error&message='.urlencode('Facebook authorized the app but returned no usable Page. If the Pages were selected on the Facebook screen, the app most likely still has Standard Access for Page permissions — it can then only read Pages owned by the business portfolio that owns the app. Check the server log for the exact Graph response.'));
         }
 
         if (count($pages) === 1) {
@@ -1030,7 +1036,7 @@ class ConnectionController extends Controller
                 'page_id' => $page['id'],
             ]);
 
-            return redirect($resultUrl . '?status=success&message=' . urlencode('Facebook Page connected successfully!'));
+            return redirect($resultUrl.'?status=success&message='.urlencode('Facebook Page connected successfully!'));
         }
 
         // Multiple Pages: stash the choice list. The SPA renders a picker and
@@ -1065,10 +1071,10 @@ class ConnectionController extends Controller
             'page_count' => count($pages),
             // A Page listed without a token can only be connected by the
             // re-fetch, so this number is what says whether connect will work.
-            'pages_with_token' => collect($pages)->filter(fn ($page) => !empty($page['access_token']))->count(),
+            'pages_with_token' => collect($pages)->filter(fn ($page) => ! empty($page['access_token']))->count(),
         ]);
 
-        return redirect($resultUrl . '?status=success&message=' . urlencode('Authorized! Now choose which Page to connect.'));
+        return redirect($resultUrl.'?status=success&message='.urlencode('Authorized! Now choose which Page to connect.'));
     }
 
     /**
@@ -1081,7 +1087,7 @@ class ConnectionController extends Controller
      * token is never connectable through here.
      *
      * @param  array<string, mixed>  $debugData  debug_token's `data` payload
-     * @return array<int, array<string, mixed>>  Pages carrying a page access token
+     * @return array<int, array<string, mixed>> Pages carrying a page access token
      */
     private function messengerFallbackPages(Connection $connection, string $userToken, array $debugData): array
     {
@@ -1112,7 +1118,7 @@ class ConnectionController extends Controller
 
             $pageToken = $response->successful() ? ($response->json()['access_token'] ?? null) : null;
 
-            if (!$pageToken) {
+            if (! $pageToken) {
                 continue;
             }
 
@@ -1161,7 +1167,7 @@ class ConnectionController extends Controller
                     $attempts["{$business['id']}/{$edge}"] = $response->json();
 
                     foreach ($response->json()['data'] ?? [] as $page) {
-                        if ($granted->contains((string) ($page['id'] ?? '')) && !empty($page['access_token'])) {
+                        if ($granted->contains((string) ($page['id'] ?? '')) && ! empty($page['access_token'])) {
                             $pages[] = $page;
                         }
                     }
@@ -1191,14 +1197,14 @@ class ConnectionController extends Controller
         $response = Http::withToken($accessToken)
             ->post("https://graph.facebook.com/v25.0/{$wabaId}/subscribed_apps");
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             Log::error('Failed to subscribe app to WABA webhook', [
                 'waba_id' => $wabaId,
                 'status' => $response->status(),
                 'body' => $response->json(),
             ]);
 
-            throw new \Exception('Failed to subscribe app to WABA webhook: ' . ($response->json()['error']['message'] ?? 'Unknown error'));
+            throw new \Exception('Failed to subscribe app to WABA webhook: '.($response->json()['error']['message'] ?? 'Unknown error'));
         }
 
         Log::info('Subscribed app to WABA webhook', ['waba_id' => $wabaId]);
@@ -1225,6 +1231,7 @@ class ConnectionController extends Controller
 
         if ($response->successful()) {
             Log::info('Phone number registered on Cloud API', ['phone_number_id' => $phoneNumberId]);
+
             return;
         }
 
@@ -1248,6 +1255,7 @@ class ConnectionController extends Controller
                 'phone_number_id' => $phoneNumberId,
                 'error' => $error,
             ]);
+
             return;
         }
 
@@ -1265,7 +1273,7 @@ class ConnectionController extends Controller
             throw new UserFacingException($hint);
         }
 
-        throw new \Exception('Failed to register phone number: ' . ($message ?: 'Unknown error') . " (code {$code}, subcode {$subcode})");
+        throw new \Exception('Failed to register phone number: '.($message ?: 'Unknown error')." (code {$code}, subcode {$subcode})");
     }
 
     /**
@@ -1284,14 +1292,14 @@ class ConnectionController extends Controller
         return match ($code) {
             // 133005: registered elsewhere under a PIN we do not know.
             133005 => 'This number still has two-step verification enabled at your current provider. '
-                . 'Ask them to disable it (or turn it off yourself in WhatsApp Manager → Settings → Two-step verification), '
-                . 'then run the migration again.',
+                .'Ask them to disable it (or turn it off yourself in WhatsApp Manager → Settings → Two-step verification), '
+                .'then run the migration again.',
             // 133006: the number was never verified, so it cannot be moved.
             133006 => 'This number has not completed phone verification. '
-                . 'Finish verification in WhatsApp Manager before migrating it.',
+                .'Finish verification in WhatsApp Manager before migrating it.',
             // 133016: too many registration attempts in a short window.
             133016 => 'Meta is rate-limiting registration attempts for this number. '
-                . 'Wait a few minutes and try the migration again.',
+                .'Wait a few minutes and try the migration again.',
             default => null,
         };
     }
@@ -1301,15 +1309,17 @@ class ConnectionController extends Controller
         try {
             $signedRequest = $request->input('signed_request');
 
-            if (!$signedRequest) {
+            if (! $signedRequest) {
                 Log::warning('Facebook deauthorization: missing signed_request');
+
                 return response()->json(['error' => 'Missing signed_request'], 400);
             }
 
             $data = $this->parseFacebookSignedRequest($signedRequest);
 
-            if (!$data || !isset($data['user_id'])) {
+            if (! $data || ! isset($data['user_id'])) {
                 Log::error('Facebook deauthorization: invalid signed_request');
+
                 return response()->json(['error' => 'Invalid signed_request'], 400);
             }
 
@@ -1376,15 +1386,17 @@ class ConnectionController extends Controller
         try {
             $signedRequest = $request->input('signed_request');
 
-            if (!$signedRequest) {
+            if (! $signedRequest) {
                 Log::warning('Facebook data deletion: missing signed_request');
+
                 return response()->json(['error' => 'Missing signed_request'], 400);
             }
 
             $data = $this->parseFacebookSignedRequest($signedRequest);
 
-            if (!$data || !isset($data['user_id'])) {
+            if (! $data || ! isset($data['user_id'])) {
                 Log::error('Facebook data deletion: invalid signed_request');
+
                 return response()->json(['error' => 'Invalid signed_request'], 400);
             }
 
@@ -1395,7 +1407,7 @@ class ConnectionController extends Controller
             // the original confirmation without wiping data again.
             $issuedAt = $data['issued_at'] ?? null;
             $dedupeKey = $issuedAt !== null
-                ? hash('sha256', $facebookUserId . '|' . $issuedAt)
+                ? hash('sha256', $facebookUserId.'|'.$issuedAt)
                 : null;
 
             if ($dedupeKey !== null) {
@@ -1416,7 +1428,7 @@ class ConnectionController extends Controller
                 }
             }
 
-            $confirmationCode = hash('sha256', $facebookUserId . time() . uniqid());
+            $confirmationCode = hash('sha256', $facebookUserId.time().uniqid());
             $statusUrl = route('oauth.facebook.deletion-status', ['code' => $confirmationCode]);
 
             Log::info('Facebook data deletion: matching connections by fb_user_id', [
@@ -1485,7 +1497,7 @@ class ConnectionController extends Controller
     {
         $code = $request->query('code');
 
-        if (!$code) {
+        if (! $code) {
             return response()->view('facebook.deletion-status-error', [
                 'error' => 'Missing confirmation code',
             ], 400);
@@ -1497,7 +1509,7 @@ class ConnectionController extends Controller
                 ->where('confirmation_code', $code)
                 ->first();
 
-            if (!$log) {
+            if (! $log) {
                 return response()->view('facebook.deletion-status-error', [
                     'error' => 'Invalid confirmation code',
                 ], 404);
@@ -1560,12 +1572,14 @@ class ConnectionController extends Controller
     {
         if ($secret === '') {
             Log::error('Signed request: app secret not configured', ['provider' => $provider]);
+
             return null;
         }
 
         $parts = explode('.', $signedRequest, 2);
         if (count($parts) !== 2) {
             Log::warning('Signed request: malformed (missing "." separator)', ['provider' => $provider]);
+
             return null;
         }
         [$encodedSig, $payload] = $parts;
@@ -1575,12 +1589,14 @@ class ConnectionController extends Controller
 
         if ($sig === false || $jsonPayload === false) {
             Log::warning('Signed request: base64 decode failed', ['provider' => $provider]);
+
             return null;
         }
 
         $data = json_decode($jsonPayload, true);
-        if (!is_array($data)) {
+        if (! is_array($data)) {
             Log::warning('Signed request: payload not a JSON object', ['provider' => $provider]);
+
             return null;
         }
 
@@ -1590,15 +1606,17 @@ class ConnectionController extends Controller
                 'provider' => $provider,
                 'algorithm' => $algorithm,
             ]);
+
             return null;
         }
 
         $expectedSig = hash_hmac('sha256', $payload, $secret, true);
 
-        if (!hash_equals($expectedSig, $sig)) {
+        if (! hash_equals($expectedSig, $sig)) {
             Log::error('Signed request: signature verification failed — REJECTING request', [
                 'provider' => $provider,
             ]);
+
             return null;
         }
 

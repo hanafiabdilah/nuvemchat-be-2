@@ -3,8 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Conversation\Status;
-use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\Billing\AiRunQuotaExceededException;
+use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Models\Conversation;
@@ -26,19 +26,19 @@ class AiSuggestController extends Controller
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
 
-        if(!$conversation->isAccessibleBy(Auth::user())){
+        if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json([
                 'message' => 'Unauthorized',
             ], 403);
         }
 
-        if($conversation->status !== Status::Active){
+        if ($conversation->status !== Status::Active) {
             return response()->json([
                 'message' => 'Conversation is not active',
             ], 400);
         }
 
-        if(!$conversation->connection->ai_suggest_agent_id){
+        if (! $conversation->connection->ai_suggest_agent_id) {
             return response()->json([
                 'message' => 'No AI agent is linked to this connection',
             ], 400);

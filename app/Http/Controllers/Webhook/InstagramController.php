@@ -15,7 +15,7 @@ class InstagramController extends Controller
 {
     public function __construct(
         protected ChatService $chatService,
-    ){
+    ) {
         //
     }
 
@@ -38,7 +38,7 @@ class InstagramController extends Controller
 
     public function handle(Request $request)
     {
-        if (!MetaSignatureVerifier::verify($request, InstagramConfig::clientSecret(), 'instagram')) {
+        if (! MetaSignatureVerifier::verify($request, InstagramConfig::clientSecret(), 'instagram')) {
             return response()->json(['message' => 'Invalid signature'], 401);
         }
 
@@ -46,19 +46,20 @@ class InstagramController extends Controller
 
         $object = $request->input('object');
 
-        if($object !== 'instagram') {
+        if ($object !== 'instagram') {
             return response()->json([
                 'message' => 'Invalid webhook object',
             ], 400);
         }
 
-        foreach($request->input('entry', []) as $entry) {
+        foreach ($request->input('entry', []) as $entry) {
             $userId = $entry['id'] ?? null;
 
-            if(!$userId) {
+            if (! $userId) {
                 Log::error('Missing user ID in Instagram webhook entry', [
                     'entry' => $entry,
                 ]);
+
                 continue;
             }
 
@@ -66,12 +67,13 @@ class InstagramController extends Controller
                 ->where('credentials->user_id', (string) $userId)
                 ->first();
 
-            if(!$connection) {
+            if (! $connection) {
                 Log::error('Connection not found for Instagram webhook', [
                     'user_id' => $userId,
                 ]);
+
                 continue;
-            };
+            }
 
             $this->chatService->handle($connection, $entry);
         }

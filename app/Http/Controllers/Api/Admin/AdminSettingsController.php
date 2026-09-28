@@ -11,11 +11,11 @@ use App\Services\Billing\PaymentService\PaymentServiceConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
 use App\Services\Connection\Proxy\ApiwayConfig;
-use App\Services\VirtualNumbers\ApiwayNumbersConfig;
-use App\Services\VirtualNumbers\NumberPricing;
 use App\Services\Connection\TikTok\TikTokConfig;
 use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationProviderFactory;
+use App\Services\VirtualNumbers\ApiwayNumbersConfig;
+use App\Services\VirtualNumbers\NumberPricing;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -432,6 +432,6 @@ class AdminSettingsController extends Controller
 
         $len = strlen($value);
 
-        return $len <= 4 ? str_repeat('•', $len) : str_repeat('•', max(4, $len - 4)) . substr($value, -4);
+        return $len <= 4 ? str_repeat('•', $len) : str_repeat('•', max(4, $len - 4)).substr($value, -4);
     }
 }

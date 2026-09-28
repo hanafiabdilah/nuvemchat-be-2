@@ -77,6 +77,7 @@ class TikTokController extends Controller
 
         if ($secret === '') {
             Log::error('TikTok webhook: app secret not configured');
+
             return false;
         }
 
@@ -91,13 +92,15 @@ class TikTokController extends Controller
 
         if (! $timestamp || ! $signature) {
             Log::warning('TikTok webhook: malformed signature header');
+
             return false;
         }
 
-        $expected = hash_hmac('sha256', $timestamp . '.' . $request->getContent(), $secret);
+        $expected = hash_hmac('sha256', $timestamp.'.'.$request->getContent(), $secret);
 
         if (! hash_equals($expected, $signature)) {
             Log::error('TikTok webhook: signature verification failed — REJECTING request');
+
             return false;
         }
 
@@ -105,6 +108,7 @@ class TikTokController extends Controller
             Log::warning('TikTok webhook: stale signature timestamp', [
                 'timestamp' => $timestamp,
             ]);
+
             return false;
         }
 

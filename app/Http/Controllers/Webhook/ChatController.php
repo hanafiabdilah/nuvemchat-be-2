@@ -7,13 +7,12 @@ use App\Models\Connection;
 use App\Services\Webhook\ChatService;
 use App\Services\Webhook\ChatWebhookSecret;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 
 class ChatController extends Controller
 {
     public function __construct(
         protected ChatService $chatService,
-    ){
+    ) {
         //
     }
 
@@ -31,11 +30,11 @@ class ChatController extends Controller
     {
         $connection = Connection::find($id);
 
-        if(!$connection) {
+        if (! $connection) {
             return response()->json([
                 'message' => 'Connection not found',
             ], 404);
-        };
+        }
 
         if (! ChatWebhookSecret::authorizes($request, $connection, $token)) {
             return response()->json([

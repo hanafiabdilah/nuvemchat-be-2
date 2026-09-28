@@ -88,6 +88,11 @@ class AppServiceProvider extends ServiceProvider
         // hopeless against a 48-character secret.
         RateLimiter::for('mcp-token', fn (Request $request) => Limit::perMinute(60)->by('mcp-token:'.$request->ip()));
 
+        // Upload links carry no bearer token, so there is nothing but the
+        // address to count by. A link is single-use and 48 characters long —
+        // this is a flood stop, not the thing that makes guessing hopeless.
+        RateLimiter::for('mcp-upload', fn (Request $request) => Limit::perMinute(30)->by('mcp-upload:'.$request->ip()));
+
         RateLimiter::for('webhook-chat', function (Request $request) {
             return Limit::perMinute(600)->by('webhook-chat:'.$request->route('id'));
         });

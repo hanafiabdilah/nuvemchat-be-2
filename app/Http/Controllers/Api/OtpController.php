@@ -65,9 +65,11 @@ class OtpController extends Controller
     /** Show only the last 4 digits of the destination number. */
     private function mask(?string $number): ?string
     {
-        if (! $number) return null;
+        if (! $number) {
+            return null;
+        }
         $digits = preg_replace('/\D+/', '', $number);
 
-        return strlen($digits) <= 4 ? $digits : str_repeat('•', max(0, strlen($digits) - 4)) . substr($digits, -4);
+        return strlen($digits) <= 4 ? $digits : str_repeat('•', max(0, strlen($digits) - 4)).substr($digits, -4);
     }
 }

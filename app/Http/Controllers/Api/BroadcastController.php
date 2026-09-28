@@ -48,7 +48,7 @@ class BroadcastController extends Controller
             ->where('tenant_id', $request->user()->tenant_id)
             ->when($request->filled('status'), fn ($query) => $query->where('status', $request->string('status')))
             ->when($request->filled('connection_id'), fn ($query) => $query->where('connection_id', $request->integer('connection_id')))
-            ->when($request->filled('search'), fn ($query) => $query->where('name', 'like', '%' . $request->string('search') . '%'))
+            ->when($request->filled('search'), fn ($query) => $query->where('name', 'like', '%'.$request->string('search').'%'))
             ->orderByDesc('id')
             ->paginate($request->integer('per_page', 20));
 
@@ -73,7 +73,7 @@ class BroadcastController extends Controller
             ->with('contact.tags')
             ->when($request->filled('status'), fn ($query) => $query->where('status', $request->string('status')))
             ->when($request->filled('search'), function ($query) use ($request) {
-                $term = '%' . $request->string('search') . '%';
+                $term = '%'.$request->string('search').'%';
                 $query->where(fn ($q) => $q->where('address', 'like', $term)->orWhere('name', 'like', $term));
             })
             ->orderBy('id')
@@ -153,7 +153,7 @@ class BroadcastController extends Controller
         $contentType = $request->input('content_type');
 
         $data = $request->validate([
-            'conversation_ids' => ['required', 'array', 'min:1', 'max:' . self::MAX_SELECTED_THREADS],
+            'conversation_ids' => ['required', 'array', 'min:1', 'max:'.self::MAX_SELECTED_THREADS],
             'conversation_ids.*' => ['integer'],
             'name' => ['nullable', 'string', 'max:255'],
             'content_type' => ['required', Rule::in([ContentType::Text->value, ContentType::Media->value])],

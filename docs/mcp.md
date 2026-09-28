@@ -2,7 +2,7 @@
 
 Lets a workspace drive Pingly from an LLM client — Claude Code, Claude Desktop,
 Codex — over the Model Context Protocol. Phase one exposes the flow builder and
-nothing else.
+the media gallery.
 
 This is the platform's first surface where an outside program acts as **a named
 person** rather than as the workspace. The public API (`/v1/*`) authenticates
@@ -60,6 +60,9 @@ nobody can act on.
 | `create_flow` | write | `flows.create` |
 | `update_flow` | write | `flows.update` |
 | `delete_flow` | write | `flows.delete` |
+| `list_files` | `mcp:media.read` | `gallery.view` |
+| `upload_file` | write | `flows.update` |
+| `create_upload_link` | write | `flows.update` |
 
 ⚠️ **`get_flow_specification` is the one that makes the rest work.** Half of
 `FlowBlueprint`'s rules are tenant-scoped `exists` checks — a tag, an agent, an
@@ -84,6 +87,43 @@ as in the builder's own save. `update_flow` returns `node_keys`, the caller's
 keys mapped to stored ids — a caller that discards it re-sends its own keys next
 time, creating the nodes again and deleting the rows any live conversation is
 standing on.
+
+### Media: uploading for flows, reusing the gallery
+
+**Uploads land exactly where the flow builder's own do** — `uploads/` on the
+published disk, through `App\Services\Media\PublishedUpload`, the class
+`POST /api/uploads` now also uses. Same content-based allow-list, same 10 MB
+ceiling, same customer-facing filename, same permanent URL, **no gallery quota**.
+So they are gated like editing a flow (`mcp:flows.write` + `flows.update`): a
+person who can attach a picture to a node in the builder can do it from an
+editor, and nothing here is stricter or looser. ⚠️ The HTTP route itself cannot
+be reused — it takes a Sanctum token, and an MCP token must never be one — which
+is why the storing is shared as a class instead.
+
+**The gallery is read-only from here.** `list_files` (`mcp:media.read` +
+`gallery.view`, plan feature `mcp` only) lists what people uploaded by hand in
+Pingly › Gallery, with each file's permanent signed URL, so a flow can use it
+as `attachment_url`. Nothing is written into, renamed in or deleted from it.
+
+Three ways to upload, because clients can do different things:
+
+- **`create_upload_link`** — a one-time URL (`POST /mcp/uploads/{token}`,
+  multipart field `file`) the client's shell sends a local file to with curl.
+  ⚠️ The one that matters: tool arguments are JSON the model *types*, so base64
+  of an ordinary picture is hundreds of thousands of tokens. The token lives
+  only as a hash in the cache, is single-use (`Cache::pull`, burned even when
+  the file is refused), expires after `MCP_UPLOAD_LINK_TTL_MINUTES` (15), and
+  grants nothing by itself — redeeming it re-checks the connection, the person,
+  the plan and the permission. `throttle:mcp-upload` (30/min per IP).
+- **`upload_file` with `url`** — fetched through `PublicUrl` + `OutboundHttp`
+  like every caller-chosen address (public hosts only, redirects re-checked,
+  streamed to disk under the 10 MB ceiling).
+- **`upload_file` with `content_base64`** — small files, capped at
+  `MCP_UPLOAD_INLINE_MAX_MB` (5).
+
+⚠️ Connections approved before `mcp:media.read` existed cannot see the gallery
+until the person reconnects; uploading needs no new scope. `/mcp/*` is already
+in Caddy's `@backend`, so no Caddy change.
 
 ---
 

@@ -3,8 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Services\Media\MediaFilename;
-use App\Services\Media\MediaStorage;
+use App\Services\Media\PublishedUpload;
 use App\Services\Media\UploadPolicy;
 use Illuminate\Http\Request;
 
@@ -33,29 +32,11 @@ class UploadController extends Controller
     public function store(Request $request)
     {
         $request->validate([
-            'file' => UploadPolicy::rules(10240), // Max 10MB
+            'file' => PublishedUpload::rules(),
         ], [
             'file.mimes' => UploadPolicy::message(),
         ]);
 
-        $file = $request->file('file');
-
-        $path = 'uploads/'.MediaFilename::build(
-            $file->getClientOriginalName(),
-            // From the content, never from the name the browser sent: this
-            // extension decides the Content-Type served back off our own
-            // domain, and the MIME type announced to the channel.
-            UploadPolicy::storedExtension($file),
-        );
-
-        MediaStorage::published()->putFileAs(dirname($path), $file, basename($path));
-
-        return response()->json([
-            'url' => MediaStorage::publishedUrl($path),
-            'path' => $path,
-            'filename' => $file->getClientOriginalName(),
-            'size' => $file->getSize(),
-            'mime_type' => $file->getMimeType(),
-        ]);
+        return response()->json(PublishedUpload::store($request->file('file')));
     }
 }

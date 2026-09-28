@@ -6,12 +6,15 @@ use App\Models\McpConnection;
 use App\Models\User;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Mcp\Tools\CreateFlowTool;
+use App\Services\Mcp\Tools\CreateUploadLinkTool;
 use App\Services\Mcp\Tools\DeleteFlowTool;
 use App\Services\Mcp\Tools\FlowSpecificationTool;
 use App\Services\Mcp\Tools\GetFlowTool;
+use App\Services\Mcp\Tools\ListFilesTool;
 use App\Services\Mcp\Tools\ListFlowsTool;
 use App\Services\Mcp\Tools\Tool;
 use App\Services\Mcp\Tools\UpdateFlowTool;
+use App\Services\Mcp\Tools\UploadFileTool;
 use App\Services\Mcp\Tools\ValidateFlowTool;
 
 /**
@@ -38,6 +41,11 @@ final class ToolRegistry
         CreateFlowTool::class,
         UpdateFlowTool::class,
         DeleteFlowTool::class,
+        // Media after flows: a file is usually uploaded *for* a flow, and the
+        // listing comes first because the file is often already there.
+        ListFilesTool::class,
+        UploadFileTool::class,
+        CreateUploadLinkTool::class,
     ];
 
     public function __construct(

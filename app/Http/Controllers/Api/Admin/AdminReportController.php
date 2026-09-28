@@ -234,5 +234,4 @@ class AdminReportController extends Controller
             return preg_match('/^[=+\-@\t\r]/', $cell) === 1 ? "\t".$cell : $cell;
         }, $cells));
     }
-
 }

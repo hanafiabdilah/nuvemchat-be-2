@@ -18,13 +18,10 @@ class AuditLogController extends Controller
         $search = trim((string) $request->query('search', ''));
 
         $logs = AuditLog::query()
-            ->when($request->filled('action'), fn ($q) =>
-                $q->where('action', $request->query('action')))
-            ->when($search !== '', fn ($q) =>
-                $q->where(fn ($w) =>
-                    $w->where('description', 'like', "%{$search}%")
-                        ->orWhere('actor_name', 'like', "%{$search}%")
-                        ->orWhere('action', 'like', "%{$search}%")))
+            ->when($request->filled('action'), fn ($q) => $q->where('action', $request->query('action')))
+            ->when($search !== '', fn ($q) => $q->where(fn ($w) => $w->where('description', 'like', "%{$search}%")
+                ->orWhere('actor_name', 'like', "%{$search}%")
+                ->orWhere('action', 'like', "%{$search}%")))
             ->orderByDesc('id')
             ->paginate($perPage)
             ->withQueryString();

@@ -16,9 +16,7 @@ class AgentController extends Controller
 {
     use ResolvesAiHubTenant;
 
-    public function __construct(protected AiAgentHubTenantService $tenantService)
-    {
-    }
+    public function __construct(protected AiAgentHubTenantService $tenantService) {}
 
     public function index(): JsonResponse
     {
@@ -129,7 +127,7 @@ class AgentController extends Controller
      */
     protected function resolveProviderCredentialId(array $payload, int $aiHubTenantId): array
     {
-        if (!isset($payload['providerCredentialId'])) {
+        if (! isset($payload['providerCredentialId'])) {
             return $payload;
         }
 

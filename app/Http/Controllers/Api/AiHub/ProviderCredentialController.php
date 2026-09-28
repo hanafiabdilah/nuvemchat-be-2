@@ -14,9 +14,7 @@ class ProviderCredentialController extends Controller
 {
     use ResolvesAiHubTenant;
 
-    public function __construct(protected AiAgentHubTenantService $tenantService)
-    {
-    }
+    public function __construct(protected AiAgentHubTenantService $tenantService) {}
 
     public function index(): JsonResponse
     {

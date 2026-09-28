@@ -102,7 +102,7 @@ class ContactController extends Controller
             ->firstOrFail();
 
         try {
-            $contactService = new ContactService();
+            $contactService = new ContactService;
             $contact = $contactService->addContact($connection, $validated);
 
             return new ContactResource($contact);

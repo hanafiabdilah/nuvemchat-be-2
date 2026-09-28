@@ -15,7 +15,6 @@ use App\Services\Gallery\GalleryPricing;
 use App\Services\Gallery\GalleryStorage;
 use App\Services\Media\MediaRetention;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 /**
  * Back Office: how much disk each customer is using, and how much of it the

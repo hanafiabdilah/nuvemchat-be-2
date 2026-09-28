@@ -74,9 +74,7 @@ class VocabularyTestController extends Controller
         'oga' => 'ogg',
     ];
 
-    public function __construct(private AiAgentHubTenantService $hub)
-    {
-    }
+    public function __construct(private AiAgentHubTenantService $hub) {}
 
     public function listen(Request $request): JsonResponse
     {
@@ -88,7 +86,7 @@ class VocabularyTestController extends Controller
         )));
 
         $validated = $request->validate(array_merge($this->sharedRules(), [
-            'audio' => ['required', 'file', 'max:' . $this->maxUploadKb(), 'mimes:' . implode(',', $accepted)],
+            'audio' => ['required', 'file', 'max:'.$this->maxUploadKb(), 'mimes:'.implode(',', $accepted)],
         ]));
 
         $agent = $this->agent((int) $validated['ai_hub_agent_id']);
@@ -107,14 +105,14 @@ class VocabularyTestController extends Controller
         // Stored only for as long as the run takes: the hub fetches the file
         // itself, by the same kind of signed link a stored voice note travels
         // as, and nothing about a test recording is worth keeping afterwards.
-        $path = $file->storeAs('vocabulary-tests/' . $tenant->id, Str::uuid() . '.' . $extension, MediaStorage::diskName());
+        $path = $file->storeAs('vocabulary-tests/'.$tenant->id, Str::uuid().'.'.$extension, MediaStorage::diskName());
 
         try {
             $attachments = [[
                 'type' => 'audio',
                 'mimeType' => AiAttachments::audioMimeFor($extension),
                 'url' => MediaStorage::signedUrl($path, now()->addMinutes(15)),
-                'name' => 'teste-vocabulario.' . $extension,
+                'name' => 'teste-vocabulario.'.$extension,
             ]];
 
             $inputAudio = AiTranscription::options(
@@ -165,7 +163,7 @@ class VocabularyTestController extends Controller
         $this->decodeTerms($request);
 
         $validated = $request->validate(array_merge($this->sharedRules(), [
-            'text' => ['required', 'string', 'max:' . self::MAX_TEXT],
+            'text' => ['required', 'string', 'max:'.self::MAX_TEXT],
             'voice' => ['nullable', 'string', 'max:40'],
             'voice_id' => ['nullable', 'string', 'max:64'],
             'model' => ['nullable', 'string', 'max:64'],
@@ -222,7 +220,7 @@ class VocabularyTestController extends Controller
                 // inside `output.audio`, not as a failed run.
                 throw UpstreamError::exception(
                     UpstreamProvider::AiHub,
-                    'voice test audio ' . ($audio['status'] ?? 'missing') . ': ' . json_encode($audio['error'] ?? null),
+                    'voice test audio '.($audio['status'] ?? 'missing').': '.json_encode($audio['error'] ?? null),
                     upstreamCode: 'voice_not_generated',
                     context: ['ai_hub_run_id' => $run->id],
                 );
@@ -252,7 +250,7 @@ class VocabularyTestController extends Controller
             'data' => [
                 // Inline rather than the hub's link: that one expires, and a
                 // browser that cannot reach the hub directly would play nothing.
-                'audio' => 'data:' . $mime . ';base64,' . base64_encode($bytes),
+                'audio' => 'data:'.$mime.';base64,'.base64_encode($bytes),
                 'text' => $text,
                 'provider' => $config['provider'],
                 'fell_back_to_default' => $requested === AiTranscription::ELEVENLABS && $config['provider'] !== AiTranscription::ELEVENLABS,
@@ -267,14 +265,14 @@ class VocabularyTestController extends Controller
     {
         return [
             'ai_hub_agent_id' => ['required', 'integer'],
-            'provider' => ['nullable', 'in:' . AiTranscription::OPENAI . ',' . AiTranscription::ELEVENLABS],
+            'provider' => ['nullable', 'in:'.AiTranscription::OPENAI.','.AiTranscription::ELEVENLABS],
             'credential_id' => ['nullable', 'string', 'max:64'],
             // The same rules as saving, so what can be tested is what can be kept.
-            'terms' => ['sometimes', 'array', 'max:' . AiVocabulary::MAX_TERMS],
+            'terms' => ['sometimes', 'array', 'max:'.AiVocabulary::MAX_TERMS],
             'terms.*.term' => ['required', 'string', 'min:2', 'max:50'],
-            'terms.*.aliases' => ['sometimes', 'array', 'max:' . AiVocabulary::MAX_ALIASES],
+            'terms.*.aliases' => ['sometimes', 'array', 'max:'.AiVocabulary::MAX_ALIASES],
             'terms.*.aliases.*' => ['string', 'min:2', 'max:50'],
-            'terms.*.speak_as' => ['nullable', 'string', 'max:' . AiVocabulary::MAX_SPEAK_AS_LENGTH],
+            'terms.*.speak_as' => ['nullable', 'string', 'max:'.AiVocabulary::MAX_SPEAK_AS_LENGTH],
         ];
     }
 
@@ -403,7 +401,7 @@ class VocabularyTestController extends Controller
      */
     private static function contains(string $haystack, string $needle): bool
     {
-        return (bool) preg_match('/(?<![\p{L}\p{N}])' . preg_quote($needle, '/') . '(?![\p{L}\p{N}])/iu', $haystack);
+        return (bool) preg_match('/(?<![\p{L}\p{N}])'.preg_quote($needle, '/').'(?![\p{L}\p{N}])/iu', $haystack);
     }
 
     private function refusal(\Throwable $e): JsonResponse

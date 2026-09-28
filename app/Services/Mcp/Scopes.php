@@ -18,7 +18,7 @@ use App\Enums\Billing\Feature;
  * for every change. The ceiling is a decision about the editor; the floor is a
  * decision about the person, and it is made fresh each time.
  *
- * Phase one is flows. Adding a surface means a constant here, a line in
+ * Flows and the media gallery. Adding a surface means a constant here, a line in
  * `all()`, and tools that name it — nothing in the OAuth layer changes.
  */
 final class Scopes
@@ -28,6 +28,13 @@ final class Scopes
     public const FLOWS_WRITE = 'mcp:flows.write';
 
     /**
+     * The workspace's media gallery, read-only: list what people uploaded by
+     * hand so a flow can use it. There is no write scope — MCP uploads go where
+     * the flow builder's do and ride on `flows.write`.
+     */
+    public const MEDIA_READ = 'mcp:media.read';
+
+    /**
      * Every scope this server issues, in the order a consent screen should
      * read them: what it can see before what it can change.
      *
@@ -35,7 +42,7 @@ final class Scopes
      */
     public static function all(): array
     {
-        return [self::FLOWS_READ, self::FLOWS_WRITE];
+        return [self::FLOWS_READ, self::FLOWS_WRITE, self::MEDIA_READ];
     }
 
     /**
@@ -94,6 +101,8 @@ final class Scopes
     {
         return match ($scope) {
             self::FLOWS_READ, self::FLOWS_WRITE => Feature::Flow,
+            // The gallery is not a plan feature (its gate is the storage
+            // meter), so MCP itself is the only feature in front of reading it.
             default => Feature::Mcp,
         };
     }

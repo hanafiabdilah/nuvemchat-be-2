@@ -4,6 +4,7 @@ use App\Http\Controllers\Mcp\McpController;
 use App\Http\Controllers\Mcp\MetadataController;
 use App\Http\Controllers\Mcp\RegistrationController;
 use App\Http\Controllers\Mcp\TokenController;
+use App\Http\Controllers\Mcp\UploadController;
 use App\Http\Middleware\Mcp\AuthenticateMcp;
 use App\Http\Middleware\Mcp\EnsureMcpEnabled;
 use Illuminate\Support\Facades\Route;
@@ -56,6 +57,13 @@ Route::middleware(EnsureMcpEnabled::class)->group(function () {
 
     Route::post('/mcp', [McpController::class, 'handle'])
         ->middleware([AuthenticateMcp::class, 'throttle:mcp']);
+
+    // The one-time link create_upload_link hands out. No bearer token — the
+    // client's shell does not hold one — so the token in the path is the
+    // credential, and the controller re-checks everything a tool call would.
+    Route::post('/mcp/uploads/{token}', [UploadController::class, 'store'])
+        ->where('token', '[A-Za-z0-9]{48}')
+        ->middleware('throttle:mcp-upload');
 
     // GET was the standalone event stream and DELETE ended a session; revision
     // 2026-07-28 removed both. Answering 405 is what tells an older client to

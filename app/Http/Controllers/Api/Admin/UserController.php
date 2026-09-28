@@ -26,12 +26,9 @@ class UserController extends Controller
         $users = User::query()
             ->whereNotNull('tenant_id')
             ->with(['roles', 'tenant.user'])
-            ->when($request->filled('tenant_id'), fn ($q) =>
-                $q->where('tenant_id', $request->integer('tenant_id')))
-            ->when($search !== '', fn ($q) =>
-                $q->where(fn ($w) =>
-                    $w->where('name', 'like', "%{$search}%")
-                        ->orWhere('email', 'like', "%{$search}%")))
+            ->when($request->filled('tenant_id'), fn ($q) => $q->where('tenant_id', $request->integer('tenant_id')))
+            ->when($search !== '', fn ($q) => $q->where(fn ($w) => $w->where('name', 'like', "%{$search}%")
+                ->orWhere('email', 'like', "%{$search}%")))
             ->orderBy('id', $sort)
             ->paginate($perPage)
             ->withQueryString();

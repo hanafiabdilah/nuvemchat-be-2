@@ -15,9 +15,7 @@ class AgentTrainingExampleController extends Controller
 {
     use ResolvesAiHubTenant;
 
-    public function __construct(protected AiAgentHubTenantService $tenantService)
-    {
-    }
+    public function __construct(protected AiAgentHubTenantService $tenantService) {}
 
     public function index(int $agentId): JsonResponse
     {
@@ -54,7 +52,7 @@ class AgentTrainingExampleController extends Controller
 
         $updated = $this->tenantService->updateAgentTrainingExample($example, $validated);
 
-        if (!$updated) {
+        if (! $updated) {
             return response()->json([
                 'message' => 'Training example disabled and removed',
             ]);

@@ -131,7 +131,7 @@ class AdminFlowAssistantController extends Controller
                     'nodes_generated' => $nodes,
                     'message' => $result['flow'] !== null
                         ? "The assistant answered and produced a valid {$nodes}-node flow."
-                        : 'The assistant answered but produced no flow: ' . $result['reply'],
+                        : 'The assistant answered but produced no flow: '.$result['reply'],
                 ],
             ]);
         } catch (UpstreamServiceException $e) {
@@ -167,6 +167,6 @@ class AdminFlowAssistantController extends Controller
 
         return strlen($value) <= 8
             ? str_repeat('•', strlen($value))
-            : substr($value, 0, 4) . str_repeat('•', 6) . substr($value, -4);
+            : substr($value, 0, 4).str_repeat('•', 6).substr($value, -4);
     }
 }

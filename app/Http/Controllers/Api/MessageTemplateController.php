@@ -5,13 +5,13 @@ namespace App\Http\Controllers\Api;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status as ConversationStatus;
+use App\Events\ConversationUpdated;
+use App\Events\MessageReceived;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\MessageResource;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
-use App\Events\ConversationUpdated;
-use App\Events\MessageReceived;
 use App\Services\Connection\WhatsApp\WhatsappTemplateService;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Message\MessageService;
@@ -167,7 +167,7 @@ class MessageTemplateController extends Controller
 
         $user = $request->user();
 
-        if (!empty($data['conversation_id'])) {
+        if (! empty($data['conversation_id'])) {
             $conversation = Conversation::visibleTo($user)
                 ->whereHas('connection', fn ($q) => $q->where('channel', Channel::WhatsappOfficial))
                 ->findOrFail($data['conversation_id']);
@@ -189,12 +189,12 @@ class MessageTemplateController extends Controller
                 ->resolve($connection, $contact, assignedUserId: $user->id)
                 ?->conversation;
 
-            if (!$conversation) {
+            if (! $conversation) {
                 abort(422, 'Could not open a conversation for this number');
             }
         }
 
-        $message = (new MessageService())->sendTemplate($conversation, $data);
+        $message = (new MessageService)->sendTemplate($conversation, $data);
         $message?->update(['sent_by_user_id' => $user->id]);
 
         // A template re-opens the conversation; make it active + assigned so the
@@ -245,7 +245,7 @@ class MessageTemplateController extends Controller
             // A connection with no WABA id cannot host a template at all; keying
             // those by their own id keeps them in the list so the caller gets a
             // per-connection error rather than a silent disappearance.
-            ->unique(fn (Connection $connection) => $connection->credentials['business_account_id'] ?? 'connection:' . $connection->id)
+            ->unique(fn (Connection $connection) => $connection->credentials['business_account_id'] ?? 'connection:'.$connection->id)
             ->values()
             ->all();
     }
@@ -269,7 +269,7 @@ class MessageTemplateController extends Controller
 
         $connection = $query->first();
 
-        if (!$connection) {
+        if (! $connection) {
             abort(404, 'No WhatsApp Official connection found');
         }
 

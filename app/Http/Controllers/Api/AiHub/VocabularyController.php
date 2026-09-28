@@ -37,11 +37,11 @@ class VocabularyController extends Controller
     public function update(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'terms' => ['present', 'array', 'max:' . AiVocabulary::MAX_TERMS],
+            'terms' => ['present', 'array', 'max:'.AiVocabulary::MAX_TERMS],
             'terms.*.term' => ['required', 'string', 'min:2', 'max:50'],
-            'terms.*.aliases' => ['sometimes', 'array', 'max:' . AiVocabulary::MAX_ALIASES],
+            'terms.*.aliases' => ['sometimes', 'array', 'max:'.AiVocabulary::MAX_ALIASES],
             'terms.*.aliases.*' => ['string', 'min:2', 'max:50'],
-            'terms.*.speak_as' => ['nullable', 'string', 'max:' . AiVocabulary::MAX_SPEAK_AS_LENGTH],
+            'terms.*.speak_as' => ['nullable', 'string', 'max:'.AiVocabulary::MAX_SPEAK_AS_LENGTH],
         ]);
 
         $tenant = $request->user()->tenant;

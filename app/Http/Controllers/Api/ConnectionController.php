@@ -1120,11 +1120,11 @@ class ConnectionController extends Controller
         // empty /me/accounts forever. rerequest re-shows that screen so the
         // user can add the missing Page(s).
         $url = 'https://www.facebook.com/v25.0/dialog/oauth'
-            . "?client_id={$appId}"
-            . "&redirect_uri={$redirectUri}"
-            . '&response_type=code'
-            . '&auth_type=rerequest'
-            . '&state=' . urlencode($state);
+            ."?client_id={$appId}"
+            ."&redirect_uri={$redirectUri}"
+            .'&response_type=code'
+            .'&auth_type=rerequest'
+            .'&state='.urlencode($state);
 
         // Business-type apps use Facebook Login for Business: the dialog takes
         // a login configuration (config_id) and IGNORES the classic scope
@@ -1132,12 +1132,12 @@ class ConnectionController extends Controller
         // The configuration must grant pages_show_list + pages_messaging +
         // pages_manage_metadata over the Pages asset (user access token).
         if ($messengerConfigId = FacebookConfig::messengerConfigId()) {
-            return $url . '&config_id=' . urlencode($messengerConfigId);
+            return $url.'&config_id='.urlencode($messengerConfigId);
         }
 
         // Consumer-type apps: classic scope-based request.
         // pages_show_list → /me/accounts, pages_messaging → Send API,
         // pages_manage_metadata → /{page}/subscribed_apps.
-        return $url . '&scope=' . urlencode('pages_show_list,pages_messaging,pages_manage_metadata');
+        return $url.'&scope='.urlencode('pages_show_list,pages_messaging,pages_manage_metadata');
     }
 }

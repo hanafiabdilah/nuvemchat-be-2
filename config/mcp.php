@@ -97,4 +97,24 @@ return [
 
     'client_metadata_max_bytes' => (int) env('MCP_CLIENT_METADATA_MAX_BYTES', 32768),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Uploads into the media gallery
+    |--------------------------------------------------------------------------
+    |
+    | Inline base64 is capped far below the gallery's own per-file limit: every
+    | byte of it is written by the model and travels inside one JSON-RPC body.
+    | Real files go through a one-time upload link instead, which accepts up to
+    | `gallery.max_upload_mb`.
+    |
+    | The link is a bearer credential for exactly one file, so it is short-lived
+    | and single-use; redeeming it re-checks the connection, the person and their
+    | permission like any tool call.
+    |
+    */
+
+    'upload_inline_max_mb' => (int) env('MCP_UPLOAD_INLINE_MAX_MB', 5),
+
+    'upload_link_ttl_minutes' => (int) env('MCP_UPLOAD_LINK_TTL_MINUTES', 15),
+
 ];

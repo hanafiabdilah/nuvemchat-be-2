@@ -254,6 +254,13 @@ final class Server
 
         `validate_flow` costs nothing and writes nothing. Use it before `create_flow`
         or `update_flow` whenever you are unsure.
+
+        A message can carry an image, video, audio or document. If the person means a
+        file they already have, look in their media gallery with `list_files` and use
+        its `url`. To add a new file from the local disk, call `create_upload_link`
+        and send it with the curl command it returns; for a file already online, pass
+        its URL to `upload_file`. Either way the `url` you get back is permanent: use
+        it as a message's `attachment_url`, with `message_type` equal to its `type`.
         TEXT;
     }
 

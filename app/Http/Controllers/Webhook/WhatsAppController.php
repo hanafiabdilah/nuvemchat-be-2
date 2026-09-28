@@ -20,7 +20,7 @@ class WhatsAppController extends Controller
         protected ChatService $chatService,
         protected WhatsappCoexistenceHandler $coexistenceHandler,
         protected WhatsappCallHandler $callHandler,
-    ){
+    ) {
         //
     }
 
@@ -43,7 +43,7 @@ class WhatsAppController extends Controller
 
     public function handle(Request $request)
     {
-        if (!MetaSignatureVerifier::verify($request, FacebookConfig::appSecret(), 'whatsapp')) {
+        if (! MetaSignatureVerifier::verify($request, FacebookConfig::appSecret(), 'whatsapp')) {
             return response()->json(['message' => 'Invalid signature'], 401);
         }
 
@@ -57,19 +57,20 @@ class WhatsAppController extends Controller
 
         $object = $request->input('object');
 
-        if($object !== 'whatsapp_business_account') {
+        if ($object !== 'whatsapp_business_account') {
             return response()->json([
                 'message' => 'Invalid webhook object',
             ], 400);
         }
 
-        foreach($request->input('entry', []) as $entry) {
+        foreach ($request->input('entry', []) as $entry) {
             $businessAccountId = $entry['id'] ?? null;
 
-            if(!$businessAccountId) {
+            if (! $businessAccountId) {
                 Log::error('Missing business account ID in WhatsApp webhook entry', [
                     'entry' => $entry,
                 ]);
+
                 continue;
             }
 
@@ -77,12 +78,13 @@ class WhatsAppController extends Controller
                 ->where('credentials->business_account_id', (string) $businessAccountId)
                 ->first();
 
-            if(!$connection) {
+            if (! $connection) {
                 Log::error('Connection not found for WhatsApp webhook', [
                     'business_account_id' => $businessAccountId,
                 ]);
+
                 continue;
-            };
+            }
 
             // The WABA webhook multiplexes several fields. Route by field:
             // templates, calls, and Coexistence fields (message echoes, history
@@ -95,6 +97,7 @@ class WhatsAppController extends Controller
 
             if ($hasTemplateStatus) {
                 $this->handleTemplateStatusUpdate($connection, $changes);
+
                 continue;
             }
 
@@ -112,7 +115,7 @@ class WhatsAppController extends Controller
                 }
             }
 
-            if (!empty($chatChanges)) {
+            if (! empty($chatChanges)) {
                 $entry['changes'] = $chatChanges;
                 $this->chatService->handle($connection, $entry);
             }

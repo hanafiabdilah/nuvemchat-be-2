@@ -91,10 +91,10 @@ class AdminConversationOverviewController extends Controller
     {
         $volume = $this->messages($period, $tenantId)
             ->selectRaw(
-                "COUNT(*) as total,
+                'COUNT(*) as total,
                  SUM(CASE WHEN messages.sender_type = ? THEN 1 ELSE 0 END) as inbound,
                  SUM(CASE WHEN messages.sender_type = ? THEN 1 ELSE 0 END) as outbound,
-                 SUM(CASE WHEN messages.error IS NOT NULL THEN 1 ELSE 0 END) as failed",
+                 SUM(CASE WHEN messages.error IS NOT NULL THEN 1 ELSE 0 END) as failed',
                 [SenderType::Incoming->value, SenderType::Outgoing->value]
             )->first();
 
@@ -153,10 +153,10 @@ class AdminConversationOverviewController extends Controller
     {
         $rows = $this->messages($period, null)
             ->selectRaw(
-                "connections.tenant_id as tenant_id,
+                'connections.tenant_id as tenant_id,
                  COUNT(*) as messages,
                  SUM(CASE WHEN messages.sender_type = ? THEN 1 ELSE 0 END) as inbound,
-                 SUM(CASE WHEN messages.error IS NOT NULL THEN 1 ELSE 0 END) as failed",
+                 SUM(CASE WHEN messages.error IS NOT NULL THEN 1 ELSE 0 END) as failed',
                 [SenderType::Incoming->value]
             )
             ->groupBy('connections.tenant_id')

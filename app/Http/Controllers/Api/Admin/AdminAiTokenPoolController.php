@@ -113,7 +113,7 @@ class AdminAiTokenPoolController extends Controller
             'label' => ['sometimes', 'string', 'max:120'],
             'api_key' => ['sometimes', 'nullable', 'string', 'max:500'],
             'default_model' => ['sometimes', 'nullable', 'string', 'max:100'],
-            'status' => ['sometimes', 'string', 'in:' . implode(',', TokenPoolKeyStatus::values())],
+            'status' => ['sometimes', 'string', 'in:'.implode(',', TokenPoolKeyStatus::values())],
             'weight' => ['sometimes', 'integer', 'min:1', 'max:1000'],
             'max_tenants' => ['sometimes', 'nullable', 'integer', 'min:1', 'max:10000'],
             'meta' => ['sometimes', 'nullable', 'array'],

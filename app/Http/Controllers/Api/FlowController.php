@@ -29,8 +29,11 @@ class FlowController extends Controller
      * refuses, which is the one failure the assistant exists to prevent.
      */
     private const NODE_TYPES = FlowBlueprint::NODE_TYPES;
+
     private const BRANCH_VALUE_PATTERN = FlowBlueprint::BRANCH_VALUE_PATTERN;
+
     private const EXPORT_FORMAT = FlowBlueprint::EXPORT_FORMAT;
+
     private const EXPORT_VERSION = FlowBlueprint::EXPORT_VERSION;
 
     /**
@@ -255,7 +258,7 @@ class FlowController extends Controller
     {
         $validated = $request->validate([
             'format' => ['required', 'string', Rule::in([self::EXPORT_FORMAT])],
-            'version' => ['required', 'integer', 'max:' . self::EXPORT_VERSION],
+            'version' => ['required', 'integer', 'max:'.self::EXPORT_VERSION],
             'name' => ['nullable', 'string', 'max:255'], // optional name override
             'flow' => ['required', 'array'],
             'flow.name' => ['required', 'string', 'max:255'],

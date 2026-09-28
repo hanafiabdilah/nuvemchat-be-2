@@ -138,7 +138,7 @@ class FlowAssistantController extends Controller
         return response()->stream(function () use ($input, $context, $history, $flow) {
             $emit = function (string $event, array $data): void {
                 echo "event: {$event}\n";
-                echo 'data: ' . json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+                echo 'data: '.json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)."\n\n";
 
                 // PHP-FPM buffers until the handler returns, which would
                 // deliver every stage at once at the end — the exact opposite
@@ -211,12 +211,12 @@ class FlowAssistantController extends Controller
     private function validated(Request $request): array
     {
         $validated = $request->validate([
-            'message' => ['required', 'string', 'max:' . FlowAssistantConfig::MAX_MESSAGE_CHARS],
+            'message' => ['required', 'string', 'max:'.FlowAssistantConfig::MAX_MESSAGE_CHARS],
             // Ids, never URLs — the same reason `gallery_asset_id` is an id on
             // every send route (see GalleryMediaResolver). A URL the client
             // supplied is a URL the client chose, and it would end up baked
             // into a saved flow that sends it to customers.
-            'gallery_asset_ids' => ['nullable', 'array', 'max:' . self::MAX_GALLERY_ASSETS],
+            'gallery_asset_ids' => ['nullable', 'array', 'max:'.self::MAX_GALLERY_ASSETS],
             'gallery_asset_ids.*' => ['integer'],
         ]);
 

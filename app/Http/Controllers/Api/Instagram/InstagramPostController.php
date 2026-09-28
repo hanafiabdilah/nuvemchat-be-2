@@ -333,7 +333,7 @@ class InstagramPostController extends Controller
 
         $data = $request->validate([
             'media_type' => ['required', Rule::enum(PostMediaType::class)],
-            'caption' => ['nullable', 'string', 'max:' . self::MAX_CAPTION],
+            'caption' => ['nullable', 'string', 'max:'.self::MAX_CAPTION],
             'items' => [$isDraft ? 'nullable' : 'required', 'array', 'max:10'],
             'items.*.url' => ['required', 'string', 'max:2048'],
             'items.*.path' => ['nullable', 'string', 'max:1024'],

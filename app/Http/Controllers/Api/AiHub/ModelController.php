@@ -15,8 +15,7 @@ class ModelController extends Controller
     public function __construct(
         protected AiAgentHubTenantService $tenantService,
         protected AiModelCatalog $catalog,
-    ) {
-    }
+    ) {}
 
     /**
      * Models a tenant can name when building an agent.

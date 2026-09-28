@@ -42,7 +42,7 @@ class FacebookController extends Controller
 
     public function handle(Request $request)
     {
-        if (!MetaSignatureVerifier::verify($request, FacebookConfig::appSecret(), 'facebook')) {
+        if (! MetaSignatureVerifier::verify($request, FacebookConfig::appSecret(), 'facebook')) {
             return response()->json(['message' => 'Invalid signature'], 401);
         }
 
@@ -59,10 +59,11 @@ class FacebookController extends Controller
         foreach ($request->input('entry', []) as $entry) {
             $pageId = $entry['id'] ?? null;
 
-            if (!$pageId) {
+            if (! $pageId) {
                 Log::error('Missing page ID in Facebook webhook entry', [
                     'entry' => $entry,
                 ]);
+
                 continue;
             }
 
@@ -70,10 +71,11 @@ class FacebookController extends Controller
                 ->where('credentials->page_id', (string) $pageId)
                 ->first();
 
-            if (!$connection) {
+            if (! $connection) {
                 Log::error('Connection not found for Facebook webhook', [
                     'page_id' => $pageId,
                 ]);
+
                 continue;
             }
 
