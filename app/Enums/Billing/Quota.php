@@ -14,7 +14,6 @@ enum Quota: string
 {
     case MaxConnections = 'max_connections';
     case MaxAgents = 'max_agents';
-    case MaxAiRuns = 'max_ai_runs';
     case IncludedInstances = 'included_instances';
     case IncludedTrainedAgents = 'included_trained_agents';
 
@@ -41,7 +40,6 @@ enum Quota: string
         return match ($this) {
             self::MaxConnections => 'Connections',
             self::MaxAgents => 'Agents',
-            self::MaxAiRuns => 'AI runs / month',
             self::IncludedInstances => 'Included API Way instances',
             self::IncludedTrainedAgents => 'Included trained agents',
             self::GalleryStorageGb => 'Gallery storage (GB)',
@@ -53,7 +51,6 @@ enum Quota: string
         return match ($this) {
             self::MaxConnections => 'Channels the workspace may connect at once.',
             self::MaxAgents => 'User seats in the workspace.',
-            self::MaxAiRuns => 'AI Hub runs per billing month. Resets with the subscription period.',
             self::IncludedInstances => 'API Way instances provisioned free with the plan.',
             self::IncludedTrainedAgents => 'Pre-trained catalog agents the plan may hire at no extra cost.',
             self::GalleryStorageGb => 'Media library space included with the plan. Absent or 0 means none — the tenant can still rent space per GB.',
@@ -66,7 +63,6 @@ enum Quota: string
         return match ($this) {
             self::MaxConnections => 'On connecting a new channel.',
             self::MaxAgents => 'On inviting a new agent.',
-            self::MaxAiRuns => 'On each AI agent run; over the limit, the flow hands off instead.',
             self::IncludedInstances => 'On provisioning; extra instances are billed per unit.',
             self::IncludedTrainedAgents => 'On hiring from the catalog; past the limit the agent is a one-off purchase.',
             self::GalleryStorageGb => 'On uploading to the gallery. Over the limit the library goes read-only — nothing is ever deleted.',

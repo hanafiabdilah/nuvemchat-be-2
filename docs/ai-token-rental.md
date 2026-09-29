@@ -344,10 +344,11 @@ Consequences, decided by the caller:
   handed to a human, never left talking to silence.
 - **"Respond with AI"** → `402` with code `credit_exhausted`.
 
-Kept apart from `ai_quota_exceeded` on purpose: both stop the AI for an account
-reason, but they are fixed on different screens — one by upgrading the plan, one
-by topping up — and a customer pointed at the wrong one loses the afternoon
-before they find out.
+Its own code rather than a generic error: the fix is a top-up on the Billing
+screen, and a customer pointed anywhere else loses the afternoon before they find
+out. (There used to be a sibling, `ai_quota_exceeded`, for a per-plan run cap.
+The cap was removed in Sep 2026 — token cost is already paid by the workspace's
+own key or by this balance, so it only stopped customers who had already paid.)
 
 Charging failures are **swallowed**, not thrown: the reply has already been
 generated and is on its way to a customer, and throwing there would hand the

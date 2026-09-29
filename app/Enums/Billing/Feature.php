@@ -95,7 +95,7 @@ enum Feature: string
             self::WhatsappApi => 'Marks an API Way workspace. Granted automatically by owning instances — it does NOT gate buying them, which is open to every tenant.',
             self::Crm => 'Lead board, pipelines and stages.',
             self::Flow => 'The visual automation builder.',
-            self::FlowAssistant => 'Builds and edits flows from a description, in the builder. Runs on the platform\'s own OpenAI key, so every turn costs the platform — it does not consume the workspace\'s AI runs. Needs `flow` to be of any use.',
+            self::FlowAssistant => 'Builds and edits flows from a description, in the builder. Runs on the platform\'s own OpenAI key, so every turn costs the platform — it never touches the workspace\'s balance. Needs `flow` to be of any use.',
             self::AiAgentHub => 'AI agents, handoff and reply suggestions.',
             self::Statistics => 'The tenant analytics pages.',
             self::Mcp => 'Lets people connect Claude, Codex or another MCP client to this workspace and work through it. Costs the platform nothing per use — the model tokens are billed to the customer\'s own AI subscription. Today it reaches the flow builder; each tool still needs the feature and the permission its own surface requires.',

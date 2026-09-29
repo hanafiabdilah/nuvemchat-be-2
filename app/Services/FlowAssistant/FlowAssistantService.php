@@ -32,11 +32,11 @@ use Illuminate\Validation\ValidationException;
  * ── Why this does not go through AiAgentHubTenantService::runAgent ──
  *
  * That method exists to answer a customer, and everything it does around the
- * HTTP call says so: it needs a real Conversation, it counts against the
- * workspace's `max_ai_runs`, it can spend the workspace's prepaid balance, and
+ * HTTP call says so: it needs a real Conversation, it can spend the
+ * workspace's prepaid balance, and
  * it writes an `ai_hub_runs` row keyed to a local agent. None of that is true
  * here. The assistant is a platform tool running on the platform's own OpenAI
- * key: no conversation, no workspace quota, nothing to bill. Reusing that
+ * key: no conversation, nothing to bill. Reusing that
  * method would mean weakening every one of those guarantees for the one caller
  * that must not have them.
  *

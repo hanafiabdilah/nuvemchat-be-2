@@ -298,7 +298,6 @@ test('every way the AI gives up within service hours ends in the queue', functio
     'the run failed' => 'error',
     'the agent is gone' => 'agent_missing',
     'too many turns' => 'max_turns_exceeded',
-    'the plan ran out of AI runs' => 'ai_quota_exceeded',
     'the prepaid balance is empty' => 'credit_exhausted',
 ]);
 

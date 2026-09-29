@@ -59,7 +59,6 @@ class AdminEntitlementController extends Controller
                 'usage' => [
                     'connections' => $tenant->connections()->count(),
                     'agents' => $tenant->users()->count(),
-                    'ai_runs' => $this->gate->aiRunsUsed($tenant),
                 ],
             ],
         ]);

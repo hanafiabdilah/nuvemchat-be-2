@@ -203,7 +203,7 @@ trait History
         $answer = $this->sent($conversation, $at, 'Vou chamar uma pessoa do nosso time para te ajudar, só um instante 🙂', [
             'sent_by_flow_id' => $this->flows[$flowKey]->id, 'sent_by_ai_hub_agent_id' => $agent->id,
         ]);
-        $reasons = ['ai_requested', 'ai_requested', 'service_hours', 'flow_requested', 'ai_quota_exceeded'];
+        $reasons = ['ai_requested', 'ai_requested', 'service_hours', 'flow_requested'];
         $conversation->forceFill(['handoff_at' => $at, 'handoff_reason' => $reasons[mt_rand(0, count($reasons) - 1)]])->saveQuietly();
 
         $this->make(FlowState::class, [

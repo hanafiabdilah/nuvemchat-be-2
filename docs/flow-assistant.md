@@ -304,10 +304,9 @@ to open.
 ## Costs
 
 The platform pays for every turn, including repairs. Nothing is charged to the
-workspace and nothing counts against `max_ai_runs` — the assistant deliberately
-does **not** go through `AiAgentHubTenantService::runAgent()`, which exists to
-answer a customer and carries quota, billing and an `ai_hub_runs` row keyed to a
-workspace agent.
+workspace — the assistant deliberately does **not** go through
+`AiAgentHubTenantService::runAgent()`, which exists to answer a customer and
+carries billing and an `ai_hub_runs` row keyed to a workspace agent.
 
 The consequence: **no usage row is written.** `ai_hub_runs` cannot hold these
 (its agent FK points at a workspace-owned agent), so the audit trail is the log:

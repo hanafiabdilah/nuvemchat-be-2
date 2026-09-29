@@ -1,6 +1,5 @@
 <?php
 
-use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Models\Admin;
 use App\Models\Setting;
 use App\Services\AiAgentHub\AiAgentHubConfig;
@@ -15,7 +14,6 @@ use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
-use App\Services\Billing\SubscriptionGate;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Spatie\Permission\Models\Permission;
@@ -35,8 +33,8 @@ function aiUsageAdmin(): Admin
     return $admin;
 }
 
-/** A tenant with an AI agent wired up, on a plan with $runLimit AI runs. */
-function tenantWithAiAgent(?int $runLimit = null): array
+/** A tenant with an AI agent wired up, on an active AI plan. */
+function tenantWithAiAgent(): array
 {
     $owner = User::factory()->create();
     $tenant = Tenant::create(['user_id' => $owner->id]);
@@ -48,7 +46,7 @@ function tenantWithAiAgent(?int $runLimit = null): array
         'price_cents' => 9900,
         'billing_cycle' => 'monthly',
         'features' => ['chat' => true, 'ai_agent_hub' => true],
-        'quotas' => $runLimit === null ? [] : ['max_ai_runs' => $runLimit],
+        'quotas' => [],
     ]);
 
     $subscription = Subscription::create([
@@ -194,55 +192,22 @@ test('an admin without the permission cannot read platform AI spend', function (
     $this->actingAs($admin, 'sanctum')->getJson('/api/admin/ai-usage')->assertForbidden();
 });
 
-test('a tenant over its AI run quota is refused before the hub is called', function () {
+test('a plan never caps how many AI runs a workspace makes', function () {
+    // The run quota was removed: token cost is already paid — by the
+    // workspace's own provider key, or by the prepaid balance on a rented one —
+    // so a cap in the plan only stopped customers who had already paid.
     config()->set('services.billing.enforce', true);
-    Http::fake();
-
-    [$tenant, $agent] = tenantWithAiAgent(runLimit: 2);
-    aiRun($tenant);
-    aiRun($tenant);
-
-    $conversation = Conversation::first();
-
-    expect(fn () => app(AiAgentHubTenantService::class)->runAgent($agent, $conversation, 'hello'))
-        ->toThrow(AiRunQuotaExceededException::class);
-
-    // The point of checking before the call: an over-quota workspace costs nothing.
-    Http::assertNothingSent();
-});
-
-test('a plan with no AI run quota is unlimited', function () {
-    config()->set('services.billing.enforce', true);
-
-    [$tenant] = tenantWithAiAgent(runLimit: null);
-    aiRun($tenant);
-
-    expect(app(SubscriptionGate::class)->canRunAi($tenant->fresh()))->toBeTrue();
-});
-
-test('AI runs are counted within the billing period, not the calendar month', function () {
-    [$tenant] = tenantWithAiAgent(runLimit: 5);
-
-    // A run from the previous period must not eat into this period's allowance.
-    aiRun($tenant)->forceFill(['created_at' => now()->subDays(10)])->save();
-    aiRun($tenant);
-
-    expect(app(SubscriptionGate::class)->aiRunsUsed($tenant->fresh()))->toBe(1);
-});
-
-test('enforcement follows the billing master switch', function () {
-    config()->set('services.billing.enforce', false);
     Http::fake(['*' => Http::response(['id' => 'r1', 'status' => 'COMPLETED', 'output' => ['message' => 'hi']], 200)]);
 
-    [$tenant, $agent] = tenantWithAiAgent(runLimit: 1);
-    aiRun($tenant);
+    [$tenant, $agent] = tenantWithAiAgent();
+    foreach (range(1, 5) as $_) {
+        aiRun($tenant);
+    }
 
     // Auth to the hub is platform-level: Pingly is one tenant there, so a
     // single token stands behind every workspace's calls.
     Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'platform-hub-token');
 
-    // Already over the limit, but with enforcement off quotas are advisory —
-    // the same master switch every other entitlement check follows.
     $run = app(AiAgentHubTenantService::class)->runAgent($agent, Conversation::first(), 'hello');
 
     expect($run->hub_run_id)->toBe('r1');

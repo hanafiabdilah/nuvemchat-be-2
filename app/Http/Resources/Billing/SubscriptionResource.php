@@ -2,7 +2,6 @@
 
 namespace App\Http\Resources\Billing;
 
-use App\Models\AiHubRun;
 use App\Models\Connection;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -59,7 +58,6 @@ class SubscriptionResource extends JsonResource
 
     /**
      * Live usage for quota'd resources, mirroring what SubscriptionGate enforces.
-     * AI runs are counted within the current billing period.
      */
     protected function currentUsage(): array
     {
@@ -68,10 +66,6 @@ class SubscriptionResource extends JsonResource
         return [
             'connections' => Connection::where('tenant_id', $tenantId)->count(),
             'agents' => User::where('tenant_id', $tenantId)->count(),
-            'ai_runs' => AiHubRun::where('tenant_id', $tenantId)
-                ->when($this->current_period_start, fn ($q) => $q->where('created_at', '>=', $this->current_period_start))
-                ->when($this->current_period_end, fn ($q) => $q->where('created_at', '<=', $this->current_period_end))
-                ->count(),
         ];
     }
 }

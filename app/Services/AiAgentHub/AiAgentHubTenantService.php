@@ -2,10 +2,8 @@
 
 namespace App\Services\AiAgentHub;
 
-use App\Enums\Billing\Quota;
 use App\Enums\Connection\Channel;
 use App\Exceptions\AiHubObjectMissingException;
-use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Models\AiHubAgent;
 use App\Models\AiHubAgentProfile;
@@ -16,7 +14,6 @@ use App\Models\AiHubSkill;
 use App\Models\AiHubTenant;
 use App\Models\AiHubTrainingExample;
 use App\Models\Conversation;
-use App\Services\Billing\SubscriptionGate;
 use App\Services\Credits\CreditService;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
@@ -906,7 +903,6 @@ class AiAgentHubTenantService
         $tenant = $agent->aiHubTenant;
         $conversation->loadMissing(['contact', 'connection']);
 
-        $this->assertWithinRunQuota($agent);
         $this->assertCanSpendCredit($agent);
 
         // Recorded on the run so "did the agent actually see the screenshot /
@@ -1167,7 +1163,6 @@ class AiAgentHubTenantService
     ): AiHubRun {
         $tenant = $agent->aiHubTenant;
 
-        $this->assertWithinRunQuota($agent);
         $this->assertCanSpendCredit($agent);
 
         // A fresh hub conversation per test: nothing said to the bench may
@@ -1324,47 +1319,6 @@ class AiAgentHubTenantService
             Channel::LiveChatWidget => 'live_chat_widget',
             Channel::Email => throw new \InvalidArgumentException('Email channel not supported for this operation yet'),
         };
-    }
-
-    /**
-     * Refuse the run when the plan's `max_ai_runs` for the period is spent.
-     *
-     * Checked here rather than in each caller so nothing can reach the hub
-     * around it — this is the only place a billable run is started. Plans
-     * without the quota (the majority) pay for one array lookup and no query.
-     *
-     * Follows the same master switch as every other entitlement check: with
-     * BILLING_ENFORCE off, quotas are advisory and nothing is blocked.
-     */
-    protected function assertWithinRunQuota(AiHubAgent $agent): void
-    {
-        if (! config('services.billing.enforce')) {
-            return;
-        }
-
-        $tenant = $agent->aiHubTenant?->tenant;
-
-        if ($tenant === null) {
-            return;
-        }
-
-        $gate = app(SubscriptionGate::class);
-        $limit = $gate->quota($tenant, Quota::MaxAiRuns->value);
-
-        if ($limit === null || $gate->canRunAi($tenant)) {
-            return;
-        }
-
-        $used = $gate->aiRunsUsed($tenant);
-
-        Log::warning('AiAgentHubTenantService: AI run quota exhausted', [
-            'tenant_id' => $tenant->id,
-            'ai_hub_agent_id' => $agent->id,
-            'limit' => $limit,
-            'used' => $used,
-        ]);
-
-        throw new AiRunQuotaExceededException($limit, $used);
     }
 
     /**

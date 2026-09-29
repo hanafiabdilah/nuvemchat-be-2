@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api\AiHub;
 
 use App\Enums\Connection\Channel;
-use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Api\AiHub\Concerns\ResolvesAiHubTenant;
@@ -125,7 +124,7 @@ class VocabularyTestController extends Controller
             );
 
             $run = $this->hub->runAudioTest($agent, self::LISTEN_PROMPT, attachments: $attachments, inputAudio: $inputAudio);
-        } catch (AiRunQuotaExceededException|CreditExhaustedException|UpstreamServiceException $e) {
+        } catch (CreditExhaustedException|UpstreamServiceException $e) {
             return $this->refusal($e);
         } finally {
             MediaStorage::disk()->delete($path);
@@ -236,7 +235,7 @@ class VocabularyTestController extends Controller
                     context: ['ai_hub_run_id' => $run->id],
                 );
             }
-        } catch (AiRunQuotaExceededException|CreditExhaustedException|UpstreamServiceException $e) {
+        } catch (CreditExhaustedException|UpstreamServiceException $e) {
             return $this->refusal($e);
         }
 
@@ -409,12 +408,6 @@ class VocabularyTestController extends Controller
         return match (true) {
             // Same codes and statuses as "Respond with AI": the screen that
             // fixes each is different, and the client already knows both.
-            $e instanceof AiRunQuotaExceededException => response()->json([
-                'message' => 'Your plan\'s AI runs for this billing period are used up.',
-                'code' => 'ai_quota_exceeded',
-                'limit' => $e->limit,
-                'used' => $e->used,
-            ], 402),
             $e instanceof CreditExhaustedException => response()->json([
                 'message' => 'Your credit balance is empty. Top it up to keep using AI.',
                 'code' => 'credit_exhausted',

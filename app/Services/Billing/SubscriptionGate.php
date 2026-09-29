@@ -5,7 +5,6 @@ namespace App\Services\Billing;
 use App\Enums\Apiway\ApiwaySubscriptionStatus;
 use App\Enums\Billing\Feature;
 use App\Enums\Billing\Quota;
-use App\Models\AiHubRun;
 use App\Models\ApiwayInstance;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
@@ -63,44 +62,6 @@ class SubscriptionGate
 
         // No limit configured = unlimited.
         return $limit === null || $currentCount < $limit;
-    }
-
-    /**
-     * AI Hub runs consumed in the current billing period.
-     *
-     * Windowed by the subscription's own period rather than the calendar month
-     * so the counter resets when the customer is charged, not on the 1st. With
-     * no subscription (or an open-ended comp) the calendar month is the only
-     * honest fallback.
-     */
-    public function aiRunsUsed(Tenant $tenant): int
-    {
-        $subscription = $tenant->currentSubscription;
-        $start = $subscription?->current_period_start ?? now()->startOfMonth();
-        $end = $subscription?->current_period_end;
-
-        return AiHubRun::query()
-            ->where('tenant_id', $tenant->id)
-            ->where('created_at', '>=', $start)
-            ->when($end, fn ($q) => $q->where('created_at', '<=', $end))
-            ->count();
-    }
-
-    /**
-     * Whether the tenant may start one more AI run.
-     *
-     * Free when no `max_ai_runs` quota is set, which is every plan that does not
-     * sell the limit — the count query only runs for plans that do.
-     */
-    public function canRunAi(Tenant $tenant): bool
-    {
-        $limit = $this->quota($tenant, Quota::MaxAiRuns->value);
-
-        if ($limit === null) {
-            return true;
-        }
-
-        return $this->aiRunsUsed($tenant) < $limit;
     }
 
     /**

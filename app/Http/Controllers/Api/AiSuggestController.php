@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Conversation\Status;
-use App\Exceptions\Billing\AiRunQuotaExceededException;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
@@ -52,21 +51,11 @@ class AiSuggestController extends Controller
 
         try {
             $suggestion = $service->suggest($conversation);
-        } catch (AiRunQuotaExceededException $th) {
-            // 402, not 502: nothing is broken, the plan's AI runs are spent.
-            // The agent can still write the reply themselves, so this is a
-            // disabled button and a note — not an error state.
-            return response()->json([
-                'message' => 'Your plan\'s AI runs for this billing period are used up.',
-                'code' => 'ai_quota_exceeded',
-                'limit' => $th->limit,
-                'used' => $th->used,
-            ], 402);
         } catch (CreditExhaustedException $th) {
-            // Same 402, different code and different fix: this workspace runs
-            // on a rented platform key and has nothing left in its balance.
-            // Top up, not upgrade — and the button that appears has to lead to
-            // the right screen.
+            // 402, not 502: nothing is broken — this workspace runs on a
+            // rented platform key and has nothing left in its balance. The
+            // agent can still write the reply themselves, and the fix is a
+            // top-up, so the button that appears has to lead there.
             return response()->json([
                 'message' => 'Your credit balance is empty. Top it up to keep using AI.',
                 'code' => 'credit_exhausted',

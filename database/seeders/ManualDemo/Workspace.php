@@ -76,13 +76,13 @@ trait Workspace
         Plan::where('slug', 'business')->first()?->forceFill([
             'features' => $all,
             'quotas' => [
-                'max_connections' => 15, 'max_agents' => 8, 'max_ai_runs' => 10000,
+                'max_connections' => 15, 'max_agents' => 8,
                 'included_instances' => 2, 'included_trained_agents' => 3, 'gallery_storage_gb' => 2,
             ],
         ])->save();
 
         Plan::where('slug', 'pro')->first()?->forceFill([
-            'quotas' => ['max_connections' => 5, 'max_agents' => 10, 'max_ai_runs' => 2000, 'gallery_storage_gb' => 1],
+            'quotas' => ['max_connections' => 5, 'max_agents' => 10, 'gallery_storage_gb' => 1],
         ])->save();
 
         // A fourth card priced in centavos trips a display rounding quirk; the
