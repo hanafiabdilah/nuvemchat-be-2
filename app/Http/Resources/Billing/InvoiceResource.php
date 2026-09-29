@@ -27,6 +27,14 @@ class InvoiceResource extends JsonResource
                 'copy_paste' => $this->pix_copy_paste,
                 'expires_at' => $this->pix_expires_at,
             ] : null,
+            // A hosted payment page (dLocal Go, direct billing outside Brazil).
+            // Only while the invoice can still be paid: a link to a settled or
+            // dead checkout is a button that leads nowhere.
+            'checkout' => $this->payment_method?->value === 'checkout' ? [
+                'url' => $this->status?->value === 'pending' ? $this->checkout_url : null,
+                'expires_at' => $this->checkout_expires_at,
+            ] : null,
+            'gateway' => $this->gateway ?? 'payment_service',
             'created_at' => $this->created_at,
         ];
     }

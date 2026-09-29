@@ -24,6 +24,13 @@ class ProcessOverdueSubscriptions extends Command
             ->where('pix_expires_at', '<', now())
             ->update(['status' => InvoiceStatus::Expired->value]);
 
+        // A hosted checkout link dies the same way a Pix QR does.
+        $expired += Invoice::query()
+            ->where('status', InvoiceStatus::Pending->value)
+            ->whereNotNull('checkout_expires_at')
+            ->where('checkout_expires_at', '<', now())
+            ->update(['status' => InvoiceStatus::Expired->value]);
+
         // 2. Active subscriptions whose period has lapsed with no payment → past_due (+grace).
         $lapsed = Subscription::query()
             ->whereIn('status', [SubscriptionStatus::Active->value, SubscriptionStatus::Trialing->value])

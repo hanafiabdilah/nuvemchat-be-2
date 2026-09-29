@@ -5,7 +5,7 @@ namespace App\Console\Commands\Billing;
 use App\Enums\Billing\InvoiceStatus;
 use App\Models\Invoice;
 use App\Services\Billing\BillingService;
-use App\Services\Billing\PaymentService\PaymentServiceClient;
+use App\Services\Billing\Gateways\BillingGateways;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -26,9 +26,9 @@ class ReconcileSubscriptions extends Command
                             {--hours=48 : Look back this many hours for in-flight charges}
                             {--invoice= : Reconcile only this invoice id}';
 
-    protected $description = 'Safety net: re-read in-flight charges from the payment service without waiting for webhooks.';
+    protected $description = 'Safety net: re-read in-flight charges from their gateway without waiting for webhooks.';
 
-    public function handle(PaymentServiceClient $payments, BillingService $billing): int
+    public function handle(BillingGateways $gateways, BillingService $billing): int
     {
         $invoices = Invoice::query()
             ->when(
@@ -47,7 +47,10 @@ class ReconcileSubscriptions extends Command
 
         foreach ($invoices as $invoice) {
             try {
-                $billing->applyPaymentUpdate($payments->getPayment($invoice->payment_id));
+                // Asked of the gateway the charge was made on, not the one
+                // PAYMENT_METHOD points at today.
+                $gateway = $gateways->forInvoice($invoice);
+                $billing->applyPaymentUpdate($gateway->getPayment($invoice->payment_id), $gateway->name());
                 $reconciled++;
             } catch (\Throwable $e) {
                 Log::error('Reconcile failed for invoice', [

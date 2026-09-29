@@ -18,9 +18,11 @@ use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
-use App\Services\Billing\PaymentService\PaymentServiceClient;
+use App\Services\Billing\Gateways\BillingGateways;
+use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditService;
+use App\Services\Market\MarketBillingMethods;
 use App\Services\Market\MarketDocuments;
 use App\Services\TrainedAgent\TrainedAgentService;
 use Carbon\CarbonInterface;
@@ -47,21 +49,21 @@ use Illuminate\Support\Str;
 class BillingService
 {
     public function __construct(
-        protected PaymentServiceClient $payments,
+        protected BillingGateways $gateways,
         protected SubscriptionGate $gate,
         protected BillingNotifier $notifier,
     ) {}
 
     /**
-     * How long a Pix instruction stays payable.
+     * How long a Pix instruction (or a hosted checkout link) stays payable.
      *
-     * ⚠️ Set explicitly, and it matters more than it used to. The payment
-     * service has no way to cancel a pending Pix — `void` releases a card
-     * authorisation and refuses anything else — so this window is the only
-     * thing that eventually kills a QR the customer walked away from.
-     * Cancelling now stops us showing it and stops it counting; it does not
-     * stop it being payable. If somebody pays anyway the webhook honours it
-     * (see applyPaymentUpdate), which is the right answer — the money arrived.
+     * ⚠️ Set explicitly, and it matters more than it used to. Neither the
+     * payment service nor a hosted checkout can be cancelled once issued, so
+     * this window is the only thing that eventually kills a QR the customer
+     * walked away from. Cancelling now stops us showing it and stops it
+     * counting; it does not stop it being payable. If somebody pays anyway the
+     * webhook honours it (see applyPaymentUpdate), which is the right answer —
+     * the money arrived.
      *
      * Not shortened to minutes on purpose: someone paying a monthly plan opens
      * their bank app, and a code that expires while they are doing that turns
@@ -70,7 +72,8 @@ class BillingService
     protected const PIX_WINDOW_HOURS = 24;
 
     /**
-     * Subscribe a tenant to a plan via card (recurring) or pix.
+     * Subscribe a tenant to a plan via card (recurring), Pix, or a hosted
+     * checkout.
      *
      * @param  array{card_token?:string, provider?:string, payer_email:string}  $opts
      */
@@ -87,17 +90,11 @@ class BillingService
             ]);
         }
 
-        // ⚠️ Enforced here, not only in the browser. The checkout hides a method
-        // the plan does not sell, but this endpoint accepted one anyway — so a
-        // Pix charge could be raised against a plan that sells no Pix, and in a
-        // country that has no Pix at all.
-        $offered = match ($method) {
-            PaymentMethod::Card => (bool) $price->card_enabled,
-            PaymentMethod::Pix => (bool) $price->pix_enabled,
-            default => true,
-        };
-
-        if (! $offered) {
+        // ⚠️ Enforced here, not only in the browser. Which methods a plan can
+        // be paid with is no longer a per-plan checkbox — it is whatever the
+        // gateway that bills this workspace can take today, and never Pix
+        // outside the country that has it.
+        if ($method !== PaymentMethod::Manual && ! $this->offers($tenant, $method)) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'method' => __('This plan cannot be paid for this way in your country.'),
             ]);
@@ -105,10 +102,110 @@ class BillingService
 
         return match ($method) {
             PaymentMethod::Card => $this->subscribeWithCard($tenant, $plan, $opts),
-            PaymentMethod::Pix => $this->subscribeWithPix($tenant, $plan, $opts),
+            PaymentMethod::Pix, PaymentMethod::Checkout => $this->subscribePerCycle($tenant, $plan, $method, $opts),
             PaymentMethod::Manual => throw new \InvalidArgumentException('Use grantManual for manual subscriptions.'),
         };
     }
+
+    // --- What can be charged ---------------------------------------------
+
+    /**
+     * The raw method list of the gateway that would bill this workspace now.
+     *
+     * Cached for a minute per gateway and currency: cheap enough to ask on
+     * every checkout render, and the whole point is that the answer changes.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function paymentMethodsFor(Tenant $tenant): array
+    {
+        $gateway = $this->gateways->forTenant($tenant);
+        $currency = $tenant->currency();
+
+        return Cache::remember(
+            "billing:payment-methods:{$gateway->name()}:{$currency}",
+            now()->addMinute(),
+            fn () => $gateway->paymentMethods($currency),
+        );
+    }
+
+    /**
+     * The methods this workspace can actually be sold, or null when the
+     * gateway could not be asked.
+     *
+     * Card only where some gateway can charge it unattended (otherwise it is a
+     * single charge dressed up as a subscription), Pix only where the rail
+     * exists, a hosted checkout wherever the gateway offers one.
+     *
+     * @return list<string>|null
+     */
+    public function offeredMethods(Tenant $tenant): ?array
+    {
+        try {
+            $methods = $this->paymentMethodsFor($tenant);
+        } catch (\Throwable $e) {
+            Log::warning('Could not read the payment methods', [
+                'tenant_id' => $tenant->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        return $this->offeredFrom($tenant, $methods);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $methods
+     * @return list<string>
+     */
+    public function offeredFrom(Tenant $tenant, array $methods): array
+    {
+        $offered = [];
+
+        foreach ($methods as $method) {
+            $name = $method['method'] ?? null;
+
+            $ok = match ($name) {
+                'card' => (bool) ($method['merchant_initiated_cards'] ?? false),
+                'pix' => MarketBillingMethods::has($tenant->market_code, 'pix'),
+                'checkout' => true,
+                default => false,
+            };
+
+            if ($ok && ! in_array($name, $offered, true)) {
+                $offered[] = $name;
+            }
+        }
+
+        return $offered;
+    }
+
+    /**
+     * ⚠️ Unknown counts as yes. The two failures are not equal: refusing a
+     * checkout that would have worked, because the gateway blinked, stops a
+     * customer from paying us — while letting one through that cannot work
+     * ends at the gateway, with translated copy. Pix outside Brazil is the one
+     * thing refused even blind: that is a fact about the country.
+     */
+    protected function offers(Tenant $tenant, PaymentMethod $method): bool
+    {
+        if ($method === PaymentMethod::Pix && ! MarketBillingMethods::has($tenant->market_code, 'pix')) {
+            return false;
+        }
+
+        $offered = $this->offeredMethods($tenant);
+
+        return $offered === null || in_array($method->value, $offered, true);
+    }
+
+    /** The card-session answer of whichever gateway would bill this workspace. */
+    public function cardSession(Tenant $tenant): array
+    {
+        return $this->gateways->forTenant($tenant)->cardSession($tenant);
+    }
+
+    // --- Subscribing ---------------------------------------------------------
 
     /**
      * Card: charge now, and keep the instrument for the cycles after this one.
@@ -121,12 +218,17 @@ class BillingService
      * card kept without ever being charged is regularly found to be invalid the
      * first time it is used, which produces a subscription that looks healthy
      * right up until its first renewal.
+     *
+     * Direct billing in Brazil answers this with a Mercado Pago preapproval:
+     * the "instrument" is the preapproval, and Mercado Pago runs every cycle
+     * after this one itself (see applyRecurringCharge()).
      */
     protected function subscribeWithCard(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
         $this->assertBillable($tenant);
 
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card);
+        $gateway = $this->gateways->forTenant($tenant);
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name());
         $periodEnd = $this->nextPeriodEnd($subscription, now());
 
         $invoice = Invoice::create([
@@ -134,6 +236,7 @@ class BillingService
             'subscription_id' => $subscription->id,
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Card,
+            'gateway' => $gateway->name(),
             'amount_cents' => $subscription->price_cents,
             // From the subscription, which froze both halves of the price when
             // it was created — see createPendingSubscription().
@@ -145,7 +248,7 @@ class BillingService
         ]);
 
         try {
-            $response = $this->payments->createPayment([
+            $response = $gateway->createPayment([
                 'order_reference' => $invoice->order_reference,
                 'amount' => $invoice->amount_cents,
                 'currency' => $invoice->currency,
@@ -159,6 +262,8 @@ class BillingService
                 // belongs to one gateway and is meaningless to another, so this
                 // is the one payment where the provider is not ours to choose.
                 'provider' => $opts['provider'] ?? null,
+                // Only read by a gateway that renews on its own schedule.
+                'recurring' => $plan->billing_cycle->mercadoPagoFrequency(),
                 'customer' => $this->customerPayload($tenant, $opts['payer_email'] ?? null),
                 'metadata' => ['tenant_id' => $tenant->id, 'subscription_id' => $subscription->id],
             ], $invoice->idempotency_key);
@@ -186,7 +291,7 @@ class BillingService
             // Neither activates anything; `unknown` resolves by itself and its
             // webhook lands on this same invoice through order_reference.
             $invoice->update([
-                'status' => ($payment['status'] ?? null) === 'unknown'
+                'status' => in_array($payment['status'] ?? null, ['unknown', 'pending'], true)
                     ? InvoiceStatus::Pending
                     : InvoiceStatus::Failed,
             ]);
@@ -198,16 +303,22 @@ class BillingService
     }
 
     /**
-     * Pix: create a pending subscription + first pix charge.
+     * Pix or a hosted checkout: a pending subscription + the first charge the
+     * customer pays by hand. Becomes active once that charge settles.
      */
-    protected function subscribeWithPix(Tenant $tenant, Plan $plan, array $opts): Subscription
+    protected function subscribePerCycle(Tenant $tenant, Plan $plan, PaymentMethod $method, array $opts): Subscription
     {
         $this->assertBillable($tenant);
 
-        // Starts past_due (createPendingSubscription); becomes active once the pix is paid.
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Pix);
+        // Starts past_due (createPendingSubscription); becomes active once paid.
+        $subscription = $this->createPendingSubscription(
+            $tenant,
+            $plan,
+            $method,
+            $this->gateways->forTenant($tenant)->name(),
+        );
 
-        $this->createPixInvoice($subscription, $opts['payer_email'] ?? null);
+        $this->createCycleInvoice($subscription, $method, $opts['payer_email'] ?? null);
         $this->fireUpdated($subscription);
 
         return $subscription;
@@ -215,12 +326,51 @@ class BillingService
 
     /**
      * Create (or refresh) a pending Pix invoice for a subscription's next period.
+     *
+     * Kept under its old name for the Pix refresh endpoint; the method is
+     * chosen by renewalMethodFor() when the subscription was not paid by Pix.
      */
     public function createPixInvoice(Subscription $subscription, ?string $payerEmail = null): Invoice
+    {
+        return $this->createCycleInvoice($subscription, $this->renewalMethodFor($subscription), $payerEmail);
+    }
+
+    /**
+     * Which per-cycle method the next invoice should use.
+     *
+     * The subscription's own, unless the gateway billing this workspace today
+     * no longer offers it — flipping PAYMENT_METHOD, or a provider switched
+     * off — in which case the other per-cycle method it does offer. Better a
+     * payable link in a different shape than a renewal nobody can pay.
+     */
+    public function renewalMethodFor(Subscription $subscription): PaymentMethod
+    {
+        $own = $subscription->payment_method?->isPaidPerCycle() ? $subscription->payment_method : PaymentMethod::Pix;
+        $offered = $subscription->tenant ? $this->offeredMethods($subscription->tenant) : null;
+
+        if ($offered === null || in_array($own->value, $offered, true)) {
+            return $own;
+        }
+
+        foreach ([PaymentMethod::Pix, PaymentMethod::Checkout] as $candidate) {
+            if (in_array($candidate->value, $offered, true)) {
+                return $candidate;
+            }
+        }
+
+        return $own;
+    }
+
+    /**
+     * Issue the invoice the customer pays by hand for a subscription's next
+     * period: a Pix QR, or a link to the gateway's hosted checkout.
+     */
+    public function createCycleInvoice(Subscription $subscription, PaymentMethod $method, ?string $payerEmail = null): Invoice
     {
         $tenant = $subscription->tenant;
         $this->assertBillable($tenant);
 
+        $gateway = $this->gateways->forTenant($tenant);
         $plan = $subscription->plan;
         $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
             ? $subscription->current_period_end->copy()
@@ -232,7 +382,8 @@ class BillingService
             'tenant_id' => $subscription->tenant_id,
             'subscription_id' => $subscription->id,
             'status' => InvoiceStatus::Pending,
-            'payment_method' => PaymentMethod::Pix,
+            'payment_method' => $method,
+            'gateway' => $gateway->name(),
             'amount_cents' => $subscription->price_cents,
             // The snapshot taken when the workspace subscribed, not today's
             // plan: the price is frozen, so its unit has to be frozen with it.
@@ -245,13 +396,14 @@ class BillingService
         ]);
 
         try {
-            $response = $this->payments->createPayment([
+            $response = $gateway->createPayment([
                 'order_reference' => $invoice->order_reference,
                 'amount' => $invoice->amount_cents,
                 'currency' => $invoice->currency,
-                'payment_method' => 'pix',
+                'payment_method' => $method->value,
                 'description' => "Assinatura {$plan?->name} — fatura #{$invoice->id}",
                 'expires_at' => $expiresAt->toIso8601String(),
+                'return_url' => DirectBillingConfig::returnUrl('/billing'),
                 'customer' => $this->customerPayload($tenant, $payerEmail),
                 'metadata' => ['tenant_id' => $subscription->tenant_id, 'subscription_id' => $subscription->id],
             ], $invoice->idempotency_key);
@@ -265,18 +417,18 @@ class BillingService
             throw $e;
         }
 
-        $this->applyPixInstructions($invoice, $response['data'] ?? [], $expiresAt);
+        $this->applyInstructions($invoice, $response['data'] ?? [], $expiresAt);
 
         return $invoice->fresh();
     }
 
     /**
-     * Create a payable Pix charge that tops up a workspace's prepaid balance.
+     * Create a payable charge that tops up a workspace's prepaid balance.
      *
-     * Pix only, and that is not a gap: a top-up is "put R$50 in, whenever you
-     * feel like it", which no stored-instrument schedule describes. A card
-     * top-up would be a one-off card charge, and this product has nowhere to
-     * collect a card outside the subscription checkout.
+     * Pix where the country has it, the gateway's hosted checkout elsewhere.
+     * Never a card here: a top-up is "put R$50 in, whenever you feel like it",
+     * which no stored-instrument schedule describes, and this product has
+     * nowhere to collect a card outside the subscription checkout.
      *
      * The amount comes from the caller, which is the first time that is true in
      * this class: everywhere else the price belongs to a plan or a quote and
@@ -288,16 +440,17 @@ class BillingService
      * it does not renew, and `period_start`/`period_end` would only be
      * describing a cycle that does not exist.
      */
-    public function createCreditTopupPixInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
+    public function createCreditTopupInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
     {
         $this->assertBillable($tenant);
 
-        // ⚠️ This method issues a Pix and nothing else — and Pix is a Brazilian
-        // rail. Without this an Indonesian workspace got a real invoice, then a
-        // gateway refusal, then generic copy telling them to try another payment
-        // method: one this endpoint never offered a choice about and their
-        // country does not have. Refused here, where the sentence can say so.
-        if (! $this->acceptsPix($tenant->currency())) {
+        $method = $this->topupMethodFor($tenant);
+
+        // ⚠️ Refused here, where the sentence can say so. Without it an
+        // Indonesian workspace once got a real invoice, then a gateway refusal,
+        // then copy telling them to try another payment method — one this
+        // endpoint never offered a choice about.
+        if ($method === null) {
             throw new UserFacingException(
                 'Ainda não há meio de pagamento disponível no seu país para adicionar saldo.',
                 422,
@@ -305,13 +458,15 @@ class BillingService
             );
         }
 
+        $gateway = $this->gateways->forTenant($tenant);
         $expiresAt = now()->addHours(self::PIX_WINDOW_HOURS);
 
         $invoice = Invoice::create([
             'tenant_id' => $tenant->id,
             'purpose' => InvoicePurpose::CreditTopup,
             'status' => InvoiceStatus::Pending,
-            'payment_method' => PaymentMethod::Pix,
+            'payment_method' => $method,
+            'gateway' => $gateway->name(),
             'amount_cents' => $amountCents,
             // The balance this tops up is in the workspace's own currency, so
             // the charge that fills it has to be too.
@@ -325,13 +480,14 @@ class BillingService
         $invoice->update(['order_reference' => "pingly-topup-{$invoice->id}"]);
 
         try {
-            $response = $this->payments->createPayment([
+            $response = $gateway->createPayment([
                 'order_reference' => $invoice->order_reference,
                 'amount' => $invoice->amount_cents,
                 'currency' => $invoice->currency,
-                'payment_method' => 'pix',
+                'payment_method' => $method->value,
                 'description' => "Créditos — fatura #{$invoice->id}",
                 'expires_at' => $expiresAt->toIso8601String(),
+                'return_url' => DirectBillingConfig::returnUrl('/billing?tab=credits'),
                 'customer' => $this->customerPayload($tenant, $payerEmail),
                 'metadata' => ['tenant_id' => $tenant->id, 'purpose' => 'credit_topup'],
             ], $invoice->idempotency_key);
@@ -341,9 +497,36 @@ class BillingService
             throw $e;
         }
 
-        $this->applyPixInstructions($invoice, $response['data'] ?? [], $expiresAt);
+        $this->applyInstructions($invoice, $response['data'] ?? [], $expiresAt);
 
         return $invoice->fresh();
+    }
+
+    /** @deprecated The top-up is no longer Pix-only; use createCreditTopupInvoice(). */
+    public function createCreditTopupPixInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
+    {
+        return $this->createCreditTopupInvoice($tenant, $amountCents, $payerEmail);
+    }
+
+    /**
+     * Pix first, then a hosted checkout. Unknown (the gateway could not be
+     * asked) counts as Pix where the rail exists — see offers() for why blind
+     * is not the same as no.
+     */
+    protected function topupMethodFor(Tenant $tenant): ?PaymentMethod
+    {
+        $hasPixRail = MarketBillingMethods::has($tenant->market_code, 'pix');
+        $offered = $this->offeredMethods($tenant);
+
+        if ($offered === null) {
+            return $hasPixRail ? PaymentMethod::Pix : null;
+        }
+
+        if (in_array('pix', $offered, true)) {
+            return PaymentMethod::Pix;
+        }
+
+        return in_array('checkout', $offered, true) ? PaymentMethod::Checkout : null;
     }
 
     /**
@@ -363,6 +546,15 @@ class BillingService
     public function chargeRenewal(Subscription $subscription): ?Invoice
     {
         if ($subscription->payment_method !== PaymentMethod::Card || ! $subscription->payment_instrument_id) {
+            return null;
+        }
+
+        // The gateway that holds the card — not whatever PAYMENT_METHOD says
+        // today. A card stored at the payment service is meaningless anywhere
+        // else, and one held by a Mercado Pago preapproval renews itself.
+        $gateway = $this->gateways->forSubscription($subscription);
+
+        if ($gateway->renewsItself($subscription->payment_instrument_id)) {
             return null;
         }
 
@@ -391,6 +583,7 @@ class BillingService
             'subscription_id' => $subscription->id,
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Card,
+            'gateway' => $gateway->name(),
             'amount_cents' => $subscription->price_cents,
             // ⚠️ The snapshot, never the live plan. Reading the currency off
             // the plan while the amount comes from the subscription meant a
@@ -405,7 +598,7 @@ class BillingService
         ]);
 
         try {
-            $response = $this->payments->createPayment([
+            $response = $gateway->createPayment([
                 'order_reference' => $reference,
                 'amount' => $invoice->amount_cents,
                 'currency' => $invoice->currency,
@@ -453,13 +646,17 @@ class BillingService
      * Apply a payment-service notification to the matching invoice.
      *
      * @param  array  $payment  Either a webhook `data` block or a fetched payment.
+     * @param  string|null  $gateway  Which gateway said so. Payment ids are only
+     *                                unique within one gateway, so a direct
+     *                                gateway's id must never match an invoice
+     *                                made elsewhere.
      */
-    public function applyPaymentUpdate(array $payment): void
+    public function applyPaymentUpdate(array $payment, ?string $gateway = null): void
     {
         $paymentId = $this->paymentIdOf($payment);
         $status = $payment['status'] ?? null;
 
-        $invoice = $this->matchInvoice($payment);
+        $invoice = $this->matchInvoice($payment, $gateway);
 
         if (! $invoice) {
             Log::warning('Payment with no matching invoice', [
@@ -600,6 +797,168 @@ class BillingService
     }
 
     /**
+     * One cycle of a subscription the gateway renews on its own (a Mercado
+     * Pago preapproval), reported by webhook.
+     *
+     * Two shapes arrive here and must not be confused. The *first* debit of a
+     * new preapproval pays the cycle subscribeWithCard() already invoiced —
+     * it is attached to that invoice, never billed as a second period. Every
+     * later one is a renewal: a paid invoice for the next period, and the
+     * subscription moved forward. Only approved debits count; a refused one is
+     * retried by the gateway, and a period that runs out unpaid lapses through
+     * billing:process-overdue like any other.
+     */
+    public function applyRecurringCharge(string $gateway, string $instrumentId, ?string $paymentId, ?string $status): void
+    {
+        $subscription = Subscription::where('gateway', $gateway)
+            ->where('payment_instrument_id', $instrumentId)
+            ->latest('id')
+            ->first();
+
+        if (! $subscription) {
+            Log::warning('Recurring charge with no matching subscription', [
+                'gateway' => $gateway,
+                'instrument_id' => $instrumentId,
+                'payment_id' => $paymentId,
+            ]);
+
+            return;
+        }
+
+        if ($status !== 'paid') {
+            Log::info('Recurring charge not approved', [
+                'subscription_id' => $subscription->id,
+                'payment_id' => $paymentId,
+                'status' => $status,
+            ]);
+
+            return;
+        }
+
+        // Exact idempotency: this debit already produced (or joined) an invoice.
+        if ($paymentId && Invoice::where('gateway', $gateway)->where('payment_id', $paymentId)->exists()) {
+            return;
+        }
+
+        DB::transaction(function () use ($subscription, $gateway, $paymentId) {
+            $subscription = Subscription::lockForUpdate()->find($subscription->id);
+
+            // The first debit: the invoice created at subscribe time is still
+            // waiting for a payment id.
+            $first = $subscription->invoices()
+                ->where('gateway', $gateway)
+                ->where('payment_method', PaymentMethod::Card->value)
+                ->whereNull('payment_id')
+                ->whereIn('status', [InvoiceStatus::Paid->value, InvoiceStatus::Pending->value])
+                ->oldest('id')
+                ->first();
+
+            if ($first) {
+                $wasPending = $first->status === InvoiceStatus::Pending;
+
+                $first->update([
+                    'payment_id' => $paymentId,
+                    'status' => InvoiceStatus::Paid,
+                    'paid_at' => $first->paid_at ?? now(),
+                ]);
+
+                if ($wasPending) {
+                    $this->activate($subscription, $first->period_end ?? $this->nextPeriodEnd($subscription, now()));
+                }
+
+                $this->fireUpdated($subscription);
+
+                return;
+            }
+
+            $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
+                ? $subscription->current_period_end->copy()
+                : now();
+            $periodEnd = $this->nextPeriodEnd($subscription, $periodStart);
+
+            Invoice::firstOrCreate(
+                ['order_reference' => $this->orderReference($subscription, $periodStart)],
+                [
+                    'tenant_id' => $subscription->tenant_id,
+                    'subscription_id' => $subscription->id,
+                    'status' => InvoiceStatus::Paid,
+                    'payment_method' => PaymentMethod::Card,
+                    'gateway' => $gateway,
+                    'amount_cents' => $subscription->price_cents,
+                    'currency' => $subscription->currency ?: 'BRL',
+                    'period_start' => $periodStart,
+                    'period_end' => $periodEnd,
+                    'paid_at' => now(),
+                    'payment_id' => $paymentId,
+                    'idempotency_key' => (string) Str::uuid(),
+                ],
+            );
+
+            $this->activate($subscription, $periodEnd);
+            $this->fireUpdated($subscription);
+        });
+    }
+
+    /**
+     * The gateway changed a standing authorisation on its side — the customer
+     * cancelled it in their Mercado Pago account, or it gave up after repeated
+     * refusals. Treated exactly like an instrument that stopped working.
+     *
+     * `paused` is ignored: this platform pauses it itself on cancel-at-period-
+     * end, and reading our own echo back as a failure would notify a customer
+     * who simply asked to leave.
+     */
+    public function applyRecurringStateChange(string $gateway, string $instrumentId, ?string $state): void
+    {
+        if ($state !== 'cancelled') {
+            return;
+        }
+
+        $matches = Subscription::where('gateway', $gateway)
+            ->where('payment_instrument_id', $instrumentId)
+            ->whereNotIn('status', [SubscriptionStatus::Cancelled->value, SubscriptionStatus::Suspended->value])
+            ->exists();
+
+        if ($matches) {
+            $this->applyInstrumentUpdate(['instrument_id' => $instrumentId, 'status' => 'cancelled', 'reason' => 'gateway_cancelled']);
+        }
+    }
+
+    /**
+     * Tell the gateway about a standing authorisation, when there is one.
+     *
+     * Best-effort by design: the local state change is what the customer asked
+     * for and must happen regardless. A failure is logged loudly, because the
+     * price of missing it is a card charged for a plan somebody left.
+     */
+    protected function setRecurringState(Subscription $subscription, string $state): void
+    {
+        $instrumentId = $subscription->payment_instrument_id;
+
+        if (! $instrumentId) {
+            return;
+        }
+
+        $gateway = $this->gateways->forSubscription($subscription);
+
+        if (! $gateway->renewsItself($instrumentId)) {
+            return;
+        }
+
+        try {
+            $gateway->setRecurringState($instrumentId, $state);
+        } catch (\Throwable $e) {
+            Log::error('Could not update a recurring authorisation at the gateway', [
+                'subscription_id' => $subscription->id,
+                'gateway' => $gateway->name(),
+                'instrument_id' => $instrumentId,
+                'state' => $state,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
      * Super-admin manual / comp grant — bypasses the payment service entirely.
      *
      * The grantor is an `Admin`, never a `User`: this is only reachable from
@@ -657,6 +1016,11 @@ class BillingService
             return $this->cancelPendingCheckout($subscription);
         }
 
+        // A preapproval would keep charging on its own schedule. Paused rather
+        // than cancelled, because `cancelled` is terminal at Mercado Pago and
+        // resume() has to be able to undo this.
+        $this->setRecurringState($subscription, 'paused');
+
         $subscription->update([
             'cancel_at_period_end' => true,
             'cancelled_at' => now(),
@@ -675,6 +1039,8 @@ class BillingService
      */
     public function resume(Subscription $subscription): Subscription
     {
+        $this->setRecurringState($subscription, 'active');
+
         $subscription->update([
             'cancel_at_period_end' => false,
             'cancelled_at' => null,
@@ -712,6 +1078,8 @@ class BillingService
             throw new PaymentAlreadySettledException;
         }
 
+        $this->setRecurringState($subscription, 'cancelled');
+
         $tenant = $subscription->tenant;
 
         DB::transaction(function () use ($subscription, $tenant) {
@@ -744,9 +1112,10 @@ class BillingService
      */
     public function voidOpenPixInvoices(Subscription $subscription): int
     {
+        // Every charge the customer pays by hand: a Pix QR or a hosted link.
         $open = $subscription->invoices()
             ->where('status', InvoiceStatus::Pending->value)
-            ->where('payment_method', PaymentMethod::Pix->value)
+            ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
             ->get();
 
         $cancelled = 0;
@@ -778,10 +1147,11 @@ class BillingService
 
         if ($invoice->payment_id) {
             try {
-                $payment = $this->payments->getPayment($invoice->payment_id);
+                $gateway = $this->gateways->forInvoice($invoice);
+                $payment = $gateway->getPayment($invoice->payment_id);
 
                 if (($payment['status'] ?? null) === 'paid') {
-                    $this->applyPaymentUpdate($payment);
+                    $this->applyPaymentUpdate($payment, $gateway->name());
 
                     return $invoice->fresh();
                 }
@@ -824,8 +1194,11 @@ class BillingService
             return;
         }
 
-        // No standing authorisation to revoke: a stored instrument is only
-        // charged when we ask, and a suspended subscription is never asked for.
+        // A stored instrument is only charged when we ask, and a suspended
+        // subscription is never asked for — but a preapproval charges itself,
+        // so that one has to be ended at the gateway.
+        $this->setRecurringState($subscription, 'cancelled');
+
         $subscription->update(['status' => SubscriptionStatus::Suspended]);
         $this->gate->forget($subscription->tenant);
         $this->fireUpdated($subscription);
@@ -908,42 +1281,10 @@ class BillingService
     /**
      * Refuse before calling out, where the sentence can still say what to do.
      *
-     * The service rejects a charge with no CPF or CNPJ by naming
-     * `customer.document_number` — a field the person reading it has never seen
-     * and cannot find in this product.
+     * The gateway rejects a charge with no CPF or CNPJ by naming
+     * `customer.document_number` — a field the person reading it has never
+     * seen and cannot find in this product.
      */
-    /**
-     * Whether the payment service can take a Pix in this currency today.
-     *
-     * ⚠️ Unknown counts as yes. The two failures are not equal: refusing a
-     * top-up that would have worked, because the service blinked, stops a
-     * Brazilian customer from paying us — while letting one through in a
-     * country with no Pix ends where it ended before, at the gateway. So only a
-     * positive answer that omits Pix refuses.
-     *
-     * Shares BillingController::paymentMethods()'s cache key deliberately: two
-     * readers asking the same question a minute apart must not get two answers.
-     */
-    private function acceptsPix(string $currency): bool
-    {
-        try {
-            $methods = Cache::remember(
-                "billing:payment-methods:{$currency}",
-                now()->addMinute(),
-                fn () => $this->payments->paymentMethods($currency),
-            );
-        } catch (\Throwable $e) {
-            Log::warning('could not read the payment methods before a top-up', [
-                'currency' => $currency,
-                'error' => $e->getMessage(),
-            ]);
-
-            return true;
-        }
-
-        return collect($methods)->contains(fn ($method) => ($method['method'] ?? null) === 'pix');
-    }
-
     protected function assertBillable(?Tenant $tenant): void
     {
         if (! $tenant?->hasBillingIdentity()) {
@@ -951,20 +1292,31 @@ class BillingService
         }
     }
 
-    /** Copy a Pix instruction onto the invoice columns the SPA already reads. */
-    protected function applyPixInstructions(Invoice $invoice, array $payment, CarbonInterface $fallbackExpiry): void
+    /**
+     * Copy what the customer needs to pay onto the invoice: a Pix QR into the
+     * columns the SPA already reads, or the hosted checkout link.
+     */
+    protected function applyInstructions(Invoice $invoice, array $payment, CarbonInterface $fallbackExpiry): void
     {
         $instructions = $payment['instructions'] ?? [];
+        $expiresAt = isset($instructions['expires_at'])
+            ? Carbon::parse($instructions['expires_at'])
+            : $fallbackExpiry;
 
-        $invoice->update([
-            'payment_id' => isset($payment['id']) ? (string) $payment['id'] : null,
-            'pix_qr_code' => $instructions['qr_code'] ?? null,
-            'pix_qr_code_base64' => $instructions['qr_code_image'] ?? null,
-            'pix_copy_paste' => $instructions['qr_code'] ?? null,
-            'pix_expires_at' => isset($instructions['expires_at'])
-                ? Carbon::parse($instructions['expires_at'])
-                : $fallbackExpiry,
-        ]);
+        $invoice->update(array_merge(
+            ['payment_id' => isset($payment['id']) ? (string) $payment['id'] : null],
+            $invoice->payment_method === PaymentMethod::Checkout
+                ? [
+                    'checkout_url' => $instructions['redirect_url'] ?? null,
+                    'checkout_expires_at' => $expiresAt,
+                ]
+                : [
+                    'pix_qr_code' => $instructions['qr_code'] ?? null,
+                    'pix_qr_code_base64' => $instructions['qr_code_image'] ?? null,
+                    'pix_copy_paste' => $instructions['qr_code'] ?? null,
+                    'pix_expires_at' => $expiresAt,
+                ],
+        ));
     }
 
     /**
@@ -1050,7 +1402,7 @@ class BillingService
         $this->fireUpdated($subscription);
     }
 
-    protected function createPendingSubscription(Tenant $tenant, Plan $plan, PaymentMethod $method): Subscription
+    protected function createPendingSubscription(Tenant $tenant, Plan $plan, PaymentMethod $method, ?string $gateway = null): Subscription
     {
         // Before the tenant moves on: close whatever charge the old
         // subscription still has open (talks to the payment service, so keep it
@@ -1061,7 +1413,7 @@ class BillingService
         // here, because everything downstream reads the subscription.
         $price = $plan->priceForMarket($tenant->market_code);
 
-        return DB::transaction(function () use ($tenant, $plan, $method, $price) {
+        return DB::transaction(function () use ($tenant, $plan, $method, $price, $gateway) {
             $this->supersedeCurrent($tenant);
 
             $subscription = Subscription::create([
@@ -1074,6 +1426,7 @@ class BillingService
                 // Callers move it to Active once payment is confirmed.
                 'status' => SubscriptionStatus::PastDue,
                 'payment_method' => $method,
+                'gateway' => $gateway,
                 'billing_cycle' => $plan->billing_cycle->value,
                 'price_cents' => $price?->amount_cents ?? $plan->price_cents,
                 // Snapshotted with the price, not read off the plan later: a
@@ -1138,6 +1491,10 @@ class BillingService
     {
         if ($current = $tenant->currentSubscription) {
             $this->voidOpenPixInvoices($current);
+
+            // ⚠️ A preapproval on the plan being replaced would go on charging
+            // the old price next to the new plan.
+            $this->setRecurringState($current, 'cancelled');
         }
     }
 
@@ -1154,12 +1511,20 @@ class BillingService
      * matters when a webhook overtakes the response that created the payment —
      * at that moment the invoice has a reference but no id yet.
      */
-    protected function matchInvoice(array $payment): ?Invoice
+    protected function matchInvoice(array $payment, ?string $gateway = null): ?Invoice
     {
         $paymentId = $this->paymentIdOf($payment);
 
-        if ($paymentId && $invoice = Invoice::where('payment_id', $paymentId)->first()) {
-            return $invoice;
+        if ($paymentId) {
+            $byId = Invoice::where('payment_id', $paymentId)
+                ->when($gateway !== null, fn ($q) => $gateway === BillingGateways::PAYMENT_SERVICE
+                    ? $q->where(fn ($w) => $w->whereNull('gateway')->orWhere('gateway', BillingGateways::PAYMENT_SERVICE))
+                    : $q->where('gateway', $gateway))
+                ->first();
+
+            if ($byId) {
+                return $byId;
+            }
         }
 
         $reference = $payment['order_reference'] ?? null;

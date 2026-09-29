@@ -20,6 +20,20 @@ enum BillingCycle: string
         };
     }
 
+    /**
+     * The same cycle in Mercado Pago preapproval terms — which only knows days
+     * and months, so a year is twelve of them.
+     *
+     * @return array{frequency: int, frequency_type: string}
+     */
+    public function mercadoPagoFrequency(): array
+    {
+        return match ($this) {
+            self::Daily => ['frequency' => 1, 'frequency_type' => 'days'],
+            self::Monthly => ['frequency' => 1, 'frequency_type' => 'months'],
+            self::Yearly => ['frequency' => 12, 'frequency_type' => 'months'],
+        };
+    }
 
     /** Human label for UIs. */
     public function label(): string

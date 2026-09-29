@@ -67,6 +67,17 @@ return [
         // `enforce` had nothing to do with that company.
         'grace_days' => (int) env('BILLING_GRACE_DAYS', 3),
         'enforce' => (bool) env('BILLING_ENFORCE', false),
+
+        // Which road a *new* charge takes: `payment_service` (the group's own
+        // service) or `direct` (Pingly's own gateway accounts — Mercado Pago in
+        // Brazil, dLocal Go everywhere else). See App\Enums\Billing\BillingRoute.
+        //
+        // ⚠️ In .env on purpose, not in the Back Office: flipping it changes
+        // where money goes for every workspace at once, and the credentials of
+        // both roads are edited separately under Integrations. A stored card
+        // or an open charge keeps the gateway it was created on — this only
+        // decides what is created next.
+        'payment_method' => env('PAYMENT_METHOD', 'payment_service'),
     ],
 
     'whatsapp' => [

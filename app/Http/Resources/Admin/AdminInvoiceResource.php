@@ -27,6 +27,9 @@ class AdminInvoiceResource extends JsonResource
             'due_date' => $this->due_date,
             'paid_at' => $this->paid_at,
             'payment_id' => $this->payment_id,
+            // Which company holds `payment_id` — an operator looking it up has
+            // to know which dashboard to open.
+            'gateway' => $this->gateway ?? 'payment_service',
             'order_reference' => $this->order_reference,
             'subscription_id' => $this->subscription_id,
             'tenant_id' => $this->tenant_id,

@@ -57,6 +57,8 @@ use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Billing\BillingController;
 use App\Http\Controllers\Api\BroadcastController;
+use App\Http\Controllers\Api\Catalog\OrderController as CatalogOrderController;
+use App\Http\Controllers\Api\Catalog\ProductController as CatalogProductController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
@@ -93,8 +95,6 @@ use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
-use App\Http\Controllers\Api\Catalog\OrderController as CatalogOrderController;
-use App\Http\Controllers\Api\Catalog\ProductController as CatalogProductController;
 use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
 use App\Http\Controllers\Api\V1\ConversationMessageController as V1ConversationMessageController;
 use App\Http\Controllers\Api\V1\ConversationToolController as V1ConversationToolController;
@@ -897,6 +897,7 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             // The payment service credential's own proof: what can be charged,
             // and whether any active gateway can auto-renew a card at all.
             Route::get('/payment-service/test', [AdminPaymentServiceController::class, 'test']);
+            Route::get('/billing-gateways/{gateway}/test', [AdminPaymentServiceController::class, 'testDirect']);
 
             // The flow builder's AI assistant. Not part of the bulk settings
             // save: storing the key provisions a credential and an agent at the

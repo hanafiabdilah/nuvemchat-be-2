@@ -29,11 +29,6 @@ class PlanResource extends JsonResource
                         'market_code' => $price->market_code,
                         'amount_cents' => $price->amount_cents,
                         'currency' => $price->currency,
-                        // Per country, because Pix is: one global checkbox used
-                        // to offer it everywhere the moment a plan was priced
-                        // for a second country.
-                        'card_enabled' => (bool) $price->card_enabled,
-                        'pix_enabled' => (bool) $price->pix_enabled,
                     ])
                     ->values(),
             ),
@@ -44,8 +39,9 @@ class PlanResource extends JsonResource
             'is_active' => $this->is_active,
             'is_public' => $this->is_public,
             'sort_order' => $this->sort_order,
-            'card_enabled' => $this->card_enabled,
-            'pix_enabled' => $this->pix_enabled,
+            // No `card_enabled` / `pix_enabled` any more: how a plan is paid is
+            // decided by the gateway billing the workspace (GET
+            // /billing/payment-methods → `offered`), not by a checkbox per plan.
             'created_at' => $this->created_at,
         ];
     }

@@ -120,7 +120,8 @@ class CreditController extends Controller
     }
 
     /**
-     * Buy credit. Pix only — see BillingService::createCreditTopupPixInvoice.
+     * Buy credit: Pix where the country has it, otherwise the gateway's hosted
+     * checkout — see BillingService::createCreditTopupInvoice.
      *
      * The floor is enforced here rather than in the service so the customer
      * gets a field error on the amount they typed, not an exception.
@@ -137,7 +138,7 @@ class CreditController extends Controller
 
         $tenant = $request->user()->tenant;
 
-        $invoice = $this->billing->createCreditTopupPixInvoice(
+        $invoice = $this->billing->createCreditTopupInvoice(
             $tenant,
             (int) $validated['amount_cents'],
             $validated['payer_email'] ?? $request->user()->email,

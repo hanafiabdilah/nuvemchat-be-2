@@ -2,14 +2,13 @@
 
 use App\Http\Controllers\Webhook\ApiwayNumbersController;
 use App\Http\Controllers\Webhook\ChatController;
+use App\Http\Controllers\Webhook\DirectBillingWebhookController;
 use App\Http\Controllers\Webhook\FacebookController;
 use App\Http\Controllers\Webhook\InstagramController;
 use App\Http\Controllers\Webhook\IntegrationWebhookController;
 use App\Http\Controllers\Webhook\PaymentServiceWebhookController;
 use App\Http\Controllers\Webhook\TikTokController;
 use App\Http\Controllers\Webhook\WhatsAppController;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 
 /**
@@ -54,6 +53,19 @@ Route::post('/webhook/tiktok', [TikTokController::class, 'handle'])->name('webho
 Route::post('/webhook/payments', [PaymentServiceWebhookController::class, 'handle'])
     ->middleware('throttle:webhook-inbound')
     ->name('webhook.payments');
+
+// Platform billing straight at a gateway (PAYMENT_METHOD=direct): Mercado Pago
+// for Brazil, dLocal Go for every other market. Both send a pointer and the
+// state is read back from their API — see DirectBillingWebhookController.
+// Registered whatever the env says, because a charge made in direct mode still
+// reports here after it is flipped back.
+Route::post('/webhook/billing/mercadopago', [DirectBillingWebhookController::class, 'mercadoPago'])
+    ->middleware('throttle:webhook-inbound')
+    ->name('webhook.billing.mercadopago');
+
+Route::post('/webhook/billing/dlocalgo', [DirectBillingWebhookController::class, 'dlocalGo'])
+    ->middleware('throttle:webhook-inbound')
+    ->name('webhook.billing.dlocalgo');
 
 // API Way pushes every SMS received on a rented virtual number here. One
 // webhook per account, and the platform has one account, so this single route

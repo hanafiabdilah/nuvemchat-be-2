@@ -13,11 +13,9 @@ use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Tenant;
 use App\Services\Billing\BillingService;
-use App\Services\Billing\PaymentService\PaymentServiceClient;
 use App\Services\Market\MarketDocuments;
 use App\Support\Errors\HasUserSafeMessage;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 
@@ -25,39 +23,30 @@ class BillingController extends Controller
 {
     public function __construct(
         protected BillingService $billing,
-        protected PaymentServiceClient $payments,
     ) {}
 
     /**
-     * What can be charged right now, straight from the payment service.
+     * What can be charged right now, straight from whichever gateway bills
+     * this workspace (the payment service, or — with PAYMENT_METHOD=direct —
+     * Mercado Pago in Brazil and dLocal Go elsewhere).
      *
-     * Replaces the old "here is the gateway's public key" endpoint. A checkout
-     * that hard-codes its buttons shows someone an option that fails on the day
-     * a provider is suspended or a method is turned off; asking makes that a
-     * non-event.
+     * A checkout that hard-codes its buttons shows someone an option that
+     * fails on the day a provider is suspended or a method is turned off;
+     * asking makes that a non-event. `offered` is the answer the checkout
+     * renders: no per-plan checkbox decides it any more.
      *
      * ⚠️ `merchant_initiated_cards` is the one field the checkout must not
      * ignore. It says whether a stored card can be charged with nobody at the
      * screen — which is the only thing that makes "renova automaticamente"
-     * true. Without a provider that can do it, the card tile is hidden rather
-     * than sold and then discovered to be manual at the second cycle.
-     *
-     * Cached for a minute: cheap enough to ask on every render, and the whole
-     * point is that the answer changes.
+     * true. Without it, the card tile is hidden rather than sold and then
+     * discovered to be manual at the second cycle.
      */
     public function paymentMethods(Request $request)
     {
-        // Asked for the currency this workspace actually pays in: what Brazil
-        // can be charged with says nothing about Indonesia, and offering Pix to
-        // a rupiah checkout is a button that cannot work.
-        $currency = $this->tenant($request)->currency();
+        $tenant = $this->tenant($request);
 
         try {
-            $methods = Cache::remember(
-                "billing:payment-methods:{$currency}",
-                now()->addMinute(),
-                fn () => $this->payments->paymentMethods($currency),
-            );
+            $methods = $this->billing->paymentMethodsFor($tenant);
         } catch (\Throwable $e) {
             Log::warning('Could not load payment methods', ['error' => $e->getMessage()]);
 
@@ -70,6 +59,7 @@ class BillingController extends Controller
 
         return response()->json([
             'data' => $methods,
+            'offered' => $this->billing->offeredFrom($tenant, $methods),
             'card_auto_renew' => (bool) ($card['merchant_initiated_cards'] ?? false),
         ]);
     }
@@ -85,19 +75,8 @@ class BillingController extends Controller
      */
     public function cardSession(Request $request)
     {
-        $tenant = $this->tenant($request);
-
-        $session = $this->payments->instrumentSession([
-            'customer_reference' => $tenant->paymentCustomerReference(),
-            'type' => 'card_token',
-        ]);
-
         return response()->json([
-            'data' => [
-                'sdk' => $session['session']['sdk'] ?? null,
-                'public_key' => $session['session']['public_key'] ?? null,
-                'provider' => $session['provider']['name'] ?? null,
-            ],
+            'data' => $this->billing->cardSession($this->tenant($request)),
         ]);
     }
 
@@ -267,8 +246,9 @@ class BillingController extends Controller
 
         return response()->json([
             'data' => new SubscriptionResource($subscription->loadMissing('plan')),
-            // For pix, the frontend needs the freshly-created charge to render the QR.
-            'invoice' => $method === PaymentMethod::Pix
+            // For pix / a hosted checkout, the frontend needs the freshly-created
+            // charge to render the QR or open the gateway's page.
+            'invoice' => $method->isPaidPerCycle()
                 ? new InvoiceResource($subscription->invoices()->latest()->first())
                 : null,
         ], 201);

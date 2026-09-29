@@ -14,6 +14,8 @@ class Subscription extends Model
         'plan_id',
         'status',
         'payment_method',
+        // Which gateway holds the stored instrument (null = payment service).
+        'gateway',
         'billing_cycle',
         'price_cents',
         // Snapshotted beside the price. A frozen amount whose unit is read live

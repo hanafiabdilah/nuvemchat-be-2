@@ -3,6 +3,9 @@
 namespace App\Services\Billing\PaymentService;
 
 use App\Exceptions\UserFacingException;
+use App\Models\Tenant;
+use App\Services\Billing\Gateways\BillingGateway;
+use App\Services\Billing\Gateways\BillingGateways;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Client\ConnectionException as HttpConnectionException;
@@ -25,12 +28,44 @@ use Illuminate\Support\Facades\Log;
  * workers, or an operator retrying by hand days later. Callers must build the
  * reference from the thing being paid for — see BillingService::orderReference().
  */
-class PaymentServiceClient
+class PaymentServiceClient implements BillingGateway
 {
+    public function name(): string
+    {
+        return BillingGateways::PAYMENT_SERVICE;
+    }
+
     public function isConfigured(): bool
     {
         return PaymentServiceConfig::isConfigured();
     }
+
+    /**
+     * The service tokenises cards through whichever gateway it routed this
+     * session to, and says which — the first charge has to reuse it.
+     */
+    public function cardSession(Tenant $tenant): array
+    {
+        $session = $this->instrumentSession([
+            'customer_reference' => $tenant->paymentCustomerReference(),
+            'type' => 'card_token',
+        ]);
+
+        return [
+            'sdk' => $session['session']['sdk'] ?? null,
+            'public_key' => $session['session']['public_key'] ?? null,
+            'provider' => $session['provider']['name'] ?? null,
+        ];
+    }
+
+    /** Stored instruments here are charged by us (billing:charge-renewals). */
+    public function renewsItself(string $instrumentId): bool
+    {
+        return false;
+    }
+
+    /** No standing authorisation exists: we simply stop asking. */
+    public function setRecurringState(string $instrumentId, string $state): void {}
 
     // --- Payments -----------------------------------------------------------
 
@@ -45,11 +80,16 @@ class PaymentServiceClient
      * twice. It resolves on its own and the notification follows.
      *
      * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>  The whole envelope: data, client_token, notice.
+     * @return array<string, mixed> The whole envelope: data, client_token, notice.
      */
     public function createPayment(array $payload, string $idempotencyKey): array
     {
         $this->assertReferenceIsPortable($payload['order_reference'] ?? null);
+
+        // Read only by the direct gateways (a preapproval's cycle, a hosted
+        // checkout's way back). The service owns both decisions itself, and
+        // an unknown field is not something to send a strict API on a hunch.
+        unset($payload['recurring'], $payload['return_url']);
 
         return $this->decode(
             $this->request(timeout: 60)

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Webhook;
 use App\Http\Controllers\Controller;
 use App\Models\WebhookEvent;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\Gateways\BillingGateways;
 use App\Services\Billing\PaymentService\WebhookSignatureVerifier;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -104,7 +105,7 @@ class PaymentServiceWebhookController extends Controller
             // `payment.` plus the new status. Branching on the status inside
             // the payload rather than on the event name keeps this in step with
             // the fetch path, which sees the same field.
-            Str::startsWith($type, 'payment.') => $this->billing->applyPaymentUpdate($data),
+            Str::startsWith($type, 'payment.') => $this->billing->applyPaymentUpdate($data, BillingGateways::PAYMENT_SERVICE),
 
             // Every instrument event says the same operational thing — stop
             // scheduling against this — so they share one handler. A product

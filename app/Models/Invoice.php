@@ -18,6 +18,8 @@ class Invoice extends Model
         'trained_agent_hire_id',
         'status',
         'payment_method',
+        // Which gateway the charge was made on (null = payment service).
+        'gateway',
         'amount_cents',
         'currency',
         'period_start',
@@ -30,6 +32,8 @@ class Invoice extends Model
         'pix_qr_code_base64',
         'pix_copy_paste',
         'pix_expires_at',
+        'checkout_url',
+        'checkout_expires_at',
         'idempotency_key',
         'meta',
     ];
@@ -44,6 +48,7 @@ class Invoice extends Model
         'due_date' => 'date',
         'paid_at' => 'datetime',
         'pix_expires_at' => 'datetime',
+        'checkout_expires_at' => 'datetime',
         'meta' => 'array',
     ];
 

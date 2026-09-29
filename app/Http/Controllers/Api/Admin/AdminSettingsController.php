@@ -2,11 +2,13 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\Billing\BillingRoute;
 use App\Enums\Notification\NotificationType;
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
 use App\Models\Setting;
 use App\Services\AiAgentHub\AiAgentHubConfig;
+use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
 use App\Services\Billing\PaymentService\PaymentServiceConfig;
 use App\Services\Connection\Meta\FacebookConfig;
 use App\Services\Connection\Meta\InstagramConfig;
@@ -92,6 +94,12 @@ class AdminSettingsController extends Controller
                     'provider' => PaymentServiceConfig::provider(),
                     'providers' => PaymentServiceConfig::PROVIDERS,
                 ],
+                // Which road takes new charges — PAYMENT_METHOD in .env, shown
+                // read-only. The Back Office renders the payment-service form
+                // or the two gateway forms below from this, so the screen always
+                // edits the credentials that are actually in use.
+                'billing_mode' => BillingRoute::current()->value,
+                'billing_direct' => $this->directBillingSettings(),
                 'instagram' => [
                     'client_id' => InstagramConfig::clientId(),
                     'redirect_uri' => InstagramConfig::redirectUri(),
@@ -204,6 +212,18 @@ class AdminSettingsController extends Controller
             // the recommendation — naming one only matters when it matters.
             'payment_service.provider' => ['nullable', 'string', Rule::in(PaymentServiceConfig::PROVIDERS)],
 
+            // Direct billing (PAYMENT_METHOD=direct): Mercado Pago for the
+            // Brazilian market, dLocal Go for every other one.
+            'billing_direct' => ['sometimes', 'array'],
+            'billing_direct.mercadopago' => ['sometimes', 'array'],
+            'billing_direct.mercadopago.public_key' => ['nullable', 'string', 'max:255'],
+            'billing_direct.mercadopago.access_token' => ['nullable', 'string', 'max:512'],
+            'billing_direct.mercadopago.webhook_secret' => ['nullable', 'string', 'max:255'],
+            'billing_direct.dlocalgo' => ['sometimes', 'array'],
+            'billing_direct.dlocalgo.api_key' => ['nullable', 'string', 'max:512'],
+            'billing_direct.dlocalgo.secret_key' => ['nullable', 'string', 'max:512'],
+            'billing_direct.dlocalgo.sandbox' => ['sometimes', 'boolean'],
+
             'instagram' => ['sometimes', 'array'],
             'instagram.client_id' => ['nullable', 'string', 'max:255'],
             'instagram.redirect_uri' => ['nullable', 'url', 'max:255'],
@@ -315,6 +335,38 @@ class AdminSettingsController extends Controller
             }
         }
 
+        if ($request->has('billing_direct')) {
+            $mp = $validated['billing_direct']['mercadopago'] ?? null;
+
+            if (is_array($mp)) {
+                // Public: stored as sent, so it can also be cleared.
+                if (array_key_exists('public_key', $mp)) {
+                    Setting::set(DirectBillingConfig::MP_PUBLIC_KEY, trim((string) $mp['public_key']) ?: null);
+                }
+                // Secrets: only replaced when a new value is supplied.
+                if (! empty($mp['access_token'])) {
+                    Setting::set(DirectBillingConfig::MP_ACCESS_TOKEN, trim($mp['access_token']));
+                }
+                if (! empty($mp['webhook_secret'])) {
+                    Setting::set(DirectBillingConfig::MP_WEBHOOK_SECRET, trim($mp['webhook_secret']));
+                }
+            }
+
+            $go = $validated['billing_direct']['dlocalgo'] ?? null;
+
+            if (is_array($go)) {
+                if (array_key_exists('sandbox', $go)) {
+                    Setting::set(DirectBillingConfig::DLOCALGO_SANDBOX, $go['sandbox'] ? '1' : '0');
+                }
+                if (! empty($go['api_key'])) {
+                    Setting::set(DirectBillingConfig::DLOCALGO_API_KEY, trim($go['api_key']));
+                }
+                if (! empty($go['secret_key'])) {
+                    Setting::set(DirectBillingConfig::DLOCALGO_SECRET_KEY, trim($go['secret_key']));
+                }
+            }
+        }
+
         if ($request->has('instagram')) {
             $ig = $validated['instagram'];
 
@@ -422,6 +474,38 @@ class AdminSettingsController extends Controller
         AuditLog::record('settings.update', 'Updated platform settings');
 
         return $this->show();
+    }
+
+    /**
+     * The two gateway accounts used when PAYMENT_METHOD=direct. Returned even
+     * while the env says `payment_service`, so an operator can fill them in
+     * before flipping it rather than after checkouts start failing.
+     */
+    private function directBillingSettings(): array
+    {
+        $mpToken = DirectBillingConfig::mpAccessToken();
+        $mpSecret = DirectBillingConfig::mpWebhookSecret();
+        $goKey = DirectBillingConfig::dlocalGoApiKey();
+        $goSecret = DirectBillingConfig::dlocalGoSecretKey();
+
+        return [
+            'mercadopago' => [
+                'public_key' => DirectBillingConfig::mpPublicKey(),
+                'access_token_set' => $mpToken !== null,
+                'access_token_preview' => $this->mask($mpToken),
+                'webhook_secret_set' => $mpSecret !== null,
+                'webhook_secret_preview' => $this->mask($mpSecret),
+                'webhook_url' => DirectBillingConfig::mpWebhookUrl(),
+            ],
+            'dlocalgo' => [
+                'api_key_set' => $goKey !== null,
+                'api_key_preview' => $this->mask($goKey),
+                'secret_key_set' => $goSecret !== null,
+                'secret_key_preview' => $this->mask($goSecret),
+                'sandbox' => DirectBillingConfig::dlocalGoSandbox(),
+                'webhook_url' => DirectBillingConfig::dlocalGoWebhookUrl(),
+            ],
+        ];
     }
 
     private function mask(?string $value): ?string

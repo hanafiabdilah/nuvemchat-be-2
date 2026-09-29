@@ -4,6 +4,9 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
+use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
+use App\Services\Billing\Gateways\Direct\DLocalGoBillingGateway;
+use App\Services\Billing\Gateways\Direct\MercadoPagoBillingGateway;
 use App\Services\Billing\PaymentService\PaymentServiceClient;
 use App\Services\Billing\PaymentService\PaymentServiceConfig;
 
@@ -52,6 +55,47 @@ class AdminPaymentServiceController extends Controller
                 */
                 'card_auto_renew' => (bool) ($card['merchant_initiated_cards'] ?? false),
             ],
+        ]);
+    }
+
+    /**
+     * The same proof for the direct gateways (PAYMENT_METHOD=direct): one
+     * authenticated call that creates nothing — `GET /users/me` at Mercado
+     * Pago, `POST /v1/me` at dLocal Go.
+     */
+    public function testDirect(string $gateway)
+    {
+        abort_unless(in_array($gateway, ['mercadopago', 'dlocalgo'], true), 404);
+
+        try {
+            $account = $gateway === 'mercadopago'
+                ? app(MercadoPagoBillingGateway::class)->verifyCredentials()
+                : app(DLocalGoBillingGateway::class)->verifyCredentials();
+        } catch (UpstreamServiceException $e) {
+            // Raw, as above: the operator is the one fixing it.
+            return response()->json([
+                'message' => $e->rawMessage ?: $e->getMessage(),
+                'code' => $e->getErrorCode(),
+                'ref' => $e->reference,
+            ], $e->httpStatus);
+        }
+
+        return response()->json([
+            'data' => $gateway === 'mercadopago'
+                ? [
+                    'account' => $account['nickname'] ?? $account['email'] ?? null,
+                    'site_id' => $account['site_id'] ?? null,
+                    'methods' => ['card', 'pix'],
+                    // Without the public key the browser cannot tokenise a
+                    // card, so the checkout offers Pix only.
+                    'card_auto_renew' => DirectBillingConfig::mpPublicKey() !== null,
+                ]
+                : [
+                    'account' => $account['name'] ?? $account['email'] ?? $account['merchant_name'] ?? null,
+                    'sandbox' => DirectBillingConfig::dlocalGoSandbox(),
+                    'methods' => ['checkout'],
+                    'card_auto_renew' => false,
+                ],
         ]);
     }
 }
