@@ -71,6 +71,15 @@ class RestoreMediaFilenames extends Command
                 continue;
             }
 
+            // ⚠️ `media/` only. A widget upload lives under
+            // `widget-uploads/{session}/`, has its own lifecycle and its own
+            // orphan sweep in media:purge — relocating one into `media/` is a
+            // bigger action than renaming it, and not one this command was
+            // asked to take.
+            if (! str_starts_with($from, 'media/')) {
+                continue;
+            }
+
             $to = $this->target($message, $from);
 
             if ($to === null || $to === $from) {
@@ -158,16 +167,23 @@ class RestoreMediaFilenames extends Command
 
     private function desiredName(Message $message, string $from): ?string
     {
+        $base = pathinfo($from, PATHINFO_FILENAME);
+
         // The pristine name, where the channel gave us one. This is the branch
         // that recovers `Comprovante de Pagamento.pdf` from a path that never
         // held anything but a hash.
         $pristine = $message->meta['filename'] ?? null;
 
         if (is_string($pristine) && trim($pristine) !== '') {
-            return $pristine;
-        }
+            $candidate = pathinfo(basename(str_replace('\\', '/', trim($pristine))), PATHINFO_FILENAME);
 
-        $base = pathinfo($from, PATHINFO_FILENAME);
+            // ⚠️ The widget writes `meta.filename` as the basename of the path
+            // it just stored, so on that channel this field *is* the code we are
+            // trying to remove. Caught in a dry run against production, where it
+            // wanted to move thousands of files to rewrite a UUID into itself.
+            // A recovered name has to say something the path does not.
+            return $candidate === $base || self::isBareCode($candidate) ? null : $candidate;
+        }
 
         // ⚠️ Only the two suffixes this platform actually wrote: the message id,
         // or a 12-hex token. A looser pattern would eat the end of a real name —
@@ -182,7 +198,22 @@ class RestoreMediaFilenames extends Command
         // Unchanged, or nothing but code — an old `4812_68d1a2f3b4c5d` with no
         // recorded name has no name to go back to, and inventing one is worse
         // than leaving the hash.
-        return $stripped === $base || trim($stripped) === '' ? null : $stripped;
+        return $stripped === $base || trim($stripped) === '' || self::isBareCode($stripped)
+            ? null
+            : $stripped;
+    }
+
+    /**
+     * A UUID, or a long run of nothing but hex and separators: a code with no
+     * human part to recover.
+     *
+     * Deliberately narrow — `comprovante2026-09-01_142423` carries letters well
+     * past `f`, so a real name never looks like this.
+     */
+    private static function isBareCode(string $name): bool
+    {
+        return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $name) === 1
+            || preg_match('/^[0-9a-f][0-9a-f_-]{15,}$/i', $name) === 1;
     }
 
     /**

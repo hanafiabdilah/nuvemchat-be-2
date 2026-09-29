@@ -240,6 +240,18 @@ de 12 hex, os dois sufixos que esta plataforma realmente escreveu. Um padrão
 solto comeria o fim de um nome real — `Relatorio_2026.pdf` é o arquivo de alguém,
 e um comando que arranca o ano dele é pior do que um que não faz nada.
 
+⚠️ **Só mexe em `media/`.** Um upload de widget vive em
+`widget-uploads/{sessão}/`, tem ciclo de vida próprio e varredura de órfãos
+própria no `media:purge` — mover um para `media/` é uma ação maior do que
+renomear, e não é a que este comando foi pedido para tomar.
+
+⚠️ **Um nome recuperado precisa dizer algo que o caminho já não diga.** O widget
+grava `meta.filename` como o basename do caminho que acabou de salvar, então
+naquele canal esse campo **é** o código que a gente quer tirar. Descoberto num
+`--dry-run` contra produção, onde ele queria mover milhares de arquivos para
+reescrever um UUID em si mesmo. Por isso o comando ignora um nome recuperado que
+seja igual ao atual, ou que seja só código (UUID, ou uma sequência longa de hex).
+
 ⚠️ `uploads/` é deixado de lado de propósito, e o comando conta quantos e diz por
 quê: aqueles endereços estão escritos dentro de nós de fluxo, cartões de
 carrossel, campanhas e itens de post do Instagram — JSON que teria de ser
