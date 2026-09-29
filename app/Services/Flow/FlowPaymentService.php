@@ -19,6 +19,7 @@ use App\Services\Integrations\IntegrationDrivers;
 use App\Services\Integrations\Payments\CancelsCharges;
 use App\Services\Integrations\Payments\ChargeRequest;
 use App\Services\Money\MarketMoney;
+use App\Support\AppTime;
 use App\Support\Errors\UpstreamError;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
@@ -346,6 +347,11 @@ class FlowPaymentService
         if (! $status->isFinal()) {
             return false;
         }
+
+        // Gateways report the moment in their own zone (Asaas in
+        // America/Sao_Paulo, Mercado Pago in -04:00); a column must hold it
+        // in ours — see AppTime.
+        $paidAt = AppTime::fromNullable($paidAt);
 
         $outcome = DB::transaction(function () use ($payment, $status, $paidAt, $providerStatus) {
             $locked = FlowPayment::whereKey($payment->id)->lockForUpdate()->first();

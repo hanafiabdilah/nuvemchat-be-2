@@ -2,6 +2,7 @@
 
 namespace App\Services\Flow;
 
+use App\Support\AppTime;
 use App\Enums\Flow\FlowInvoiceStatus;
 use App\Enums\Integration\IntegrationCategory;
 use App\Events\FlowInvoiceUpdated;
@@ -267,7 +268,8 @@ class FlowInvoiceService
 
                 $locked->forceFill(array_merge($this->fieldsFrom($result, $locked), [
                     'status' => $result->status,
-                    'issued_at' => $result->status === FlowInvoiceStatus::Issued ? ($result->issuedAt ?? now()) : null,
+                    // Spedy answers in America/Sao_Paulo; the column is ours — see AppTime.
+                    'issued_at' => $result->status === FlowInvoiceStatus::Issued ? (AppTime::fromNullable($result->issuedAt) ?? now()) : null,
                     'settled_at' => now(),
                     'failure_reason' => $result->status === FlowInvoiceStatus::Issued
                         ? null
