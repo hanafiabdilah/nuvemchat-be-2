@@ -218,14 +218,15 @@ it('changes nothing on a dry run', function () {
         ->and(Storage::disk('local')->exists('media/Fatura_a3f2b1c4d5e6.pdf'))->toBeTrue();
 });
 
-it('does not disturb the delta-sync cursor', function () {
+it('moves the delta-sync cursor so dashboards hear about the new path', function () {
     $message = restoreAttachment('media/Fatura_a3f2b1c4d5e6.pdf');
     $before = $message->updated_at;
 
     $this->travel(2)->minutes();
     $this->artisan('media:restore-filenames')->assertSuccessful();
 
-    // `updated_at` is what every dashboard pages through. A tidier path is not
-    // a change any of them need to be handed.
-    expect($message->fresh()->updated_at->timestamp)->toBe($before->timestamp);
+    // The SPA writes attachment URLs into IndexedDB and never asks for one
+    // again, so this bump is the only way a client holding the old path stops
+    // showing a broken bubble.
+    expect($message->fresh()->updated_at->timestamp)->toBeGreaterThan($before->timestamp);
 });

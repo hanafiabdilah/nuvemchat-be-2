@@ -258,9 +258,18 @@ carrossel, campanhas e itens de post do Instagram — JSON que teria de ser
 reescrito em lockstep. `media:scan-unsafe-uploads` já existe justamente porque as
 URLs daquela pasta podem estar em lugares que a gente não controla.
 
-Idempotente, `--dry-run` primeiro. Não mexe em `updated_at` (é o cursor de delta
-sync, e um caminho mais arrumado não é mudança que dashboard nenhum precisa
-receber). Testes: `tests/Feature/Media/RestoreMediaFilenamesTest.php`.
+Idempotente, `--dry-run` primeiro.
+
+⚠️ **Sobe o `updated_at`**, ao contrário do `media:purge`. O cursor de delta sync
+é o único jeito de um dashboard saber disso: o SPA grava a URL do anexo no
+IndexedDB e nunca pede de novo, então um cliente com o caminho antigo ficaria com
+a bolha quebrada para sempre. O purge pode ficar calado porque o cliente descobre
+sozinho pelo `expires` da URL que já tem; um arquivo movido ele não tem como
+inferir. O medo de volume que justificaria o silêncio não sobrevive ao contato com
+os dados — uma passada completa em produção são algumas centenas de linhas, e quem
+limita um lote é o `--limit`.
+
+Testes: `tests/Feature/Media/RestoreMediaFilenamesTest.php`.
 
 ## Se precisar mexer
 

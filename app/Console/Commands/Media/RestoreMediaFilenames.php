@@ -118,12 +118,20 @@ class RestoreMediaFilenames extends Command
                     continue;
                 }
 
-                // withoutTimestamps: `updated_at` is the delta-sync cursor, and a
-                // pass over a year of history would hand every dashboard tens of
-                // thousands of rows whose only change is a tidier path.
-                Message::withoutTimestamps(fn () => Message::whereKey($message->getKey())
+                // ⚠️ `updated_at` IS bumped, unlike media:purge. The delta-sync
+                // cursor is the only way a dashboard hears about this: the SPA
+                // writes attachment URLs into IndexedDB and never asks for one
+                // again, so a client holding the old path would keep a broken
+                // bubble forever. Purge can stay silent because the client can
+                // tell from the `expires` in the URL it already has; a moved
+                // file it cannot infer at all.
+                //
+                // The volume worry that argued for silence does not survive
+                // contact with the data — a full pass over production is a few
+                // hundred rows, and `--limit` is what bounds a batch anyway.
+                Message::whereKey($message->getKey())
                     ->toBase()
-                    ->update(['attachment' => $to]));
+                    ->update(['attachment' => $to, 'updated_at' => now()]);
             }
 
             $moved++;
