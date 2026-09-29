@@ -325,7 +325,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             ]);
 
             // Store the original image content (not base64)
-            $mediaPath = 'media/' . MediaFilename::build($data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, $imageContent);
 
             $message->update([
@@ -464,7 +464,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             ]);
 
             // Store the converted audio content
-            $mediaPath = 'media/' . MediaFilename::build($data['audio']->getClientOriginalName(), $extension, (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['audio']->getClientOriginalName(), $extension);
             MediaStorage::disk()->put($mediaPath, $audioContent);
 
             $message->update([
@@ -525,8 +525,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
         try {
             // Store video temporarily in public directory
             $videoContent = file_get_contents($data['video']->getRealPath());
-            $tempFileName = MediaFilename::build($data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension());
-            $tempPublicPath = 'videos/' . $tempFileName;
+            $tempPublicPath = MediaFilename::path('videos', MediaFilename::token(), $data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension());
 
             MediaStorage::outbound()->put($tempPublicPath, $videoContent);
 
@@ -574,7 +573,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             ]);
 
             // Store the original video content permanently
-            $mediaPath = 'media/' . MediaFilename::build($data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, $videoContent);
 
             $message->update([
@@ -647,8 +646,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
         try {
             // Store document temporarily in public directory
             $documentContent = file_get_contents($data['document']->getRealPath());
-            $tempFileName = MediaFilename::build($data['document']->getClientOriginalName(), $data['document']->getClientOriginalExtension());
-            $tempPublicPath = 'documents/' . $tempFileName;
+            $tempPublicPath = MediaFilename::path('documents', MediaFilename::token(), $data['document']->getClientOriginalName(), $data['document']->getClientOriginalExtension());
 
             MediaStorage::outbound()->put($tempPublicPath, $documentContent);
 
@@ -704,7 +702,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             ]);
 
             // Store the original document content permanently
-            $mediaPath = 'media/' . MediaFilename::build($filename, $data['document']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $filename, $data['document']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, $documentContent);
 
             $message->update([

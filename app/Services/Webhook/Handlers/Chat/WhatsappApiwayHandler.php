@@ -1207,10 +1207,11 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
 
             $originalName = $node['fileName'] ?? $node['FileName'] ?? $node['title'] ?? $node['Title'] ?? null;
 
-            $path = 'media/'.MediaFilename::build(
+            $path = MediaFilename::path(
+                'media',
+                (string) $message->id,
                 $originalName,
                 $this->extensionFromMime($mimetype),
-                (string) $message->id,
                 $type->value,
             );
             MediaStorage::disk()->put($path, $plain);

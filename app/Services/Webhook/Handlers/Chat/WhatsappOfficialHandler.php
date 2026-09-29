@@ -693,10 +693,11 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             // download and the customer's screen all say the same thing.
             $originalName = $mediaData['filename'] ?? null;
 
-            $mediaPath = 'media/'.MediaFilename::build(
+            $mediaPath = MediaFilename::path(
+                'media',
+                (string) $message->id,
                 $originalName,
                 $extension,
-                (string) $message->id,
                 $messageType->value,
             );
             MediaStorage::disk()->put($mediaPath, $mediaResponse->body());

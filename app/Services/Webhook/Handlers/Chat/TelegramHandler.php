@@ -527,10 +527,11 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
         // for photos, which have no name on either side).
         $originalName = $media['file_name'] ?? null;
 
-        $mediaPath = 'media/'.MediaFilename::build(
+        $mediaPath = MediaFilename::path(
+            'media',
+            (string) $message->id,
             $originalName,
             $extension,
-            (string) $message->id,
             $messageType->value,
         );
 

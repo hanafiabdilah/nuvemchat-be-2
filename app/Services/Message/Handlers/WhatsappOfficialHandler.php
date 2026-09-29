@@ -807,7 +807,7 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
                 $extraMeta,
             );
 
-            $mediaPath = 'media/' . MediaFilename::build($filename, $extension, (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $filename, $extension);
             MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update(['attachment' => $mediaPath]);

@@ -340,7 +340,7 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
             }
 
             $extension = $this->getExtensionFromContentType($response->header('Content-Type'));
-            $mediaPath = 'media/'.MediaFilename::build(null, $extension, (string) $message->id, $message->message_type->value);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, null, $extension, $message->message_type->value);
 
             MediaStorage::disk()->put($mediaPath, $response->body());
 

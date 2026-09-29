@@ -175,7 +175,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
         try {
             $content = file_get_contents($data[$fileKey]->getRealPath());
             $extension = $data[$fileKey]->getClientOriginalExtension();
-            $tempPublicPath = $fbType . 's/' . MediaFilename::build($data[$fileKey]->getClientOriginalName(), $extension);
+            $tempPublicPath = MediaFilename::path($fbType.'s', MediaFilename::token(), $data[$fileKey]->getClientOriginalName(), $extension);
 
             MediaStorage::outbound()->put($tempPublicPath, $content);
 
@@ -188,7 +188,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
             $message = $this->sendAttachmentByUrl($conversation, $publicUrl, $fbType, $messageTypeEnum, $extraMeta);
 
             // Keep the original bytes privately for the dashboard preview.
-            $mediaPath = 'media/' . MediaFilename::build($data[$fileKey]->getClientOriginalName(), $extension, (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data[$fileKey]->getClientOriginalName(), $extension);
             MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update([

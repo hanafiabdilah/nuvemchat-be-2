@@ -7,6 +7,7 @@ use App\Models\McpConnection;
 use App\Models\User;
 use App\Services\Mcp\Media\McpMediaUploads;
 use App\Services\Mcp\Scopes;
+use App\Enums\Media\UploadConflict;
 use App\Services\Media\PublishedUpload;
 use Illuminate\Http\UploadedFile;
 
@@ -59,6 +60,11 @@ class UploadFileTool extends Tool
                 'url' => ['type' => 'string', 'format' => 'uri', 'description' => 'A public http(s) URL of the file.'],
                 'content_base64' => ['type' => 'string', 'description' => 'The file\'s bytes, base64-encoded (a data: URI is accepted).'],
                 'filename' => ['type' => 'string', 'maxLength' => 200, 'description' => 'The file name with its extension, e.g. "catalogo.pdf". Required with content_base64. Customers see it on documents.'],
+                'on_conflict' => [
+                    'type' => 'string',
+                    'enum' => UploadConflict::values(),
+                    'description' => 'If the workspace already has a file with this name: "rename" keeps both as "catalogo (2).pdf" (the default), "replace" overwrites it and changes what every flow already using that URL sends, "cancel" fails instead.',
+                ],
             ],
             'additionalProperties' => false,
         ];
@@ -97,14 +103,21 @@ class UploadFileTool extends Tool
             ? $this->media->fromBase64($content, $filename)
             : $this->media->fromUrl($url, $filename !== '' ? $filename : null);
 
-        return self::stored($this->media, $file, $connection, $user, $url !== '' ? 'url' : 'inline');
+        return self::stored(
+            $this->media,
+            $file,
+            $connection,
+            $user,
+            $url !== '' ? 'url' : 'inline',
+            UploadConflict::tryFrom((string) ($arguments['on_conflict'] ?? '')),
+        );
     }
 
     /** Shared with the upload-link endpoint, so both report a file the same way. */
-    public static function stored(McpMediaUploads $media, UploadedFile $file, McpConnection $connection, User $user, string $source): ToolResult
+    public static function stored(McpMediaUploads $media, UploadedFile $file, McpConnection $connection, User $user, string $source, ?UploadConflict $onConflict = null): ToolResult
     {
         try {
-            $stored = $media->store($file);
+            $stored = $media->store($file, $connection->tenant, $onConflict);
         } finally {
             @unlink($file->getRealPath() ?: $file->getPathname());
         }

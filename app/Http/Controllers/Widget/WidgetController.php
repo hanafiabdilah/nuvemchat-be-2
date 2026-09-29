@@ -158,10 +158,11 @@ class WidgetController extends Controller
         // conversation is about before they click. The session token already
         // scopes the directory, so a short random suffix is enough to keep two
         // uploads of the same name apart.
-        $path = sprintf(
-            'widget-uploads/%s/%s',
-            $session->session_token,
-            MediaFilename::build($file->getClientOriginalName(), $ext),
+        $path = MediaFilename::path(
+            'widget-uploads/'.$session->session_token,
+            MediaFilename::token(),
+            $file->getClientOriginalName(),
+            $ext,
         );
 
         // ⚠️ Streamed, not read into a string. `file_get_contents()` on a 50 MB
@@ -348,7 +349,10 @@ class WidgetController extends Controller
             return null;
         }
 
-        $storagePath = ltrim(substr($urlPath, $pos), '/');
+        // Decoded, because the URL we handed the widget was encoded: a stored
+        // name carries the visitor's own spelling, and `exists()` is asked
+        // about the path on disk, not about its URL spelling.
+        $storagePath = rawurldecode(ltrim(substr($urlPath, $pos), '/'));
 
         if (! MediaStorage::disk()->exists($storagePath)) {
             return null;

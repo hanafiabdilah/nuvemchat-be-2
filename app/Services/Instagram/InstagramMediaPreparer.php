@@ -92,7 +92,9 @@ class InstagramMediaPreparer
         // Named after the upload, not hashed: the post library lists these by
         // path, and a marketing team that uploaded `lancamento-outubro.mp4`
         // should be able to tell their own files apart.
-        $path = $this->directory($tenantId).'/'.MediaFilename::build(
+        $path = MediaFilename::path(
+            $this->directory($tenantId),
+            MediaFilename::token(),
             $file->getClientOriginalName(),
             UploadPolicy::storedExtension($file),
         );
@@ -116,7 +118,9 @@ class InstagramMediaPreparer
             try {
                 // Re-encoded to JPEG, so the extension is ours — but the base
                 // name is still the one the person recognises.
-                $path = $this->directory($tenantId) . '/' . MediaFilename::build(
+                $path = MediaFilename::path(
+                    $this->directory($tenantId),
+                    MediaFilename::token(),
                     $file->getClientOriginalName(),
                     'jpg',
                 );

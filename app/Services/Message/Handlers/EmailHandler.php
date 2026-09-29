@@ -474,10 +474,11 @@ class EmailHandler implements MessageHandlerInterface, MarksMessagesAsRead
      */
     private function storeAttachment(UploadedFile $file): string
     {
-        $path = 'media/' . MediaFilename::build(
+        $path = MediaFilename::path(
+            'media',
+            MediaFilename::token(),
             $file->getClientOriginalName(),
             $file->getClientOriginalExtension(),
-            null,
             'attachment',
         );
 

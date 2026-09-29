@@ -160,7 +160,7 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
                 ],
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($file->getClientOriginalName(), $file->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $file->getClientOriginalName(), $file->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, file_get_contents($file->getRealPath()));
 
             $message->update(['attachment' => $mediaPath]);

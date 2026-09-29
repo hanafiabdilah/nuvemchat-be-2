@@ -447,7 +447,7 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $filename = $attachment['filename'] ?? 'attachment.bin';
             $extension = pathinfo($filename, PATHINFO_EXTENSION) ?: 'bin';
 
-            $mediaPath = 'media/'.MediaFilename::build($filename, $extension, (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $filename, $extension);
             MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([

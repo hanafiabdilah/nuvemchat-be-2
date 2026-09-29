@@ -591,10 +591,11 @@ class EmailInboxSynchronizer
     {
         $filename = basename(str_replace('\\', '/', $attachment->filename));
 
-        $path = 'media/'.MediaFilename::build(
+        $path = MediaFilename::path(
+            'media',
+            $message->id.'/'.$index,
             $filename,
             pathinfo($filename, PATHINFO_EXTENSION),
-            $message->id.'-'.$index,
             'attachment',
         );
 

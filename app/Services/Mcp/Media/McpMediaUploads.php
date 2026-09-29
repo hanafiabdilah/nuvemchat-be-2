@@ -4,7 +4,9 @@ namespace App\Services\Mcp\Media;
 
 use App\Enums\Gallery\AssetType;
 use App\Models\GalleryAsset;
+use App\Enums\Media\UploadConflict;
 use App\Models\McpConnection;
+use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Mcp\Tools\ToolException;
 use App\Services\Media\PublishedUpload;
@@ -21,9 +23,10 @@ use Illuminate\Support\Str;
 /**
  * Files an MCP client uploads for use in flows, and the gallery it may reuse.
  *
- * ⚠️ Uploads land exactly where the flow builder's own do — `uploads/` on the
- * published disk, through `PublishedUpload`, the class `POST /api/uploads`
- * uses. Same allow-list, same 10 MB ceiling, same permanent URL, no quota. A
+ * ⚠️ Uploads land exactly where the flow builder's own do — `uploads/{tenant}`
+ * on the published disk, through `PublishedUpload`, the class `POST /api/uploads`
+ * uses. Same folder, same allow-list, same 10 MB ceiling, same permanent URL,
+ * no quota. A
  * person who can attach a picture to a node in the builder can do the same
  * from an editor, and nothing here is stricter or looser than that.
  *
@@ -51,7 +54,7 @@ class McpMediaUploads
      *
      * @throws ToolException with a sentence the caller can act on
      */
-    public function store(UploadedFile $file): array
+    public function store(UploadedFile $file, Tenant $tenant, ?UploadConflict $onConflict = null): array
     {
         $validator = Validator::make(['file' => $file], ['file' => PublishedUpload::rules()], [
             'file.mimes' => UploadPolicy::message(),
@@ -61,7 +64,12 @@ class McpMediaUploads
             throw new ToolException('The file was not accepted.', $validator->errors()->all());
         }
 
-        $stored = PublishedUpload::store($file);
+        // ⚠️ `rename` by default, unlike the dashboard. There is nobody at the
+        // prompt to answer a collision: failing the call spends a turn on a
+        // name clash, and replacing could repoint a flow node the model was
+        // never asked to touch. Keeping both is the only answer that is always
+        // safe and always succeeds. A caller who means to replace says so.
+        $stored = PublishedUpload::store($file, $tenant, $onConflict ?? UploadConflict::Rename);
 
         return [
             'url' => $stored['url'],
@@ -147,7 +155,7 @@ class McpMediaUploads
 
         $name = $filename !== null && trim($filename) !== ''
             ? $filename
-            : basename((string) parse_url($url, PHP_URL_PATH));
+            : rawurldecode(basename((string) parse_url($url, PHP_URL_PATH)));
 
         return new UploadedFile($path, $this->cleanFilename($name), null, null, true);
     }
@@ -162,14 +170,18 @@ class McpMediaUploads
      *
      * @return array{url: string, expires_at: string, expires_in_seconds: int}
      */
-    public function issueLink(McpConnection $connection, User $user): array
+    public function issueLink(McpConnection $connection, User $user, ?UploadConflict $onConflict = null): array
     {
         $token = Str::random(48);
         $ttl = max(1, (int) config('mcp.upload_link_ttl_minutes', 15)) * 60;
 
+        // The answer to a name collision is decided when the link is asked for,
+        // not when curl redeems it: the client that knows what it means to do is
+        // the one talking to us now, and the redeem request is a bare file post.
         Cache::put(self::LINK_CACHE_PREFIX.hash('sha256', $token), [
             'mcp_connection_id' => $connection->id,
             'user_id' => $user->id,
+            'on_conflict' => ($onConflict ?? UploadConflict::Rename)->value,
         ], $ttl);
 
         return [
@@ -185,7 +197,7 @@ class McpMediaUploads
      * upload costs one more create_upload_link call, a reusable link costs a
      * credential that outlives its purpose.
      *
-     * @return array{mcp_connection_id: int, user_id: int}|null
+     * @return array{mcp_connection_id: int, user_id: int, on_conflict?: string}|null
      */
     public function redeemLink(string $token): ?array
     {

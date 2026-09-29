@@ -80,9 +80,13 @@ it('uploads inline base64 where the flow builder uploads, with no gallery quota 
 
     expect($result['isError'])->toBeFalse()
         ->and($result['structuredContent']['file']['type'])->toBe('image')
-        ->and($result['structuredContent']['file']['url'])->toContain('/storage/uploads/Logo-Aurora');
+        // Encoded in the URL, pristine on disk: the space is the URL's problem,
+        // not the filename's.
+        ->and($result['structuredContent']['file']['url'])->toEndWith('/Logo%20Aurora.png')
+        ->and($result['structuredContent']['file']['url'])->toContain('/storage/uploads/')
+        ->and($result['structuredContent']['file']['filename'])->toBe('Logo Aurora.png');
 
-    expect(Storage::disk('public')->files('uploads'))->toHaveCount(1)
+    expect(Storage::disk('public')->allFiles('uploads'))->toHaveCount(1)
         // Nothing is written into the gallery.
         ->and(GalleryAsset::count())->toBe(0);
 });
@@ -96,7 +100,7 @@ it('refuses what the builder\'s upload refuses, whatever the name says', functio
     ]);
 
     expect($result['isError'])->toBeTrue()
-        ->and(Storage::disk('public')->files('uploads'))->toBe([]);
+        ->and(Storage::disk('public')->allFiles('uploads'))->toBe([]);
 });
 
 it('refuses a url that points inside the network', function () {
@@ -143,7 +147,7 @@ it('re-checks the connection when a link is redeemed', function () {
     $this->post($path, ['file' => UploadedFile::fake()->createWithContent('a.png', mcpPngBytes())])
         ->assertForbidden();
 
-    expect(Storage::disk('public')->files('uploads'))->toBe([]);
+    expect(Storage::disk('public')->allFiles('uploads'))->toBe([]);
 });
 
 // ─────────────────────────── Reusing the gallery ───────────────────────────

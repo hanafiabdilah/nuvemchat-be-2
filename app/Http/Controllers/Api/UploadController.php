@@ -3,9 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Enums\Media\UploadConflict;
+use App\Exceptions\Media\FileAlreadyExistsException;
 use App\Services\Media\PublishedUpload;
 use App\Services\Media\UploadPolicy;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class UploadController extends Controller
 {
@@ -31,12 +34,27 @@ class UploadController extends Controller
      */
     public function store(Request $request)
     {
-        $request->validate([
+        $validated = $request->validate([
             'file' => PublishedUpload::rules(),
+            'on_conflict' => ['sometimes', Rule::enum(UploadConflict::class)],
         ], [
             'file.mimes' => UploadPolicy::message(),
         ]);
 
-        return response()->json(PublishedUpload::store($request->file('file')));
+        $onConflict = UploadConflict::tryFrom((string) ($validated['on_conflict'] ?? ''))
+            ?? UploadConflict::Cancel;
+
+        try {
+            return response()->json(PublishedUpload::store(
+                $request->file('file'),
+                $request->user()->tenant,
+                $onConflict,
+            ));
+        } catch (FileAlreadyExistsException $e) {
+            // 409, not 422: nothing about the request is wrong. The workspace
+            // simply already has this name, and only the person can say whether
+            // that means replace it, keep both, or stop.
+            return response()->json($e->payload(), 409);
+        }
     }
 }

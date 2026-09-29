@@ -6,6 +6,7 @@ use App\Enums\Billing\Feature;
 use App\Http\Controllers\Controller;
 use App\Models\McpConnection;
 use App\Services\Billing\SubscriptionGate;
+use App\Enums\Media\UploadConflict;
 use App\Services\Mcp\Media\McpMediaUploads;
 use App\Services\Mcp\ToolRegistry;
 use App\Services\Mcp\Tools\CreateUploadLinkTool;
@@ -68,7 +69,14 @@ class UploadController extends Controller
         Auth::setUser($user);
 
         try {
-            $result = UploadFileTool::stored($this->media, $file, $connection, $user, 'link');
+            $result = UploadFileTool::stored(
+                $this->media,
+                $file,
+                $connection,
+                $user,
+                'link',
+                UploadConflict::tryFrom((string) ($claims['on_conflict'] ?? '')),
+            );
         } catch (ToolException $e) {
             return $this->refuse('upload_refused', $e->text(), 422);
         } catch (\Throwable $e) {

@@ -215,7 +215,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'meta' => $responseArray,
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, file_get_contents($data['image']->getRealPath()));
 
             $message->update([
@@ -290,7 +290,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'meta' => $responseArray,
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($data['audio']->getClientOriginalName(), $data['audio']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['audio']->getClientOriginalName(), $data['audio']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, file_get_contents($data['audio']->getRealPath()));
 
             $message->update([
@@ -367,7 +367,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'meta' => $responseArray,
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, file_get_contents($data['video']->getRealPath()));
 
             $message->update([
@@ -447,7 +447,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'meta' => array_merge($responseArray, ['filename' => $filename]),
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($filename, $data['document']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $filename, $data['document']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, file_get_contents($data['document']->getRealPath()));
 
             $message->update([

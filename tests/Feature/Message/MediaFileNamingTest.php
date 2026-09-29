@@ -26,10 +26,12 @@ use Illuminate\Support\Facades\Storage;
  * dispute had `4812_68d1a2f3b4c5d.pdf` where the customer had
  * `Comprovante de Pagamento.pdf`.
  *
- * Two names, deliberately, and they are not redundant: `meta.filename` is
- * pristine and exists only where the channel reported one, and the path is the
- * transliterated, suffixed copy every row has. The SPA prefers the first and
- * falls back to the second.
+ * Two names, and they now usually agree: `meta.filename` is the pristine one and
+ * exists only where the channel reported it, while the path's last segment is
+ * the one every row has. Neither carries a code — uniqueness lives in the
+ * directory above — and neither is mangled, because the URL layer encodes
+ * instead. They still differ where a path cannot hold a character at all, so the
+ * SPA prefers the first and falls back to the second.
  */
 uses(RefreshDatabase::class);
 
@@ -117,9 +119,9 @@ test('a document the customer sent is stored under the name they gave it', funct
 
     $message = Message::first()->fresh();
 
-    // The path: transliterated and suffixed, because it is interpolated into a
-    // URL and read back as a MIME type.
-    expect(basename($message->attachment))->toBe('Comprovante-de-Pagamento_'.$message->id.'.pdf')
+    // The path: the customer's own name, spelling and all. What makes it unique
+    // is the directory, which nobody reads.
+    expect($message->attachment)->toBe("media/{$message->id}/Comprovante de Pagamento.pdf")
         // The pristine copy, which is what the agent actually reads.
         ->and($message->meta['filename'])->toBe('Comprovante de Pagamento.pdf')
         ->and(Storage::disk('local')->get($message->attachment))->toBe('pdf-bytes');
@@ -141,9 +143,10 @@ test('the pristine name reaches the dashboard', function () {
     // a file's name belongs to the file, not to the channel that carried it.
     $payload = (new MessageResource($message))->resolve();
 
+    // Both names now agree, because the path no longer has to give anything up:
+    // the URL layer encodes, so the stored name does not have to be mangled.
     expect($payload['meta']['filename'])->toBe('Relatório Anual.pdf')
-        // Accents survive here even though the path could not keep them.
-        ->and(basename($message->attachment))->toBe('Relatorio-Anual_'.$message->id.'.pdf');
+        ->and(basename($message->attachment))->toBe('Relatório Anual.pdf');
 });
 
 test('a filename carrying a path cannot choose where the download lands', function () {
@@ -180,7 +183,8 @@ test('a channel that reports no name falls back to what the file is', function (
 
     $message = Message::first()->fresh();
 
-    expect(basename($message->attachment))->toBe('document_'.$message->id.'.pdf')
+    expect(basename($message->attachment))->toBe('document.pdf')
+        ->and($message->attachment)->toBe("media/{$message->id}/document.pdf")
         ->and($message->meta)->not->toHaveKey('filename');
 });
 
@@ -202,7 +206,7 @@ test('a document an agent sends is stored under its own name', function () {
 
     $message = app(MessageService::class)->sendDocument($conversation, ['document' => $file]);
 
-    expect(basename($message->fresh()->attachment))->toBe('Proposta-Comercial_'.$message->id.'.pdf')
+    expect($message->fresh()->attachment)->toBe("media/{$message->id}/Proposta Comercial.pdf")
         // Already recorded by this handler before any of this; it is what the
         // customer's WhatsApp shows, and now the agent's bubble agrees with it.
         ->and($message->meta['filename'])->toBe('Proposta Comercial.pdf');

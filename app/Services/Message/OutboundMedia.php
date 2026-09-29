@@ -60,7 +60,13 @@ class OutboundMedia
             self::assertFetchable($url);
 
             $pathFromUrl = parse_url($url, PHP_URL_PATH) ?: '';
-            $basename = $pathFromUrl ? basename($pathFromUrl) : '';
+
+            // ⚠️ Decoded: this basename is the filename announced to the
+            // channel, and on Instagram and Messenger it is the only name the
+            // customer ever sees. Left encoded, a file called
+            // `Contrato de Serviço.pdf` reaches them as
+            // `Contrato%20de%20Servi%C3%A7o.pdf`.
+            $basename = $pathFromUrl ? rawurldecode(basename($pathFromUrl)) : '';
             $extension = strtolower(pathinfo($basename, PATHINFO_EXTENSION) ?: '');
             $mime = $extension ? self::mimeFromExtension($extension) : null;
 

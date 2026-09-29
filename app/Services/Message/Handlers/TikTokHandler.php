@@ -114,7 +114,7 @@ class TikTokHandler implements MessageHandlerInterface
                 'meta' => ['message_id' => $messageId, 'media_id' => $mediaId],
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($file->getClientOriginalName(), $extension, (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $file->getClientOriginalName(), $extension);
             MediaStorage::disk()->put($mediaPath, $contents);
 
             $message->update([

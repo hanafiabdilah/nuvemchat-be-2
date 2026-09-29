@@ -6,6 +6,7 @@ use App\Models\McpConnection;
 use App\Models\User;
 use App\Services\Mcp\Media\McpMediaUploads;
 use App\Services\Mcp\Scopes;
+use App\Enums\Media\UploadConflict;
 use App\Services\Media\PublishedUpload;
 
 /**
@@ -72,7 +73,11 @@ class CreateUploadLinkTool extends Tool
 
     public function run(array $arguments, McpConnection $connection, User $user): ToolResult
     {
-        $link = $this->media->issueLink($connection, $user);
+        $link = $this->media->issueLink(
+            $connection,
+            $user,
+            UploadConflict::tryFrom((string) ($arguments['on_conflict'] ?? '')),
+        );
 
         return ToolResult::data(
             $link + ['method' => 'POST', 'field' => 'file', 'curl' => 'curl -sS -F "file=@/path/to/file" '.escapeshellarg($link['url'])],

@@ -172,8 +172,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
         try {
             // Store image temporarily in public directory
             $imageContent = file_get_contents($data['image']->getRealPath());
-            $tempFileName = MediaFilename::build($data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension());
-            $tempPublicPath = 'images/' . $tempFileName;
+            $tempPublicPath = MediaFilename::path('images', MediaFilename::token(), $data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension());
 
             MediaStorage::outbound()->put($tempPublicPath, $imageContent);
 
@@ -227,7 +226,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'meta' => $responseArray,
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, $imageContent);
 
             $message->update([
@@ -368,8 +367,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             }
 
             // Store audio temporarily in public directory
-            $tempFileName = MediaFilename::build($data['audio']->getClientOriginalName(), $extension);
-            $tempPublicPath = 'audios/' . $tempFileName;
+            $tempPublicPath = MediaFilename::path('audios', MediaFilename::token(), $data['audio']->getClientOriginalName(), $extension);
 
             $saved = MediaStorage::outbound()->put($tempPublicPath, $audioContent);
 
@@ -440,7 +438,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
             ]);
 
             // Store the converted audio content permanently
-            $mediaPath = 'media/' . MediaFilename::build($data['audio']->getClientOriginalName(), $extension, (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['audio']->getClientOriginalName(), $extension);
             MediaStorage::disk()->put($mediaPath, $audioContent);
 
             $message->update([
@@ -506,8 +504,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
         try {
             // Store video temporarily in public directory
             $videoContent = file_get_contents($data['video']->getRealPath());
-            $tempFileName = MediaFilename::build($data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension());
-            $tempPublicPath = 'videos/' . $tempFileName;
+            $tempPublicPath = MediaFilename::path('videos', MediaFilename::token(), $data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension());
 
             MediaStorage::outbound()->put($tempPublicPath, $videoContent);
 
@@ -561,7 +558,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'meta' => $responseArray,
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, $videoContent);
 
             $message->update([
@@ -624,8 +621,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
         try {
             // Store document temporarily in public directory
             $documentContent = file_get_contents($data['document']->getRealPath());
-            $tempFileName = MediaFilename::build($data['document']->getClientOriginalName(), $data['document']->getClientOriginalExtension());
-            $tempPublicPath = 'documents/' . $tempFileName;
+            $tempPublicPath = MediaFilename::path('documents', MediaFilename::token(), $data['document']->getClientOriginalName(), $data['document']->getClientOriginalExtension());
 
             MediaStorage::outbound()->put($tempPublicPath, $documentContent);
 
@@ -683,7 +679,7 @@ class InstagramHandler implements MessageHandlerInterface, SendsTypingIndicator,
                 'meta' => array_merge($responseArray, ['filename' => $filename]),
             ]);
 
-            $mediaPath = 'media/' . MediaFilename::build($filename, $data['document']->getClientOriginalExtension(), (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $filename, $data['document']->getClientOriginalExtension());
             MediaStorage::disk()->put($mediaPath, $documentContent);
 
             $message->update([

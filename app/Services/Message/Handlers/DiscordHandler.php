@@ -258,7 +258,7 @@ class DiscordHandler implements MessageHandlerInterface, SendsTypingIndicator
             ]);
 
             $extension = pathinfo($filename, PATHINFO_EXTENSION) ?: 'bin';
-            $mediaPath = 'media/' . MediaFilename::build($filename, $extension, (string) $message->id);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $filename, $extension);
             MediaStorage::disk()->put($mediaPath, $content);
 
             $message->update([

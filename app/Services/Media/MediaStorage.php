@@ -104,9 +104,10 @@ final class MediaStorage
     public static function outboundUrl(string $path): string
     {
         if (self::isLocalDisk(self::outboundDiskName())) {
-            return url('storage/'.ltrim($path, '/'));
+            return url('storage/'.self::encodePath($path));
         }
 
+        // Presigned: the SDK encodes the key, so the raw path goes in.
         return self::outbound()->temporaryUrl($path, now()->addHours(2));
     }
 
@@ -131,10 +132,34 @@ final class MediaStorage
     public static function publishedUrl(string $path): string
     {
         if (self::isLocalDisk(self::publishedDiskName())) {
-            return url('storage/'.ltrim($path, '/'));
+            return url('storage/'.self::encodePath($path));
         }
 
-        return self::published()->url($path);
+        // A public bucket URL is plain concatenation on Laravel's side, so the
+        // encoding is ours to do.
+        return self::published()->url(self::encodePath($path));
+    }
+
+    /**
+     * A stored path as it may appear inside a URL.
+     *
+     * Stored names keep the customer's spelling — spaces, accents, parentheses
+     * — and none of that is a URI character. A raw space ends the URL for some
+     * fetchers; a raw UTF-8 byte is simply not allowed. This is the boundary
+     * that rule belongs at, which is why the name itself does not pay for it.
+     *
+     * ⚠️ Per segment: the slashes are path structure and must survive, so
+     * `rawurlencode` on the whole string (which would turn them into `%2F`)
+     * is wrong. And `rawurlencode`, not `urlencode` — the latter writes a space
+     * as `+`, which is form syntax and means a literal plus inside a path.
+     *
+     * ⚠️ Never pre-encode for `temporaryUrl()`: a presigned URL is built and
+     * signed by the AWS SDK, which encodes the key itself, and encoding twice
+     * produces a signature over a key the bucket does not have.
+     */
+    public static function encodePath(string $path): string
+    {
+        return implode('/', array_map('rawurlencode', explode('/', ltrim($path, '/'))));
     }
 
     public static function isLocalDisk(string $disk): bool

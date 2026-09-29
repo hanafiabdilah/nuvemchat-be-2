@@ -520,7 +520,7 @@ class MessengerHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $mimeType = $response->header('Content-Type');
             $extension = $this->getExtensionFromMimeType($mimeType);
 
-            $mediaPath = 'media/'.MediaFilename::build(null, $extension, (string) $message->id, $messageType->value);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, null, $extension, $messageType->value);
             MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([

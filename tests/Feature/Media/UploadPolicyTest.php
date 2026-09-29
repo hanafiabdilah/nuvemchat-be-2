@@ -4,6 +4,7 @@ use App\Models\GalleryAsset;
 use App\Services\Media\UploadPolicy;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Laravel\Sanctum\Sanctum;
 use Tests\Support\GalleryFixtures;
 
@@ -17,6 +18,11 @@ use Tests\Support\GalleryFixtures;
  * file's content, because the name is the attacker's to choose.
  */
 uses(RefreshDatabase::class);
+
+// ⚠️ Faked, because these tests really do upload. Without it they write into the
+// app's own storage, and now that a name is not unique by construction the file
+// one run leaves behind is the conflict the next run trips over.
+beforeEach(fn () => Storage::fake('public'));
 
 /**
  * A real upload with real bytes.

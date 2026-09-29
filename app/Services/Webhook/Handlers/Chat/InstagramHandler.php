@@ -784,7 +784,7 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
             $extension = $this->getExtensionFromMimeType($mimeType) ?? 'bin';
 
             // Save media file
-            $mediaPath = 'media/'.MediaFilename::build(null, $extension, (string) $message->id, $message->message_type->value);
+            $mediaPath = MediaFilename::path('media', (string) $message->id, null, $extension, $message->message_type->value);
             MediaStorage::disk()->put($mediaPath, $response->body());
 
             $message->update([
