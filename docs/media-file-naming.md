@@ -186,6 +186,44 @@ que o nome pode dizer com honestidade, e ainda é melhor que um hash.
 > ⚠️ A casing do payload do whatsmeow **não é consistente** (`URL`, `mediaKey` e
 > `mimetype` convivem), por isso o lado API Way tenta as quatro grafias.
 
+## Devolver o nome à mídia de fluxo, campanha e produto
+
+```
+php artisan media:restore-upload-filenames --dry-run
+php artisan media:restore-upload-filenames [--tenant=] [--limit=]
+```
+
+⚠️ **Copia, nunca move.** Uma varredura em produção achou 677 linhas de
+`messages.attachment`, 15 de `messages.meta`, 8 de `messages.body` e um registro
+de auditoria apontando para dentro de `uploads/`. Isso é histórico: o registro do
+arquivo que um cliente **de fato** recebeu. Mover transformaria o passado em 404,
+e reescrever essas linhas para acompanhar seria pior — seria afirmar que a gente
+mandou algo que não mandou. Então o original fica exatamente onde está.
+
+O que é reescrito são só os três lugares de onde um envio **futuro** lê:
+`flow_nodes.data`, `broadcasts.payload` e `products.image_url`. Uma referência
+que o comando não encontrar continua funcionando também — é isso que o torna
+seguro de rodar antes de alguém ter certeza de que a lista está completa. Tem
+teste estrutural garantindo que ele não escreve em `messages` nem em
+`audit_logs`.
+
+⚠️ **Só `{nome}_{12-hex}.{ext}` é recuperável.** O resto é `hashName()` do
+Laravel (`oLXug5pUMJYR…mp3`) e o nome nunca foi guardado em lugar nenhum:
+`POST /api/uploads` não escreve linha no banco, então — diferente de mídia de
+mensagem — não existe `meta.filename` de onde tirar. Em produção isso é 14 de 26
+referências, e nenhum trabalho aqui traz de volta.
+
+⚠️ **A varredura de referências tem uma pegadinha**: um cast JSON escapa a barra,
+então o que está de fato em `flow_nodes.data` é `uploads\/`. Procurar por
+`uploads/` não acha nenhum nó de fluxo — foi assim que a primeira varredura de
+produção reportou zero. As queries do comando usam `LIKE '%uploads%'`, sem a
+barra, de propósito.
+
+A cópia limpa cai na pasta do workspace (`uploads/{tenant}/{nome}`), com
+numeração ` (2)` se o nome já estiver ocupado — "provavelmente é o mesmo arquivo"
+não basta para apontar um fluxo vivo para os bytes de outra pessoa. Testes:
+`tests/Feature/Media/RestoreUploadFilenamesTest.php`.
+
 ## Deliberadamente fora
 
 - **Galeria** (`GalleryService::publicFilename`) — já fazia isso desde sempre, e
@@ -252,11 +290,7 @@ naquele canal esse campo **é** o código que a gente quer tirar. Descoberto num
 reescrever um UUID em si mesmo. Por isso o comando ignora um nome recuperado que
 seja igual ao atual, ou que seja só código (UUID, ou uma sequência longa de hex).
 
-⚠️ `uploads/` é deixado de lado de propósito, e o comando conta quantos e diz por
-quê: aqueles endereços estão escritos dentro de nós de fluxo, cartões de
-carrossel, campanhas e itens de post do Instagram — JSON que teria de ser
-reescrito em lockstep. `media:scan-unsafe-uploads` já existe justamente porque as
-URLs daquela pasta podem estar em lugares que a gente não controla.
+⚠️ `uploads/` é deixado de lado por este comando — quem cuida dele é o próximo.
 
 Idempotente, `--dry-run` primeiro.
 
