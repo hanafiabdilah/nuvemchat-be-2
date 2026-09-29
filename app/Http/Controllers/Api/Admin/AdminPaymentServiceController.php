@@ -61,7 +61,7 @@ class AdminPaymentServiceController extends Controller
     /**
      * The same proof for the direct gateways (PAYMENT_METHOD=direct): one
      * authenticated call that creates nothing — `GET /users/me` at Mercado
-     * Pago, `POST /v1/me` at dLocal Go.
+     * Pago, `GET /v1/me` at dLocal Go.
      */
     public function testDirect(string $gateway)
     {
@@ -91,7 +91,11 @@ class AdminPaymentServiceController extends Controller
                     'card_auto_renew' => DirectBillingConfig::mpPublicKey() !== null,
                 ]
                 : [
-                    'account' => $account['name'] ?? $account['email'] ?? $account['merchant_name'] ?? null,
+                    // `/v1/me` answers with an id and the account's own
+                    // currency, not a name.
+                    'account' => isset($account['merchant_id'])
+                        ? 'Merchant #'.$account['merchant_id'].(isset($account['currency']) ? " ({$account['currency']})" : '')
+                        : null,
                     'sandbox' => DirectBillingConfig::dlocalGoSandbox(),
                     'methods' => ['checkout'],
                     'card_auto_renew' => false,

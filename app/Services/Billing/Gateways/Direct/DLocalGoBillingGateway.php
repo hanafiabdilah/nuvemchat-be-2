@@ -129,10 +129,17 @@ class DLocalGoBillingGateway implements BillingGateway
 
     public function setRecurringState(string $instrumentId, string $state): void {}
 
-    /** `POST /v1/me` — dLocal Go's own credential check. A POST that reads. */
+    /**
+     * `GET /v1/me` — the account behind the keys; creates nothing.
+     *
+     * ⚠️ GET, not POST. A POST (which the payment service's adapter notes
+     * claim is required) is answered `500 {"code":7000,"message":
+     * "internal_server_error"}` for any keys at all — verified against
+     * production, where the same keys answer GET with the merchant record.
+     */
     public function verifyCredentials(): array
     {
-        return $this->decode($this->http()->post('/v1/me', []));
+        return $this->decode($this->http()->get('/v1/me'));
     }
 
     /**

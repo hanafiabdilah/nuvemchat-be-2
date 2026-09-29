@@ -499,3 +499,21 @@ it('reports the direct gateways to the Back Office and saves their secrets', fun
         ->and(DirectBillingConfig::dlocalGoSecretKey())->toBe('go_secret')
         ->and(DirectBillingConfig::dlocalGoBaseUrl())->toBe('https://api-sbx.dlocalgo.com');
 });
+
+it('checks dLocal Go credentials with a GET, which is the only verb /v1/me answers', function () {
+    Http::fake(['api.dlocalgo.com/v1/me' => fn ($request) => $request->method() === 'GET'
+        ? Http::response(['merchant_id' => 235256, 'currency' => 'BRL'])
+        : Http::response(['code' => 7000, 'message' => 'internal_server_error'], 500)]);
+
+    $role = \Spatie\Permission\Models\Role::findOrCreate('super-admin', 'web');
+    $role->forceFill(['is_platform' => true])->save();
+    $role->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate('bo.settings.manage', 'web'));
+    $admin = \App\Models\Admin::factory()->create();
+    $admin->assignRole($role);
+
+    $this->actingAs($admin, 'sanctum')
+        ->getJson('/api/admin/billing-gateways/dlocalgo/test')
+        ->assertOk()
+        ->assertJsonPath('data.account', 'Merchant #235256 (BRL)')
+        ->assertJsonPath('data.methods', ['checkout']);
+});
