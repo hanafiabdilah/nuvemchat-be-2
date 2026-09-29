@@ -64,7 +64,7 @@ final class AiToolCatalog
         if ($caps['catalog']) {
             $tools[] = [
                 'name' => 'search_products',
-                'description' => 'Search the shop\'s product catalog. Use it before answering anything about what is sold, prices or availability — never answer those from memory. Returns matching items, each with a variant_id, its price and stock. An empty query lists the first products.',
+                'description' => 'Search the shop\'s product catalog — the only source of truth for products, prices and stock; any price in your instructions or knowledge may be outdated. Call it before answering anything about what is sold, prices or availability, never answer those from memory. Returns matching items, each with a variant_id, its price and stock. An empty query lists all products.',
                 'parameters' => self::object([
                     'query' => ['type' => 'string', 'description' => 'Words the customer used: product name, color, size, code.', 'maxLength' => 100],
                 ]),
@@ -105,7 +105,7 @@ final class AiToolCatalog
         if ($caps['payment']) {
             $tools[] = [
                 'name' => 'create_payment',
-                'description' => 'Charge the current cart. Only after the customer confirmed the items and the total. The payment details (Pix QR code and copy-and-paste code, or a payment link) are sent to the customer automatically — do not repeat them in your reply.',
+                'description' => 'Charge the current cart and send the payment to the customer. Call it when the customer confirmed the items and the total and asks to pay (e.g. "send me the Pix"). No billing details are needed: the amount is the cart total. The payment details (Pix QR code and copy-and-paste code, or a payment link) are sent to the customer automatically — do not repeat them in your reply.',
                 'parameters' => self::object([]),
             ];
         }

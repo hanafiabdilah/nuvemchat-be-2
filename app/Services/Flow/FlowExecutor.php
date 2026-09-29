@@ -4325,16 +4325,23 @@ class FlowExecutor
         $this->markAiHandling($conversation);
 
         try {
+            $tools = $this->aiToolsFor($node, $conversation, $agent);
+
             $run = $this->aiAgentHubService->runAgent(
                 $agent,
                 $conversation,
-                $userInput,
+                // Offering tools is not enough on its own: an agent whose
+                // prompt lists products and prices answers from the prompt and
+                // never looks (conversation #28295). The preamble says which
+                // source wins. Absent without tools, so a plain AI Agent
+                // node's message is exactly what it was.
+                AiToolNodes::preamble($tools).$userInput,
                 $flowState->id,
                 $node->id,
                 attachments: $attachments,
                 responseAudio: $speak ? AiVoiceReply::options($voice, $conversation->connection->channel, $conversation->connection->tenant) : [],
                 inputAudio: AiTranscription::options($data, $attachments, $conversation->connection->tenant),
-                tools: $this->aiToolsFor($node, $conversation, $agent),
+                tools: $tools,
             );
 
             // Before the reply is sent: the transcription belongs to the

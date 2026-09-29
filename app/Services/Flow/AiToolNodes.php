@@ -99,6 +99,39 @@ final class AiToolNodes
         return $branches;
     }
 
+    /**
+     * What the turn tells the agent about the tools it has, ahead of the
+     * customer's words. Empty when there are none.
+     *
+     * Written for the agent, in English, and deliberately free of the words
+     * the hub's handoff detector reacts to ("atendente", "humano"…): this text
+     * travels in `message.content`, which that detector scans — the lesson of
+     * the welcome preamble that handed off 53 of 53 runs.
+     *
+     * @param  list<string>  $tools
+     */
+    public static function preamble(array $tools): string
+    {
+        if ($tools === []) {
+            return '';
+        }
+
+        $lines = [
+            'The shop\'s product catalog is available through your tools and it is the ONLY source of truth for what is sold, prices and stock. Prices or product lists written anywhere else (your instructions, your knowledge, earlier messages) may be outdated — do not quote them.',
+            'Before answering anything about products, prices or availability, call search_products (use an empty query to list everything) or get_product, and answer from what they return.',
+        ];
+
+        if (in_array('cart_add', $tools, true)) {
+            $lines[] = 'When the customer wants to buy, add the chosen items with cart_add (using the variant_id from the catalog) and confirm the items and total with cart_view.';
+        }
+
+        if (in_array('create_payment', $tools, true)) {
+            $lines[] = 'When the customer confirms and asks to pay, call create_payment: it charges the cart total and sends the payment (Pix code/QR or link) to the customer by itself. Do not ask for other billing details to charge the cart, and do not repeat the code in your reply.';
+        }
+
+        return '[Shop tools — '.implode(' ', $lines)."]\n\n";
+    }
+
     /** @param  array<string, mixed>  $data
      *  @return array<string, mixed> */
     public static function paymentConfig(array $data): array

@@ -51,7 +51,8 @@ it('leaves a plain AI agent run exactly as it was, even with tools switched on',
     // does not know.
     expect($run)->not->toHaveKey('tools')
         ->and($run['conversation'])->not->toHaveKey('callbackRef')
-        ->and(array_keys($run))->toBe(['agentExternalId', 'responseMode', 'conversation', 'message']);
+        ->and(array_keys($run))->toBe(['agentExternalId', 'responseMode', 'conversation', 'message'])
+        ->and($run['message']['content'])->not->toContain('[Shop tools');
 });
 
 it('runs an ai_tools node as a plain agent while tools are off', function () {
@@ -79,6 +80,13 @@ it('names the ticked tools in the run, after registering the catalog and the cre
 
     // Names only — the definitions live in the agent's catalog on the hub.
     expect($run['tools'])->toBe(['search_products', 'get_product', 'cart_add', 'cart_remove', 'cart_view'])
+        // The turn says the catalog wins over prices in the agent's prompt
+        // (conversation #28295 answered from the prompt and never looked),
+        // with the selling steps only for tools it actually has.
+        ->and($run['message']['content'])->toStartWith('[Shop tools')
+        ->and($run['message']['content'])->toContain('search_products')->toContain('cart_add')
+        ->and($run['message']['content'])->not->toContain('create_payment')
+        ->and($run['message']['content'])->toEndWith('Tem camiseta preta?')
         ->and($run['conversation']['callbackRef'])->toStartWith('cr1.')
         ->and($run['metadata']['toolCount'])->toBe(5);
 
