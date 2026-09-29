@@ -372,6 +372,11 @@ class AdminTrainedAgentController extends Controller
             'skills.*.description' => ['nullable', 'string'],
             'skills.*.instructions' => ['nullable', 'array'],
             'skills.*.instructions.*' => ['string'],
+            // What an HTTP skill declares (method, endpoint, headers, body) —
+            // the same free-form object the tenant's training page writes.
+            // Without a rule here it was stripped on save, so a ready-made
+            // agent could never be sold with the actions it was trained around.
+            'skills.*.metadata' => ['nullable', 'array'],
 
             'training_examples' => ['nullable', 'array'],
             'training_examples.*.type' => ['nullable', 'string', 'max:60'],

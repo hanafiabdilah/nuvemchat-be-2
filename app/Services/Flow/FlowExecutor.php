@@ -22,6 +22,7 @@ use App\Exceptions\Billing\CreditExhaustedException;
 use App\Jobs\ExpireFlowPayment;
 use App\Jobs\ReleaseFlowInvoice;
 use App\Jobs\RunAiAgentTurn;
+use App\Jobs\RunAiToolsPaymentBranch;
 use App\Jobs\RunFlowIntervalNode;
 use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowWaitResponseBuffer;
@@ -42,6 +43,7 @@ use App\Models\FlowState;
 use App\Models\Integration;
 use App\Models\LeadStage;
 use App\Models\Message;
+use App\Models\Order;
 use App\Models\User;
 use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
@@ -54,6 +56,9 @@ use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\AiAgentHub\AiTypingPresence;
 use App\Services\AiAgentHub\AiVoiceReply;
+use App\Services\AiAgentHub\Tools\AiToolCatalog;
+use App\Services\AiAgentHub\Tools\AiToolHubSync;
+use App\Services\Catalog\OrderService;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
 use App\Services\Contact\ContactIdentity;
@@ -311,7 +316,11 @@ class FlowExecutor
                 $this->executeTaggingNode($flowState, $node);
                 break;
 
+            // One machinery for both: the AI-with-actions node is an AI Agent
+            // node that may also act, and everything keyed to the node id —
+            // turns, burst window, welcome, handoff — works for either.
             case NodeType::AIAgent:
+            case NodeType::AiTools:
                 $this->executeAIAgentNode($flowState, $node);
                 break;
 
@@ -2348,7 +2357,7 @@ class FlowExecutor
         if ($this->handoffMode($node->data ?? []) === 'always_ai') {
             // AI is done with this node; release it from the AI tab before advancing.
             $this->releaseAiHandling($flowState->conversation);
-            $this->moveToNextNode($flowState, $node);
+            $this->leaveAiNode($flowState, $node);
 
             return;
         }
@@ -2370,6 +2379,26 @@ class FlowExecutor
 
         // AI cannot continue and no human is available — advance the flow.
         $this->releaseAiHandling($flowState->conversation);
+        $this->leaveAiNode($flowState, $node);
+    }
+
+    /**
+     * Where an AI node goes when the AI is done with it.
+     *
+     * An AI Agent node has a single output, so it is simply the next node. The
+     * AI-with-actions node has several — the payment outcomes among them — and
+     * a handoff must take its own `handoff` output, never whichever edge
+     * happens to be first: that could be `paid`, and the customer would be
+     * thanked for a payment they never made.
+     */
+    protected function leaveAiNode(FlowState $flowState, FlowNode $node): void
+    {
+        if ($node->type === NodeType::AiTools) {
+            $this->moveToNextNodeByBranch($flowState, $node, AiToolNodes::BRANCH_HANDOFF);
+
+            return;
+        }
+
         $this->moveToNextNode($flowState, $node);
     }
 
@@ -2671,7 +2700,7 @@ class FlowExecutor
         // Nor is the turn run here. It is armed, and this message re-arms it —
         // see scheduleAIAgentTurn(). Answering each message as it lands is what
         // made a customer typing in bursts get one reply per burst.
-        if ($currentNode->type === NodeType::AIAgent) {
+        if ($currentNode->type->isAiAgent()) {
             $this->scheduleAIAgentTurn($flowState, $currentNode);
 
             return;
@@ -3454,7 +3483,7 @@ class FlowExecutor
 
         $node = $flowState->currentNode;
 
-        if (! $node || $node->id !== $nodeId || $node->type !== NodeType::AIAgent) {
+        if (! $node || $node->id !== $nodeId || ! $node->type->isAiAgent()) {
             return true;
         }
 
@@ -3660,7 +3689,7 @@ class FlowExecutor
 
         $node = $flowState->currentNode;
 
-        if (! $node || $node->id !== $nodeId || $node->type !== NodeType::AIAgent) {
+        if (! $node || $node->id !== $nodeId || ! $node->type->isAiAgent()) {
             $skip('the flow moved to another node');
 
             return;
@@ -4029,7 +4058,7 @@ class FlowExecutor
 
         $node = $flowState->currentNode;
 
-        if (! $node || $node->type !== NodeType::AIAgent) {
+        if (! $node || ! $node->type->isAiAgent()) {
             return;
         }
 
@@ -4304,7 +4333,8 @@ class FlowExecutor
                 $node->id,
                 attachments: $attachments,
                 responseAudio: $speak ? AiVoiceReply::options($voice, $conversation->connection->channel, $conversation->connection->tenant) : [],
-                inputAudio: AiTranscription::options($data, $attachments, $conversation->connection->tenant)
+                inputAudio: AiTranscription::options($data, $attachments, $conversation->connection->tenant),
+                tools: $this->aiToolsFor($node, $conversation, $agent),
             );
 
             // Before the reply is sent: the transcription belongs to the
@@ -4319,6 +4349,21 @@ class FlowExecutor
             // The run is spent either way; its reply is not sent.
             if (! $this->stillWithTheFlow($conversation)) {
                 Log::info('FlowExecutor: AIAgent reply dropped, a person took the conversation during the run', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $conversation->id,
+                    'run_id' => $run->id,
+                ]);
+
+                return;
+            }
+
+            // The hub stopped the run because our tool endpoint said a person
+            // has the conversation, or it is closed, or the flow moved on
+            // (409 → CANCELLED + responseSuppressed). Silence is the answer:
+            // replying would talk over the person, and handing off again would
+            // undo whatever they just did.
+            if (! empty(($run->metadata ?? [])['responseSuppressed'])) {
+                Log::info('FlowExecutor: AIAgent run suppressed by the hub, nothing to send', [
                     'node_id' => $node->id,
                     'conversation_id' => $conversation->id,
                     'run_id' => $run->id,
@@ -4710,6 +4755,14 @@ class FlowExecutor
      */
     public function resumeFromPayment(FlowPayment $payment): void
     {
+        // A cart the AI charged: its branches are the AI node's, and the turn
+        // lock decides when they may be taken — see RunAiToolsPaymentBranch.
+        if ($payment->order_id !== null) {
+            RunAiToolsPaymentBranch::dispatch($payment->id);
+
+            return;
+        }
+
         $nodeId = (int) $payment->flow_node_id;
         $flowState = $payment->flow_state_id ? FlowState::find($payment->flow_state_id) : null;
 
@@ -4794,9 +4847,9 @@ class FlowExecutor
      * own — alone, so a long-press copies exactly the code, which is how
      * people pay a Pix from the phone they are chatting on.
      */
-    protected function sendPaymentMessages(FlowState $flowState, FlowNode $node, FlowPayment $payment): void
+    protected function sendPaymentMessages(FlowState $flowState, FlowNode $node, FlowPayment $payment, ?array $data = null): void
     {
-        $data = $node->data ?? [];
+        $data ??= $node->data ?? [];
         $text = trim((string) ($data['message'] ?? ''));
 
         $linkSent = PaymentNodes::sendsLink($data) && $payment->payment_url;
@@ -4831,6 +4884,207 @@ class FlowExecutor
         foreach ($bubbles as $index => $bubble) {
             $this->sendMessageItem($flowState, $node, $bubble, $index);
         }
+    }
+
+    // ────────────────────────  AI with actions  ────────────────────────
+
+    /**
+     * The tool names this turn allows — empty for a plain AI Agent node, for
+     * an ai_tools node with nothing ticked, and for every node while tools are
+     * switched off platform-wide. Empty adds nothing to the run.
+     *
+     * Names only: the definitions live in the agent's catalog on the hub,
+     * registered (and kept current) by AiToolHubSync right here, before the
+     * run that needs them.
+     *
+     * @return list<string>
+     */
+    protected function aiToolsFor(FlowNode $node, Conversation $conversation, AiHubAgent $agent): array
+    {
+        if ($node->type !== NodeType::AiTools || ! AiToolNodes::enabled()) {
+            return [];
+        }
+
+        $tenant = $conversation->connection->tenant;
+        $names = AiToolCatalog::names($node, (int) $tenant->id);
+
+        if ($names !== []) {
+            app(AiToolHubSync::class)->ensure($agent, $tenant);
+        }
+
+        return $names;
+    }
+
+    /**
+     * Charge a cart for the `create_payment` tool: the Payment node's steps —
+     * issue, record the variables, send the means to pay, arm the expiry —
+     * with the order's total as the amount.
+     *
+     * Called from inside the hub's run, so the Pix bubbles go out before the
+     * model's reply; the tool result tells the model they did, so it does not
+     * repeat the code.
+     */
+    public function chargeCartFromTool(FlowState $flowState, FlowNode $node, Order $order): FlowPayment
+    {
+        $payments = new FlowPaymentService;
+        $config = AiToolNodes::paymentConfig($node->data ?? []);
+
+        $payment = $payments->createForOrder(
+            $flowState,
+            $node,
+            $order,
+            $config,
+            fn (string $template) => $this->interpolateVariables($template, $flowState),
+        );
+
+        if ($payment->status === FlowPaymentStatus::Failed) {
+            // The cart stays open: the customer still wants these things, and
+            // the next attempt (a fixed integration, a human) starts from them.
+            $payments->note($payment, PaymentNodes::INFO_FAILED);
+
+            return $payment;
+        }
+
+        app(OrderService::class)->markAwaitingPayment($order);
+
+        $this->storePaymentVariables($flowState, $payment);
+        $this->storeOrderVariables($flowState, $order);
+
+        if ($payment->status !== FlowPaymentStatus::Pending) {
+            // Settled on creation (a gateway that confirms at once). settle()
+            // only moves a pending row, so the order is brought along here.
+            $payments->note($payment, $payment->status === FlowPaymentStatus::Paid ? PaymentNodes::INFO_PAID : PaymentNodes::INFO_FAILED);
+            app(OrderService::class)->syncFromPayment($payment);
+
+            return $payment;
+        }
+
+        $this->sendPaymentMessages($flowState, $node, $payment, $config);
+        $payments->note($payment, PaymentNodes::INFO_CREATED);
+
+        if ($payment->expires_at) {
+            ExpireFlowPayment::dispatch($payment->id)->delay($payment->expires_at->copy()->addSeconds(30));
+        }
+
+        Log::info('FlowExecutor: AI charged a cart', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'order_id' => $order->id,
+            'flow_payment_id' => $payment->id,
+        ]);
+
+        return $payment;
+    }
+
+    /**
+     * A cart the AI charged was settled — take the node's `paid` or
+     * `payment_failed` output, if the author drew one.
+     *
+     * Runs under the conversation's AI turn lock (see RunAiToolsPaymentBranch):
+     * the money can arrive while the model is still writing, and leaving the
+     * node under a turn in flight would send the customer the next step and
+     * then the bot's reply to a question that is no longer being asked.
+     *
+     * Returns false when the lock is held, so the job comes back.
+     */
+    public function takeAiToolsPaymentBranch(FlowPayment $payment): bool
+    {
+        $flowState = $payment->flow_state_id ? FlowState::find($payment->flow_state_id) : null;
+        $nodeId = (int) $payment->flow_node_id;
+
+        if (! $flowState || $flowState->status !== FlowStateStatus::Running || (int) $flowState->current_node_id !== $nodeId) {
+            return true;
+        }
+
+        $conversation = $flowState->conversation;
+
+        if (! $conversation || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            // An agent took the conversation: the payment and the stock are
+            // recorded, the automation is not replayed over them.
+            return true;
+        }
+
+        $lock = Cache::lock($this->aiTurnLockKey($conversation->id), self::AI_TURN_LOCK_SECONDS);
+
+        if (! $lock->get()) {
+            return false;
+        }
+
+        try {
+            $flowState->refresh();
+            $node = FlowNode::find($nodeId);
+
+            if ($flowState->status !== FlowStateStatus::Running
+                || (int) $flowState->current_node_id !== $nodeId
+                || ! $node
+                || $node->type !== NodeType::AiTools) {
+                return true;
+            }
+
+            // Only the newest charge of the order decides: an older one
+            // expiring after a newer one was issued must not send the customer
+            // down "payment failed" while they are paying the new code.
+            $order = $payment->order;
+            $latest = $order?->payments()->first();
+
+            if (! $order || ($latest && $latest->id !== $payment->id)) {
+                return true;
+            }
+
+            $paid = $payment->status === FlowPaymentStatus::Paid;
+            $branch = $paid ? AiToolNodes::BRANCH_PAID : AiToolNodes::BRANCH_PAYMENT_FAILED;
+
+            $this->storePaymentVariables($flowState, $payment);
+            $this->storeOrderVariables($flowState, $order->refresh());
+
+            $edge = $node->outgoingEdges()->where('condition_value', $branch)->first();
+
+            if (! $edge) {
+                // Unwired: the AI carries on. It learns of the payment from the
+                // note in the thread on its next turn — nothing to send now.
+                Log::info('FlowExecutor: cart payment settled, no step drawn for it — the AI carries on', [
+                    'flow_payment_id' => $payment->id,
+                    'branch' => $branch,
+                ]);
+
+                return true;
+            }
+
+            // Leaving the AI: the indicators it may have up come down, and the
+            // conversation goes back to the queue the next step expects.
+            $this->clearAiHoldingMessage($conversation);
+            AiTypingPresence::stop($conversation);
+            LiveActivity::idle($conversation);
+            $this->releaseAiHandling($conversation);
+
+            Log::info('FlowExecutor: cart payment settled, leaving the AI', [
+                'flow_payment_id' => $payment->id,
+                'conversation_id' => $conversation->id,
+                'branch' => $branch,
+            ]);
+
+            $this->followEdge($flowState, $edge, ['branch' => $branch]);
+        } finally {
+            $lock->release();
+        }
+
+        return true;
+    }
+
+    /**
+     * The order as flow variables, for the steps after `paid`: a message that
+     * says {{order_total}}, an invoice for {{order_items}}.
+     */
+    protected function storeOrderVariables(FlowState $flowState, Order $order): void
+    {
+        $order->loadMissing('items');
+
+        $flowState->update(['state_data' => array_merge($flowState->state_data ?? [], [
+            'order_id' => $order->id,
+            'order_total' => $order->formattedTotal(),
+            'order_items' => $order->itemsSummary(),
+            'order_status' => $order->status->value,
+        ])]);
     }
 
     // ──────────────────────────────  Invoice  ──────────────────────────────

@@ -26,6 +26,7 @@ class FlowPayment extends Model
         'flow_id',
         'flow_state_id',
         'flow_node_id',
+        'order_id',
         'reference',
         'provider_payment_id',
         'method',
@@ -136,5 +137,11 @@ class FlowPayment extends Model
         }
 
         return URL::signedRoute('flow-payments.qr', ['reference' => $this->reference]);
+    }
+
+    /** The cart this charge pays for, when the AI issued it; null for a Payment node. */
+    public function order(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(Order::class);
     }
 }

@@ -14,6 +14,14 @@ enum NodeType: string
     case Status = 'status';
     case Action = 'action';
     case AIAgent = 'ai_agent';
+
+    /**
+     * "Agente IA com ações": an AI Agent that can also *do* things — look up
+     * the workspace's product catalog, keep a cart, issue a Pix — deciding by
+     * itself when. Runs on the AI Agent's own machinery (service hours, burst
+     * window, typing, handoff); see App\Services\Flow\AiToolNodes.
+     */
+    case AiTools = 'ai_tools';
     case HttpRequest = 'http_request';
     case Interactive = 'interactive';
     case Payment = 'payment';
@@ -217,6 +225,36 @@ enum NodeType: string
                 'owner_id' => null,
                 'lost_reason' => '', // used only when the stage is a lost stage
             ],
+            // Everything an AI Agent node carries, plus what it may act on.
+            // Every capability starts off: the node is auto-saved the moment
+            // it lands on the canvas, and one that could already charge
+            // customers before its author chose an account would be a side
+            // effect nobody asked for. Outputs follow the capabilities — see
+            // AiToolNodes::branches().
+            self::AiTools => array_merge(self::AIAgent->data(), [
+                'capabilities' => [
+                    'catalog' => false,
+                    'cart' => false,
+                    'payment' => [
+                        'enabled' => false,
+                        'integration_id' => null,
+                        'method' => 'pix',
+                        'expires_in_minutes' => 60,
+                        'payer_document' => '', // supports {{variable}}; some gateways require it
+                    ],
+                ],
+            ]),
         };
+    }
+
+    /**
+     * Both AI node types. They share one execution path — the turn, the burst
+     * window, the handoff — so every check that asks "is the flow parked on
+     * an AI?" must ask it of both, or the newer node silently stops answering
+     * wherever the check was written for the older one only.
+     */
+    public function isAiAgent(): bool
+    {
+        return $this === self::AIAgent || $this === self::AiTools;
     }
 }

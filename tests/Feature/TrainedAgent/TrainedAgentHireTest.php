@@ -294,6 +294,35 @@ test('fulfilment forks the whole blueprint into the tenant workspace', function 
         ->and($agent->profile)->not->toBeNull();
 });
 
+test('a skill carries what its HTTP request declares into the fork', function () {
+    [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 1);
+    $metadata = ['type' => 'http_request', 'method' => 'GET', 'endpoint' => 'https://api.exemplo.com/agenda'];
+    $blueprint = trainedAgentBlueprint([
+        'skills' => [
+            ['name' => 'Consultar agenda', 'description' => 'Horários livres.', 'metadata' => $metadata],
+            ['name' => 'Sem metadata', 'description' => 'Como sempre foi.'],
+        ],
+    ]);
+
+    Bus::fake();
+    $hire = app(TrainedAgentService::class)->hire($tenant, $blueprint, $credential->id);
+
+    fakeHubFork();
+    app(TrainedAgentService::class)->fulfill($hire->fresh());
+
+    $sent = collect(Http::recorded())
+        ->map(fn ($pair) => $pair[0])
+        ->filter(fn ($request) => str_ends_with($request->url(), '/skills') && $request->method() === 'POST')
+        ->map(fn ($request) => $request->data())
+        ->values();
+
+    // Before this, the rule set stripped `metadata` on save and fulfil()
+    // copied three fields only: a ready-made agent lost its actions.
+    expect($sent[0]['metadata'])->toBe($metadata)
+        // A skill without it reaches the hub exactly as it always did.
+        ->and($sent[1])->not->toHaveKey('metadata');
+});
+
 test('a resumed fulfilment continues instead of creating a second agent', function () {
     [$tenant, , $credential] = trainedAgentWorkspace(includedAgents: 1);
     $blueprint = trainedAgentBlueprint();

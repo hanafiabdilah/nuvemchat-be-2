@@ -424,11 +424,15 @@ class TrainedAgentService
             $progress,
             'skills',
             $snapshot['skills'] ?? [],
-            fn (array $item) => $this->hubTenant->createAgentSkill($agent, [
+            fn (array $item) => $this->hubTenant->createAgentSkill($agent, array_filter([
                 'name' => $item['name'] ?? '',
                 'description' => $item['description'] ?? null,
                 'instructions' => $item['instructions'] ?? null,
-            ]),
+                // Carried when the blueprint has it, absent otherwise: a skill
+                // written before this existed must reach the hub exactly as it
+                // always did.
+                'metadata' => ! empty($item['metadata']) && is_array($item['metadata']) ? $item['metadata'] : null,
+            ], fn ($value, $key) => $key !== 'metadata' || $value !== null, ARRAY_FILTER_USE_BOTH)),
         );
 
         $this->copyList(

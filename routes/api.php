@@ -93,8 +93,11 @@ use App\Http\Controllers\Api\TagController;
 use App\Http\Controllers\Api\TrainedAgent\TrainedAgentController;
 use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\Catalog\OrderController as CatalogOrderController;
+use App\Http\Controllers\Api\Catalog\ProductController as CatalogProductController;
 use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
 use App\Http\Controllers\Api\V1\ConversationMessageController as V1ConversationMessageController;
+use App\Http\Controllers\Api\V1\ConversationToolController as V1ConversationToolController;
 use App\Http\Controllers\Api\V1\LeadController as V1LeadController;
 use App\Http\Controllers\Api\V1\SendMessageController;
 use App\Http\Controllers\Api\WebhookController;
@@ -281,6 +284,27 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::delete('/{id}', [IntegrationController::class, 'destroy'])->whereNumber('id')->middleware('permission:integrations.manage')->name('destroy');
         Route::get('/{id}/payments', [IntegrationController::class, 'payments'])->whereNumber('id')->middleware('permission:integrations.view')->name('payments');
         Route::get('/{id}/invoices', [IntegrationController::class, 'invoices'])->whereNumber('id')->middleware('permission:integrations.view')->name('invoices');
+    });
+
+    // The product catalog the "Agente IA com ações" node sells from, and the
+    // orders it took. Behind the `catalog` plan feature — the pages, the API
+    // and the node are one product. The literal paths are registered before
+    // `/{id}`, which is numeric-only anyway.
+    Route::middleware('feature:'.Feature::Catalog->value)->group(function () {
+        Route::prefix('products')->name('products.')->group(function () {
+            Route::get('/', [CatalogProductController::class, 'index'])->middleware('permission:products.view|flows.update')->name('index');
+            Route::post('/', [CatalogProductController::class, 'store'])->middleware('permission:products.manage')->name('store');
+            Route::post('/import/preview', [CatalogProductController::class, 'importPreview'])->middleware(['permission:products.manage', 'throttle:20,1'])->name('import-preview');
+            Route::post('/import', [CatalogProductController::class, 'importCommit'])->middleware(['permission:products.manage', 'throttle:20,1'])->name('import');
+            Route::get('/{id}', [CatalogProductController::class, 'show'])->whereNumber('id')->middleware('permission:products.view')->name('show');
+            Route::put('/{id}', [CatalogProductController::class, 'update'])->whereNumber('id')->middleware('permission:products.manage')->name('update');
+            Route::delete('/{id}', [CatalogProductController::class, 'destroy'])->whereNumber('id')->middleware('permission:products.manage')->name('destroy');
+        });
+
+        Route::prefix('orders')->name('orders.')->group(function () {
+            Route::get('/', [CatalogOrderController::class, 'index'])->middleware('permission:orders.view')->name('index');
+            Route::get('/{id}', [CatalogOrderController::class, 'show'])->whereNumber('id')->middleware('permission:orders.view')->name('show');
+        });
     });
 
     // API keys — the one credential of the public API (/v1/*). One permission
@@ -779,6 +803,12 @@ Route::prefix('/v1')->middleware([ApiKeyAuth::class, 'throttle:public-api'])->gr
     // see AiCallbackRef. A per-conversation ceiling applies on top of the
     // per-key throttle above.
     Route::post('conversations/messages', [V1ConversationMessageController::class, 'store']);
+
+    // The AI Hub running one of our tools mid-run ("Agente IA com ações").
+    // Called with the workspace API key the hub holds per agent (registered
+    // by AiToolHubSync); the signed callback_ref scopes each call to one
+    // conversation. Off until switched on (config ai.tools.enabled).
+    Route::post('conversations/tools', [V1ConversationToolController::class, 'store']);
 });
 
 /*

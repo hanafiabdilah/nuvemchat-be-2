@@ -490,4 +490,52 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Tools for the "Agente IA com ações" node (ai_tools)
+    |--------------------------------------------------------------------------
+    |
+    | The agent deciding by itself to look up the catalog, keep a cart and
+    | issue a Pix. The loop belongs to the hub: it calls
+    | POST /api/v1/conversations/tools in the middle of its own run, and this
+    | app executes the tool (App\Services\AiAgentHub\AiToolCallService).
+    |
+    | ⚠️ Off by default, and it must stay off until the hub ships support. The
+    | hub validates the run strictly: one field it does not know rejects the
+    | WHOLE run — the `inputAudio` incident of 28 Aug 2026 — so switching this
+    | on early stops every ai_tools node from answering at all. While off, an
+    | ai_tools node runs exactly like a plain AI Agent node (no field is added
+    | to the run) and the endpoint refuses every call.
+    |
+    */
+
+    'tools' => [
+
+        'enabled' => (bool) env('AI_TOOLS_ENABLED', false),
+
+        /*
+        | Name of the run field that carries the NAMES of the tools this turn
+        | allows (the definitions are registered per agent — AiToolHubSync).
+        | `tools` per the hub's contract (PINGLY-TOOLS-20260928.md); kept
+        | configurable so a rename is an env change, not a deploy.
+        */
+
+        'run_field' => env('AI_TOOLS_RUN_FIELD', 'tools'),
+
+
+        /*
+        | Ceiling on tool calls per conversation per hour, on top of the per-key
+        | throttle. The hub owns the loop, so a tool that always answers "not
+        | yet" could otherwise spin until the hub's own cap — this one is ours.
+        */
+
+        'max_calls_per_conversation_per_hour' => (int) env('AI_TOOLS_MAX_CALLS_PER_CONVERSATION_PER_HOUR', 120),
+
+        /* How many products a search hands the model. More costs tokens every
+        | turn and makes the model misread the list. */
+
+        'search_limit' => (int) env('AI_TOOLS_SEARCH_LIMIT', 8),
+
+    ],
+
 ];

@@ -23,6 +23,8 @@ class AiHubAgent extends Model
         'status',
         'handoff_rules',
         'metadata',
+        'tools_catalog_hash',
+        'tools_api_key_id',
     ];
 
     protected $casts = [

@@ -900,7 +900,8 @@ class AiAgentHubTenantService
         ?string $conversationExternalId = null,
         array $attachments = [],
         array $responseAudio = [],
-        array $inputAudio = []
+        array $inputAudio = [],
+        array $tools = []
     ): AiHubRun {
         $tenant = $agent->aiHubTenant;
         $conversation->loadMissing(['contact', 'connection']);
@@ -956,7 +957,12 @@ class AiAgentHubTenantService
         // the vocabulary bench — and a draft must not hand out the ability to
         // send. The node id is what the reference is scoped to, so a run
         // without one cannot be scoped at all.
-        if ($conversationExternalId === null && $flowNodeId !== null && AiCallbackRef::enabled()) {
+        //
+        // Tools need the same reference: the hub names the conversation with it
+        // when it calls POST /v1/conversations/tools mid-run. `$tools` is only
+        // ever non-empty with ai.tools.enabled on, so a plain AI Agent node's
+        // payload is exactly what it was before tools existed.
+        if ($conversationExternalId === null && $flowNodeId !== null && (AiCallbackRef::enabled() || $tools !== [])) {
             $payload['conversation']['callbackRef'] = AiCallbackRef::mint(
                 $conversation->id,
                 $flowNodeId,
@@ -979,6 +985,21 @@ class AiAgentHubTenantService
             $metadata['voiceRequested'] = true;
         }
 
+        // The actions this turn may take ("Agente IA com ações"): the NAMES of
+        // tools already in the agent's catalog on the hub (AiToolHubSync
+        // registered it). The hub hands those to the model and calls our tool
+        // endpoint when the model uses one.
+        //
+        // ⚠️ Deliberately NOT one of the optional extras below that a failed
+        // run is retried without. An agent that silently lost its tools would
+        // answer stock and prices from memory — the failure that reads like
+        // software working. A run the hub refuses because of this field fails
+        // and the node hands off, which somebody notices.
+        if ($tools !== []) {
+            $payload[(string) config('ai.tools.run_field', 'tools')] = $tools;
+            $metadata['toolCount'] = count($tools);
+        }
+
         if (! empty($metadata)) {
             $payload['metadata'] = $metadata;
         }
@@ -989,7 +1010,12 @@ class AiAgentHubTenantService
             'conversation_id' => $conversation->id,
         ];
 
-        $carriesExtras = $attachments !== [] || $responseAudio !== [] || $inputAudio !== [];
+        // ⚠️ Never retried when tools were offered. A retry is a second run —
+        // the model starts over and may call cart_add or create_payment again
+        // under a new run id, which our idempotency cannot recognise as the
+        // same call. The hub's contract says the same: fatal failures are not
+        // replayed. The node hands off instead.
+        $carriesExtras = $tools === [] && ($attachments !== [] || $responseAudio !== [] || $inputAudio !== []);
 
         // Strip everything optional and keep the words. Shared by both ways a
         // run can fail — an HTTP error, and a 200 carrying a failed run.
@@ -1039,6 +1065,15 @@ class AiAgentHubTenantService
             $data = $this->postRun($tenant, $payload, $context);
         }
 
+        // Cancelled on purpose by the hub: a tool call answered 409 (a person
+        // took the conversation, it closed, the flow moved on). Not a failure
+        // — the caller must stay silent (FlowExecutor reads this flag).
+        if (($data['output']['responseSuppressed'] ?? false) === true) {
+            $metadata['responseSuppressed'] = true;
+
+            return $this->persistRun($agent, $conversation, $userMessage, $data, $flowStateId, $flowNodeId, $metadata);
+        }
+
         // A 200 can still carry a run that failed: the hub answers with
         // `status: FAILED`, `output: null` and the stage that threw — an
         // ElevenLabs key without the speech_to_text permission, a voice id
@@ -1081,6 +1116,12 @@ class AiAgentHubTenantService
                     context: $context,
                 );
             }
+        }
+
+        // Which tools the run used (name, status, duration — never arguments),
+        // for "why did the agent answer that" without opening the hub.
+        if (is_array($data['output']['toolCalls'] ?? null) && $data['output']['toolCalls'] !== []) {
+            $metadata['toolCalls'] = $data['output']['toolCalls'];
         }
 
         $run = $this->persistRun(
@@ -1779,6 +1820,41 @@ class AiAgentHubTenantService
      * Auth headers for every hub call. Adjust here if the hub expects a
      * different header (e.g. `x-hub-api-key`).
      */
+    /**
+     * Replace the agent's tool catalog on the hub — the whole list, atomically
+     * (PUT /v1/agents/{id}/pingly-tools). Registering a catalog does not
+     * switch anything on: a run only uses the tools it names.
+     *
+     * @param  list<array{name: string, description: string, parameters: array<string, mixed>}>  $tools
+     */
+    public function putPinglyTools(AiHubAgent $agent, array $tools): void
+    {
+        $response = Http::withHeaders($this->headers())
+            ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/pingly-tools", ['tools' => $tools]);
+
+        $this->ensureSuccessful($response, 'register the agent tools', [
+            'ai_hub_agent_id' => $agent->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+    }
+
+    /**
+     * Give the hub the workspace API key it calls Pingly with, for this agent
+     * (PUT /v1/agents/{id}/pingly-delivery). The hub stores it encrypted and
+     * never returns it; the same credential serves tools and proactive
+     * messages.
+     */
+    public function putPinglyDelivery(AiHubAgent $agent, string $apiKey): void
+    {
+        $response = Http::withHeaders($this->headers())
+            ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/pingly-delivery", ['apiKey' => $apiKey]);
+
+        $this->ensureSuccessful($response, 'register the agent Pingly credential', [
+            'ai_hub_agent_id' => $agent->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+        ]);
+    }
+
     protected function headers(): array
     {
         return [

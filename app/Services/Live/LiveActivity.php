@@ -237,6 +237,18 @@ final class LiveActivity
         self::emit($conversation, self::AI_THINKING, $node);
     }
 
+    /**
+     * The agent is using a tool mid-run — looking up the catalog, charging a
+     * cart. Still the thinking phase (the run is not over), with the tool's
+     * name so the panel can say what it is doing. Never the arguments: they
+     * can carry a CPF or an address, the same rule flowHttp() keeps by
+     * sending the host and not the URL.
+     */
+    public static function aiTool(Conversation $conversation, ?FlowNode $node, string $tool): void
+    {
+        self::emit($conversation, self::AI_THINKING, $node, ['tool' => $tool]);
+    }
+
     public static function aiSuggest(Conversation $conversation, User $agent): void
     {
         self::emit($conversation, self::AI_SUGGEST, null, [

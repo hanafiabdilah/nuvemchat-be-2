@@ -38,9 +38,17 @@ class FlowBlueprint
     /** Allowed node types. The frontend palette must stay in sync. */
     public const NODE_TYPES = [
         'start', 'message', 'interval', 'response', 'wait_response', 'status',
-        'tagging', 'condition', 'action', 'ai_agent', 'http_request',
+        'tagging', 'condition', 'action', 'ai_agent', 'ai_tools', 'http_request',
         'interactive', 'payment', 'invoice', 'pixel', 'go_to_flow', 'lead',
     ];
+
+    /**
+     * Node types whose outputs are not a fixed pair but depend on the node's
+     * own data — an interactive node's options, an AI-with-actions node's
+     * capabilities. Listed so the prose below can name every branching type
+     * without anyone keeping a second list in a sentence.
+     */
+    public const DYNAMIC_BRANCH_TYPES = ['interactive', 'ai_tools'];
 
     /**
      * Edge branch values: the fixed pair per branching node — condition
@@ -226,6 +234,29 @@ class FlowBlueprint
                 'holding_message.media_messages' => ['nullable', 'array', 'max:'.AiHoldingMessage::MAX_LINES],
                 'holding_message.media_messages.*' => ['nullable', 'string', 'max:'.AiHoldingMessage::MAX_LENGTH],
             ],
+            // The AI Agent node's fields, plus what it may act on. Everything in
+            // `capabilities` is optional and off when absent: the builder
+            // auto-saves the node the moment it lands, before anything is
+            // ticked. Ownership is strict, like everywhere else — the payment
+            // account must be this workspace's.
+            'ai_tools' => array_merge(self::rulesFor('ai_agent'), [
+                'capabilities' => ['nullable', 'array'],
+                'capabilities.catalog' => ['nullable', 'boolean'],
+                'capabilities.cart' => ['nullable', 'boolean'],
+                'capabilities.payment' => ['nullable', 'array'],
+                'capabilities.payment.enabled' => ['nullable', 'boolean'],
+                'capabilities.payment.integration_id' => [
+                    'nullable',
+                    'integer',
+                    Rule::exists('integrations', 'id')
+                        ->where('tenant_id', self::tenantId())
+                        ->whereIn('provider', self::providersFor(IntegrationCategory::Payment)),
+                ],
+                'capabilities.payment.method' => ['nullable', 'string', Rule::in(PaymentNodes::METHODS)],
+                'capabilities.payment.expires_in_minutes' => ['nullable', 'integer', 'min:'.PaymentNodes::MIN_EXPIRES_MINUTES, 'max:'.PaymentNodes::MAX_EXPIRES_MINUTES],
+                'capabilities.payment.payer_document' => ['nullable', 'string', 'max:64'],
+                'capabilities.payment.payer_email' => ['nullable', 'string', 'max:255'],
+            ]),
             // Lengths mirror the WhatsApp Cloud API limits so the builder warns
             // long before a send fails. Texts stay nullable (like http_request)
             // so auto-save never fights a half-finished node; the executor skips
@@ -539,7 +570,9 @@ class FlowBlueprint
         $problems = [];
 
         foreach ($nodes as $node) {
-            if (($node['type'] ?? null) !== 'ai_agent') {
+            $type = $node['type'] ?? null;
+
+            if ($type !== 'ai_agent' && $type !== 'ai_tools') {
                 continue;
             }
 
@@ -547,11 +580,16 @@ class FlowBlueprint
             $data = (array) ($node['data'] ?? []);
 
             if (empty($data['ai_hub_agent_id'])) {
-                $problems[] = "Node \"{$key}\" (ai_agent) needs an ai_hub_agent_id from the AI agents listed in the context. If none is listed, do not use this node type.";
+                $problems[] = "Node \"{$key}\" ({$type}) needs an ai_hub_agent_id from the AI agents listed in the context. If none is listed, do not use this node type.";
             }
 
             if (trim((string) ($data['welcoming_message'] ?? '')) === '') {
-                $problems[] = "Node \"{$key}\" (ai_agent) needs a welcoming_message.";
+                $problems[] = "Node \"{$key}\" ({$type}) needs a welcoming_message.";
+            }
+
+            if ($type === 'ai_tools' && (bool) (($data['capabilities']['payment'] ?? [])['enabled'] ?? false)
+                && empty(($data['capabilities']['payment'] ?? [])['integration_id'])) {
+                $problems[] = "Node \"{$key}\" (ai_tools) charges payments but has no capabilities.payment.integration_id from the payment integrations listed in the context.";
             }
         }
 
@@ -584,6 +622,19 @@ class FlowBlueprint
                 $list = '"'.implode('", "', $allowed).'"';
 
                 return ["Edge from node \"{$sourceKey}\" ({$type}) has condition_value {$shown}; it must be one of {$list}."];
+            }
+
+            return [];
+        }
+
+        if ($type === 'ai_tools') {
+            $allowed = AiToolNodes::branches((array) ($sourceNode['data'] ?? []));
+
+            if (! in_array($value, $allowed, true)) {
+                $shown = $value === null ? 'null' : "\"{$value}\"";
+                $list = '"'.implode('", "', $allowed).'"';
+
+                return ["Edge from ai_tools node \"{$sourceKey}\" has condition_value {$shown}; it must be one of {$list} (\"paid\" and \"payment_failed\" exist only when capabilities.payment.enabled is true)."];
             }
 
             return [];
@@ -624,7 +675,7 @@ class FlowBlueprint
         }
 
         if ($value !== null && $value !== '') {
-            return ["Edge from node \"{$sourceKey}\" ({$type}) must not carry a condition_value — only condition, wait_response, http_request, payment, invoice and interactive nodes branch."];
+            return ["Edge from node \"{$sourceKey}\" ({$type}) must not carry a condition_value — only ".self::branchingTypesSentence().' nodes branch.'];
         }
 
         return [];
@@ -852,6 +903,11 @@ class FlowBlueprint
         $minWait = InvoiceNodes::MIN_WAIT_MINUTES;
         $maxWait = InvoiceNodes::MAX_WAIT_MINUTES;
         $invoiceVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', InvoiceNodes::VARIABLES));
+        $branchingTypes = self::branchingTypesSentence();
+        $toolsHandoff = AiToolNodes::BRANCH_HANDOFF;
+        $toolsPaid = AiToolNodes::BRANCH_PAID;
+        $toolsPaymentFailed = AiToolNodes::BRANCH_PAYMENT_FAILED;
+        $orderVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', AiToolNodes::ORDER_VARIABLES));
 
         return <<<SPEC
         # Flow file format ("{$format}", version {$version})
@@ -872,15 +928,15 @@ class FlowBlueprint
 
         - Exactly ONE node of type "start". Its `data` is null. It has no incoming edge.
         - Every other node must be reachable from "start" by following edges.
-        - `condition_value` is null on ordinary edges. Only condition, wait_response,
-          http_request, payment, invoice and interactive nodes branch, and their
-          values are fixed:
+        - `condition_value` is null on ordinary edges. Only {$branchingTypes} nodes
+          branch, and their values are fixed:
             condition     → "true" / "false"
             wait_response → "{$replied}" / "{$timeout}"
             http_request  → "success" / "error"
             payment       → "{$paid}" / "{$failed}"
             invoice       → "{$issued}" / "{$invoiceFailed}"
             interactive   → the id of one of that node's own options, or "{$invalidBranch}"
+            ai_tools      → "{$toolsHandoff}", plus "{$toolsPaid}" / "{$toolsPaymentFailed}" when it charges payments
         - status and go_to_flow END the flow: no edge may leave them.
         - Lay the canvas out left to right: x grows by ~280 per step, y separates
           branches by ~180. Never stack two nodes on the same coordinates.
@@ -1036,6 +1092,29 @@ class FlowBlueprint
           lookups) — an extra bubble on every turn is a cost, not a courtesy.
         - One output (taken when the agent hands off).
 
+        ### ai_tools — an AI agent that can also act ("Agente IA com ações")
+        { "ai_hub_agent_id": 12, "welcoming_message": "Oi! Posso te ajudar a escolher?",
+          "capabilities": { "catalog": true, "cart": true,
+            "payment": { "enabled": true, "integration_id": 4, "method": "pix",
+                         "expires_in_minutes": 60 } } }
+        - Everything the ai_agent node takes, same rules, plus `capabilities` —
+          switches for what the agent may do by itself during the conversation.
+          All optional and off when absent.
+        - `catalog`: look up the workspace's products (price, stock).
+          `cart` (needs catalog): build the customer's cart.
+          `payment` (needs cart): charge the cart; `integration_id` MUST be one of
+          the payment integrations listed in the context, `method` {$paymentMethods}.
+          The amount is always the cart total — there is no amount field.
+        - Use this node instead of a chain of response + http_request + condition +
+          payment nodes whenever the person wants a sales conversation that flows
+          naturally.
+        - OUTPUTS: "{$toolsHandoff}" (always — taken when the agent hands off, like
+          ai_agent's single output) and, only when payment is enabled, "{$toolsPaid}"
+          and "{$toolsPaymentFailed}". Every output is optional: leaving one unwired
+          means the AI keeps serving. After "{$toolsPaid}" these variables are set:
+          {$orderVariables} plus {$paymentVariables}. A typical "{$toolsPaid}" branch
+          sends a thank-you message, then invoice / lead / pixel nodes.
+
         ### tagging — label the conversation or the contact
         { "action": "add", "target": "conversation", "tags": [3, 7] }
         - `tags` are ids from the workspace's tag list in the context below. If the
@@ -1185,5 +1264,19 @@ class FlowBlueprint
     private static function quoted(array $values): string
     {
         return '"'.implode('" | "', $values).'"';
+    }
+
+    /**
+     * "condition, wait_response, http_request, payment, invoice, interactive
+     * and ai_tools" — derived from the constants, so the next branching node
+     * cannot make the error message (or the assistant's spec) tell a lie. The
+     * old hand-written list would have, the day ai_tools shipped.
+     */
+    public static function branchingTypesSentence(): string
+    {
+        $types = array_values(array_unique(array_merge(array_keys(self::FIXED_BRANCHES), self::DYNAMIC_BRANCH_TYPES)));
+        $last = array_pop($types);
+
+        return implode(', ', $types).' and '.$last;
     }
 }

@@ -281,7 +281,7 @@ final class AiProactiveMessageService
             || $flowState->status !== FlowStateStatus::Running
             || ! $node
             || $node->id !== $claims['flow_node_id']
-            || $node->type !== NodeType::AIAgent) {
+            || ! $node->type->isAiAgent()) {
             throw new PublicApiException(
                 'Esta conversa não está mais sendo atendida por este agente de IA.',
                 'conversation_not_with_ai',

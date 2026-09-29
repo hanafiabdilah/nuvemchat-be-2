@@ -40,6 +40,14 @@ class UserController extends Controller
             ];
         }
 
+        // Platform switches the dashboard has to follow. Today one: whether the
+        // AI Hub accepts tool definitions yet (config ai.tools.enabled). While
+        // it does not, the builder hides the "AI agent with actions" node —
+        // one saved in a flow still runs, as a plain AI agent.
+        $data['platform'] = [
+            'ai_tools' => (bool) config('ai.tools.enabled', false),
+        ];
+
         return response()->json([
             'data' => $data,
         ]);

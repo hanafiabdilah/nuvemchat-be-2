@@ -58,6 +58,15 @@ enum Feature: string
      */
     case Mcp = 'mcp';
 
+    /**
+     * The workspace's own product catalog and the orders its AI takes: the
+     * Products and Orders pages, and the flow node that sells from them
+     * ("Agente IA com ações"). One key for all three because none is useful
+     * alone — a catalog nothing sells from is a spreadsheet, and a selling
+     * node with no catalog has nothing to offer.
+     */
+    case Catalog = 'catalog';
+
     /** @return list<string> */
     public static function values(): array
     {
@@ -75,6 +84,7 @@ enum Feature: string
             self::AiAgentHub => 'AI Agent Hub',
             self::Statistics => 'Statistics',
             self::Mcp => 'MCP (Claude / Codex)',
+            self::Catalog => 'Product catalog & AI sales',
         };
     }
 
@@ -89,6 +99,7 @@ enum Feature: string
             self::AiAgentHub => 'AI agents, handoff and reply suggestions.',
             self::Statistics => 'The tenant analytics pages.',
             self::Mcp => 'Lets people connect Claude, Codex or another MCP client to this workspace and work through it. Costs the platform nothing per use — the model tokens are billed to the customer\'s own AI subscription. Today it reaches the flow builder; each tool still needs the feature and the permission its own surface requires.',
+            self::Catalog => 'Products, stock and orders, plus the "AI agent with actions" flow node that looks up the catalog, builds a cart and charges a Pix by itself. The node also needs `flow`.',
         };
     }
 }

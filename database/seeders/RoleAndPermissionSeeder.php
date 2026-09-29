@@ -137,6 +137,13 @@ class RoleAndPermissionSeeder extends Seeder
             // workspace's money, which is why editing a flow does not imply it.
             'integrations.view',
             'integrations.manage',
+
+            // The product catalog the AI sells from, and what it sold.
+            // `products.manage` edits prices a bot is quoting right now;
+            // orders are written by the AI and the gateway, so only read.
+            'products.view',
+            'products.manage',
+            'orders.view',
         ];
 
         foreach ($permissions as $permission) {

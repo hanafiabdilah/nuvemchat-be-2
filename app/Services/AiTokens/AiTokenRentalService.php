@@ -547,7 +547,8 @@ class AiTokenRentalService
         }
 
         return FlowNode::query()
-            ->where('type', NodeType::AIAgent->value)
+            // Both AI node types carry the same audio settings.
+            ->whereIn('type', [NodeType::AIAgent->value, NodeType::AiTools->value])
             ->whereHas('flow', fn ($q) => $q->where('tenant_id', $tenantId))
             ->get()
             ->filter(function (FlowNode $node) use ($credential) {

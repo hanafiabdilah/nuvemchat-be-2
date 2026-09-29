@@ -11,6 +11,8 @@ use App\Models\FlowNode;
 use App\Models\FlowPayment;
 use App\Models\FlowState;
 use App\Models\Integration;
+use App\Models\Order;
+use App\Services\Catalog\OrderService;
 use App\Services\Contact\ContactIdentity;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Integrations\IntegrationDrivers;
@@ -59,11 +61,67 @@ class FlowPaymentService
      */
     public function createForNode(FlowState $flowState, FlowNode $node, callable $interpolate): FlowPayment
     {
+        $data = $node->data ?? [];
+        $rawAmount = trim($interpolate((string) ($data['amount'] ?? '')));
+
+        return $this->issue(
+            $flowState,
+            $node,
+            $data,
+            PaymentNodes::parseAmount($rawAmount),
+            $rawAmount,
+            Str::limit(trim($interpolate((string) ($data['description'] ?? ''))), 140, ''),
+            $interpolate,
+        );
+    }
+
+    /**
+     * Issue the charge for a cart the AI built (an "Agente IA com ações" node).
+     *
+     * Same machinery as a Payment node — same gateways, same refusals, same
+     * settle-once — with one difference that is the point of the whole
+     * feature: the amount is the order's total, summed by OrderService from
+     * catalog prices. Nothing the model said is an amount.
+     *
+     * @param  array<string, mixed>  $config  the node's `capabilities.payment`
+     * @param  callable(string): string  $interpolate
+     */
+    public function createForOrder(FlowState $flowState, FlowNode $node, Order $order, array $config, callable $interpolate): FlowPayment
+    {
+        $amount = $order->total_cents > 0 && $order->total_cents <= PaymentNodes::MAX_AMOUNT_CENTS
+            ? $order->total_cents
+            : null;
+
+        return $this->issue(
+            $flowState,
+            $node,
+            $config,
+            $amount,
+            (string) $order->total_cents,
+            Str::limit('Pedido #'.$order->id, 140, ''),
+            $interpolate,
+            $order,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $data  integration_id, method, expires_in_minutes, payer_document, payer_email
+     * @param  callable(string): string  $interpolate
+     */
+    private function issue(
+        FlowState $flowState,
+        FlowNode $node,
+        array $data,
+        ?int $amountCents,
+        string $rawAmount,
+        string $description,
+        callable $interpolate,
+        ?Order $order = null,
+    ): FlowPayment {
         $conversation = $flowState->conversation;
         $connection = $conversation->connection;
         $tenantId = (int) $connection->tenant_id;
         $contact = $conversation->contact;
-        $data = $node->data ?? [];
 
         $integrationId = (int) ($data['integration_id'] ?? 0);
         $integration = $integrationId > 0
@@ -71,9 +129,6 @@ class FlowPaymentService
             : null;
 
         $method = PaymentNodes::method($data);
-        $rawAmount = trim($interpolate((string) ($data['amount'] ?? '')));
-        $amountCents = PaymentNodes::parseAmount($rawAmount);
-        $description = Str::limit(trim($interpolate((string) ($data['description'] ?? ''))), 140, '');
         $expiresAt = CarbonImmutable::now()->addMinutes(PaymentNodes::expiresInMinutes($data));
 
         $payment = new FlowPayment([
@@ -85,6 +140,7 @@ class FlowPaymentService
             'flow_id' => $flowState->flow_id,
             'flow_state_id' => $flowState->id,
             'flow_node_id' => $node->id,
+            'order_id' => $order?->id,
             'reference' => 'pingly-fp-'.Str::lower((string) Str::ulid()),
             'method' => $method,
             'amount_cents' => $amountCents ?? 0,
@@ -92,7 +148,7 @@ class FlowPaymentService
             // gateway on this surface was Brazilian; Stripe is not, so a shop
             // outside Brazil was charging its customers in a currency neither
             // of them uses.
-            'currency' => $connection->tenant?->currency() ?? MarketMoney::baseCurrency(),
+            'currency' => $order?->currency ?? $connection->tenant?->currency() ?? MarketMoney::baseCurrency(),
             'description' => $description !== '' ? $description : null,
             'status' => FlowPaymentStatus::Pending,
             'expires_at' => $expiresAt,
@@ -333,6 +389,20 @@ class FlowPaymentService
         }
 
         $payment->refresh();
+
+        // Before anything that can throw on the flow side: the stock and the
+        // order follow the money, whether or not a flow is still waiting.
+        if ($payment->order_id !== null) {
+            try {
+                app(OrderService::class)->syncFromPayment($payment);
+            } catch (\Throwable $e) {
+                Log::error('FlowPaymentService: could not update the order for a settled charge', [
+                    'flow_payment_id' => $payment->id,
+                    'order_id' => $payment->order_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         if ($outcome === 'paid_late') {
             $this->note($payment, PaymentNodes::INFO_PAID_LATE);
