@@ -2,8 +2,13 @@
 
 namespace App\Services\Flow;
 
+use App\Enums\Conversation\Status;
+use App\Enums\Message\MessageType;
+use App\Enums\Message\SenderType;
 use App\Jobs\RunFlowTurn;
 use App\Models\Conversation;
+use App\Models\FlowState;
+use App\Services\Conversation\LastAgentRouter;
 
 /**
  * The one place that decides *where* a flow turn runs.
@@ -33,7 +38,46 @@ final class FlowRunner
 
     public static function resume(Conversation $conversation, string $userInput): void
     {
+        // A thread something other than the customer opened — today, a call
+        // log (CallLog creates the conversation to hold the note) — reaches
+        // the handlers as an *existing* conversation, so the customer's first
+        // real message is treated as a follow-up and resumed. With no flow
+        // state there is nothing to resume, and the bot never greets them.
+        // That message is still the opening one, so it gets the opening move.
+        if (self::opensThread($conversation)) {
+            if (! LastAgentRouter::route($conversation) && $conversation->connection?->flow_id) {
+                self::start($conversation);
+            }
+
+            return;
+        }
+
         self::run($conversation, RunFlowTurn::RESUME, $userInput);
+    }
+
+    /**
+     * Whether the message just stored is the customer's first word in a
+     * thread nobody has acted on: still in the queue, unassigned, no flow ever
+     * run, nothing said to them, and exactly one message from them. Info notes
+     * (call logs, transfers) are not conversation and do not count.
+     */
+    private static function opensThread(Conversation $conversation): bool
+    {
+        if ($conversation->status !== Status::Pending
+            || $conversation->user_id !== null
+            || $conversation->isGroup()
+            || FlowState::where('conversation_id', $conversation->id)->exists()) {
+            return false;
+        }
+
+        $said = $conversation->messages()
+            ->where('message_type', '!=', MessageType::Info)
+            ->selectRaw('sender_type, COUNT(*) as total')
+            ->groupBy('sender_type')
+            ->pluck('total', 'sender_type');
+
+        return (int) ($said[SenderType::Incoming->value] ?? 0) === 1
+            && (int) ($said[SenderType::Outgoing->value] ?? 0) === 0;
     }
 
     private static function run(Conversation $conversation, string $mode, string $userInput = ''): void
