@@ -705,6 +705,11 @@ class BillingService
      * (`in_process`, a manual review) is settled by that webhook later; refused
      * fails the invoice and — for a card added for this very charge — takes the
      * card back out of the list.
+     *
+     * `$keepCard = false` is a new card the customer chose not to keep: a one-off
+     * charge needs the card on the Mercado Pago customer (that is where its
+     * brand and issuer come from), so it is kept for the charge and removed
+     * right after, whatever the outcome.
      */
     public function createCreditTopupCardPayment(
         Tenant $tenant,
@@ -712,8 +717,14 @@ class BillingService
         SavedCard $card,
         string $cardToken,
         bool $discardCardOnFailure = false,
+        bool $keepCard = true,
     ): Invoice {
         $this->assertBillable($tenant);
+
+        // Only a card that has never paid for anything can be dropped after the
+        // charge — "don't keep it" is about the card typed now, not one the
+        // workspace already relies on.
+        $dropAfter = ! $keepCard && $card->last_used_at === null;
 
         $gateway = $this->gateways->forTenant($tenant);
 
@@ -755,7 +766,7 @@ class BillingService
         } catch (\Throwable $e) {
             $invoice->update(['status' => InvoiceStatus::Failed]);
 
-            if ($discardCardOnFailure) {
+            if ($discardCardOnFailure || $dropAfter) {
                 $this->savedCards->discardIfNeverUsed($card);
             }
 
@@ -765,11 +776,15 @@ class BillingService
         $payment = $response['data'] ?? [];
         $status = $payment['status'] ?? null;
 
+        if ($dropAfter) {
+            $this->savedCards->remove($card);
+        }
+
         if (filled($payment['id'] ?? null)) {
             $invoice->update(['payment_id' => (string) $payment['id']]);
         }
 
-        if (in_array($status, ['paid', 'pending', 'unknown'], true)) {
+        if (! $dropAfter && in_array($status, ['paid', 'pending', 'unknown'], true)) {
             $this->savedCards->markUsed($card);
         }
 
@@ -778,7 +793,7 @@ class BillingService
         } elseif (! in_array($status, ['pending', 'unknown'], true)) {
             $invoice->update(['status' => InvoiceStatus::Failed]);
 
-            if ($discardCardOnFailure) {
+            if ($discardCardOnFailure && ! $dropAfter) {
                 $this->savedCards->discardIfNeverUsed($card);
             }
         }

@@ -141,6 +141,8 @@ class CreditController extends Controller
             'saved_card_id' => ['required_if:method,card', 'nullable', 'integer'],
             'card_token' => ['required_if:method,card', 'nullable', 'string', 'max:128'],
             'discard_card_on_failure' => ['sometimes', 'boolean'],
+            // A new card the customer chose not to keep: removed after the charge.
+            'keep_card' => ['sometimes', 'boolean'],
         ]);
 
         $tenant = $request->user()->tenant;
@@ -152,6 +154,7 @@ class CreditController extends Controller
                 app(SavedCardService::class)->find($tenant, (int) $validated['saved_card_id']),
                 $validated['card_token'],
                 (bool) ($validated['discard_card_on_failure'] ?? false),
+                (bool) ($validated['keep_card'] ?? true),
             )
             : $this->billing->createCreditTopupInvoice(
                 $tenant,

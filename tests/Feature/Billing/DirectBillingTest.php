@@ -963,3 +963,36 @@ it('removes a saved card here and at Mercado Pago', function () {
     Http::assertSent(fn ($request) => $request->method() === 'DELETE'
         && str_ends_with($request->url(), '/v1/customers/cus_1/cards/card_9'));
 });
+
+it('charges a new card the customer chose not to keep, then forgets it', function () {
+    mpCardFakes();
+
+    $tenant = directWorkspace('BR');
+    $card = brSavedCard($tenant, ['last_used_at' => null]);
+
+    $this->actingAs(brOwnerOf($tenant), 'sanctum')
+        ->postJson('/api/credits/topup', [
+            'amount_cents' => 5000,
+            'method' => 'card',
+            'saved_card_id' => $card->id,
+            'card_token' => 'tok_new',
+            'discard_card_on_failure' => true,
+            'keep_card' => false,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.status', 'paid');
+
+    expect(\App\Models\SavedCard::find($card->id))->toBeNull()
+        ->and(app(\App\Services\Credits\CreditService::class)->balanceCents($tenant))->toBe(5000);
+});
+
+it('never forgets a card the workspace already relies on, even when asked not to keep it', function () {
+    mpCardFakes();
+
+    $tenant = directWorkspace('BR');
+    $card = brSavedCard($tenant);
+
+    app(BillingService::class)->createCreditTopupCardPayment($tenant, 5000, $card, 'tok_cvv', keepCard: false);
+
+    expect(\App\Models\SavedCard::find($card->id))->not->toBeNull();
+});
