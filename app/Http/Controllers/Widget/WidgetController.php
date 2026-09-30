@@ -21,6 +21,7 @@ use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use Carbon\Carbon;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -144,6 +145,10 @@ class WidgetController extends Controller
 
         $session = $this->resolveSession($sessionToken);
 
+        if ($closed = $this->refuseIfResolved($session)) {
+            return $closed;
+        }
+
         $file = $request->file('file');
 
         // ⚠️ The extension comes from the detected type, not from the name the
@@ -200,6 +205,10 @@ class WidgetController extends Controller
         ]);
 
         $session = $this->resolveSession($sessionToken);
+
+        if ($closed = $this->refuseIfResolved($session)) {
+            return $closed;
+        }
 
         $attachmentPath = null;
         $messageType = MessageType::Text;
@@ -540,6 +549,37 @@ class WidgetController extends Controller
             'port' => $port,
             'scheme' => $scheme,
         ];
+    }
+
+    /**
+     * A resolved conversation is read-only to the visitor.
+     *
+     * One widget session is one conversation, and the widget's own model is
+     * that a resolved one stays in the visitor's list to be read, with "start
+     * a new conversation" in place of the composer. The widget enforces that
+     * when it knows — but a visitor whose tab missed the status event (widget
+     * closed during the resolve, a socket that dropped, an older bundle)
+     * still had a composer, and nothing here stopped them: their messages
+     * landed in a closed thread, out of every queue, with no flow to answer
+     * them. Refused before anything is written, with a code the widget reads
+     * to switch itself to the resolved state.
+     */
+    private function refuseIfResolved(LiveChatSession $session): ?JsonResponse
+    {
+        $conversation = $session->conversation;
+
+        if ($conversation->status !== ConversationStatus::Resolved) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'This conversation has ended. Start a new conversation to keep talking.',
+            'code' => 'conversation_resolved',
+            'conversation' => [
+                'id' => $conversation->id,
+                'status' => $conversation->status,
+            ],
+        ], 409);
     }
 
     private function resolveSession(string $sessionToken): LiveChatSession
