@@ -13,6 +13,7 @@ use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Tenant;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\SavedCardService;
 use App\Services\Market\MarketDocuments;
 use App\Support\Errors\HasUserSafeMessage;
 use Illuminate\Http\Request;
@@ -235,6 +236,11 @@ class BillingController extends Controller
             // The payment the card form was bound to, for a gateway whose form
             // needs one (dLocal Go SmartFields). Absent everywhere else.
             'checkout_token' => ['nullable', 'string', 'max:128'],
+            // A kept card (Mercado Pago): the token was minted from its id and
+            // the CVV. `discard_card_on_failure` is set for a card added for
+            // this very charge — refused, it leaves the list again.
+            'saved_card_id' => ['nullable', 'integer'],
+            'discard_card_on_failure' => ['sometimes', 'boolean'],
             'payer_email' => ['required', 'email'],
         ]);
 
@@ -245,6 +251,9 @@ class BillingController extends Controller
         // kind with better quotas or a lower price.
         $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
         $method = PaymentMethod::from($validated['method']);
+        $savedCard = filled($validated['saved_card_id'] ?? null) && $method === PaymentMethod::Card
+            ? app(SavedCardService::class)->find($this->tenant($request), (int) $validated['saved_card_id'])
+            : null;
 
         try {
             $subscription = $this->billing->subscribe(
@@ -255,6 +264,8 @@ class BillingController extends Controller
                     'card_token' => $validated['card_token'] ?? null,
                     'provider' => $validated['provider'] ?? null,
                     'checkout_token' => $validated['checkout_token'] ?? null,
+                    'saved_card' => $savedCard,
+                    'discard_card_on_failure' => (bool) ($validated['discard_card_on_failure'] ?? false),
                     'payer_email' => $validated['payer_email'],
                 ],
             );

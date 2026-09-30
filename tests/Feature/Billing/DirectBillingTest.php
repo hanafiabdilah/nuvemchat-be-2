@@ -732,3 +732,234 @@ it('serves the card-checkout endpoint to the workspace', function () {
         ->assertOk()
         ->assertJsonPath('data.checkout_token', 'tok_abc');
 });
+
+// --- Brazil: saved cards (Mercado Pago customers & cards) -------------------
+
+function mpCardFakes(array $overrides = []): void
+{
+    Http::fake(array_merge([
+        'api.mercadopago.com/v1/customers/search*' => Http::response(['results' => []]),
+        'api.mercadopago.com/v1/customers/cus_1/cards/*' => Http::response([], 200),
+        'api.mercadopago.com/v1/customers/cus_1/cards' => Http::response([
+            'id' => 'card_9',
+            'first_six_digits' => '503143',
+            'last_four_digits' => '6351',
+            'expiration_month' => 11,
+            'expiration_year' => now()->addYears(3)->year,
+            'payment_method' => ['id' => 'master', 'payment_type_id' => 'credit_card'],
+            'issuer' => ['id' => 24],
+            'cardholder' => ['name' => 'ANA DUARTE'],
+        ]),
+        'api.mercadopago.com/v1/customers' => Http::response(['id' => 'cus_1']),
+        'api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_7', 'status' => 'authorized']),
+        'api.mercadopago.com/v1/payments' => Http::response([
+            'id' => 555,
+            'status' => 'approved',
+            'external_reference' => 'x',
+        ]),
+    ], $overrides));
+}
+
+function brOwnerOf(Tenant $tenant): User
+{
+    $user = $tenant->user;
+    \Spatie\Permission\Models\Permission::findOrCreate('billing.manage', 'web');
+    \Spatie\Permission\Models\Permission::findOrCreate('billing.view', 'web');
+    $user->givePermissionTo(['billing.manage', 'billing.view']);
+
+    return $user;
+}
+
+function brSavedCard(Tenant $tenant, array $attributes = []): \App\Models\SavedCard
+{
+    return \App\Models\SavedCard::create(array_merge([
+        'tenant_id' => $tenant->id,
+        'gateway' => 'mercadopago',
+        'customer_id' => 'cus_1',
+        'customer_email' => 'owner@example.test',
+        'card_id' => 'card_9',
+        'brand' => 'master',
+        'issuer_id' => '24',
+        'last_four' => '6351',
+        'exp_month' => 11,
+        'exp_year' => now()->addYears(3)->year,
+        'last_used_at' => now()->subMonth(),
+    ], $attributes));
+}
+
+it('tells the Brazilian checkout to draw its own card fields', function () {
+    expect(app(BillingService::class)->cardSession(directWorkspace('BR')))
+        ->toMatchArray(['sdk' => 'mercadopago', 'provider' => 'mercadopago', 'saved_cards' => true]);
+});
+
+it('keeps a card at a Mercado Pago customer found or created by email', function () {
+    mpCardFakes();
+
+    $tenant = directWorkspace('BR');
+    $user = brOwnerOf($tenant);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson('/api/billing/cards', ['card_token' => 'tok_new'])
+        ->assertCreated()
+        ->assertJsonPath('data.last_four', '6351')
+        ->assertJsonPath('data.brand', 'master')
+        ->assertJsonPath('data.card_id', 'card_9');
+
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.mercadopago.com/v1/customers'
+        && $request->data()['email'] === strtolower($user->email)
+        && $request->data()['identification'] === ['type' => 'CPF', 'number' => '12345678909']);
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.mercadopago.com/v1/customers/cus_1/cards'
+        && $request->data()['token'] === 'tok_new');
+
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/billing/cards')
+        ->assertOk()
+        ->assertJsonPath('available', true)
+        ->assertJsonCount(1, 'data')
+        ->assertJsonMissingPath('data.0.customer_id');
+});
+
+it('subscribes on a saved card as a preapproval that renews itself, in the card owner\'s name', function () {
+    mpCardFakes();
+
+    $tenant = directWorkspace('BR');
+    $card = brSavedCard($tenant, ['last_used_at' => null]);
+
+    $subscription = app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_from_card_and_cvv',
+        'saved_card' => $card,
+        'payer_email' => 'someone-else@example.test',
+    ]);
+
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.mercadopago.com/preapproval'
+        && $request->data()['card_token_id'] === 'tok_from_card_and_cvv'
+        && $request->data()['payer_email'] === 'owner@example.test');
+
+    expect($subscription->status)->toBe(SubscriptionStatus::Active)
+        ->and($subscription->payment_instrument_id)->toBe('mp_preapproval:pre_7')
+        ->and(app(\App\Services\Billing\Gateways\BillingGateways::class)->forSubscription($subscription)
+            ->renewsItself($subscription->payment_instrument_id))->toBeTrue()
+        ->and($card->fresh()->last_used_at)->not->toBeNull();
+});
+
+it('takes a card added for a refused first charge back out of the list', function () {
+    mpCardFakes(['api.mercadopago.com/preapproval' => Http::response(['message' => 'cc_rejected_other_reason'], 400)]);
+
+    $tenant = directWorkspace('BR');
+    $card = brSavedCard($tenant, ['last_used_at' => null]);
+
+    $thrown = null;
+    try {
+        app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
+            'card_token' => 'tok_1',
+            'saved_card' => $card,
+            'discard_card_on_failure' => true,
+            'payer_email' => 'owner@example.test',
+        ]);
+    } catch (\Throwable $e) {
+        $thrown = $e;
+    }
+
+    expect($thrown)->not->toBeNull();
+
+    expect(\App\Models\SavedCard::find($card->id))->toBeNull();
+    Http::assertSent(fn ($request) => $request->method() === 'DELETE'
+        && $request->url() === 'https://api.mercadopago.com/v1/customers/cus_1/cards/card_9');
+});
+
+it('never discards a card that has already paid for something', function () {
+    mpCardFakes(['api.mercadopago.com/preapproval' => Http::response(['message' => 'cc_rejected_other_reason'], 400)]);
+
+    $tenant = directWorkspace('BR');
+    $card = brSavedCard($tenant);
+
+    try {
+        app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
+            'card_token' => 'tok_1',
+            'saved_card' => $card,
+            'discard_card_on_failure' => true,
+            'payer_email' => 'owner@example.test',
+        ]);
+    } catch (\Throwable) {
+    }
+
+    expect(\App\Models\SavedCard::find($card->id))->not->toBeNull();
+});
+
+it('tops up the balance with a saved card and its CVV, charged once', function () {
+    mpCardFakes();
+
+    $tenant = directWorkspace('BR');
+    $user = brOwnerOf($tenant);
+    $card = brSavedCard($tenant);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson('/api/credits/topup', [
+            'amount_cents' => 5000,
+            'method' => 'card',
+            'saved_card_id' => $card->id,
+            'card_token' => 'tok_cvv',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.status', 'paid')
+        ->assertJsonPath('data.payment_method', 'card');
+
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.mercadopago.com/v1/payments'
+        && $request->data()['token'] === 'tok_cvv'
+        && $request->data()['transaction_amount'] === 50.0
+        && $request->data()['payment_method_id'] === 'master'
+        && $request->data()['issuer_id'] === 24
+        && $request->data()['payer'] === ['type' => 'customer', 'id' => 'cus_1']
+        && str_starts_with($request->data()['external_reference'], 'pingly-topup-'));
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), 'preapproval'));
+
+    expect(app(\App\Services\Credits\CreditService::class)->balanceCents($tenant))->toBe(5000);
+});
+
+it('fails a refused top-up without crediting anything', function () {
+    mpCardFakes(['api.mercadopago.com/v1/payments' => Http::response(['id' => 556, 'status' => 'rejected', 'status_detail' => 'cc_rejected_insufficient_amount'])]);
+
+    $tenant = directWorkspace('BR');
+    $invoice = app(BillingService::class)->createCreditTopupCardPayment($tenant, 5000, brSavedCard($tenant), 'tok_cvv');
+
+    expect($invoice->status)->toBe(InvoiceStatus::Failed)
+        ->and(app(\App\Services\Credits\CreditService::class)->balanceCents($tenant))->toBe(0);
+});
+
+it('refuses a saved card that belongs to another workspace', function () {
+    mpCardFakes();
+
+    $tenant = directWorkspace('BR');
+    $card = brSavedCard(directWorkspace('BR'));
+
+    $this->actingAs(brOwnerOf($tenant), 'sanctum')
+        ->postJson('/api/credits/topup', [
+            'amount_cents' => 5000,
+            'method' => 'card',
+            'saved_card_id' => $card->id,
+            'card_token' => 'tok_cvv',
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('saved_card_id');
+
+    $this->actingAs(brOwnerOf($tenant), 'sanctum')
+        ->deleteJson("/api/billing/cards/{$card->id}")
+        ->assertNotFound();
+
+    Http::assertNothingSent();
+});
+
+it('removes a saved card here and at Mercado Pago', function () {
+    mpCardFakes();
+
+    $tenant = directWorkspace('BR');
+    $card = brSavedCard($tenant);
+
+    $this->actingAs(brOwnerOf($tenant), 'sanctum')
+        ->deleteJson("/api/billing/cards/{$card->id}")
+        ->assertOk();
+
+    expect(\App\Models\SavedCard::find($card->id))->toBeNull();
+    Http::assertSent(fn ($request) => $request->method() === 'DELETE'
+        && str_ends_with($request->url(), '/v1/customers/cus_1/cards/card_9'));
+});

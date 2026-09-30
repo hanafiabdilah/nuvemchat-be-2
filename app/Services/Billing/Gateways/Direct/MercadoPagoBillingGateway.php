@@ -5,6 +5,7 @@ namespace App\Services\Billing\Gateways\Direct;
 use App\Models\Tenant;
 use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
+use App\Services\Billing\Gateways\SavesCards;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Client\ConnectionException;
@@ -29,11 +30,16 @@ use Illuminate\Support\Str;
  *    `subscription_authorized_payment` webhook, and a cancellation has to be
  *    told to Mercado Pago or it keeps charging.
  *
+ * **Saved cards** (Mercado Pago customers & cards, `SavesCards`) sit on top of
+ * both: a kept card is still charged through a fresh token (card id + CVV typed
+ * again), either into a new preapproval (subscription) or into a one-off
+ * `/v1/payments` charge (`once` — a balance top-up).
+ *
  * Errors are translated under UpstreamProvider::PaymentService, not
  * ::MercadoPago: that dictionary is written for a *customer's own* account
  * ("confira a variável do nó"), and this account is ours.
  */
-class MercadoPagoBillingGateway implements BillingGateway
+class MercadoPagoBillingGateway implements BillingGateway, SavesCards
 {
     /** How a preapproval is stored in `subscriptions.payment_instrument_id`. */
     public const INSTRUMENT_PREFIX = 'mp_preapproval:';
@@ -90,6 +96,9 @@ class MercadoPagoBillingGateway implements BillingGateway
             'sdk' => 'mercadopago',
             'public_key' => DirectBillingConfig::mpPublicKey(),
             'provider' => $this->name(),
+            // The page draws its own card fields (saved cards + CVV, or a new
+            // card that is kept) instead of the payment brick.
+            'saved_cards' => true,
         ];
     }
 
@@ -99,6 +108,11 @@ class MercadoPagoBillingGateway implements BillingGateway
 
         if ($method === 'pix') {
             return ['data' => $this->createPix($payload, $idempotencyKey)];
+        }
+
+        // One charge, not a subscription: a balance top-up on a saved card.
+        if ($method === 'card' && filled($payload['card_token'] ?? null) && ($payload['once'] ?? false)) {
+            return ['data' => $this->createCardPayment($payload, $idempotencyKey)];
         }
 
         if ($method === 'card' && filled($payload['card_token'] ?? null)) {
@@ -180,7 +194,112 @@ class MercadoPagoBillingGateway implements BillingGateway
         return $this->decode($this->http()->get('/users/me'));
     }
 
+    // --- Saved cards (customers & cards) ------------------------------------
+
+    /**
+     * Mercado Pago keeps one customer per email, so a lookup comes first; a
+     * create that loses a race to another request is answered with "already
+     * exists", and the lookup is simply made again.
+     */
+    public function findOrCreateCustomer(array $customer): string
+    {
+        $email = strtolower(trim((string) ($customer['email'] ?? '')));
+
+        if ($email === '') {
+            throw UpstreamError::exception(
+                UpstreamProvider::PaymentService,
+                'Mercado Pago customers need an email.',
+                upstreamCode: 'payment_refused',
+                status: 422,
+            );
+        }
+
+        if ($found = $this->searchCustomer($email)) {
+            return $found;
+        }
+
+        $payer = $this->payer(['email' => $email] + $customer);
+        $response = $this->http()->post('/v1/customers', array_filter([
+            'email' => $email,
+            'first_name' => $payer['first_name'] ?? null,
+            'last_name' => $payer['last_name'] ?? null,
+            'identification' => $payer['identification'] ?? null,
+        ], fn ($value) => $value !== null));
+
+        if (! $response->successful() && ($found = $this->searchCustomer($email))) {
+            return $found;
+        }
+
+        return (string) ($this->decode($response)['id'] ?? '');
+    }
+
+    public function saveCard(string $customerId, string $cardToken): array
+    {
+        $card = $this->decode($this->http()->post('/v1/customers/'.rawurlencode($customerId).'/cards', [
+            'token' => $cardToken,
+        ]));
+
+        return [
+            'id' => (string) ($card['id'] ?? ''),
+            'brand' => $card['payment_method']['id'] ?? null,
+            'payment_type' => $card['payment_method']['payment_type_id'] ?? null,
+            'issuer_id' => isset($card['issuer']['id']) ? (string) $card['issuer']['id'] : null,
+            'first_six' => $card['first_six_digits'] ?? null,
+            'last_four' => $card['last_four_digits'] ?? null,
+            'exp_month' => isset($card['expiration_month']) ? (int) $card['expiration_month'] : null,
+            'exp_year' => isset($card['expiration_year']) ? (int) $card['expiration_year'] : null,
+            'holder_name' => $card['cardholder']['name'] ?? null,
+        ];
+    }
+
+    public function deleteCard(string $customerId, string $cardId): void
+    {
+        $response = $this->http()->delete('/v1/customers/'.rawurlencode($customerId).'/cards/'.rawurlencode($cardId));
+
+        if ($response->status() === 404) {
+            return;
+        }
+
+        $this->decode($response);
+    }
+
+    protected function searchCustomer(string $email): ?string
+    {
+        $results = $this->decode($this->http()->get('/v1/customers/search', ['email' => $email]))['results'] ?? [];
+        $id = $results[0]['id'] ?? null;
+
+        return $id === null ? null : (string) $id;
+    }
+
     // --- Charges ------------------------------------------------------------
+
+    /**
+     * A single card charge (a top-up) on a saved card, with the token minted
+     * from its id and the CVV. `payer.type = customer` ties the charge to the
+     * customer the card belongs to — the token alone is not enough for that.
+     *
+     * Synchronous like any card: the response carries the outcome, and
+     * `in_process` (manual review) settles later through the webhook.
+     */
+    protected function createCardPayment(array $payload, string $idempotencyKey): array
+    {
+        $response = $this->http($idempotencyKey)->post('/v1/payments', array_filter([
+            'transaction_amount' => $this->decimal((int) $payload['amount']),
+            'token' => $payload['card_token'],
+            'installments' => 1,
+            'payment_method_id' => $payload['card_brand'] ?? null,
+            'issuer_id' => filled($payload['card_issuer_id'] ?? null) ? (int) $payload['card_issuer_id'] : null,
+            'description' => $payload['description'] ?? null,
+            'external_reference' => $payload['order_reference'] ?? null,
+            'notification_url' => $this->notificationUrl(),
+            'payer' => filled($payload['customer_id'] ?? null)
+                ? ['type' => 'customer', 'id' => $payload['customer_id']]
+                : $this->payer($payload['customer'] ?? []),
+            'metadata' => $payload['metadata'] ?? null,
+        ], fn ($value) => $value !== null));
+
+        return $this->normalizePayment($this->decode($response));
+    }
 
     protected function createPix(array $payload, string $idempotencyKey): array
     {

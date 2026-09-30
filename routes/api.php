@@ -56,6 +56,7 @@ use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
 use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Billing\BillingController;
+use App\Http\Controllers\Api\Billing\SavedCardController;
 use App\Http\Controllers\Api\BroadcastController;
 use App\Http\Controllers\Api\Catalog\OrderController as CatalogOrderController;
 use App\Http\Controllers\Api\Catalog\ProductController as CatalogProductController;
@@ -194,6 +195,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // with. billing.manage, because it is the first step of paying.
         Route::post('/card-session', [BillingController::class, 'cardSession'])->middleware('permission:billing.manage')->name('card-session');
         Route::post('/card-checkout', [BillingController::class, 'cardCheckout'])->middleware('permission:billing.manage')->name('card-checkout');
+        // Saved cards (Brazil, Mercado Pago). Listing is billing.view; keeping
+        // or removing one spends nothing but changes what can be charged.
+        Route::get('/cards', [SavedCardController::class, 'index'])->middleware('permission:billing.view')->name('cards');
+        Route::post('/cards', [SavedCardController::class, 'store'])->middleware('permission:billing.manage')->name('cards.store');
+        Route::delete('/cards/{card}', [SavedCardController::class, 'destroy'])->whereNumber('card')->middleware('permission:billing.manage')->name('cards.destroy');
         // The CPF/CNPJ every charge needs. Stored on the tenant because a
         // renewal runs with nobody at a screen to supply it.
         Route::get('/profile', [BillingController::class, 'billingProfile'])->middleware('permission:billing.view')->name('profile');

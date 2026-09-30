@@ -235,6 +235,11 @@ class Tenant extends Model
     /**
      * The tenant's current subscription (denormalised pointer for O(1) lookup).
      */
+    public function savedCards()
+    {
+        return $this->hasMany(SavedCard::class);
+    }
+
     public function currentSubscription()
     {
         return $this->belongsTo(Subscription::class, 'current_subscription_id');

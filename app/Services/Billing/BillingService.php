@@ -15,6 +15,7 @@ use App\Models\Admin;
 use App\Models\ApiwaySubscription;
 use App\Models\Invoice;
 use App\Models\Plan;
+use App\Models\SavedCard;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
@@ -54,6 +55,7 @@ class BillingService
         protected BillingGateways $gateways,
         protected SubscriptionGate $gate,
         protected BillingNotifier $notifier,
+        protected SavedCardService $savedCards,
     ) {}
 
     /**
@@ -313,6 +315,12 @@ class BillingService
         if ($gateway instanceof OpensCardCheckouts) {
             return $this->subscribeWithOpenedCard($tenant, $plan, $gateway, $opts);
         }
+
+        // A kept card (Mercado Pago): the token was minted from its id and the
+        // CVV typed now, and the payer has to be the customer the card belongs to.
+        /** @var SavedCard|null $card */
+        $card = $opts['saved_card'] ?? null;
+        $payerEmail = $card?->customer_email ?: ($opts['payer_email'] ?? null);
         $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name());
         $periodEnd = $this->nextPeriodEnd($subscription, now());
 
@@ -349,13 +357,17 @@ class BillingService
                 'provider' => $opts['provider'] ?? null,
                 // Only read by a gateway that renews on its own schedule.
                 'recurring' => $plan->billing_cycle->mercadoPagoFrequency(),
-                'customer' => $this->customerPayload($tenant, $opts['payer_email'] ?? null),
+                'customer' => $this->customerPayload($tenant, $payerEmail),
                 'metadata' => ['tenant_id' => $tenant->id, 'subscription_id' => $subscription->id],
             ], $invoice->idempotency_key);
         } catch (\Throwable $e) {
             // The row exists before the call because its reference goes in the
             // payload; a refusal must not strand it looking payable.
             $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            if ($card && ($opts['discard_card_on_failure'] ?? false)) {
+                $this->savedCards->discardIfNeverUsed($card);
+            }
 
             throw $e;
         }
@@ -367,6 +379,12 @@ class BillingService
         ]);
 
         $this->rememberInstrument($subscription, $payment);
+
+        if ($card) {
+            in_array($payment['status'] ?? null, ['paid', 'pending', 'unknown'], true)
+                ? $this->savedCards->markUsed($card)
+                : (($opts['discard_card_on_failure'] ?? false) ? $this->savedCards->discardIfNeverUsed($card) : null);
+        }
 
         if (($payment['status'] ?? null) === 'paid') {
             $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]);
@@ -674,6 +692,96 @@ class BillingService
         }
 
         $this->applyInstructions($invoice, $response['data'] ?? [], $expiresAt);
+
+        return $invoice->fresh();
+    }
+
+    /**
+     * Top up the balance with a saved card (Mercado Pago): one charge, not a
+     * subscription, on a token minted from the card id and the CVV typed now.
+     *
+     * Synchronous like any card. Paid credits the balance here, through the same
+     * settlement the webhook uses (so a late notification is a no-op); pending
+     * (`in_process`, a manual review) is settled by that webhook later; refused
+     * fails the invoice and — for a card added for this very charge — takes the
+     * card back out of the list.
+     */
+    public function createCreditTopupCardPayment(
+        Tenant $tenant,
+        int $amountCents,
+        SavedCard $card,
+        string $cardToken,
+        bool $discardCardOnFailure = false,
+    ): Invoice {
+        $this->assertBillable($tenant);
+
+        $gateway = $this->gateways->forTenant($tenant);
+
+        if ($gateway->name() !== $card->gateway || $this->savedCards->gatewayFor($tenant) === null) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'method' => __('This plan cannot be paid for this way in your country.'),
+            ]);
+        }
+
+        $invoice = Invoice::create([
+            'tenant_id' => $tenant->id,
+            'purpose' => InvoicePurpose::CreditTopup,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Card,
+            'gateway' => $gateway->name(),
+            'amount_cents' => $amountCents,
+            'currency' => $tenant->currency(),
+            'due_date' => now()->toDateString(),
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
+
+        $invoice->update(['order_reference' => "pingly-topup-{$invoice->id}"]);
+
+        try {
+            $response = $gateway->createPayment([
+                'order_reference' => $invoice->order_reference,
+                'amount' => $invoice->amount_cents,
+                'currency' => $invoice->currency,
+                'payment_method' => 'card',
+                'once' => true,
+                'card_token' => $cardToken,
+                'card_brand' => $card->brand,
+                'card_issuer_id' => $card->issuer_id,
+                'customer_id' => $card->customer_id,
+                'description' => "Créditos — fatura #{$invoice->id}",
+                'customer' => $this->customerPayload($tenant, $card->customer_email),
+                'metadata' => ['tenant_id' => $tenant->id, 'purpose' => 'credit_topup'],
+            ], $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            if ($discardCardOnFailure) {
+                $this->savedCards->discardIfNeverUsed($card);
+            }
+
+            throw $e;
+        }
+
+        $payment = $response['data'] ?? [];
+        $status = $payment['status'] ?? null;
+
+        if (filled($payment['id'] ?? null)) {
+            $invoice->update(['payment_id' => (string) $payment['id']]);
+        }
+
+        if (in_array($status, ['paid', 'pending', 'unknown'], true)) {
+            $this->savedCards->markUsed($card);
+        }
+
+        if ($status === 'paid') {
+            $this->applyAssetPaymentUpdate($invoice->fresh(), $payment['id'] ?? null, 'paid');
+        } elseif (! in_array($status, ['pending', 'unknown'], true)) {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            if ($discardCardOnFailure) {
+                $this->savedCards->discardIfNeverUsed($card);
+            }
+        }
 
         return $invoice->fresh();
     }

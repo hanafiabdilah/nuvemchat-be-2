@@ -7,6 +7,7 @@ use App\Http\Resources\Billing\InvoiceResource;
 use App\Http\Resources\Credit\CreditTransactionResource;
 use App\Models\CreditTransaction;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\SavedCardService;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditPricing;
 use App\Services\Credits\CreditService;
@@ -134,15 +135,29 @@ class CreditController extends Controller
         $validated = $request->validate([
             'amount_cents' => ['required', 'integer', "min:{$min}", 'max:10000000'],
             'payer_email' => ['nullable', 'email'],
+            // A saved card (Brazil, Mercado Pago), charged once with a token
+            // minted from its id and the CVV typed now. Absent = Pix / hosted.
+            'method' => ['nullable', 'in:card'],
+            'saved_card_id' => ['required_if:method,card', 'nullable', 'integer'],
+            'card_token' => ['required_if:method,card', 'nullable', 'string', 'max:128'],
+            'discard_card_on_failure' => ['sometimes', 'boolean'],
         ]);
 
         $tenant = $request->user()->tenant;
 
-        $invoice = $this->billing->createCreditTopupInvoice(
-            $tenant,
-            (int) $validated['amount_cents'],
-            $validated['payer_email'] ?? $request->user()->email,
-        );
+        $invoice = ($validated['method'] ?? null) === 'card'
+            ? $this->billing->createCreditTopupCardPayment(
+                $tenant,
+                (int) $validated['amount_cents'],
+                app(SavedCardService::class)->find($tenant, (int) $validated['saved_card_id']),
+                $validated['card_token'],
+                (bool) ($validated['discard_card_on_failure'] ?? false),
+            )
+            : $this->billing->createCreditTopupInvoice(
+                $tenant,
+                (int) $validated['amount_cents'],
+                $validated['payer_email'] ?? $request->user()->email,
+            );
 
         return response()->json([
             'message' => 'Charge created',
