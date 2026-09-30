@@ -58,6 +58,12 @@ class ImpersonationController extends Controller
         return response()->json([
             'code' => $code,
             'expires_in' => 60,
+            // The domain the workspace's own people use. An Indonesian
+            // workspace opened on the Brazilian domain works, but it is not
+            // what its owner sees — and support is there to see exactly that.
+            // Null means the market has no domain of its own; the Back Office
+            // then uses its configured tenant app address.
+            'app_url' => $target->tenant?->market?->dashboardUrl(),
             'user' => [
                 'id' => $target->id,
                 'name' => $target->name,

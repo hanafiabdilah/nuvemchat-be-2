@@ -101,6 +101,23 @@ class Market extends Model
         return $this->hasMany(MarketDomain::class, 'market_code', 'code');
     }
 
+    /**
+     * Where a person of this market opens the dashboard: its primary domain,
+     * or the oldest one when none is flagged. Null for a market with no
+     * domain of its own — Brazil among them, because the platform host can
+     * never be registered as a market domain — and the caller falls back to
+     * the platform's own dashboard address.
+     */
+    public function dashboardUrl(): ?string
+    {
+        $domain = $this->domains()
+            ->orderByDesc('is_primary')
+            ->orderBy('id')
+            ->value('domain');
+
+        return $domain ? 'https://'.$domain : null;
+    }
+
     public function tenants(): HasMany
     {
         return $this->hasMany(Tenant::class, 'market_code', 'code');
