@@ -2,6 +2,8 @@
 
 namespace App\Http\Resources\Gallery;
 
+use App\Enums\Gallery\AssetOrigin;
+use App\Services\Media\MediaRetention;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 /**
@@ -26,7 +28,16 @@ class GalleryAssetResource extends JsonResource
             'type' => $this->type->value,
             'mime_type' => $this->mime_type,
             'size_bytes' => $this->size_bytes,
+            // Null only for a sent attachment whose retention has closed and
+            // which the next purge will remove.
             'url' => $this->publicUrl(),
+            'origin' => $this->origin->value,
+            'counts_toward_quota' => $this->origin->countsTowardQuota(),
+            // When a temporary (`message`) file disappears, so the tile can say
+            // so and offer "Salvar na galeria" before it happens.
+            'expires_at' => $this->origin === AssetOrigin::Message && $this->message !== null
+                ? MediaRetention::deadlineFor($this->message)?->toISOString()
+                : null,
             'filename' => $this->public_filename,
             // Which send endpoint this file goes out through, decided by the
             // same enum the backend validates against — so the composer never

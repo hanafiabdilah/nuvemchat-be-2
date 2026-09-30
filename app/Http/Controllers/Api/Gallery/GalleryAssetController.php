@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Gallery;
 
+use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\AssetType;
 use App\Exceptions\Gallery\GalleryQuotaExceededException;
 use App\Http\Controllers\Controller;
@@ -40,6 +41,14 @@ class GalleryAssetController extends Controller
         $validated = $request->validate([
             'search' => ['nullable', 'string', 'max:200'],
             'type' => ['nullable', Rule::in(AssetType::values())],
+            // `kept` = the library files the quota counts; `linked` = everything
+            // the gallery lists without storing (flow, campaign, catalog and
+            // agent attachments); or one origin by name.
+            'origin' => ['nullable', Rule::in([...AssetOrigin::values(), 'kept', 'linked'])],
+            // For pickers that write the URL somewhere it is sent again later —
+            // a campaign, a flow node, a product. Leaves out attachments, whose
+            // URL dies with the message's media.
+            'permanent' => ['nullable', 'boolean'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
@@ -47,7 +56,13 @@ class GalleryAssetController extends Controller
             ->forTenant($request->user()->tenant_id)
             ->when($validated['search'] ?? null, fn ($q, $search) => $q->where('name', 'like', "%{$search}%"))
             ->when($validated['type'] ?? null, fn ($q, $type) => $q->where('type', $type))
-            ->with('uploader:id,name')
+            ->when($validated['origin'] ?? null, fn ($q, $origin) => match ($origin) {
+                'kept' => $q->counted(),
+                'linked' => $q->where('origin', '!=', AssetOrigin::Gallery->value),
+                default => $q->where('origin', $origin),
+            })
+            ->when($request->boolean('permanent'), fn ($q) => $q->permanent())
+            ->with(['uploader:id,name', 'message.conversation'])
             ->orderByDesc('id')
             ->paginate($validated['per_page'] ?? 40);
 
@@ -102,28 +117,56 @@ class GalleryAssetController extends Controller
         ]);
 
         $tenant = $request->user()->tenant;
-        $before = GalleryAsset::forTenant($tenant->id)->count();
 
         try {
             $asset = $this->gallery->store($tenant, $file, $request->user(), $request->input('name'));
         } catch (GalleryQuotaExceededException $e) {
-            return response()->json([
-                'message' => 'A galeria está sem espaço. Libere arquivos ou contrate mais armazenamento.',
-                'code' => 'gallery_quota_exceeded',
-                'used_bytes' => $e->usedBytes,
-                'limit_bytes' => $e->limitBytes,
-                'required_bytes' => $e->requestedBytes,
-                'shortfall_bytes' => $e->shortfallBytes(),
-            ], 422);
+            return $this->quotaExceeded($e);
         }
 
-        $created = GalleryAsset::forTenant($tenant->id)->count() > $before;
+        // Not a before/after count: storing a file the gallery already listed
+        // as a flow upload creates one row and removes the linked one.
+        $created = $asset->wasRecentlyCreated;
 
         return response()->json([
             'data' => new GalleryAssetResource($asset->load('uploader:id,name')),
             'duplicate' => ! $created,
             'storage' => $this->storage->summary($tenant),
         ], $created ? 201 : 200);
+    }
+
+    /**
+     * "Salvar na galeria": copy a linked file into the library so it is kept
+     * past its message's retention. Counts against the quota, and is refused
+     * with the same payload as an upload when there is no room.
+     */
+    public function keep(Request $request, int $id)
+    {
+        $asset = $this->find($request, $id);
+        $tenant = $request->user()->tenant;
+
+        if (! $asset->isLinked()) {
+            return response()->json([
+                'data' => new GalleryAssetResource($asset->load('uploader:id,name')),
+                'storage' => $this->storage->summary($tenant),
+            ]);
+        }
+
+        try {
+            $kept = $this->gallery->keep($asset, $request->user());
+        } catch (GalleryQuotaExceededException $e) {
+            return $this->quotaExceeded($e);
+        } catch (\RuntimeException) {
+            return response()->json([
+                'message' => 'Este arquivo não está mais disponível para ser guardado.',
+                'code' => 'gallery_source_missing',
+            ], 422);
+        }
+
+        return response()->json([
+            'data' => new GalleryAssetResource($kept->load('uploader:id,name')),
+            'storage' => $this->storage->summary($tenant),
+        ], 201);
     }
 
     /** Rename. The public URL is untouched — see GalleryService::rename(). */
@@ -151,13 +194,28 @@ class GalleryAssetController extends Controller
     public function destroy(Request $request, int $id)
     {
         $asset = $this->find($request, $id);
+        $linked = $asset->isLinked();
 
         $this->gallery->delete($asset);
 
         return response()->json([
-            'message' => 'Arquivo removido da galeria.',
+            // A linked file is only taken off the list; whatever uploaded it
+            // still has it. The sentence says which of the two happened.
+            'message' => $linked ? 'Arquivo ocultado da galeria.' : 'Arquivo removido da galeria.',
             'storage' => $this->storage->summary($request->user()->tenant),
         ]);
+    }
+
+    private function quotaExceeded(GalleryQuotaExceededException $e)
+    {
+        return response()->json([
+            'message' => 'A galeria está sem espaço. Libere arquivos ou contrate mais armazenamento.',
+            'code' => 'gallery_quota_exceeded',
+            'used_bytes' => $e->usedBytes,
+            'limit_bytes' => $e->limitBytes,
+            'required_bytes' => $e->requestedBytes,
+            'shortfall_bytes' => $e->shortfallBytes(),
+        ], 422);
     }
 
     private function find(Request $request, int $id): GalleryAsset

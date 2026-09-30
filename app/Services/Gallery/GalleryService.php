@@ -2,11 +2,14 @@
 
 namespace App\Services\Gallery;
 
+use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\AssetType;
 use App\Exceptions\Gallery\GalleryQuotaExceededException;
 use App\Models\GalleryAsset;
+use App\Models\Product;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\Media\MediaStorage;
 use App\Services\Media\UploadPolicy;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
@@ -64,13 +67,20 @@ class GalleryService
         }
 
         try {
+            // Against library files only. The same bytes listed as a flow
+            // upload or a sent attachment are not "already in the gallery" in
+            // the sense the person means — they are not kept, and a `message`
+            // row will disappear with the message's media.
             $existing = GalleryAsset::where('tenant_id', $tenant->id)
+                ->counted()
                 ->where('checksum', $checksum)
                 ->first();
 
             if ($existing !== null) {
                 // Deliberately not an error. From where the person is standing
                 // they asked for this file to be in the gallery, and it is.
+                $this->supersedeLinkedTwins($existing);
+
                 return $existing;
             }
 
@@ -102,8 +112,9 @@ class GalleryService
                 basename($path),
             );
 
-            return GalleryAsset::create([
+            $asset = GalleryAsset::create([
                 'tenant_id' => $tenant->id,
+                'origin' => AssetOrigin::Gallery,
                 'uuid' => $uuid,
                 'public_filename' => $this->publicFilename($original, $extension),
                 'uploaded_by_user_id' => $uploader?->id,
@@ -115,8 +126,52 @@ class GalleryService
                 'checksum' => $checksum,
                 'meta' => array_filter(['original_filename' => $original]),
             ]);
+
+            $this->supersedeLinkedTwins($asset);
+
+            return $asset;
         } finally {
             $lock?->release();
+        }
+    }
+
+    /**
+     * "Salvar na galeria": copy a linked file into the library so it is kept.
+     *
+     * Only meaningful for `message` rows — they are the only ones that expire.
+     * The copy counts against the quota like any upload, and is refused the
+     * same way when there is no room; the linked row is then replaced by the
+     * library one (see supersedeLinkedTwins), so the tile stays where it was
+     * and stops being temporary.
+     *
+     * @throws GalleryQuotaExceededException
+     */
+    public function keep(GalleryAsset $asset, ?User $by = null): GalleryAsset
+    {
+        if (! $asset->isLinked()) {
+            return $asset;
+        }
+
+        $disk = $asset->origin === AssetOrigin::Message ? MediaStorage::disk() : MediaStorage::published();
+        $stream = $disk->readStream($asset->path);
+
+        if (! is_resource($stream)) {
+            throw new \RuntimeException('The file behind this gallery row is gone.');
+        }
+
+        $tmp = tempnam(sys_get_temp_dir(), 'gallery-keep-');
+
+        try {
+            $out = fopen($tmp, 'wb');
+            stream_copy_to_stream($stream, $out);
+            fclose($out);
+            fclose($stream);
+
+            $file = new UploadedFile($tmp, $asset->public_filename, $asset->mime_type, null, true);
+
+            return $this->store($asset->tenant, $file, $by, $asset->name);
+        } finally {
+            @unlink($tmp);
         }
     }
 
@@ -148,6 +203,15 @@ class GalleryService
      */
     public function delete(GalleryAsset $asset): void
     {
+        // ⚠️ A linked row loses its tile and nothing else. The file belongs to
+        // the flow node, campaign, product or message that uploaded it, and
+        // deleting it from here would break that — silently, somewhere else.
+        if ($asset->isLinked()) {
+            $asset->delete();
+
+            return;
+        }
+
         $path = $asset->path;
 
         $asset->delete();
@@ -176,6 +240,30 @@ class GalleryService
     public function markUsed(GalleryAsset $asset): void
     {
         GalleryAsset::whereKey($asset->getKey())->toBase()->update(['last_used_at' => now()]);
+    }
+
+    /**
+     * Once a file is in the library, its linked twins stop being listed.
+     *
+     * Rows only — their bytes belong to whatever uploaded them. A product that
+     * pointed at the linked row follows the file into the library, rather than
+     * losing its reference to a null-on-delete.
+     */
+    private function supersedeLinkedTwins(GalleryAsset $asset): void
+    {
+        rescue(function () use ($asset) {
+            $twins = GalleryAsset::where('tenant_id', $asset->tenant_id)
+                ->where('checksum', $asset->checksum)
+                ->where('origin', '!=', AssetOrigin::Gallery->value)
+                ->pluck('id');
+
+            if ($twins->isEmpty()) {
+                return;
+            }
+
+            Product::whereIn('gallery_asset_id', $twins)->update(['gallery_asset_id' => $asset->id]);
+            GalleryAsset::whereIn('id', $twins)->delete();
+        }, null, false);
     }
 
     /**

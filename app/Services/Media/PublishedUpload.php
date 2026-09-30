@@ -2,9 +2,12 @@
 
 namespace App\Services\Media;
 
+use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Media\UploadConflict;
 use App\Exceptions\Media\FileAlreadyExistsException;
 use App\Models\Tenant;
+use App\Models\User;
+use App\Services\Gallery\GalleryLibrary;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -53,12 +56,18 @@ final class PublishedUpload
      *
      * @return array{url: string, path: string, filename: string, size: int|false, mime_type: string|null, replaced: bool, renamed: bool}
      *
+     * `$origin` lists the file in the workspace's gallery as well — a row that
+     * points at it, free of the storage quota (see GalleryLibrary). Best-effort:
+     * a failure to list it never fails the upload.
+     *
      * @throws FileAlreadyExistsException when the name is taken and the caller said `cancel`
      */
     public static function store(
         UploadedFile $file,
         Tenant $tenant,
         UploadConflict $onConflict = UploadConflict::Cancel,
+        ?AssetOrigin $origin = null,
+        ?User $uploader = null,
     ): array {
         $folder = 'uploads/'.$tenant->id;
         $name = MediaFilename::name(
@@ -83,7 +92,13 @@ final class PublishedUpload
                 ]);
             }
 
-            return self::write($file, $folder, $name, $onConflict);
+            $stored = self::write($file, $folder, $name, $onConflict);
+
+            if ($origin !== null) {
+                app(GalleryLibrary::class)->registerUpload($tenant, $stored, $origin, $file->getRealPath(), $uploader);
+            }
+
+            return $stored;
         } finally {
             if ($held) {
                 $lock->release();

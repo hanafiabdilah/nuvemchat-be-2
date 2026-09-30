@@ -2,6 +2,7 @@
 
 namespace App\Services\Mcp\Media;
 
+use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\AssetType;
 use App\Models\GalleryAsset;
 use App\Enums\Media\UploadConflict;
@@ -69,7 +70,8 @@ class McpMediaUploads
         // name clash, and replacing could repoint a flow node the model was
         // never asked to touch. Keeping both is the only answer that is always
         // safe and always succeeds. A caller who means to replace says so.
-        $stored = PublishedUpload::store($file, $tenant, $onConflict ?? UploadConflict::Rename);
+        // Listed in the gallery as a flow file: every MCP upload is for a flow.
+        $stored = PublishedUpload::store($file, $tenant, $onConflict ?? UploadConflict::Rename, AssetOrigin::Flow);
 
         return [
             'url' => $stored['url'],

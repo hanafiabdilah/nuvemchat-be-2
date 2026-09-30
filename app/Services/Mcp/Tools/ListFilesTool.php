@@ -83,7 +83,10 @@ class ListFilesTool extends Tool
             throw new ToolException('"type" must be one of: '.implode(', ', AssetType::values()).'.');
         }
 
+        // Permanent files only: a flow saves this URL and sends it for months,
+        // and an agent attachment's URL dies with its message's media.
         $assets = GalleryAsset::forTenant($user->tenant_id)
+            ->permanent()
             ->when($search !== '', fn ($q) => $q->where('name', 'like', '%'.addcslashes($search, '%_\\').'%'))
             ->when($type, fn ($q, $t) => $q->where('type', $t))
             ->orderByDesc('id')

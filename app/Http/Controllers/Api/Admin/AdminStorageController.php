@@ -78,7 +78,10 @@ class AdminStorageController extends Controller
      */
     private function gallery(?int $tenantId): array
     {
+        // The files the meter charges for. Linked rows point at uploads and
+        // message media counted elsewhere on this page.
         $assets = GalleryAsset::query()
+            ->counted()
             ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId));
 
         $totals = (clone $assets)
@@ -128,6 +131,7 @@ class AdminStorageController extends Controller
     private function galleryByTenant(): array
     {
         $rows = GalleryAsset::query()
+            ->counted()
             ->selectRaw('tenant_id, COUNT(*) as files, SUM(size_bytes) as bytes')
             ->groupBy('tenant_id')
             ->orderByDesc('bytes')

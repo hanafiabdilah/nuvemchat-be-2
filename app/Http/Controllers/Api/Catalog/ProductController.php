@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Catalog;
 
+use App\Enums\Gallery\AssetOrigin;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Catalog\ProductResource;
 use App\Models\GalleryAsset;
@@ -121,7 +122,7 @@ class ProductController extends Controller
             'name' => [$required, 'string', 'max:255'],
             'description' => ['sometimes', 'nullable', 'string', 'max:5000'],
             'image_url' => ['sometimes', 'nullable', 'string', 'max:2000', 'url:https,http'],
-            'gallery_asset_id' => ['sometimes', 'nullable', 'integer', Rule::exists((new GalleryAsset)->getTable(), 'id')->where('tenant_id', $tenantId)],
+            'gallery_asset_id' => ['sometimes', 'nullable', 'integer', Rule::exists((new GalleryAsset)->getTable(), 'id')->where('tenant_id', $tenantId)->whereNot('origin', AssetOrigin::Message->value)],
             'has_variants' => ['sometimes', 'boolean'],
             'active' => ['sometimes', 'boolean'],
             'variants' => [$required, 'array', 'min:1', 'max:100'],

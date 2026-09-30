@@ -33,7 +33,9 @@ class GalleryFileController extends Controller
      */
     public function show(Request $request, string $uuid, string $filename): StreamedResponse
     {
-        $asset = GalleryAsset::where('uuid', $uuid)->firstOrFail();
+        // Library files only: a linked row's bytes live on another disk and
+        // are served from their own address (see GalleryAsset::publicUrl).
+        $asset = GalleryAsset::where('uuid', $uuid)->counted()->firstOrFail();
 
         $disk = Storage::disk((string) config('gallery.disk', 'local'));
 

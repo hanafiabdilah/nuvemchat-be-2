@@ -323,7 +323,9 @@ class FlowAssistantController extends Controller
             return [];
         }
 
+        // Permanent only — the URL is written into the flow. See scopePermanent.
         return GalleryAsset::forTenant($tenantId)
+            ->permanent()
             ->whereIn('id', $ids)
             ->get()
             ->map(fn (GalleryAsset $asset) => [

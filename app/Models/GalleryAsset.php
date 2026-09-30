@@ -2,7 +2,10 @@
 
 namespace App\Models;
 
+use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\AssetType;
+use App\Services\Media\MediaRetention;
+use App\Services\Media\MediaStorage;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\URL;
@@ -18,6 +21,8 @@ class GalleryAsset extends Model
 {
     protected $fillable = [
         'tenant_id',
+        'origin',
+        'message_id',
         'uuid',
         'public_filename',
         'uploaded_by_user_id',
@@ -31,7 +36,13 @@ class GalleryAsset extends Model
         'meta',
     ];
 
+    /** Rows made without saying otherwise are library files. */
+    protected $attributes = [
+        'origin' => 'gallery',
+    ];
+
     protected $casts = [
+        'origin' => AssetOrigin::class,
         'type' => AssetType::class,
         'size_bytes' => 'integer',
         'last_used_at' => 'datetime',
@@ -56,9 +67,40 @@ class GalleryAsset extends Model
         return $this->belongsTo(User::class, 'uploaded_by_user_id');
     }
 
+    /** The message a `message` row was read off. */
+    public function message()
+    {
+        return $this->belongsTo(Message::class);
+    }
+
     public function scopeForTenant(Builder $query, int $tenantId): Builder
     {
         return $query->where('tenant_id', $tenantId);
+    }
+
+    /** Rows the storage quota counts: files put in the library on purpose. */
+    public function scopeCounted(Builder $query): Builder
+    {
+        return $query->where('origin', AssetOrigin::Gallery->value);
+    }
+
+    /**
+     * Rows whose URL outlives any retention window.
+     *
+     * ⚠️ Every caller that writes a gallery URL somewhere it will be sent again
+     * later — a flow node, a campaign, a product, the flow assistant, MCP —
+     * must use this. A `message` row's URL dies with the message's media, and
+     * a flow that saved it would start failing a month later with nothing on
+     * the screen to say why.
+     */
+    public function scopePermanent(Builder $query): Builder
+    {
+        return $query->where('origin', '!=', AssetOrigin::Message->value);
+    }
+
+    public function isLinked(): bool
+    {
+        return $this->origin->isLinked();
     }
 
     /**
@@ -76,8 +118,22 @@ class GalleryAsset extends Model
      * WhatsApp shows that segment as the document's name — a URL ending in a
      * bare uuid arrives as an untyped, unnamed file.
      */
-    public function publicUrl(): string
+    public function publicUrl(): ?string
     {
+        // Linked rows answer with the address their bytes already have, so a
+        // file picked from the gallery goes out through exactly the URL the
+        // flow or the message it came from uses. Null only for a `message` row
+        // whose retention has closed and which the next purge will remove.
+        if ($this->origin === AssetOrigin::Message) {
+            return $this->message !== null
+                ? MediaRetention::signedUrl($this->path, $this->message)
+                : null;
+        }
+
+        if ($this->origin->isLinked()) {
+            return MediaStorage::publishedUrl($this->path);
+        }
+
         return URL::signedRoute('gallery.file', [
             'uuid' => $this->uuid,
             'filename' => $this->public_filename,

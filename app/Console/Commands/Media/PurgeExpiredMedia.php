@@ -5,6 +5,7 @@ namespace App\Console\Commands\Media;
 use App\Enums\Conversation\Type;
 use App\Enums\Message\AttachmentStatus;
 use App\Models\Message;
+use App\Services\Gallery\GalleryLibrary;
 use App\Services\Media\MediaRetention;
 use App\Services\Media\MediaStorage;
 use App\Support\Heartbeat;
@@ -152,6 +153,10 @@ class PurgeExpiredMedia extends Command
                 'attachment' => null,
                 'attachment_status' => AttachmentStatus::Expired,
             ]));
+
+            // The gallery's rows for these files go with them. The bulk update
+            // above bypasses the model events MessageGalleryObserver listens on.
+            app(GalleryLibrary::class)->forgetMessages($purgedIds);
         }
 
         $this->line(sprintf(

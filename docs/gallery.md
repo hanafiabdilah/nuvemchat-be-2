@@ -16,6 +16,52 @@ the feature exists for, and it is also where every consequence comes from:
 - `media:purge` **never touches it**. Gallery paths live under `gallery/`, the
   sweep only looks at `messages` rows and `widget-uploads/`.
 
+## Files the gallery lists without storing (Sep 2026)
+
+Every file a person uploads anywhere in the dashboard also shows up in the
+gallery — **as a row that points at it, not a copy, and not counted** against
+the quota. Column `gallery_assets.origin` (`App\Enums\Gallery\AssetOrigin`):
+
+| origin | Where the bytes live | Counts | Lifetime |
+|---|---|---|---|
+| `gallery` | `gallery/{tenant}/…` on the gallery disk | yes | permanent |
+| `flow` / `campaign` / `catalog` / `upload` | `uploads/{tenant}/…` on the published disk | no | permanent |
+| `message` | `media/…` (the message attachment) | no | the message's media retention |
+
+Rules that must survive any change here:
+
+- **Listing a file never makes the original action fail.** `GalleryLibrary` is
+  best-effort and swallows its errors; a workspace with 0 GB still saves flows,
+  campaigns and products exactly as before.
+- **Customer media is never listed.** `message` rows come only from attachments
+  an agent sent (`sender_type=outgoing` + `sent_by_user_id`), via
+  `MessageGalleryObserver` → queued `RegisterGalleryAttachment` (media queue;
+  hashes the file). Flow/AI/campaign sends are skipped — their file is already
+  listed under its own origin.
+- **`media:purge` removes `message` rows** with the files (`forgetMessages()`;
+  the bulk update bypasses model events). `message_id` also cascades.
+- **Deleting a linked row only hides the tile** — the file belongs to the flow,
+  campaign, product or message that uploaded it.
+- **"Salvar na galeria"** (`POST /api/gallery/{id}/keep`) copies a linked file
+  into a `gallery` row. It counts and is refused (`gallery_quota_exceeded`) when
+  there is no room — the only way anything linked starts costing space.
+- **Identical bytes are listed once.** A library copy supersedes linked twins
+  (rows deleted, products repointed); among linked rows the first use wins.
+  Uniqueness is `(tenant_id, path)`; `(tenant_id, checksum)` is no longer unique.
+- ⚠️ **Temporary rows must stay out of anything that saves a URL**: flows,
+  campaigns, products, the flow assistant and MCP `list_files` all use
+  `GalleryAsset::permanent()` / `?permanent=1` (picker prop `permanentOnly`).
+  The chat composer is the only picker that sees `message` rows.
+- `POST /api/uploads` takes `purpose` (`flow|campaign|catalog`); absent =
+  `upload` ("Outros envios"). MCP uploads register as `flow`.
+
+Backfill of files uploaded before this existed:
+`php artisan gallery:index-uploads [--tenant=] [--dry-run]`. Origin is inferred
+from where the URL appears (flow nodes → campaigns → products), otherwise
+`upload`. Root-level `uploads/<hash>` files from the pre-folder era are only
+listed when a reference names their workspace; otherwise skipped. Idempotent,
+touches no file. Agent attachments sent before the deploy are not backfilled.
+
 ## Storage: two allowances, one meter
 
 | Source | Where it comes from |
@@ -34,7 +80,8 @@ feature therefore includes **no** gallery storage until somebody edits it in
 BO → Plans. That is deliberate, and the feature is still alive on day one
 because renting is not gated on the plan at all.
 
-Only gallery files count toward the quota. Message attachments share the disk
+Only `origin = gallery` counts toward the quota (`GalleryAsset::counted()`).
+Message attachments share the disk
 but are not the tenant's to manage — they arrive unbidden and are purged on
 their own schedule.
 
@@ -155,6 +202,7 @@ are exactly the audience for the offer.
 ## Tests
 
 `tests/Feature/Gallery/` — uploads and the quota line
-(`GalleryUploadTest`), the rental lifecycle (`GalleryStorageRentalTest`), and
-resolving a pick into a send (`GallerySendTest`). Shared fixtures in
+(`GalleryUploadTest`), the rental lifecycle (`GalleryStorageRentalTest`),
+resolving a pick into a send (`GallerySendTest`), and linked files + backfill
+(`GalleryLinkedFilesTest`). Shared fixtures in
 `tests/Support/GalleryFixtures.php`.

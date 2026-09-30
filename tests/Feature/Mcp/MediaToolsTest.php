@@ -87,8 +87,10 @@ it('uploads inline base64 where the flow builder uploads, with no gallery quota 
         ->and($result['structuredContent']['file']['filename'])->toBe('Logo Aurora.png');
 
     expect(Storage::disk('public')->allFiles('uploads'))->toHaveCount(1)
-        // Nothing is written into the gallery.
-        ->and(GalleryAsset::count())->toBe(0);
+        // Listed in the gallery as a flow file, but nothing is stored there:
+        // the quota counts none of it.
+        ->and(GalleryAsset::counted()->count())->toBe(0)
+        ->and(GalleryAsset::where('origin', 'flow')->count())->toBe(1);
 });
 
 it('refuses what the builder\'s upload refuses, whatever the name says', function () {

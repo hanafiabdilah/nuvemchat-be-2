@@ -268,6 +268,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         Route::post('/', [GalleryAssetController::class, 'store'])->middleware('permission:gallery.manage')->name('store');
         Route::put('/{id}', [GalleryAssetController::class, 'update'])->whereNumber('id')->middleware('permission:gallery.manage')->name('update');
         Route::delete('/{id}', [GalleryAssetController::class, 'destroy'])->whereNumber('id')->middleware('permission:gallery.manage')->name('destroy');
+        Route::post('/{id}/keep', [GalleryAssetController::class, 'keep'])->whereNumber('id')->middleware('permission:gallery.manage')->name('keep');
     });
 
     // External apps the workspace connects its own accounts to: payment

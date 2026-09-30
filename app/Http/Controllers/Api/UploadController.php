@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Media\UploadConflict;
 use App\Exceptions\Media\FileAlreadyExistsException;
 use App\Services\Media\PublishedUpload;
@@ -13,7 +14,11 @@ use Illuminate\Validation\Rule;
 class UploadController extends Controller
 {
     /**
-     * Media for flows, carousel cards and campaigns. The returned URL is written
+     * Media for flows, carousel cards, campaigns and products. Every file also
+     * appears in the workspace's gallery, labelled by `purpose` and free of the
+     * storage quota — see GalleryLibrary.
+     *
+     * The returned URL is written
      * into those and sent again for months, so it lives on the published disk,
      * whose addresses never expire.
      *
@@ -37,6 +42,9 @@ class UploadController extends Controller
         $validated = $request->validate([
             'file' => PublishedUpload::rules(),
             'on_conflict' => ['sometimes', Rule::enum(UploadConflict::class)],
+            // What the file is for — only to label its gallery tile. Absent
+            // means an older client; the file is still listed, as "other".
+            'purpose' => ['sometimes', 'nullable', Rule::in(AssetOrigin::uploadPurposes())],
         ], [
             'file.mimes' => UploadPolicy::message(),
         ]);
@@ -49,6 +57,8 @@ class UploadController extends Controller
                 $request->file('file'),
                 $request->user()->tenant,
                 $onConflict,
+                AssetOrigin::tryFrom((string) ($validated['purpose'] ?? '')) ?? AssetOrigin::Upload,
+                $request->user(),
             ));
         } catch (FileAlreadyExistsException $e) {
             // 409, not 422: nothing about the request is wrong. The workspace

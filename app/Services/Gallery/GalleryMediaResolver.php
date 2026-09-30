@@ -64,8 +64,18 @@ class GalleryMediaResolver
             ]);
         }
 
+        $url = $asset->publicUrl();
+
+        if ($url === null) {
+            // A sent attachment whose retention has closed: the file is gone
+            // or about to be, and the purge will take the tile with it.
+            throw ValidationException::withMessages([
+                'gallery_asset_id' => ['Este arquivo expirou e não está mais disponível.'],
+            ]);
+        }
+
         unset($data['gallery_asset_id']);
-        $data['media_url'] = $asset->publicUrl();
+        $data['media_url'] = $url;
 
         // Best-effort and deliberately before the send: this is a usage stamp
         // for a list ordering, and a failed send is still the moment somebody

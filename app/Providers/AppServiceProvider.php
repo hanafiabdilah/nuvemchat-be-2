@@ -6,6 +6,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Observers\ConversationObserver;
 use App\Observers\MessageAttachmentObserver;
+use App\Observers\MessageGalleryObserver;
 use App\Observers\MessageLeadObserver;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\WebklexEmailInboxClientFactory;
@@ -42,6 +43,7 @@ class AppServiceProvider extends ServiceProvider
         // Register observers
         Conversation::observe(ConversationObserver::class);
         Message::observe(MessageAttachmentObserver::class);
+        Message::observe(MessageGalleryObserver::class);
         Message::observe(MessageLeadObserver::class);
 
         // lead.assigned / lead.stage_changed / lead.won / lead.lost webhooks.

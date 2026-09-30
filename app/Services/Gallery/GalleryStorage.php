@@ -3,6 +3,7 @@
 namespace App\Services\Gallery;
 
 use App\Enums\Billing\Quota;
+use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\StorageRentalStatus;
 use App\Models\GalleryAsset;
 use App\Models\GalleryStorageRental;
@@ -18,7 +19,13 @@ use App\Services\Billing\SubscriptionGate;
  * tenant rents — and a second copy of that sum is a second chance to disagree
  * with the meter the customer is looking at.
  *
- * Only gallery files count. Message attachments live on the same disk and are
+ * Only files put in the library on purpose count (`origin = gallery`). The
+ * gallery also lists files it merely points at — flow, campaign and catalog
+ * uploads, attachments agents sent — and those stay free: they existed before
+ * the gallery showed them, and counting them would push every workspace whose
+ * plan grants 0 GB over its limit for files it never chose to store here.
+ *
+ * Message attachments live on the same disk and are
  * far larger in aggregate, but they are not the tenant's to manage: they arrive
  * unbidden and `media:purge` deletes them on its own schedule. Charging a
  * customer's library quota for a photo a stranger sent them would make the
@@ -76,7 +83,7 @@ class GalleryStorage
      */
     public function usedBytes(Tenant $tenant): int
     {
-        return (int) GalleryAsset::where('tenant_id', $tenant->id)->sum('size_bytes');
+        return (int) GalleryAsset::where('tenant_id', $tenant->id)->counted()->sum('size_bytes');
     }
 
     public function remainingBytes(Tenant $tenant): int
@@ -105,7 +112,10 @@ class GalleryStorage
      * leaves the files where they are. The library goes read-only; nothing is
      * deleted, here or on any schedule.
      *
-     * @return array{plan_gb: int, rented_gb: int, limit_bytes: int, used_bytes: int, remaining_bytes: int, files: int, over_quota: bool, read_only: bool}
+     * `files` counts what the meter charges for; `linked_files` is everything
+     * else the gallery lists, which is free and never read-only.
+     *
+     * @return array{plan_gb: int, rented_gb: int, limit_bytes: int, used_bytes: int, remaining_bytes: int, files: int, linked_files: int, over_quota: bool, read_only: bool}
      */
     public function summary(Tenant $tenant): array
     {
@@ -120,7 +130,10 @@ class GalleryStorage
             'limit_bytes' => $limit,
             'used_bytes' => $used,
             'remaining_bytes' => max(0, $limit - $used),
-            'files' => GalleryAsset::where('tenant_id', $tenant->id)->count(),
+            'files' => GalleryAsset::where('tenant_id', $tenant->id)->counted()->count(),
+            'linked_files' => GalleryAsset::where('tenant_id', $tenant->id)
+                ->where('origin', '!=', AssetOrigin::Gallery->value)
+                ->count(),
             'over_quota' => $used > $limit,
             // A workspace with no space at all — no plan allowance and nothing
             // rented — is read-only too, and needs to be told that in the same
