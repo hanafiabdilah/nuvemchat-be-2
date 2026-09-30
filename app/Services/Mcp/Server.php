@@ -239,8 +239,11 @@ final class Server
     {
         return <<<'TEXT'
         Pingly is an omnichannel messaging platform. This server exposes its flow
-        builder: the automations that answer customers on WhatsApp, Instagram,
-        Telegram and the rest.
+        builder (the automations that answer customers on WhatsApp, Instagram,
+        Telegram and the rest), its broadcast campaigns, its statistics and live
+        monitor, and its sales funnel of leads. Which of these you can reach
+        depends on what the person allowed and on their role; the tool list
+        already reflects that.
 
         Before writing or changing any flow, call `get_flow_specification` once. It
         returns the exact node format this workspace accepts, together with the real
@@ -261,6 +264,20 @@ final class Server
         and send it with the curl command it returns; for a file already online, pass
         its URL to `upload_file`. Either way the `url` you get back is permanent: use
         it as a message's `attachment_url`, with `message_type` equal to its `type`.
+
+        Campaigns can be read, paused, resumed, canceled and have their failures
+        retried, but not created or started here. Resuming and retrying send
+        messages to customers, and canceling cannot be undone: confirm with the
+        person before any of them.
+
+        Statistics and the live monitor are read-only. Statistics take calendar
+        days (YYYY-MM-DD) and a timezone; pass the person's timezone, or "today"
+        will start on the server's clock. Filter ids come from
+        `get_statistics_filters`.
+
+        For leads, call `list_lead_pipelines` first: stages and owners are
+        referred to by id. A contact can have only one open lead; find the
+        contact with `find_contacts` before `create_lead`.
         TEXT;
     }
 

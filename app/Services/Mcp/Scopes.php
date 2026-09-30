@@ -18,8 +18,14 @@ use App\Enums\Billing\Feature;
  * for every change. The ceiling is a decision about the editor; the floor is a
  * decision about the person, and it is made fresh each time.
  *
- * Flows and the media gallery. Adding a surface means a constant here, a line in
- * `all()`, and tools that name it — nothing in the OAuth layer changes.
+ * Flows, the media gallery, campaigns, statistics, the live monitor and the
+ * sales funnel. Adding a surface means a constant here, a line in `all()`, and
+ * tools that name it — nothing in the OAuth layer changes.
+ *
+ * Naming rule: a surface that can be changed has a `.read` and a `.write`
+ * scope, and `.write` implies `.read` (see `satisfies()`). Statistics and the
+ * live monitor only ever have `.read` — they are observations, and there is
+ * nothing on either page an editor could change.
  */
 final class Scopes
 {
@@ -34,6 +40,38 @@ final class Scopes
      */
     public const MEDIA_READ = 'mcp:media.read';
 
+    /** Campaigns: the list, one campaign's numbers and its delivery report. */
+    public const CAMPAIGNS_READ = 'mcp:campaigns.read';
+
+    /**
+     * Campaigns: pause, resume, cancel and retry the failures of one that
+     * already exists.
+     *
+     * ⚠️ Deliberately *not* create or start. A campaign spends the reputation
+     * of the number it goes out on — a burst is what gets a line banned — and
+     * the decision to message thousands of customers stays with a person in
+     * the dashboard. What an editor may do is operate a campaign somebody
+     * already decided to send, which includes stopping it.
+     */
+    public const CAMPAIGNS_WRITE = 'mcp:campaigns.write';
+
+    /** The Statistics page: every section, over any period. */
+    public const STATISTICS_READ = 'mcp:statistics.read';
+
+    /**
+     * The live monitor: the last fifteen minutes, the queue and who is online.
+     * Its own scope rather than part of statistics because it answers a
+     * different question ("is anyone watching the queue right now?") and
+     * someone may want an editor to have one without the other.
+     */
+    public const LIVE_READ = 'mcp:live.read';
+
+    /** The sales funnel: pipelines, stages, leads, and looking up contacts. */
+    public const LEADS_READ = 'mcp:leads.read';
+
+    /** Open a lead, edit it, move it between stages (won and lost included). Never delete. */
+    public const LEADS_WRITE = 'mcp:leads.write';
+
     /**
      * Every scope this server issues, in the order a consent screen should
      * read them: what it can see before what it can change.
@@ -42,7 +80,17 @@ final class Scopes
      */
     public static function all(): array
     {
-        return [self::FLOWS_READ, self::FLOWS_WRITE, self::MEDIA_READ];
+        return [
+            self::FLOWS_READ,
+            self::FLOWS_WRITE,
+            self::MEDIA_READ,
+            self::CAMPAIGNS_READ,
+            self::CAMPAIGNS_WRITE,
+            self::STATISTICS_READ,
+            self::LIVE_READ,
+            self::LEADS_READ,
+            self::LEADS_WRITE,
+        ];
     }
 
     /**
@@ -84,6 +132,8 @@ final class Scopes
      * `flows.read` could save a flow it is not allowed to fetch first — which
      * is not a narrower permission, it is a worse one: the only safe way to
      * edit a flow here is to read it, change it and send the whole thing back.
+     * The same holds for pausing a campaign it cannot list, or moving a lead
+     * it cannot see.
      *
      * @param  list<string>  $granted
      */
@@ -93,7 +143,13 @@ final class Scopes
             return true;
         }
 
-        return $needed === self::FLOWS_READ && in_array(self::FLOWS_WRITE, $granted, true);
+        if (! str_ends_with($needed, '.read')) {
+            return false;
+        }
+
+        $write = substr($needed, 0, -strlen('.read')).'.write';
+
+        return in_array($write, self::all(), true) && in_array($write, $granted, true);
     }
 
     /** The plan feature the surface behind a scope lives behind. */
@@ -101,8 +157,11 @@ final class Scopes
     {
         return match ($scope) {
             self::FLOWS_READ, self::FLOWS_WRITE => Feature::Flow,
-            // The gallery is not a plan feature (its gate is the storage
-            // meter), so MCP itself is the only feature in front of reading it.
+            self::STATISTICS_READ, self::LIVE_READ => Feature::Statistics,
+            self::LEADS_READ, self::LEADS_WRITE => Feature::Crm,
+            // Neither the gallery (its gate is the storage meter) nor campaigns
+            // (theirs is the create/send permission split) is a plan feature,
+            // so MCP itself is the only feature in front of them.
             default => Feature::Mcp,
         };
     }

@@ -1,8 +1,8 @@
 # MCP server (`/mcp`)
 
 Lets a workspace drive Pingly from an LLM client — Claude Code, Claude Desktop,
-Codex — over the Model Context Protocol. Phase one exposes the flow builder and
-the media gallery.
+Codex — over the Model Context Protocol. It exposes the flow builder, the media
+gallery, broadcast campaigns, statistics, the live monitor and the lead funnel.
 
 This is the platform's first surface where an outside program acts as **a named
 person** rather than as the workspace. The public API (`/v1/*`) authenticates
@@ -63,6 +63,53 @@ nobody can act on.
 | `list_files` | `mcp:media.read` | `gallery.view` |
 | `upload_file` | write | `flows.update` |
 | `create_upload_link` | write | `flows.update` |
+| `list_campaigns`, `get_campaign`, `list_campaign_recipients` | `mcp:campaigns.read` | `broadcasts.view` |
+| `pause_campaign`, `resume_campaign`, `cancel_campaign`, `retry_failed_campaign` | `mcp:campaigns.write` | `broadcasts.send` |
+| `get_statistics_filters`, `get_statistics` | `mcp:statistics.read` | `statistics.tenant.view` |
+| `get_agent_statistics` | `mcp:statistics.read` | `statistics.agents.view` |
+| `get_live` | `mcp:live.read` | `statistics.tenant.view` (+ `statistics.agents.view` for the roster) |
+| `list_lead_pipelines`, `list_leads`, `get_lead`, `find_contacts` | `mcp:leads.read` | `leads.view` |
+| `create_lead` | `mcp:leads.write` | `leads.create` |
+| `update_lead` | `mcp:leads.write` | `leads.update` |
+
+Plan features: flows → `flow`; statistics & live → `statistics`; leads → `crm`;
+campaigns and the gallery → `mcp` only (neither is a plan feature). Every
+`*.write` scope implies its `*.read` (`Scopes::satisfies`).
+
+### Campaigns, statistics, live, leads (Sep 2026)
+
+⚠️ **Deliberately missing: creating or starting a campaign, and deleting a
+lead.** A campaign spends the reputation of the number it goes out on, so the
+decision to message thousands of customers stays in the dashboard; an editor may
+only *operate* one somebody already decided to send (pause, resume, cancel,
+retry failures). Adding `create_campaign`/`start_campaign` is a product decision,
+not a missing tool. Resume and retry *do* send — their descriptions tell the
+model to confirm with the person, and the server instructions repeat it.
+
+- **Campaign actions go through `BroadcastService`**, the same state machine as
+  the dashboard buttons; its `ValidationException` sentences ("Only a running
+  campaign can be paused.") reach the model verbatim as tool errors. Each action
+  writes `mcp.campaign.{paused,resumed,canceled,retried}` to `audit_logs`.
+  `get_campaign` groups failure/skip reasons so "why did 300 fail?" is one call.
+- **Statistics reuse `StatsScope::fromRequest()` on a synthetic request** —
+  same validation (`date_format:Y-m-d`, 400-day ceiling, timezone), never a
+  second reading of the arguments. One `get_statistics` with a `section`
+  argument; the agents section is its own tool only because it has its own
+  permission.
+- **Live = `LiveMonitor::forUser()`** — metadata only (no message text), and an
+  agent holding one inbox sees that inbox only, exactly as on the page. `after_id`
+  / `cursor` work like the page's keyset delta.
+- **Leads** are tenant-scoped like `LeadController`. `update_lead` edits fields
+  *and* moves stages in one call; the move goes through `Lead::moveToStage()`
+  with the person as actor, so stage history, `closed_at`, rescoring, the
+  `LeadUpdated` broadcast and outbound webhooks all fire as for a drag.
+  Everything is validated before anything is written (a refused stage does not
+  leave the title half-changed). `find_contacts` exists so `create_lead` has an
+  id; it rides on `leads.view` because the contact book is readable by every
+  member in the dashboard anyway. Audit: `mcp.lead.{created,updated}`.
+- ⚠️ Existing connections do not gain the new scopes: the person must disconnect
+  and connect again, allowing them. A client that asks for no scope still gets
+  only `mcp:flows.read`.
 
 ⚠️ **`get_flow_specification` is the one that makes the rest work.** Half of
 `FlowBlueprint`'s rules are tenant-scoped `exists` checks — a tag, an agent, an

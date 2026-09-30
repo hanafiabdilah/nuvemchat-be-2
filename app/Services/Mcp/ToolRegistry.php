@@ -5,15 +5,32 @@ namespace App\Services\Mcp;
 use App\Models\McpConnection;
 use App\Models\User;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Mcp\Tools\CancelCampaignTool;
 use App\Services\Mcp\Tools\CreateFlowTool;
+use App\Services\Mcp\Tools\CreateLeadTool;
 use App\Services\Mcp\Tools\CreateUploadLinkTool;
 use App\Services\Mcp\Tools\DeleteFlowTool;
+use App\Services\Mcp\Tools\FindContactsTool;
 use App\Services\Mcp\Tools\FlowSpecificationTool;
+use App\Services\Mcp\Tools\GetAgentStatisticsTool;
+use App\Services\Mcp\Tools\GetCampaignTool;
 use App\Services\Mcp\Tools\GetFlowTool;
+use App\Services\Mcp\Tools\GetLeadTool;
+use App\Services\Mcp\Tools\GetLiveTool;
+use App\Services\Mcp\Tools\GetStatisticsFiltersTool;
+use App\Services\Mcp\Tools\GetStatisticsTool;
+use App\Services\Mcp\Tools\ListCampaignRecipientsTool;
+use App\Services\Mcp\Tools\ListCampaignsTool;
 use App\Services\Mcp\Tools\ListFilesTool;
 use App\Services\Mcp\Tools\ListFlowsTool;
+use App\Services\Mcp\Tools\ListLeadPipelinesTool;
+use App\Services\Mcp\Tools\ListLeadsTool;
+use App\Services\Mcp\Tools\PauseCampaignTool;
+use App\Services\Mcp\Tools\ResumeCampaignTool;
+use App\Services\Mcp\Tools\RetryFailedCampaignTool;
 use App\Services\Mcp\Tools\Tool;
 use App\Services\Mcp\Tools\UpdateFlowTool;
+use App\Services\Mcp\Tools\UpdateLeadTool;
 use App\Services\Mcp\Tools\UploadFileTool;
 use App\Services\Mcp\Tools\ValidateFlowTool;
 
@@ -46,6 +63,29 @@ final class ToolRegistry
         ListFilesTool::class,
         UploadFileTool::class,
         CreateUploadLinkTool::class,
+        // Campaigns: read, then operate. There is deliberately no create or
+        // start — see Scopes::CAMPAIGNS_WRITE.
+        ListCampaignsTool::class,
+        GetCampaignTool::class,
+        ListCampaignRecipientsTool::class,
+        PauseCampaignTool::class,
+        ResumeCampaignTool::class,
+        CancelCampaignTool::class,
+        RetryFailedCampaignTool::class,
+        // Observations: the filter ids first, because both statistics tools
+        // take them.
+        GetStatisticsFiltersTool::class,
+        GetStatisticsTool::class,
+        GetAgentStatisticsTool::class,
+        GetLiveTool::class,
+        // The funnel: its shape before its cards, and finding a contact before
+        // opening a card for one. No delete — see Scopes::LEADS_WRITE.
+        ListLeadPipelinesTool::class,
+        ListLeadsTool::class,
+        GetLeadTool::class,
+        FindContactsTool::class,
+        CreateLeadTool::class,
+        UpdateLeadTool::class,
     ];
 
     public function __construct(
