@@ -35,11 +35,26 @@ class DirectBillingConfig
     /** '1' = sandbox host. dLocal Go keys belong to one mode and fail in the other. */
     public const DLOCALGO_SANDBOX = 'billing_direct.dlocalgo.sandbox';
 
+    /**
+     * The SmartFields key: what lets the card form live on our checkout page
+     * instead of dLocal Go's. Issued by dLocal Go support on request (it is not
+     * in their dashboard) and different from the API key. Public by design — it
+     * is handed to the browser — so it is stored and shown in the clear.
+     *
+     * Empty = no card form: the market is sold the hosted checkout only, which
+     * is exactly how it behaved before this key existed.
+     */
+    public const DLOCALGO_SMARTFIELDS_KEY = 'billing_direct.dlocalgo.smartfields_key';
+
     public const MP_BASE_URL = 'https://api.mercadopago.com';
 
     public const DLOCALGO_PRODUCTION_URL = 'https://api.dlocalgo.com';
 
     public const DLOCALGO_SANDBOX_URL = 'https://api-sbx.dlocalgo.com';
+
+    public const DLOCALGO_SMARTFIELDS_PRODUCTION_SDK = 'https://checkout.dlocalgo.com/js/dlocalgo-smartfields-bundled.js';
+
+    public const DLOCALGO_SMARTFIELDS_SANDBOX_SDK = 'https://checkout-sbx.dlocalgo.com/js/dlocalgo-smartfields-bundled.js';
 
     public static function mpAccessToken(): ?string
     {
@@ -69,6 +84,17 @@ class DirectBillingConfig
     public static function dlocalGoSandbox(): bool
     {
         return in_array((string) Setting::get(self::DLOCALGO_SANDBOX), ['1', 'true'], true);
+    }
+
+    public static function dlocalGoSmartFieldsKey(): ?string
+    {
+        return Setting::get(self::DLOCALGO_SMARTFIELDS_KEY) ?: null;
+    }
+
+    /** The SDK host follows the same sandbox switch as the API: a sandbox checkout token means nothing to the production script. */
+    public static function dlocalGoSmartFieldsSdkUrl(): string
+    {
+        return self::dlocalGoSandbox() ? self::DLOCALGO_SMARTFIELDS_SANDBOX_SDK : self::DLOCALGO_SMARTFIELDS_PRODUCTION_SDK;
     }
 
     public static function dlocalGoBaseUrl(): string

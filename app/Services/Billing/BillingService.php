@@ -18,8 +18,10 @@ use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
+use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
 use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
+use App\Services\Billing\Gateways\OpensCardCheckouts;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditService;
 use App\Services\Market\MarketBillingMethods;
@@ -70,6 +72,13 @@ class BillingService
      * our gap into their failed payment.
      */
     protected const PIX_WINDOW_HOURS = 24;
+
+    /**
+     * How long a card form bound to a gateway payment stays usable (dLocal Go
+     * SmartFields). Long enough to find the card in a wallet; the gateway
+     * payment is given the same lifetime so both ends expire together.
+     */
+    protected const CARD_CHECKOUT_MINUTES = 60;
 
     /**
      * Subscribe a tenant to a plan via card (recurring), Pix, or a hosted
@@ -205,6 +214,78 @@ class BillingService
         return $this->gateways->forTenant($tenant)->cardSession($tenant);
     }
 
+    /**
+     * Open the gateway payment a card form is bound to (dLocal Go SmartFields),
+     * before the card is typed.
+     *
+     * ⚠️ Nothing local is written: no subscription, no invoice. The form opens
+     * when the card tile is shown, and creating a pending subscription at that
+     * moment would move `current_subscription_id` off a live plan just because
+     * someone looked at the checkout. What is needed later is held in the cache
+     * under the checkout token, scoped to this workspace, and read back once by
+     * subscribe(). An abandoned form leaves only a gateway payment that expires.
+     *
+     * @return array{checkout_token: string, expires_at: string}
+     */
+    public function openCardCheckout(Tenant $tenant, Plan $plan, ?string $payerEmail = null): array
+    {
+        $price = $plan->priceForMarket($tenant->market_code);
+
+        if ($price === null) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'plan_id' => __('This plan is not available in your country.'),
+            ]);
+        }
+
+        if (! $this->offers($tenant, PaymentMethod::Card)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'method' => __('This plan cannot be paid for this way in your country.'),
+            ]);
+        }
+
+        $gateway = $this->gateways->forTenant($tenant);
+
+        if (! $gateway instanceof OpensCardCheckouts) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'method' => __('This plan cannot be paid for this way in your country.'),
+            ]);
+        }
+
+        $this->assertBillable($tenant);
+
+        $currency = $price->currency ?: ($plan->currency ?: $tenant->currency());
+        $reference = 'pingly-card-'.$tenant->id.'-'.Str::lower(Str::random(16));
+        $expiresAt = now()->addMinutes(self::CARD_CHECKOUT_MINUTES);
+
+        $opened = $gateway->openCardCheckout([
+            'order_reference' => $reference,
+            'amount' => $price->amount_cents,
+            'currency' => $currency,
+            'description' => "Assinatura {$plan->name}",
+            'customer' => $this->customerPayload($tenant, $payerEmail),
+            'expires_at' => $expiresAt->toIso8601String(),
+        ]);
+
+        Cache::put($this->cardCheckoutKey($tenant, $opened['checkout_token']), [
+            'plan_id' => $plan->id,
+            'amount_cents' => $price->amount_cents,
+            'currency' => $currency,
+            'order_reference' => $reference,
+            'payment_id' => $opened['payment']['id'] ?? null,
+            'gateway' => $gateway->name(),
+        ], $expiresAt);
+
+        return [
+            'checkout_token' => $opened['checkout_token'],
+            'expires_at' => $expiresAt->toIso8601String(),
+        ];
+    }
+
+    protected function cardCheckoutKey(Tenant $tenant, string $checkoutToken): string
+    {
+        return "billing:card-checkout:{$tenant->id}:".hash('sha256', $checkoutToken);
+    }
+
     // --- Subscribing ---------------------------------------------------------
 
     /**
@@ -228,6 +309,10 @@ class BillingService
         $this->assertBillable($tenant);
 
         $gateway = $this->gateways->forTenant($tenant);
+
+        if ($gateway instanceof OpensCardCheckouts) {
+            return $this->subscribeWithOpenedCard($tenant, $plan, $gateway, $opts);
+        }
         $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name());
         $periodEnd = $this->nextPeriodEnd($subscription, now());
 
@@ -295,6 +380,97 @@ class BillingService
                     ? InvoiceStatus::Pending
                     : InvoiceStatus::Failed,
             ]);
+        }
+
+        $this->fireUpdated($subscription);
+
+        return $subscription->fresh();
+    }
+
+    /**
+     * Card on a gateway whose form is bound to a payment opened beforehand
+     * (dLocal Go SmartFields): confirm that payment with the card token and
+     * keep the card for the cycles after this one.
+     *
+     * Three outcomes, like any first card charge, plus one: paid activates,
+     * refused fails the invoice, and **pending** is the issuer asking for 3-D
+     * Secure — the invoice keeps the authentication link in `checkout_url`, the
+     * page sends the customer there, and the webhook settles it. The card is
+     * kept in that case too: it is being authenticated, not refused.
+     *
+     * ⚠️ The opened checkout is read once (`Cache::pull`). A card token is
+     * single-use and a refused confirm cannot be assumed retryable on the same
+     * payment, so a second attempt opens a new form rather than reusing this one.
+     */
+    protected function subscribeWithOpenedCard(Tenant $tenant, Plan $plan, BillingGateway $gateway, array $opts): Subscription
+    {
+        $checkoutToken = (string) ($opts['checkout_token'] ?? '');
+        $opened = $checkoutToken === '' ? null : Cache::pull($this->cardCheckoutKey($tenant, $checkoutToken));
+        $price = $plan->priceForMarket($tenant->market_code);
+
+        // Expired, from another workspace, for another plan, or opened at a
+        // price that has since changed: the form is not the charge it claims
+        // to be, so the customer types the card again on a fresh one.
+        if (! is_array($opened)
+            || (int) $opened['plan_id'] !== (int) $plan->id
+            || ($opened['gateway'] ?? null) !== $gateway->name()
+            || $price === null
+            || (int) $opened['amount_cents'] !== (int) $price->amount_cents) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'checkout_token' => __('This card form has expired. Please enter your card again.'),
+            ]);
+        }
+
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name());
+        $periodEnd = $this->nextPeriodEnd($subscription, now());
+
+        $invoice = Invoice::create([
+            'tenant_id' => $tenant->id,
+            'subscription_id' => $subscription->id,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Card,
+            'gateway' => $gateway->name(),
+            'amount_cents' => $opened['amount_cents'],
+            'currency' => $opened['currency'],
+            'period_start' => $subscription->current_period_start,
+            'period_end' => $periodEnd,
+            // The reference the gateway payment was opened with, so its
+            // notification lands here.
+            'order_reference' => $opened['order_reference'],
+            'payment_id' => $opened['payment_id'],
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
+
+        try {
+            /** @var OpensCardCheckouts $gateway */
+            $payment = $gateway->confirmCardCheckout(
+                $checkoutToken,
+                (string) ($opts['card_token'] ?? ''),
+                $this->customerPayload($tenant, $opts['payer_email'] ?? null),
+            );
+        } catch (\Throwable $e) {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
+
+            throw $e;
+        }
+
+        if (filled($payment['id'] ?? null)) {
+            $invoice->update(['payment_id' => (string) $payment['id']]);
+        }
+
+        $status = $payment['status'] ?? null;
+
+        if (in_array($status, ['paid', 'pending'], true)) {
+            $this->rememberInstrument($subscription, $payment);
+        }
+
+        if ($status === 'paid') {
+            $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]);
+            $this->activate($subscription, $periodEnd);
+        } elseif (in_array($status, ['pending', 'unknown'], true)) {
+            $invoice->update(['checkout_url' => $payment['instructions']['redirect_url'] ?? null]);
+        } else {
+            $invoice->update(['status' => InvoiceStatus::Failed]);
         }
 
         $this->fireUpdated($subscription);

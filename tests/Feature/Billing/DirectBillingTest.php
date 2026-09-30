@@ -517,3 +517,218 @@ it('checks dLocal Go credentials with a GET, which is the only verb /v1/me answe
         ->assertJsonPath('data.account', 'Merchant #235256 (BRL)')
         ->assertJsonPath('data.methods', ['checkout']);
 });
+
+// --- Every other market: dLocal Go card on our page (SmartFields) -----------
+
+function goCardFakes(array $confirm = [], array $recurring = []): void
+{
+    Http::fake([
+        'api.dlocalgo.com/v1/payments/confirm/*' => Http::response(array_merge(['id' => 'DP-7', 'status' => 'PAID'], $confirm)),
+        'api.dlocalgo.com/v1/payments/recurring/*' => Http::response(array_merge(['id' => 'DP-8', 'status' => 'PAID'], $recurring)),
+        'api.dlocalgo.com/v1/payments/DP-7' => Http::response(['id' => 'DP-7', 'status' => 'PAID']),
+        'api.dlocalgo.com/v1/payments' => Http::response([
+            'id' => 'DP-7',
+            'status' => 'PENDING',
+            'redirect_url' => 'https://checkout.dlocalgo.com/validate/tok_abc',
+            'merchant_checkout_token' => 'tok_abc',
+        ]),
+    ]);
+}
+
+it('offers a card of its own outside Brazil only once the SmartFields key is set', function () {
+    $tenant = directWorkspace('MX');
+    $billing = app(BillingService::class);
+
+    expect($billing->offeredMethods($tenant))->toBe(['checkout']);
+
+    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, 'sf_key');
+    \Illuminate\Support\Facades\Cache::flush();
+
+    expect($billing->offeredMethods($tenant))->toBe(['card', 'checkout'])
+        ->and($billing->cardSession($tenant))->toMatchArray([
+            'sdk' => 'dlocalgo',
+            'public_key' => 'sf_key',
+            'provider' => 'dlocalgo',
+            'requires_checkout' => true,
+            'sdk_url' => DirectBillingConfig::DLOCALGO_SMARTFIELDS_PRODUCTION_SDK,
+        ]);
+});
+
+it('opens the card payment before the form renders, without touching the live subscription', function () {
+    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, 'sf_key');
+    goCardFakes();
+
+    $tenant = directWorkspace('MX');
+    $opened = app(BillingService::class)->openCardCheckout($tenant, directPlan(), 'ana@example.test');
+
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.dlocalgo.com/v1/payments'
+        && $request->data()['allow_transparent'] === true
+        && $request->data()['allow_recurring'] === true
+        && $request->data()['amount'] === 499.0
+        && $request->data()['currency'] === 'MXN');
+
+    expect($opened['checkout_token'])->toBe('tok_abc')
+        ->and(Subscription::where('tenant_id', $tenant->id)->count())->toBe(0)
+        ->and(Invoice::where('tenant_id', $tenant->id)->count())->toBe(0)
+        ->and($tenant->fresh()->current_subscription_id)->toBeNull();
+});
+
+it('confirms the card on our page and keeps it for the cycles after this one', function () {
+    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, 'sf_key');
+    goCardFakes();
+
+    $tenant = directWorkspace('MX');
+    $plan = directPlan();
+    $billing = app(BillingService::class);
+    $opened = $billing->openCardCheckout($tenant, $plan, 'ana@example.test');
+
+    $subscription = $billing->subscribe($tenant, $plan, PaymentMethod::Card, [
+        'card_token' => 'card_tok_1',
+        'checkout_token' => $opened['checkout_token'],
+        'provider' => 'dlocalgo',
+        'payer_email' => 'ana@example.test',
+    ]);
+
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.dlocalgo.com/v1/payments/confirm/tok_abc'
+        && $request->data()['cardToken'] === 'card_tok_1'
+        && $request->data()['clientFirstName'] === 'Ana'
+        && $request->data()['clientLastName'] === 'Duarte'
+        && $request->data()['clientEmail'] === 'ana@example.test');
+
+    $invoice = $subscription->invoices()->first();
+
+    expect($subscription->status)->toBe(SubscriptionStatus::Active)
+        ->and($subscription->gateway)->toBe('dlocalgo')
+        ->and($subscription->payment_instrument_id)->toBe('dlgo_rec:tok_abc')
+        ->and($invoice->status)->toBe(InvoiceStatus::Paid)
+        ->and($invoice->payment_id)->toBe('DP-7')
+        ->and($invoice->order_reference)->toStartWith("pingly-card-{$tenant->id}-");
+});
+
+it('renews that card every cycle from our scheduler, with nobody at a screen', function () {
+    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, 'sf_key');
+    goCardFakes();
+
+    $tenant = directWorkspace('MX');
+    $plan = directPlan();
+    $billing = app(BillingService::class);
+    $opened = $billing->openCardCheckout($tenant, $plan);
+    $subscription = $billing->subscribe($tenant, $plan, PaymentMethod::Card, [
+        'card_token' => 'card_tok_1',
+        'checkout_token' => $opened['checkout_token'],
+        'payer_email' => 'ana@example.test',
+    ]);
+
+    $end = now()->addDay();
+    $subscription->update(['current_period_end' => $end]);
+
+    Artisan::call('billing:charge-renewals', ['--days-before' => 3]);
+
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.dlocalgo.com/v1/payments/recurring/tok_abc'
+        && $request->data()['amount'] === 499.0
+        && $request->data()['orderId'] === "pingly-sub-{$subscription->id}-".$end->toDateString());
+
+    $renewal = $subscription->invoices()->latest('id')->first();
+
+    expect($renewal->status)->toBe(InvoiceStatus::Paid)
+        ->and($renewal->gateway)->toBe('dlocalgo')
+        ->and($subscription->fresh()->current_period_end->greaterThan($end))->toBeTrue();
+
+    // A second pass over the same cycle charges nothing.
+    Artisan::call('billing:charge-renewals', ['--days-before' => 3]);
+    Http::assertSentCount(3); // open, confirm, one renewal
+});
+
+it('sends the customer to 3-D Secure and activates on the notification', function () {
+    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, 'sf_key');
+    goCardFakes(['status' => 'PENDING', 'redirect_url' => 'https://3ds.example.test/challenge']);
+
+    $tenant = directWorkspace('MX');
+    $plan = directPlan();
+    $billing = app(BillingService::class);
+    $opened = $billing->openCardCheckout($tenant, $plan);
+    $subscription = $billing->subscribe($tenant, $plan, PaymentMethod::Card, [
+        'card_token' => 'card_tok_1',
+        'checkout_token' => $opened['checkout_token'],
+        'payer_email' => 'ana@example.test',
+    ]);
+
+    $invoice = $subscription->invoices()->first();
+
+    expect($subscription->status)->toBe(SubscriptionStatus::PastDue)
+        ->and($subscription->payment_instrument_id)->toBe('dlgo_rec:tok_abc')
+        ->and($invoice->status)->toBe(InvoiceStatus::Pending)
+        ->and((new \App\Http\Resources\Billing\InvoiceResource($invoice))->resolve()['authentication'])
+        ->toBe(['url' => 'https://3ds.example.test/challenge']);
+
+    $body = json_encode(['payment_id' => 'DP-7']);
+    $this->call('POST', '/webhook/billing/dlocalgo', [], [], [], [
+        'CONTENT_TYPE' => 'application/json',
+        'HTTP_AUTHORIZATION' => goSignature($body),
+    ], $body)->assertOk();
+
+    expect($subscription->fresh()->status)->toBe(SubscriptionStatus::Active)
+        ->and($invoice->fresh()->status)->toBe(InvoiceStatus::Paid);
+});
+
+it('keeps no card when the first charge is refused', function () {
+    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, 'sf_key');
+    goCardFakes(['status' => 'REJECTED']);
+
+    $tenant = directWorkspace('MX');
+    $plan = directPlan();
+    $billing = app(BillingService::class);
+    $opened = $billing->openCardCheckout($tenant, $plan);
+    $subscription = $billing->subscribe($tenant, $plan, PaymentMethod::Card, [
+        'card_token' => 'card_tok_1',
+        'checkout_token' => $opened['checkout_token'],
+        'payer_email' => 'ana@example.test',
+    ]);
+
+    expect($subscription->status)->toBe(SubscriptionStatus::PastDue)
+        ->and($subscription->payment_instrument_id)->toBeNull()
+        ->and($subscription->invoices()->first()->status)->toBe(InvoiceStatus::Failed);
+});
+
+it('refuses a checkout token that was never opened, already used, or opened by another workspace', function () {
+    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, 'sf_key');
+    goCardFakes();
+
+    $tenant = directWorkspace('MX');
+    $other = directWorkspace('MX');
+    $plan = directPlan();
+    $billing = app(BillingService::class);
+    $opened = $billing->openCardCheckout($other, $plan);
+
+    $attempt = fn (Tenant $who, ?string $token) => $billing->subscribe($who, $plan, PaymentMethod::Card, [
+        'card_token' => 'card_tok_1',
+        'checkout_token' => $token,
+        'payer_email' => 'ana@example.test',
+    ]);
+
+    expect(fn () => $attempt($tenant, 'made_up'))->toThrow(\Illuminate\Validation\ValidationException::class)
+        ->and(fn () => $attempt($tenant, $opened['checkout_token']))->toThrow(\Illuminate\Validation\ValidationException::class);
+
+    // Used once by its own workspace, then gone.
+    $attempt($other, $opened['checkout_token']);
+    expect(fn () => $attempt($other, $opened['checkout_token']))->toThrow(\Illuminate\Validation\ValidationException::class);
+
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), 'confirm') && $request->data()['cardToken'] !== 'card_tok_1');
+    expect(Subscription::where('tenant_id', $tenant->id)->count())->toBe(0);
+});
+
+it('serves the card-checkout endpoint to the workspace', function () {
+    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, 'sf_key');
+    goCardFakes();
+
+    $tenant = directWorkspace('MX');
+    $plan = directPlan();
+    $user = $tenant->user;
+    \Spatie\Permission\Models\Permission::findOrCreate('billing.manage', 'web');
+    $user->givePermissionTo('billing.manage');
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson('/api/billing/card-checkout', ['plan_id' => $plan->id])
+        ->assertOk()
+        ->assertJsonPath('data.checkout_token', 'tok_abc');
+});

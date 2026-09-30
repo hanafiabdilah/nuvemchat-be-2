@@ -34,6 +34,13 @@ class InvoiceResource extends JsonResource
                 'url' => $this->status?->value === 'pending' ? $this->checkout_url : null,
                 'expires_at' => $this->checkout_expires_at,
             ] : null,
+            // A first card charge the issuer wants authenticated (3-D Secure):
+            // the page sends the customer here and the webhook settles it.
+            'authentication' => $this->payment_method?->value === 'card'
+                && $this->status?->value === 'pending'
+                && $this->checkout_url
+                ? ['url' => $this->checkout_url]
+                : null,
             'gateway' => $this->gateway ?? 'payment_service',
             'created_at' => $this->created_at,
         ];

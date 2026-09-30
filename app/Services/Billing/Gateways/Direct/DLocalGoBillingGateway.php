@@ -5,6 +5,7 @@ namespace App\Services\Billing\Gateways\Direct;
 use App\Models\Tenant;
 use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
+use App\Services\Billing\Gateways\OpensCardCheckouts;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use App\Support\Money;
@@ -22,23 +23,36 @@ use Illuminate\Support\Str;
  * Three facts about dLocal Go shape this file (the payment service's own
  * adapter documents the same ones):
  *
- *  - **The payer leaves.** `POST /v1/payments` answers with a `redirect_url`
- *    to a dLocal-hosted page, and that is the only way a payment completes —
- *    no Pix string, no card token we could keep. So the method is `checkout`
- *    and it is paid per cycle, exactly like Pix: nothing here renews itself.
+ *  - **Two ways to pay, split by whether it is a card.** Without a card the
+ *    payer leaves: `POST /v1/payments` answers with a `redirect_url` to a
+ *    dLocal-hosted page (method `checkout`, paid per cycle like Pix). A card
+ *    stays on our page through SmartFields (`allow_transparent`) — only when
+ *    the SmartFields key is set — and is opened with `allow_recurring`, so its
+ *    `merchant_checkout_token` is what every later cycle is charged against
+ *    (`POST /v1/payments/recurring/{token}`). The clock is ours, like a stored
+ *    card at the payment service: `billing:charge-renewals` runs it.
  *  - **Nobody signs outbound.** A bearer token carrying both keys,
  *    `Bearer <api key>:<secret key>`.
  *  - **The notification is a pointer.** `{"payment_id": "…"}`, signed as
  *    HMAC-SHA256 over `api key + raw body` — so the status is always read back
  *    from the API, never from the body.
  *
- * ⚠️ dLocal Go is dLocal's Latin American self-service product. A market it
- * does not cover (Indonesia, per dLocal's own coverage list) is refused by the
- * API at charge time — the error reaches the customer as "cannot charge in
- * your currency yet", not as their fault.
+ * Coverage (dLocal Go help center, Sep 2026): Latin America plus Indonesia,
+ * Malaysia, Kenya and Nigeria — Indonesia in IDR with card, Alfamart, bank
+ * transfer and OVO. A market outside that list is refused by the API at
+ * charge time — the error reaches the customer as "cannot charge in your
+ * currency yet", not as their fault.
  */
-class DLocalGoBillingGateway implements BillingGateway
+class DLocalGoBillingGateway implements BillingGateway, OpensCardCheckouts
 {
+    /**
+     * A stored card is the checkout token of the first payment, prefixed so it
+     * can never be mistaken for another gateway's instrument id.
+     */
+    public const INSTRUMENT_PREFIX = 'dlgo_rec:';
+
+    public const SDK = 'dlocalgo';
+
     public function name(): string
     {
         return BillingGateways::DLOCALGO;
@@ -56,33 +70,155 @@ class DLocalGoBillingGateway implements BillingGateway
             return [];
         }
 
-        return [[
+        $methods = [];
+
+        // A card only with SmartFields: without that key the card could only be
+        // typed on dLocal's page, and a card taken there is one charge, not a
+        // subscription — so it stays inside `checkout` and is never sold as
+        // automatic renewal.
+        if ($this->cardFormAvailable()) {
+            $methods[] = [
+                'method' => 'card',
+                'instruction_type' => 'card_form',
+                'currencies' => [strtoupper((string) $currency)],
+                'max_installments' => 1,
+                'public_key' => DirectBillingConfig::dlocalGoSmartFieldsKey(),
+                'merchant_initiated_cards' => true,
+            ];
+        }
+
+        // ⚠️ The hosted page is deliberately not narrowed with `payment_type`:
+        // its vocabulary (CREDIT_CARD, DEBIT_CARD, BANK_TRANSFER, VOUCHER) has
+        // no word for a wallet, so excluding cards there risks hiding OVO in
+        // Indonesia — the method that page exists to offer.
+        $methods[] = [
             'method' => 'checkout',
             'instruction_type' => 'redirect',
             'currencies' => [strtoupper((string) $currency)],
             'max_installments' => 1,
             'public_key' => null,
             'merchant_initiated_cards' => false,
-        ]];
+        ];
+
+        return $methods;
     }
 
+    public function cardFormAvailable(): bool
+    {
+        return $this->isConfigured() && DirectBillingConfig::dlocalGoSmartFieldsKey() !== null;
+    }
+
+    /**
+     * What the browser needs to draw the card field. Unlike a tokenise-first
+     * SDK this is not enough on its own: SmartFields is initialised with the
+     * checkout token of a payment, which `openCardCheckout()` creates —
+     * `requires_checkout` tells the page to ask for one first.
+     */
     public function cardSession(Tenant $tenant): array
     {
-        // The card is typed on dLocal's page, never tokenised in ours.
-        throw UpstreamError::exception(
-            UpstreamProvider::PaymentService,
-            'dLocal Go takes cards on its hosted checkout only; there is no card session.',
-            upstreamCode: 'unsupported_instrument',
-            status: 422,
-        );
+        if (! $this->cardFormAvailable()) {
+            throw UpstreamError::exception(
+                UpstreamProvider::PaymentService,
+                'dLocal Go has no SmartFields key configured; cards are only taken on the hosted checkout.',
+                upstreamCode: 'unsupported_instrument',
+                status: 422,
+            );
+        }
+
+        return [
+            'sdk' => self::SDK,
+            'sdk_url' => DirectBillingConfig::dlocalGoSmartFieldsSdkUrl(),
+            'public_key' => DirectBillingConfig::dlocalGoSmartFieldsKey(),
+            'provider' => BillingGateways::DLOCALGO,
+            'requires_checkout' => true,
+        ];
+    }
+
+    public function openCardCheckout(array $payload): array
+    {
+        $customer = $payload['customer'] ?? [];
+        $currency = strtoupper((string) ($payload['currency'] ?? ''));
+        $returnUrl = $payload['return_url'] ?? DirectBillingConfig::returnUrl('/billing');
+
+        $response = $this->http()->post('/v1/payments', array_filter([
+            'amount' => $this->decimal((int) $payload['amount'], $currency),
+            'currency' => $currency,
+            'country' => strtoupper((string) ($customer['document_country'] ?? '')) ?: null,
+            'order_id' => $payload['order_reference'] ?? null,
+            'description' => $payload['description'] ?? null,
+            'notification_url' => $this->notificationUrl(),
+            // Where 3-D Secure lands the customer when the issuer asks for it.
+            'success_url' => $returnUrl,
+            'back_url' => $returnUrl,
+            'payer' => $this->payer($customer),
+            // The form is ours…
+            'allow_transparent' => true,
+            // …and the card it takes is kept for the cycles after this one.
+            // dLocal Go narrows the payment to cards when this is set, which is
+            // exactly what this path is.
+            'allow_recurring' => true,
+            ...$this->expiry($payload['expires_at'] ?? null),
+        ], fn ($value) => $value !== null && $value !== []));
+
+        $data = $this->decode($response);
+        $token = (string) ($data['merchant_checkout_token'] ?? '');
+
+        if ($token === '') {
+            throw UpstreamError::exception(
+                UpstreamProvider::PaymentService,
+                'dLocal Go created a payment without a merchant_checkout_token.',
+                upstreamCode: 'payment_refused',
+                status: 502,
+            );
+        }
+
+        return [
+            'payment' => $this->normalizePayment($data, $currency),
+            'checkout_token' => $token,
+        ];
+    }
+
+    public function confirmCardCheckout(string $checkoutToken, string $cardToken, array $customer): array
+    {
+        [$first, $last] = $this->splitName((string) ($customer['name'] ?? ''));
+
+        $response = $this->http()->post('/v1/payments/confirm/'.rawurlencode($checkoutToken), array_filter([
+            'cardToken' => $cardToken,
+            'clientFirstName' => $first,
+            'clientLastName' => $last,
+            'clientDocumentType' => $customer['document_type'] ?? null,
+            'clientDocument' => $customer['document_number'] ?? null,
+            'clientEmail' => $customer['email'] ?? null,
+        ], fn ($value) => $value !== null && $value !== ''));
+
+        $data = $this->decode($response);
+        $payment = $this->normalizePayment($data, null);
+
+        // A 3-D Secure challenge can come back as nothing but a redirect: the
+        // payment is waiting on the customer, not refused.
+        if ($payment['status'] === 'unknown' && filled($data['redirect_url'] ?? null) && blank($data['status'] ?? null)) {
+            $payment['status'] = 'pending';
+        }
+
+        if (in_array($payment['status'], ['paid', 'pending'], true)) {
+            $payment['instrument'] = ['id' => self::INSTRUMENT_PREFIX.$checkoutToken];
+        }
+
+        return $payment;
     }
 
     public function createPayment(array $payload, string $idempotencyKey): array
     {
+        $instrument = (string) ($payload['instrument_id'] ?? '');
+
+        if (($payload['payment_method'] ?? null) === 'card' && str_starts_with($instrument, self::INSTRUMENT_PREFIX)) {
+            return ['data' => $this->chargeStoredCard($instrument, $payload)];
+        }
+
         if (($payload['payment_method'] ?? null) !== 'checkout') {
             throw UpstreamError::exception(
                 UpstreamProvider::PaymentService,
-                "dLocal Go direct billing only takes hosted checkouts, not '".($payload['payment_method'] ?? '')."'.",
+                "dLocal Go direct billing takes a hosted checkout or a stored card here, not '".($payload['payment_method'] ?? '')."' (a first card goes through openCardCheckout).",
                 upstreamCode: 'unsupported_instrument',
                 status: 422,
             );
@@ -108,6 +244,37 @@ class DLocalGoBillingGateway implements BillingGateway
         ], fn ($value) => $value !== null && $value !== []));
 
         return ['data' => $this->normalizePayment($this->decode($response), $currency)];
+    }
+
+    /**
+     * A later cycle on the card kept by the first SmartFields payment. Nobody
+     * is at a screen: no card form, no 3-D Secure.
+     *
+     * `orderId` is the cycle's reference, so a retried call collapses into the
+     * same payment on their side (error 5009, duplicated) — the local
+     * already-billed guard in BillingService is the first line.
+     */
+    protected function chargeStoredCard(string $instrumentId, array $payload): array
+    {
+        $token = substr($instrumentId, strlen(self::INSTRUMENT_PREFIX));
+        $currency = strtoupper((string) ($payload['currency'] ?? ''));
+
+        $response = $this->http()->post('/v1/payments/recurring/'.rawurlencode($token), array_filter([
+            'amount' => $this->decimal((int) $payload['amount'], $currency),
+            'description' => $payload['description'] ?? null,
+            'orderId' => $payload['order_reference'] ?? null,
+        ], fn ($value) => $value !== null && $value !== ''));
+
+        $payment = $this->normalizePayment($this->decode($response), $currency);
+
+        // A refused renewal comes back with a link for the customer to fix the
+        // card on dLocal's page. It is not an instruction for this charge, and
+        // it must not turn a decline into something that looks payable.
+        if ($payment['status'] !== 'pending') {
+            $payment['instructions'] = [];
+        }
+
+        return $payment;
     }
 
     public function getPayment(string $id): array
@@ -200,6 +367,26 @@ class DLocalGoBillingGateway implements BillingGateway
     }
 
     // --- Plumbing -----------------------------------------------------------
+
+    /**
+     * SmartFields' confirm wants the name in two halves; the billing profile
+     * holds one. A single word is both — an empty last name is refused.
+     *
+     * @return array{0: ?string, 1: ?string}
+     */
+    protected function splitName(string $name): array
+    {
+        $parts = preg_split('/\s+/', trim($name)) ?: [];
+        $parts = array_values(array_filter($parts, fn ($part) => $part !== ''));
+
+        if ($parts === []) {
+            return [null, null];
+        }
+
+        $first = array_shift($parts);
+
+        return [$first, $parts === [] ? $first : implode(' ', $parts)];
+    }
 
     protected function payer(array $customer): array
     {

@@ -193,6 +193,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
         // Opens a tokenisation session: the SDK to load and the key to load it
         // with. billing.manage, because it is the first step of paying.
         Route::post('/card-session', [BillingController::class, 'cardSession'])->middleware('permission:billing.manage')->name('card-session');
+        Route::post('/card-checkout', [BillingController::class, 'cardCheckout'])->middleware('permission:billing.manage')->name('card-checkout');
         // The CPF/CNPJ every charge needs. Stored on the tenant because a
         // renewal runs with nobody at a screen to supply it.
         Route::get('/profile', [BillingController::class, 'billingProfile'])->middleware('permission:billing.view')->name('profile');

@@ -223,6 +223,7 @@ class AdminSettingsController extends Controller
             'billing_direct.dlocalgo.api_key' => ['nullable', 'string', 'max:512'],
             'billing_direct.dlocalgo.secret_key' => ['nullable', 'string', 'max:512'],
             'billing_direct.dlocalgo.sandbox' => ['sometimes', 'boolean'],
+            'billing_direct.dlocalgo.smartfields_key' => ['nullable', 'string', 'max:255'],
 
             'instagram' => ['sometimes', 'array'],
             'instagram.client_id' => ['nullable', 'string', 'max:255'],
@@ -364,6 +365,11 @@ class AdminSettingsController extends Controller
                 if (! empty($go['secret_key'])) {
                     Setting::set(DirectBillingConfig::DLOCALGO_SECRET_KEY, trim($go['secret_key']));
                 }
+                // Public, so saved as typed — and an empty value is meaningful:
+                // it turns the card form off and leaves the hosted checkout.
+                if (array_key_exists('smartfields_key', $go)) {
+                    Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, trim((string) $go['smartfields_key']));
+                }
             }
         }
 
@@ -503,6 +509,7 @@ class AdminSettingsController extends Controller
                 'secret_key_set' => $goSecret !== null,
                 'secret_key_preview' => $this->mask($goSecret),
                 'sandbox' => DirectBillingConfig::dlocalGoSandbox(),
+                'smartfields_key' => DirectBillingConfig::dlocalGoSmartFieldsKey(),
                 'webhook_url' => DirectBillingConfig::dlocalGoWebhookUrl(),
             ],
         ];

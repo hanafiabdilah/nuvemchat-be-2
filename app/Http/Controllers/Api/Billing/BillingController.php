@@ -81,6 +81,31 @@ class BillingController extends Controller
     }
 
     /**
+     * Open the gateway payment a card form is bound to (dLocal Go SmartFields).
+     *
+     * Only for a card session that answered `requires_checkout`: the form
+     * cannot be drawn without the token this returns. Nothing is charged and
+     * nothing is written locally — see BillingService::openCardCheckout().
+     */
+    public function cardCheckout(Request $request)
+    {
+        $validated = $request->validate([
+            'plan_id' => ['required', 'exists:plans,id'],
+            'payer_email' => ['nullable', 'email'],
+        ]);
+
+        $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
+
+        return response()->json([
+            'data' => $this->billing->openCardCheckout(
+                $this->tenant($request),
+                $plan,
+                $validated['payer_email'] ?? $request->user()->email,
+            ),
+        ]);
+    }
+
+    /**
      * The billing identity a charge cannot happen without.
      *
      * Read and written separately from the checkout because it outlives it: a
@@ -207,6 +232,9 @@ class BillingController extends Controller
             // customer's choice and not the operator's — the token only works
             // against the one that issued it.
             'provider' => ['nullable', 'string', 'max:32'],
+            // The payment the card form was bound to, for a gateway whose form
+            // needs one (dLocal Go SmartFields). Absent everywhere else.
+            'checkout_token' => ['nullable', 'string', 'max:128'],
             'payer_email' => ['required', 'email'],
         ]);
 
@@ -226,6 +254,7 @@ class BillingController extends Controller
                 [
                     'card_token' => $validated['card_token'] ?? null,
                     'provider' => $validated['provider'] ?? null,
+                    'checkout_token' => $validated['checkout_token'] ?? null,
                     'payer_email' => $validated['payer_email'],
                 ],
             );
@@ -244,13 +273,14 @@ class BillingController extends Controller
             ], 500);
         }
 
+        $invoice = $subscription->invoices()->latest('id')->first();
+
         return response()->json([
             'data' => new SubscriptionResource($subscription->loadMissing('plan')),
             // For pix / a hosted checkout, the frontend needs the freshly-created
-            // charge to render the QR or open the gateway's page.
-            'invoice' => $method->isPaidPerCycle()
-                ? new InvoiceResource($subscription->invoices()->latest()->first())
-                : null,
+            // charge to render the QR or open the gateway's page — and for a
+            // card, the charge's outcome: refused, or waiting on 3-D Secure.
+            'invoice' => $invoice ? new InvoiceResource($invoice) : null,
         ], 201);
     }
 
