@@ -103,6 +103,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'super-admin' => \App\Http\Middleware\EnsureUserIsSuperAdmin::class,
             'admin.mfa' => \App\Http\Middleware\EnsureAdminTwoFactor::class,
             'subscription.active' => \App\Http\Middleware\EnsureSubscriptionActive::class,
+            'onboarding.completed' => \App\Http\Middleware\EnsureOnboardingCompleted::class,
             'feature' => \App\Http\Middleware\EnsureFeatureEnabled::class,
             'capability' => \App\Http\Middleware\EnsureMarketCapability::class,
             'whatsapp.verified' => \App\Http\Middleware\EnsureWhatsAppVerified::class,

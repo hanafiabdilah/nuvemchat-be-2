@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Http\Controllers\Api\Onboarding\OnboardingController;
+use App\Services\Onboarding\OnboardingState;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\MarketResource;
 use App\Http\Resources\UserResource;
@@ -38,6 +40,11 @@ class UserController extends Controller
                 'enforced' => (bool) config('services.billing.enforce'),
                 'subscription_usable' => $gate->usable($tenant),
             ];
+
+            // Whether the first-run guide still stands between this workspace
+            // and the dashboard. Computed from what it did (paid, rented,
+            // skipped), never from a flag the client could forget to set.
+            $data['onboarding'] = OnboardingController::payloadFor($tenant, app(OnboardingState::class));
         }
 
         // Platform switches the dashboard has to follow. Today one: whether the

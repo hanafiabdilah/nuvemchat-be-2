@@ -24,8 +24,13 @@ class EnsureSubscriptionActive
      * every month from the balance, so the screen that stops it has to stay
      * reachable — and a suspended workspace that cannot see its own files
      * cannot decide which ones to delete to get back under the limit.
+     * `credits.` because the balance is what pays for every one of those: a
+     * workspace that only rents numbers has no plan by design, and locking it
+     * out of topping up made the numbers it was allowed to buy unpayable.
+     * `onboarding.` because the first-run guide is for exactly the workspace
+     * that has not paid for anything yet.
      */
-    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'apiway.', 'numbers.', 'gallery.'];
+    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'apiway.', 'numbers.', 'gallery.', 'credits.', 'onboarding.'];
 
     /**
      * Exact route URIs (relative) that remain accessible.

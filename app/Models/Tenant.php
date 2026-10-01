@@ -34,6 +34,8 @@ class Tenant extends Model
         'entitlement_overrides' => 'array',
         'audio_dictionary' => 'array',
         'billing_address' => 'array',
+        // "Set up later" in the first-run guide — see OnboardingState.
+        'onboarding_skipped_at' => 'datetime',
     ];
 
     /**

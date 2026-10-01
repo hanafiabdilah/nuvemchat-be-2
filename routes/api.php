@@ -65,6 +65,7 @@ use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\ConversationNoteController;
 use App\Http\Controllers\Api\Credits\CreditController;
+use App\Http\Controllers\Api\Onboarding\OnboardingController;
 use App\Http\Controllers\Api\FlowAssistantController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\Gallery\GalleryAssetController;
@@ -165,7 +166,9 @@ Route::middleware('auth:sanctum')->prefix('auth/otp')->group(function () {
     Route::post('/verify', [OtpController::class, 'verify']);
 });
 
-Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])->group(function () {
+// onboarding.completed before subscription.active: a workspace that has not
+// chosen how to start is told so, not that a plan it never had is suspended.
+Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 'subscription.active'])->group(function () {
     Route::post('/uploads', [UploadController::class, 'store']);
 
     Route::get('/user', [UserController::class, 'index']);
@@ -787,6 +790,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'subscription.active'])-
     // has no AI feature at all still spends from here. Even without that, money
     // sitting in a balance whose statement is hidden is how a refund request
     // turns into a support ticket.
+    // First-run guide. Exempt from subscription.active (prefix `onboarding.`):
+    // it exists for the workspace that has not paid for anything yet.
+    Route::post('/onboarding/skip', [OnboardingController::class, 'skip'])
+        ->middleware('permission:billing.manage')->name('onboarding.skip');
+
     Route::prefix('credits')->name('credits.')->group(function () {
         Route::get('/', [CreditController::class, 'index'])
             ->middleware('permission:billing.view')->name('index');
