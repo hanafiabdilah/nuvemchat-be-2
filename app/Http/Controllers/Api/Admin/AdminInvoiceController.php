@@ -27,7 +27,7 @@ class AdminInvoiceController extends Controller
         $dateColumn = $sortByPaidAt ? 'paid_at' : 'created_at';
 
         $invoices = Invoice::query()
-            ->with(['tenant.user', 'subscription.plan'])
+            ->with(['tenant.user', 'subscription.plan', 'fiscalInvoice'])
             ->when($request->filled('status'), fn ($q) => $q->where('status', $request->query('status')))
             ->when($request->filled('payment_method'), fn ($q) => $q->where('payment_method', $request->query('payment_method')))
             ->when($request->filled('tenant_id'), fn ($q) => $q->where('tenant_id', $request->integer('tenant_id')))

@@ -8,14 +8,14 @@ use App\Enums\Broadcast\Status as BroadcastStatus;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Http\Controllers\Controller;
-use App\Models\DeviceToken;
-use App\Services\Push\FirebaseConfig;
 use App\Models\ApiwaySubscription;
 use App\Models\Broadcast;
 use App\Models\Connection;
+use App\Models\DeviceToken;
 use App\Models\SystemHeartbeat;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\ConnectionCredentials;
+use App\Services\Push\FirebaseConfig;
 use App\Services\Webhook\ChatWebhookSecret;
 use App\Support\Heartbeat;
 use App\Support\PlatformUrl;
@@ -57,6 +57,7 @@ class AdminHealthController extends Controller
                 $this->productionSettings(),
                 $this->platformUrl(),
                 $this->mobilePush(),
+                $this->fiscalInvoices(),
             ],
         );
 
@@ -761,6 +762,59 @@ class AdminHealthController extends Controller
             (string) FirebaseConfig::projectId(),
             "{$devices} phone(s) registered.",
             ['devices' => $devices],
+        );
+    }
+
+    /**
+     * Notas fiscais (Plugnotas, Brazil) that need an operator.
+     *
+     * Silent `ok` while issuing is off — a platform that does not issue notas
+     * has nothing to warn about, and a permanently grey row teaches people to
+     * skip the page. Rejected/failed = down: a customer paid and has no nota.
+     * Late = warn: the prefeitura has held it for a day.
+     */
+    private function fiscalInvoices(): array
+    {
+        if (! \App\Services\Billing\Fiscal\PlugnotasConfig::enabled()) {
+            return $this->check('fiscal:invoices', 'Billing', 'Notas fiscais (Plugnotas)', 'ok', 'off',
+                'Issuing is switched off in Integrations → Nota fiscal. Paid invoices in Brazil get no nota.');
+        }
+
+        $stuck = \App\Models\FiscalInvoice::query()
+            ->whereIn('status', ['rejected', 'failed'])
+            ->with('tenant.user:id,name')
+            ->orderByDesc('id')
+            ->limit(25)
+            ->get();
+
+        $late = \App\Models\FiscalInvoice::query()
+            ->where('status', 'processing')
+            ->where('submitted_at', '<', now()->subHours(\App\Services\Billing\Fiscal\FiscalInvoiceService::LATE_HOURS))
+            ->count();
+
+        return $this->check(
+            'fiscal:invoices',
+            'Billing',
+            'Notas fiscais (Plugnotas)',
+            match (true) {
+                $stuck->isNotEmpty() => 'down',
+                $late > 0 => 'warn',
+                default => 'ok',
+            },
+            (string) ($stuck->count() + $late),
+            'Invoices paid in Brazil whose nota was rejected by the prefeitura or never reached it. Fix the cause (Integrations → Nota fiscal, or the customer\'s billing profile) and send it again from Invoices → Notas fiscais.',
+            [
+                'rejected_or_failed' => $stuck->count(),
+                'late' => $late,
+                'rows' => $stuck->map(fn ($row) => [
+                    'id' => $row->id,
+                    'invoice_id' => $row->invoice_id,
+                    'tenant_id' => $row->tenant_id,
+                    'tenant' => $row->tenant?->user?->name,
+                    'amount_cents' => $row->amount_cents,
+                    'reason' => $row->message ? mb_substr($row->message, 0, 200) : $row->status->value,
+                ])->values(),
+            ],
         );
     }
 

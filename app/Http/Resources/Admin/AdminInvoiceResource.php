@@ -44,6 +44,14 @@ class AdminInvoiceResource extends JsonResource
                 'id' => $this->subscription->plan->id,
                 'name' => $this->subscription->plan->name,
             ] : null),
+            // The nota fiscal for this invoice (Brazil), when one exists.
+            'fiscal' => $this->whenLoaded('fiscalInvoice', fn () => $this->fiscalInvoice ? [
+                'id' => $this->fiscalInvoice->id,
+                'status' => $this->fiscalInvoice->status->value,
+                'number' => $this->fiscalInvoice->number,
+                'message' => $this->fiscalInvoice->message,
+            ] : null),
+            'market_code' => $this->whenLoaded('tenant', fn () => $this->tenant->market_code),
             'created_at' => $this->created_at,
         ];
     }

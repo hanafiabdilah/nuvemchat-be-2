@@ -7,6 +7,7 @@ use App\Http\Controllers\Webhook\FacebookController;
 use App\Http\Controllers\Webhook\InstagramController;
 use App\Http\Controllers\Webhook\IntegrationWebhookController;
 use App\Http\Controllers\Webhook\PaymentServiceWebhookController;
+use App\Http\Controllers\Webhook\PlugnotasWebhookController;
 use App\Http\Controllers\Webhook\TikTokController;
 use App\Http\Controllers\Webhook\WhatsAppController;
 use Illuminate\Support\Facades\Route;
@@ -66,6 +67,13 @@ Route::post('/webhook/billing/mercadopago', [DirectBillingWebhookController::cla
 Route::post('/webhook/billing/dlocalgo', [DirectBillingWebhookController::class, 'dlocalGo'])
     ->middleware('throttle:webhook-inbound')
     ->name('webhook.billing.dlocalgo');
+
+// Plugnotas: a platform nota fiscal (NFS-e for a paid invoice, Brazil) moved.
+// Authenticated by our token in a custom header; the nota is read back before
+// anything changes — see PlugnotasWebhookController.
+Route::post('/webhook/plugnotas', [PlugnotasWebhookController::class, 'handle'])
+    ->middleware('throttle:webhook-inbound')
+    ->name('webhook.plugnotas');
 
 // API Way pushes every SMS received on a rented virtual number here. One
 // webhook per account, and the platform has one account, so this single route

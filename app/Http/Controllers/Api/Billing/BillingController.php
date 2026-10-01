@@ -13,6 +13,7 @@ use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Tenant;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\Fiscal\FiscalInvoiceService;
 use App\Services\Billing\SavedCardService;
 use App\Services\Market\MarketDocuments;
 use App\Support\Errors\HasUserSafeMessage;
@@ -174,6 +175,47 @@ class BillingController extends Controller
     }
 
     /**
+     * The tomador's address on the notas fiscais Pingly issues (Brazil only).
+     *
+     * Its own endpoint rather than a field of the billing profile: that form
+     * asks for the CPF/CNPJ again on every save, and correcting a street
+     * number is no reason to retype a tax document. Optional as a whole —
+     * most prefeituras accept a nota without one — and all-or-nothing: an
+     * incomplete address is never sent (see FiscalInvoiceService::address()).
+     */
+    public function updateBillingAddress(Request $request)
+    {
+        $tenant = $this->tenant($request);
+
+        abort_unless($tenant->market_code === FiscalInvoiceService::MARKET, 404);
+
+        $validated = $request->validate([
+            'billing_address' => ['present', 'nullable', 'array'],
+            'billing_address.cep' => ['required_with:billing_address.logradouro', 'nullable', 'string', 'max:9'],
+            'billing_address.logradouro' => ['nullable', 'string', 'max:125'],
+            'billing_address.numero' => ['nullable', 'string', 'max:10'],
+            'billing_address.complemento' => ['nullable', 'string', 'max:60'],
+            'billing_address.bairro' => ['nullable', 'string', 'max:60'],
+            'billing_address.cidade' => ['nullable', 'string', 'max:60'],
+            'billing_address.codigo_cidade' => ['nullable', 'string', 'max:7'],
+            'billing_address.estado' => ['nullable', 'string', 'size:2'],
+        ]);
+
+        $address = array_filter(array_map(
+            fn ($value) => is_string($value) ? trim($value) : $value,
+            (array) ($validated['billing_address'] ?? []),
+        ), fn ($value) => filled($value));
+
+        if (isset($address['estado'])) {
+            $address['estado'] = strtoupper($address['estado']);
+        }
+
+        $tenant->update(['billing_address' => $address ?: null]);
+
+        return response()->json(['data' => $this->profilePayload($tenant->fresh())]);
+    }
+
+    /**
      * The plans on sale in this workspace's country, at that country's prices.
      *
      * A plan with no price for the market is not listed: it is not sold there,
@@ -213,6 +255,7 @@ class BillingController extends Controller
     public function invoices(Request $request)
     {
         $invoices = Invoice::where('tenant_id', $request->user()->tenant_id)
+            ->with('fiscalInvoice')
             ->orderByDesc('created_at')
             ->limit(50)
             ->get();
@@ -449,6 +492,10 @@ class BillingController extends Controller
             // to infer it from an empty array.
             'document_types' => MarketDocuments::forMarket($tenant->market_code),
             'document_required' => MarketDocuments::required($tenant->market_code),
+            // The nota fiscal's tomador address — offered only where a nota is
+            // issued at all.
+            'address_supported' => $tenant->market_code === FiscalInvoiceService::MARKET,
+            'billing_address' => $tenant->market_code === FiscalInvoiceService::MARKET ? $tenant->billing_address : null,
         ];
     }
 

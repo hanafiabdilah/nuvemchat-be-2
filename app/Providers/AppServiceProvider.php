@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Observers\ConversationObserver;
+use App\Observers\InvoiceFiscalObserver;
 use App\Observers\MessageAttachmentObserver;
 use App\Observers\MessageGalleryObserver;
 use App\Observers\MessageLeadObserver;
@@ -45,6 +46,8 @@ class AppServiceProvider extends ServiceProvider
         Message::observe(MessageAttachmentObserver::class);
         Message::observe(MessageGalleryObserver::class);
         Message::observe(MessageLeadObserver::class);
+        // Paid invoice (Brazil) → nota fiscal via Plugnotas; refunded → cancelled.
+        \App\Models\Invoice::observe(InvoiceFiscalObserver::class);
 
         // lead.assigned / lead.stage_changed / lead.won / lead.lost webhooks.
         \App\Services\Webhooks\LeadWebhooks::register();

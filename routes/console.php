@@ -81,6 +81,15 @@ Schedule::command('flow-invoices:sync')
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('Flow invoice sync failed'));
 
+// Platform notas fiscais (Plugnotas, Brazil): resend submissions whose job was
+// lost, read back notas still with the prefeitura, and carry out cancellations
+// for refunds that arrived before the nota existed. The webhook is the fast
+// path; this is the one that cannot be missed.
+Schedule::command('fiscal-invoices:sync')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(10)
+    ->onFailure(fn () => logger()->error('Fiscal invoice sync failed'));
+
 // Close conversations whose channel reply window has run out (WhatsApp Official
 // 24h, TikTok 48h): they leave an info note in the thread and move to Resolved,
 // so the Active column only holds work an agent can actually answer. Capped per

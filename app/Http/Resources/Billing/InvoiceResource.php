@@ -42,6 +42,16 @@ class InvoiceResource extends JsonResource
                 ? ['url' => $this->checkout_url]
                 : null,
             'gateway' => $this->gateway ?? 'payment_service',
+            // The nota fiscal Pingly issued for this invoice (Brazil only).
+            // A status and a number — never Plugnotas' wording, which names
+            // fields of our configuration the customer cannot act on.
+            'fiscal' => $this->whenLoaded('fiscalInvoice', fn () => $this->fiscalInvoice ? [
+                'status' => $this->fiscalInvoice->status->value,
+                'number' => $this->fiscalInvoice->number,
+                'issued_at' => $this->fiscalInvoice->issued_at,
+                'has_document' => $this->fiscalInvoice->provider_id !== null
+                    && in_array($this->fiscalInvoice->status->value, ['issued', 'cancelling', 'cancelled'], true),
+            ] : null),
             'created_at' => $this->created_at,
         ];
     }
