@@ -8,7 +8,11 @@ use App\Models\AiModelPrice;
 use App\Models\AuditLog;
 use App\Models\CreditTransaction;
 use App\Models\CreditWallet;
+use App\Models\Market;
 use App\Models\Tenant;
+use App\Services\Market\MarketResolver;
+use App\Services\Money\ExchangeRates;
+use App\Services\Money\MarketMoney;
 use App\Services\Credits\CreditPricing;
 use App\Services\Credits\CreditService;
 use Illuminate\Http\JsonResponse;
@@ -32,16 +36,38 @@ class AdminCreditController extends Controller
     ) {}
 
     /**
-     * Wallets, biggest balance first, with the period's movement beside each.
+     * Wallets of one market, biggest balance first, with the period's movement
+     * beside each.
      *
      * A balance alone does not distinguish a workspace that deposited R$200
      * and has not started from one that deposits R$200 every week — and only
      * the second is a customer.
+     *
+     * ⚠️ Always exactly one market, never "all": a page that lists reais and
+     * rupiah side by side has no total, and its tiles would either add the two
+     * or quietly pick one. The default is the home market. For any other, each
+     * amount comes with `to_base_rate` so the page can print an estimate in the
+     * platform's own money beside it — null when no rate is set, because an
+     * estimate from an invented rate is worse than none.
      */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        $markets = Market::query()->orderBy('code')->get(['code', 'name', 'currency']);
+
+        $code = strtoupper((string) $request->query('market', MarketResolver::defaultCode()));
+        $market = $markets->firstWhere('code', $code)
+            ?? $markets->firstWhere('code', MarketResolver::defaultCode())
+            ?? $markets->first();
+
+        $baseCurrency = MarketMoney::baseCurrency();
+        $currency = $market?->currency ?: $baseCurrency;
+
         $wallets = CreditWallet::query()
             ->with('tenant.user:id,name,email')
+            ->when($market, fn ($query) => $query->whereHas(
+                'tenant',
+                fn ($tenant) => $tenant->where('market_code', $market->code),
+            ))
             ->orderByDesc('balance_cents')
             ->paginate(self::PER_PAGE);
 
@@ -73,7 +99,35 @@ class AdminCreditController extends Controller
                 'total' => $wallets->total(),
             ],
             'pricing' => CreditPricing::settings(),
+            'market' => [
+                'code' => $market?->code,
+                'name' => $market?->name,
+                'currency' => $currency,
+            ],
+            'markets' => $markets->map(fn (Market $m) => [
+                'code' => $m->code,
+                'name' => $m->name,
+                'currency' => $m->currency,
+            ])->values(),
+            'base_currency' => $baseCurrency,
+            'to_base_rate' => $this->toBaseRate($currency, $baseCurrency),
         ]);
+    }
+
+    /**
+     * Base units per one unit of `$currency`, through USD like every other
+     * conversion. Null when either side has no rate.
+     */
+    private function toBaseRate(string $currency, string $base): ?float
+    {
+        if (strtoupper($currency) === strtoupper($base)) {
+            return 1.0;
+        }
+
+        $from = ExchangeRates::perUsd($currency);
+        $to = ExchangeRates::perUsd($base);
+
+        return $from > 0 && $to > 0 ? $to / $from : null;
     }
 
     /**
