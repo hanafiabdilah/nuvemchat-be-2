@@ -15,6 +15,9 @@ class PlatformRbacSeeder extends Seeder
     public const PERMISSIONS = [
         'bo.dashboard.view',
         'bo.customers.view',
+        // Opening a workspace on someone's behalf. A write, so not folded into
+        // the view permission support desks are handed.
+        'bo.customers.create',
         'bo.users.view',
         'bo.connections.view',
         'bo.statistics.view',

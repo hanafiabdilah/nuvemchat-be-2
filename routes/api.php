@@ -883,6 +883,12 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             ->middleware('permission:bo.impersonate');
 
         // Customers (tenants) — platform-wide, not tenant-scoped
+        // Registered before /customers/{tenant} so "meta" is not read as an id.
+        Route::middleware('permission:bo.customers.create')->group(function () {
+            Route::get('/customers/meta', [AdminCustomerController::class, 'meta']);
+            Route::post('/customers', [AdminCustomerController::class, 'store']);
+        });
+
         Route::middleware('permission:bo.customers.view')->group(function () {
             Route::get('/customers', [AdminCustomerController::class, 'index']);
             Route::get('/customers/{tenant}', [AdminCustomerController::class, 'show']);
