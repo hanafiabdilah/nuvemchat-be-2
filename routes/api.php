@@ -147,6 +147,18 @@ Route::prefix('auth/password')->middleware('throttle:10,1')->group(function () {
 
 // WhatsApp number verification (post-registration). Authenticated but intentionally
 // outside the subscription.active gate so a brand-new tenant can verify before paying.
+// Server-side logout + the mobile app's phones (push notifications). Outside
+// the whatsapp.verified / subscription.active gates on purpose: logging out and
+// unregistering a phone must work for an account in any state.
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('/auth/logout', [AuthController::class, 'logout']);
+
+    Route::get('/user/devices', [\App\Http\Controllers\Api\Push\DeviceController::class, 'index']);
+    Route::post('/user/devices', [\App\Http\Controllers\Api\Push\DeviceController::class, 'store'])->middleware('throttle:30,1');
+    Route::post('/user/devices/test', [\App\Http\Controllers\Api\Push\DeviceController::class, 'test'])->middleware('throttle:5,1');
+    Route::delete('/user/devices/{deviceId}', [\App\Http\Controllers\Api\Push\DeviceController::class, 'destroy']);
+});
+
 Route::middleware('auth:sanctum')->prefix('auth/otp')->group(function () {
     Route::get('/status', [OtpController::class, 'status']);
     Route::post('/send', [OtpController::class, 'send']);
@@ -905,6 +917,11 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             // The payment service credential's own proof: what can be charged,
             // and whether any active gateway can auto-renew a card at all.
             Route::get('/payment-service/test', [AdminPaymentServiceController::class, 'test']);
+            // Firebase service account for mobile push (uploaded as the JSON file).
+            Route::get('/firebase', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'show']);
+            Route::post('/firebase', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'store']);
+            Route::delete('/firebase', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'destroy']);
+            Route::post('/firebase/test', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'test']);
             Route::get('/billing-gateways/{gateway}/test', [AdminPaymentServiceController::class, 'testDirect']);
 
             // The flow builder's AI assistant. Not part of the bulk settings

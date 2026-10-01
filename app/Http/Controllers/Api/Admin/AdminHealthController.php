@@ -8,6 +8,8 @@ use App\Enums\Broadcast\Status as BroadcastStatus;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Http\Controllers\Controller;
+use App\Models\DeviceToken;
+use App\Services\Push\FirebaseConfig;
 use App\Models\ApiwaySubscription;
 use App\Models\Broadcast;
 use App\Models\Connection;
@@ -54,6 +56,7 @@ class AdminHealthController extends Controller
                 $this->credentialsAtRest(),
                 $this->productionSettings(),
                 $this->platformUrl(),
+                $this->mobilePush(),
             ],
         );
 
@@ -703,6 +706,61 @@ class AdminHealthController extends Controller
             'ok',
             $host,
             'Webhooks, OAuth callbacks and signed links are issued on this address, whichever domain the request came from.',
+        );
+    }
+
+    /**
+     * Push notifications to the mobile app. Only yellow when it is costing
+     * somebody something: phones registered with nothing to send through, or
+     * sends that are failing for a reason a retry will not change (wrong
+     * Firebase project, revoked key).
+     */
+    private function mobilePush(): array
+    {
+        $devices = DeviceToken::query()->count();
+
+        if (! FirebaseConfig::isConfigured()) {
+            return $this->check(
+                'push:firebase',
+                'Platform',
+                'Mobile push (Firebase)',
+                $devices > 0 ? 'warn' : 'ok',
+                'Not set',
+                $devices > 0
+                    ? "{$devices} phone(s) registered for notifications, and no Firebase service account to send them with. Upload it in Integrations → Firebase."
+                    : 'No Firebase service account uploaded. Only needed once the mobile app ships.',
+                ['devices' => $devices],
+            );
+        }
+
+        $failing = DeviceToken::query()
+            ->whereNotNull('last_failed_at')
+            ->where('last_failed_at', '>=', now()->subDay())
+            ->where(fn ($q) => $q->whereNull('last_sent_at')->orWhereColumn('last_failed_at', '>', 'last_sent_at'))
+            ->count();
+
+        if ($failing > 0) {
+            $error = DeviceToken::query()->whereNotNull('last_error')->latest('last_failed_at')->value('last_error');
+
+            return $this->check(
+                'push:firebase',
+                'Platform',
+                'Mobile push (Firebase)',
+                'warn',
+                "{$failing} failing",
+                "Sends to {$failing} phone(s) failed in the last day. Last error: {$error}. SENDER_ID_MISMATCH means the service account is from a different Firebase project than the app.",
+                ['devices' => $devices, 'failing' => $failing],
+            );
+        }
+
+        return $this->check(
+            'push:firebase',
+            'Platform',
+            'Mobile push (Firebase)',
+            'ok',
+            (string) FirebaseConfig::projectId(),
+            "{$devices} phone(s) registered.",
+            ['devices' => $devices],
         );
     }
 

@@ -246,3 +246,10 @@ Schedule::command('webhooks:prune')
     ->timezone($platformTimezone)
     ->withoutOverlapping(30)
     ->onFailure(fn () => logger()->error('Webhook delivery prune failed'));
+
+// Mobile push tokens of phones that stopped opening the app (docs/mobile-push.md).
+Schedule::command('push:prune-devices')
+    ->dailyAt('04:20')
+    ->timezone($platformTimezone)
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->error('Push device prune failed'));

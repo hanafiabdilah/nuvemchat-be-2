@@ -86,6 +86,26 @@ class AuthController extends Controller
      * that had turned a second factor on was still reachable with the password
      * alone through this endpoint. Both are closed below.
      */
+    /**
+     * End this session on the server.
+     *
+     * Logging out used to be the dashboard forgetting its token — the token
+     * itself stayed valid. That mattered little in a browser and matters a lot
+     * in the mobile app: the phone's push registration hangs off this session
+     * (device_tokens.personal_access_token_id, cascade), so revoking it here is
+     * what stops a logged-out phone from announcing the next customer.
+     */
+    public function logout(Request $request)
+    {
+        $token = $request->user()?->currentAccessToken();
+
+        if ($token instanceof \Laravel\Sanctum\PersonalAccessToken) {
+            $token->delete();
+        }
+
+        return response()->noContent();
+    }
+
     public function login(Request $request)
     {
         $request->validate([

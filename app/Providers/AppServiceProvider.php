@@ -49,6 +49,9 @@ class AppServiceProvider extends ServiceProvider
         // lead.assigned / lead.stage_changed / lead.won / lead.lost webhooks.
         \App\Services\Webhooks\LeadWebhooks::register();
 
+        // Push notifications to the mobile app (docs/mobile-push.md).
+        \App\Services\Push\PushEvents::register();
+
         $this->registerQueueHeartbeat();
         $this->registerPasswordPolicy();
 
