@@ -63,6 +63,67 @@ final class Money
     }
 
     /**
+     * The nearest "round" amount on the 1–2–5 series: 20.000, 50.000, 100.000,
+     * 200.000, 500.000…
+     *
+     * For buttons that offer an amount rather than charge one already priced:
+     * a converted preset lands on Rp 64.837, and nobody picks a top-up that
+     * reads like arithmetic. Nearest on a log scale, not up — these are
+     * suggestions, and the customer can still type any amount they like.
+     */
+    public static function niceRound(int $cents): int
+    {
+        if ($cents <= 0) {
+            return $cents;
+        }
+
+        $magnitude = 10 ** (int) floor(log10($cents));
+        $best = $magnitude;
+
+        foreach ([1, 2, 5, 10] as $step) {
+            $candidate = $step * $magnitude;
+
+            if (abs(log($candidate / $cents)) < abs(log($best / $cents))) {
+                $best = $candidate;
+            }
+        }
+
+        return (int) $best;
+    }
+
+    /** The next amount on the 1–2–5 series strictly above `$cents`. */
+    public static function niceNext(int $cents): int
+    {
+        $magnitude = 10 ** (int) floor(log10(max(1, $cents)));
+
+        foreach ([1, 2, 5, 10] as $step) {
+            if ($step * $magnitude > $cents) {
+                return (int) ($step * $magnitude);
+            }
+        }
+
+        return (int) (10 * $magnitude);
+    }
+
+    /**
+     * Round **up** to a number of significant digits: 31.234 → 32.000.
+     *
+     * For floors (a minimum top-up) that came out of a conversion: they must
+     * not drop below the amount the platform set, and the 1–2–5 series would
+     * push them up by as much as two-and-a-half times.
+     */
+    public static function roundUpSignificant(int $cents, int $digits = 2): int
+    {
+        if ($cents <= 0) {
+            return $cents;
+        }
+
+        $step = 10 ** max(0, (int) floor(log10($cents)) + 1 - $digits);
+
+        return (int) (ceil($cents / $step) * $step);
+    }
+
+    /**
      * Round an amount **up** to a step, for prices that came out of a
      * conversion.
      *

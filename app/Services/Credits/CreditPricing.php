@@ -106,10 +106,14 @@ class CreditPricing
     /** Smallest top-up we will issue a Pix for. */
     public static function minTopupCents(?string $currency = null): int
     {
-        return max(1, self::inCurrency(
+        $cents = max(1, self::inCurrency(
             max(1, (int) self::number(self::KEY_MIN_TOPUP_CENTS, 'min_topup_cents', 1000)),
             $currency,
         ));
+
+        // A converted floor is rounded up to two significant digits (Rp 31.234
+        // → Rp 32.000); the base currency keeps exactly what the admin typed.
+        return self::isConverted($currency) ? Money::roundUpSignificant($cents) : $cents;
     }
 
     /**
@@ -136,6 +140,19 @@ class CreditPricing
         foreach (self::TOPUP_PRESETS_CENTS as $base) {
             $cents = Money::roundUpTo(self::inCurrency($base, $currency), max(1, $stepCents));
 
+            // Converted presets land on the 1–2–5 series (Rp 50.000, not
+            // Rp 64.837): a button offers an amount, it does not price one.
+            if (self::isConverted($currency)) {
+                $cents = Money::niceRound($cents);
+
+                // Two presets can round onto the same step (Rp 320.000 and
+                // Rp 640.000 both nearest Rp 500.000); the larger one moves up
+                // a step instead of disappearing, so the row keeps its buttons.
+                while ($presets !== [] && $cents <= end($presets)) {
+                    $cents = Money::niceNext($cents);
+                }
+            }
+
             if ($cents >= $min && ! in_array($cents, $presets, true)) {
                 $presets[] = $cents;
             }
@@ -160,6 +177,12 @@ class CreditPricing
      * that one — or when no rate exists, because a floor nobody can meet and a
      * warning that never fires are both worse than an approximate number.
      */
+    /** Whether amounts for this currency come out of a conversion. */
+    private static function isConverted(?string $currency): bool
+    {
+        return $currency !== null && strtoupper($currency) !== strtoupper(MarketMoney::baseCurrency());
+    }
+
     private static function inCurrency(int $cents, ?string $currency): int
     {
         $base = MarketMoney::baseCurrency();

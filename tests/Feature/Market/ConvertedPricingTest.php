@@ -99,3 +99,20 @@ it('leaves a platform price alone when the workspace is in the home market', fun
     expect($quote['price_per_gb_cents'])->toBe(190)
         ->and($quote['monthly_cents'])->toBe(570);
 });
+
+it('offers converted top-up presets as round amounts on the 1-2-5 series', function () {
+    // R$ 20/50/100/200 at 3.200 rupiah per real are Rp 64.000/160.000/320.000/
+    // 640.000 — the last two both round nearest to Rp 500.000, so the larger
+    // one moves up a step instead of vanishing.
+    expect(CreditPricing::topupPresetsCents('IDR', 100000))
+        ->toBe([5000000, 20000000, 50000000, 100000000])
+        // The base currency keeps exactly what the platform set.
+        ->and(CreditPricing::topupPresetsCents('BRL'))->toBe([2000, 5000, 10000, 20000]);
+});
+
+it('rounds a converted minimum up to two significant digits, never down', function () {
+    ExchangeRates::store(['IDR' => 15617]);
+
+    // R$ 10,00 → US$2 → Rp 31.234 → Rp 32.000.
+    expect(CreditPricing::minTopupCents('IDR'))->toBe(3200000);
+});
