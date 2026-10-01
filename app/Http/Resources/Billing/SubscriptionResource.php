@@ -4,6 +4,9 @@ namespace App\Http\Resources\Billing;
 
 use App\Models\Connection;
 use App\Models\User;
+use App\Services\Billing\SubscriptionGate;
+use App\Services\Connection\Apiway\ApiwayService;
+use App\Services\Gallery\GalleryStorage;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -62,10 +65,21 @@ class SubscriptionResource extends JsonResource
     protected function currentUsage(): array
     {
         $tenantId = $this->tenant_id;
+        $tenant = $this->tenant;
 
         return [
             'connections' => Connection::where('tenant_id', $tenantId)->count(),
             'agents' => User::where('tenant_id', $tenantId)->count(),
+            // Every quota a plan can carry has a meter here, read from the same
+            // service that enforces it — a usage panel showing two of five
+            // limits leaves the customer to discover the other three by
+            // hitting them.
+            'included_instances' => $tenant ? app(ApiwayService::class)->usageSummary($tenant)['included_used'] : 0,
+            'included_trained_agents' => $tenant ? app(SubscriptionGate::class)->trainedAgentsUsed($tenant) : 0,
+            // Bytes, against the plan's gigabytes **plus** any rented ones: the
+            // limit a customer actually runs into is the sum.
+            'gallery_bytes' => $tenant ? app(GalleryStorage::class)->usedBytes($tenant) : 0,
+            'gallery_limit_bytes' => $tenant ? app(GalleryStorage::class)->limitBytes($tenant) : 0,
         ];
     }
 }
