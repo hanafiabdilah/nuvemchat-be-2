@@ -18,7 +18,6 @@ use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
 use App\Services\Billing\PaymentService\PaymentServiceClient;
 use App\Services\Billing\PaymentService\PaymentServiceConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
@@ -215,108 +214,43 @@ it('refuses a Mercado Pago notification whose signature does not match', functio
 
 // --- Brazil: card = preapproval --------------------------------------------
 
-it('charges a Brazilian card once, then authorises the renewals from the end of the paid period', function () {
-    mpCardFakes(['api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_1', 'status' => 'authorized'])]);
+it('subscribes a Brazilian card as a Mercado Pago preapproval that renews itself', function () {
+    Http::fake(['api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_1', 'status' => 'authorized'])]);
 
-    $tenant = directWorkspace('BR');
-    $subscription = mpSubscribe($tenant);
-    $invoice = Invoice::first();
+    $subscription = app(BillingService::class)->subscribe(directWorkspace('BR'), directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_1',
+        'provider' => 'mercadopago',
+        'payer_email' => 'ana@example.test',
+    ]);
 
-    // The first cycle is a plain payment on the saved card, with the first token…
-    Http::assertSent(fn ($request) => $request->url() === 'https://api.mercadopago.com/v1/payments'
-        && $request->data()['token'] === 'tok_charge'
-        && $request->data()['transaction_amount'] === 99.9
-        && $request->data()['payer'] === ['type' => 'customer', 'id' => 'cus_1']
-        && $request->data()['external_reference'] === $invoice->order_reference);
-
-    // …and the renewals are a preapproval made from the second, starting when
-    // the paid period ends — so the first cycle is never charged twice.
     Http::assertSent(function ($request) use ($subscription) {
         $body = $request->data();
 
-        return $request->url() === 'https://api.mercadopago.com/preapproval'
-            && $body['card_token_id'] === 'tok_mandate'
-            && $body['payer_email'] === 'owner@example.test'
+        return str_ends_with($request->url(), '/preapproval')
+            && $body['card_token_id'] === 'tok_1'
+            && $body['status'] === 'authorized'
             && $body['external_reference'] === "pingly-mpsub-{$subscription->id}"
-            && $body['auto_recurring']['transaction_amount'] === 99.9
-            && $body['auto_recurring']['frequency_type'] === 'months'
-            && abs(Carbon::parse($body['auto_recurring']['start_date'])->diffInSeconds($subscription->current_period_end)) < 2;
+            && $body['auto_recurring'] === [
+                'frequency' => 1,
+                'frequency_type' => 'months',
+                'transaction_amount' => 99.9,
+                'currency_id' => 'BRL',
+            ];
     });
+
+    $subscription->refresh();
 
     expect($subscription->status)->toBe(SubscriptionStatus::Active)
         ->and($subscription->gateway)->toBe('mercadopago')
-        ->and($subscription->payment_instrument_id)->toBe('mp_preapproval:pre_1')
-        ->and($invoice->status)->toBe(InvoiceStatus::Paid)
-        ->and($invoice->payment_id)->toBe('555');
+        ->and($subscription->payment_instrument_id)->toBe('mp_preapproval:pre_1');
 
     // billing:charge-renewals must never charge it — Mercado Pago does.
     $subscription->update(['current_period_end' => now()->addDay()]);
     expect(app(BillingService::class)->chargeRenewal($subscription->fresh()))->toBeNull();
 });
 
-it('keeps the plan it was replacing when the card is refused', function () {
-    mpCardFakes(['api.mercadopago.com/v1/payments' => Http::response(['message' => 'cc_rejected_other_reason'], 400)]);
-
-    $tenant = directWorkspace('BR');
-    $comp = app(BillingService::class)->grantManual($tenant, directPlan(), null, \App\Models\Admin::factory()->create(), 'comp');
-
-    try {
-        mpSubscribe($tenant);
-    } catch (\Throwable) {
-    }
-
-    $tenant->refresh();
-
-    expect($tenant->current_subscription_id)->toBe($comp->id)
-        ->and($comp->fresh()->status)->toBe(SubscriptionStatus::Manual)
-        ->and(Subscription::where('tenant_id', $tenant->id)->where('status', SubscriptionStatus::PastDue->value)->exists())->toBeFalse();
-    Http::assertNotSent(fn ($request) => str_contains($request->url(), '/preapproval'));
-});
-
-it('replaces the plan only once the card has paid', function () {
-    mpCardFakes();
-
-    $tenant = directWorkspace('BR');
-    $comp = app(BillingService::class)->grantManual($tenant, directPlan(), null, \App\Models\Admin::factory()->create(), 'comp');
-    $subscription = mpSubscribe($tenant);
-
-    expect($tenant->fresh()->current_subscription_id)->toBe($subscription->id)
-        ->and($comp->fresh()->status)->toBe(SubscriptionStatus::Cancelled);
-});
-
-it('keeps a paid plan when the renewal authorisation is refused, and says why', function () {
-    mpCardFakes(['api.mercadopago.com/preapproval' => Http::response([
-        'message' => 'CC_VAL_433 Credit card validation has failed', 'status' => 400,
-    ], 400)]);
-
-    $tenant = directWorkspace('BR');
-    $subscription = mpSubscribe($tenant);
-    $invoice = Invoice::first();
-
-    expect($subscription->status)->toBe(SubscriptionStatus::Active)
-        ->and($subscription->payment_instrument_id)->toBeNull()
-        ->and($invoice->status)->toBe(InvoiceStatus::Paid)
-        ->and($invoice->meta['mandate_failure']['stage'])->toBe('mandate')
-        ->and($invoice->meta['mandate_failure']['message'])->toContain('CC_VAL_433')
-        ->and(json_encode($invoice->meta))->not->toContain('tok_mandate');
-});
-
-it('refuses a Brazilian card subscription without a saved card and its second token', function () {
-    mpCardFakes();
-
-    $tenant = directWorkspace('BR');
-
-    expect(fn () => app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
-        'card_token' => 'tok_charge',
-        'saved_card' => brSavedCard($tenant),
-        'payer_email' => 'ana@example.test',
-    ]))->toThrow(\Illuminate\Validation\ValidationException::class);
-
-    Http::assertNothingSent();
-});
-
 it('keeps the gateway answer on the invoice when Mercado Pago refuses the card', function () {
-    mpCardFakes(['api.mercadopago.com/v1/payments' => Http::response([
+    Http::fake(['api.mercadopago.com/preapproval' => Http::response([
         'message' => 'CC_VAL_433 Credit card validation has failed',
         'error' => 'bad_request',
         'status' => 400,
@@ -325,7 +259,11 @@ it('keeps the gateway answer on the invoice when Mercado Pago refuses the card',
 
     $tenant = directWorkspace('BR');
 
-    expect(fn () => mpSubscribe($tenant))->toThrow(App\Exceptions\UpstreamServiceException::class);
+    expect(fn () => app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_secret',
+        'provider' => 'mercadopago',
+        'payer_email' => 'ana@example.test',
+    ]))->toThrow(App\Exceptions\UpstreamServiceException::class);
 
     $invoice = App\Models\Invoice::where('tenant_id', $tenant->id)->latest('id')->firstOrFail();
     $failure = $invoice->meta['failure'];
@@ -338,30 +276,76 @@ it('keeps the gateway answer on the invoice when Mercado Pago refuses the card',
         ->and($failure['response']['http_status'])->toBe(400)
         ->and($failure['response']['body']['message'])->toBe('CC_VAL_433 Credit card validation has failed')
         // The card token never lands in the table.
-        ->and(json_encode($invoice->meta))->not->toContain('tok_charge');
+        ->and(json_encode($invoice->meta))->not->toContain('tok_secret');
 
     // The Back Office reads it; the tenant's own invoice resource does not.
     expect((new App\Http\Resources\Admin\AdminInvoiceResource($invoice))->resolve()['failure']['code'])->toBe('payment_refused')
         ->and((new App\Http\Resources\Billing\InvoiceResource($invoice))->resolve())->not->toHaveKey('failure');
 });
 
-it('bills every preapproval debit as a renewal after the first cycle the card paid', function () {
-    mpCardFakes(['api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_1', 'status' => 'authorized'])]);
+it('keeps the plan it was replacing when the card is refused', function () {
+    Http::fake(['api.mercadopago.com/preapproval' => Http::response(['message' => 'CC_VAL_433 Credit card validation has failed'], 400)]);
+
+    $tenant = directWorkspace('BR');
+    $comp = app(BillingService::class)->grantManual($tenant, directPlan(), null, \App\Models\Admin::factory()->create(), 'comp');
+
+    try {
+        app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
+            'card_token' => 'tok_1',
+            'payer_email' => 'ana@example.test',
+        ]);
+    } catch (\Throwable) {
+    }
+
+    $tenant->refresh();
+
+    expect($tenant->current_subscription_id)->toBe($comp->id)
+        ->and($comp->fresh()->status)->toBe(SubscriptionStatus::Manual)
+        ->and(Subscription::where('tenant_id', $tenant->id)->where('status', SubscriptionStatus::PastDue->value)->exists())->toBeFalse();
+});
+
+it('replaces the plan only once the card has paid', function () {
+    Http::fake(['api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_1', 'status' => 'authorized'])]);
+
+    $tenant = directWorkspace('BR');
+    $comp = app(BillingService::class)->grantManual($tenant, directPlan(), null, \App\Models\Admin::factory()->create(), 'comp');
+
+    $subscription = app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_1',
+        'payer_email' => 'ana@example.test',
+    ]);
+
+    expect($tenant->fresh()->current_subscription_id)->toBe($subscription->id)
+        ->and($subscription->fresh()->status)->toBe(SubscriptionStatus::Active)
+        ->and($comp->fresh()->status)->toBe(SubscriptionStatus::Cancelled);
+});
+
+it('attaches the first preapproval debit to the first invoice and bills later ones as renewals', function () {
+    Http::fake(['api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_1', 'status' => 'authorized'])]);
 
     $billing = app(BillingService::class);
-    $subscription = mpSubscribe(directWorkspace('BR'));
+    $subscription = $billing->subscribe(directWorkspace('BR'), directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_1',
+        'payer_email' => 'ana@example.test',
+    ]);
     $firstEnd = $subscription->fresh()->current_period_end;
 
-    // The first debit of the preapproval is the second cycle.
+    // First debit: joins the invoice subscribe() already created.
     $billing->applyRecurringCharge('mercadopago', 'mp_preapproval:pre_1', 'pay_1', 'paid');
 
-    expect(Invoice::count())->toBe(2)
-        ->and(Invoice::latest('id')->first()->payment_id)->toBe('pay_1')
-        ->and($subscription->fresh()->current_period_end->equalTo($firstEnd->copy()->addMonth()))->toBeTrue();
+    expect(Invoice::count())->toBe(1)
+        ->and(Invoice::first()->payment_id)->toBe('pay_1')
+        ->and($subscription->fresh()->current_period_end->equalTo($firstEnd))->toBeTrue();
 
     // A redelivery of it changes nothing.
     $billing->applyRecurringCharge('mercadopago', 'mp_preapproval:pre_1', 'pay_1', 'paid');
-    expect(Invoice::count())->toBe(2);
+    expect(Invoice::count())->toBe(1);
+
+    // The next cycle: a new paid invoice and one more month.
+    $billing->applyRecurringCharge('mercadopago', 'mp_preapproval:pre_1', 'pay_2', 'paid');
+
+    expect(Invoice::count())->toBe(2)
+        ->and($subscription->fresh()->current_period_end->equalTo($firstEnd->copy()->addMonth()))->toBeTrue();
 
     // A refused cycle bills nothing.
     $billing->applyRecurringCharge('mercadopago', 'mp_preapproval:pre_1', 'pay_3', 'rejected');
@@ -369,7 +353,7 @@ it('bills every preapproval debit as a renewal after the first cycle the card pa
 });
 
 it('reads a preapproval cycle from the authorized-payment webhook', function () {
-    mpCardFakes([
+    Http::fake([
         'api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_1', 'status' => 'authorized']),
         'api.mercadopago.com/authorized_payments/777' => Http::response([
             'id' => 777,
@@ -379,24 +363,30 @@ it('reads a preapproval cycle from the authorized-payment webhook', function () 
         ]),
     ]);
 
-    mpSubscribe(directWorkspace('BR'));
+    app(BillingService::class)->subscribe(directWorkspace('BR'), directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_1',
+        'payer_email' => 'ana@example.test',
+    ]);
 
     $this->postJson('/webhook/billing/mercadopago?type=subscription_authorized_payment&data.id=777', [
         'type' => 'subscription_authorized_payment',
         'data' => ['id' => '777'],
     ])->assertOk();
 
-    expect(Invoice::latest('id')->first()->payment_id)->toBe('5551');
+    expect(Invoice::first()->payment_id)->toBe('5551');
 });
 
 it('pauses the preapproval on cancel, re-authorises it on resume, and ends it on suspend', function () {
-    mpCardFakes([
+    Http::fake([
         'api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_1', 'status' => 'authorized']),
         'api.mercadopago.com/preapproval/pre_1' => Http::response(['id' => 'pre_1']),
     ]);
 
     $billing = app(BillingService::class);
-    $subscription = mpSubscribe(directWorkspace('BR'));
+    $subscription = $billing->subscribe(directWorkspace('BR'), directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_1',
+        'payer_email' => 'ana@example.test',
+    ]);
 
     $billing->cancel($subscription->fresh());
     Http::assertSent(fn ($r) => $r->method() === 'PUT' && $r->data() === ['status' => 'paused']);
@@ -841,17 +831,6 @@ function mpCardFakes(array $overrides = []): void
     ], $overrides));
 }
 
-/** A Brazilian card subscription the way the checkout sends it: a saved card and two tokens. */
-function mpSubscribe(Tenant $tenant, array $opts = []): Subscription
-{
-    return app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, array_merge([
-        'card_token' => 'tok_charge',
-        'mandate_token' => 'tok_mandate',
-        'saved_card' => $opts['saved_card'] ?? brSavedCard($tenant),
-        'payer_email' => 'ana@example.test',
-    ], $opts))->fresh();
-}
-
 function brOwnerOf(Tenant $tenant): User
 {
     $user = $tenant->user;
@@ -911,16 +890,20 @@ it('keeps a card at a Mercado Pago customer found or created by email', function
         ->assertJsonMissingPath('data.0.customer_id');
 });
 
-it('subscribes on a saved card in the card owner\'s name and marks it used', function () {
+it('subscribes on a saved card as a preapproval that renews itself, in the card owner\'s name', function () {
     mpCardFakes();
 
     $tenant = directWorkspace('BR');
     $card = brSavedCard($tenant, ['last_used_at' => null]);
 
-    $subscription = mpSubscribe($tenant, ['saved_card' => $card, 'payer_email' => 'someone-else@example.test']);
+    $subscription = app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_from_card_and_cvv',
+        'saved_card' => $card,
+        'payer_email' => 'someone-else@example.test',
+    ]);
 
     Http::assertSent(fn ($request) => $request->url() === 'https://api.mercadopago.com/preapproval'
-        && $request->data()['card_token_id'] === 'tok_mandate'
+        && $request->data()['card_token_id'] === 'tok_from_card_and_cvv'
         && $request->data()['payer_email'] === 'owner@example.test');
 
     expect($subscription->status)->toBe(SubscriptionStatus::Active)
@@ -931,7 +914,7 @@ it('subscribes on a saved card in the card owner\'s name and marks it used', fun
 });
 
 it('takes a card added for a refused first charge back out of the list', function () {
-    mpCardFakes(['api.mercadopago.com/v1/payments' => Http::response(['message' => 'cc_rejected_other_reason'], 400)]);
+    mpCardFakes(['api.mercadopago.com/preapproval' => Http::response(['message' => 'cc_rejected_other_reason'], 400)]);
 
     $tenant = directWorkspace('BR');
     $card = brSavedCard($tenant, ['last_used_at' => null]);
@@ -940,7 +923,6 @@ it('takes a card added for a refused first charge back out of the list', functio
     try {
         app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
             'card_token' => 'tok_1',
-            'mandate_token' => 'tok_2',
             'saved_card' => $card,
             'discard_card_on_failure' => true,
             'payer_email' => 'owner@example.test',
@@ -957,7 +939,7 @@ it('takes a card added for a refused first charge back out of the list', functio
 });
 
 it('never discards a card that has already paid for something', function () {
-    mpCardFakes(['api.mercadopago.com/v1/payments' => Http::response(['message' => 'cc_rejected_other_reason'], 400)]);
+    mpCardFakes(['api.mercadopago.com/preapproval' => Http::response(['message' => 'cc_rejected_other_reason'], 400)]);
 
     $tenant = directWorkspace('BR');
     $card = brSavedCard($tenant);
@@ -965,7 +947,6 @@ it('never discards a card that has already paid for something', function () {
     try {
         app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
             'card_token' => 'tok_1',
-            'mandate_token' => 'tok_2',
             'saved_card' => $card,
             'discard_card_on_failure' => true,
             'payer_email' => 'owner@example.test',

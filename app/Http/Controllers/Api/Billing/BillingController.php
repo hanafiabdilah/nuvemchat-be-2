@@ -365,10 +365,6 @@ class BillingController extends Controller
             // this very charge — refused, it leaves the list again.
             'saved_card_id' => ['nullable', 'integer'],
             'discard_card_on_failure' => ['sometimes', 'boolean'],
-            // A second single-use token from the same saved card + CVV, for a
-            // gateway that authorises the renewals after the first payment
-            // (Mercado Pago). `card_token` pays; this one becomes the mandate.
-            'mandate_token' => ['nullable', 'string', 'max:255'],
             'payer_email' => ['required', 'email'],
         ]);
 
@@ -390,7 +386,6 @@ class BillingController extends Controller
                 $method,
                 [
                     'card_token' => $validated['card_token'] ?? null,
-                    'mandate_token' => $validated['mandate_token'] ?? null,
                     'provider' => $validated['provider'] ?? null,
                     'checkout_token' => $validated['checkout_token'] ?? null,
                     'saved_card' => $savedCard,

@@ -3,7 +3,6 @@
 namespace App\Services\Billing\Gateways\Direct;
 
 use App\Models\Tenant;
-use App\Services\Billing\Gateways\AuthorisesRecurringSeparately;
 use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
 use App\Services\Billing\Gateways\HoldsRecurringAuthorisations;
@@ -41,7 +40,7 @@ use Illuminate\Support\Str;
  * ::MercadoPago: that dictionary is written for a *customer's own* account
  * ("confira a variável do nó"), and this account is ours.
  */
-class MercadoPagoBillingGateway implements AuthorisesRecurringSeparately, BillingGateway, HoldsRecurringAuthorisations, SavesCards
+class MercadoPagoBillingGateway implements BillingGateway, HoldsRecurringAuthorisations, SavesCards
 {
     /** How a preapproval is stored in `subscriptions.payment_instrument_id`. */
     public const INSTRUMENT_PREFIX = 'mp_preapproval:';
@@ -387,53 +386,6 @@ class MercadoPagoBillingGateway implements AuthorisesRecurringSeparately, Billin
             'decline' => ['category' => 'unknown', 'code' => $preapproval['status'] ?? null],
             'raw' => ['preapproval_id' => $preapproval['id'] ?? null],
         ];
-    }
-
-    /**
-     * The renewals of a card subscription whose first cycle was already paid
-     * through `/v1/payments`: a preapproval that starts charging when that
-     * paid period ends, so nothing is charged twice and Mercado Pago does not
-     * try to validate a card by charging it now (see the interface).
-     */
-    public function authoriseRecurring(array $payload, string $idempotencyKey): string
-    {
-        $customer = $payload['customer'] ?? [];
-        $recurring = $payload['recurring'];
-
-        $preapproval = $this->decode($this->http($idempotencyKey)->post('/preapproval', array_filter([
-            'reason' => $payload['description'] ?? 'Pingly',
-            'external_reference' => self::RECURRING_REFERENCE_PREFIX.$payload['subscription_id'],
-            'payer_email' => $customer['email'] ?? null,
-            'card_token_id' => $payload['card_token'],
-            'back_url' => DirectBillingConfig::returnUrl('/billing'),
-            'status' => 'authorized',
-            'auto_recurring' => [
-                'frequency' => (int) $recurring['frequency'],
-                'frequency_type' => $recurring['frequency_type'],
-                'transaction_amount' => $this->decimal((int) $payload['amount']),
-                'currency_id' => $payload['currency'] ?? 'BRL',
-                // Offset-bearing, like every Mercado Pago date.
-                'start_date' => \Illuminate\Support\Carbon::instance($payload['start_date'])->format('Y-m-d\TH:i:s.vP'),
-            ],
-        ], fn ($value) => $value !== null)));
-
-        if (! filled($preapproval['id'] ?? null) || ($preapproval['status'] ?? null) !== 'authorized') {
-            // A half-made authorisation left behind could start charging on
-            // its own later; nothing keeps it, so it is closed here.
-            if (filled($preapproval['id'] ?? null)) {
-                rescue(fn () => $this->http()->put('/preapproval/'.$preapproval['id'], ['status' => 'cancelled']), report: false);
-            }
-
-            throw UpstreamError::exception(
-                UpstreamProvider::PaymentService,
-                'Mercado Pago (direct billing): preapproval came back '.($preapproval['status'] ?? 'without a status'),
-                upstreamCode: 'payment_refused',
-                status: 422,
-                context: ['gateway' => 'mercadopago', 'preapproval_id' => $preapproval['id'] ?? null],
-            );
-        }
-
-        return self::INSTRUMENT_PREFIX.$preapproval['id'];
     }
 
     // --- Reading ------------------------------------------------------------
