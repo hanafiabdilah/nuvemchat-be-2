@@ -424,6 +424,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // toggle it, including on an unassigned group nobody owns yet.
         Route::post('/conversations/{id}/mute', [ConversationController::class, 'mute']);
         Route::delete('/conversations/{id}/mute', [ConversationController::class, 'unmute']);
+        // Exclusive: the thread stays in every agent's list but only its
+        // handler and the owners can read it. Gated in the controller on
+        // being the handler (or an owner), like transfer.
+        Route::post('/conversations/{id}/exclusive', [ConversationController::class, 'makeExclusive']);
+        Route::delete('/conversations/{id}/exclusive', [ConversationController::class, 'removeExclusive']);
 
         // Removing a group drops its inbound messages at ingest; the group's
         // contact (name, photo) carries on being maintained either way.

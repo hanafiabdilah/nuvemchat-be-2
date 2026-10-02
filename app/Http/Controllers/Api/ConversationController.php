@@ -58,6 +58,10 @@ class ConversationController extends Controller
 
     public const INFO_ASSIGNED = 'conversation_assigned';
 
+    public const INFO_EXCLUSIVE_ON = 'conversation_exclusive_on';
+
+    public const INFO_EXCLUSIVE_OFF = 'conversation_exclusive_off';
+
     /**
      * English fallbacks for a refused reopen. The SPA words every one of these
      * from the `code` beside them (lib/reopenWindow.ts); these are what an API
@@ -503,6 +507,10 @@ class ConversationController extends Controller
     {
         $conversation = Conversation::with(['contact', 'connection'])->visibleTo(Auth::user())->findOrFail($id);
 
+        if ($refusal = $this->refuseIfExclusive($conversation)) {
+            return $refusal;
+        }
+
         // Latest flow run for this conversation (state is preserved after it ends).
         $flowState = $conversation->flowState()->latest('id')->first();
 
@@ -562,7 +570,11 @@ class ConversationController extends Controller
      */
     public function messages(Request $request, int $id)
     {
-        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->with(['connection', 'agent'])->findOrFail($id);
+
+        if ($refusal = $this->refuseIfExclusive($conversation)) {
+            return $refusal;
+        }
 
         $limit = (int) $request->input('limit', 50);
         $limit = max(1, min($limit, 200));
@@ -599,7 +611,7 @@ class ConversationController extends Controller
      */
     public function emailHtml(int $id, int $message_id)
     {
-        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
+        $conversation = Conversation::readableBy(Auth::user())->findOrFail($id);
 
         if (! $conversation->isAccessibleBy(Auth::user())) {
             return response()->json(['message' => 'Unauthorized'], 403);
@@ -671,7 +683,13 @@ class ConversationController extends Controller
 
     public function read(int $id)
     {
-        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->with(['connection', 'agent'])->findOrFail($id);
+
+        // Marking read also tells the customer (blue ticks) — not something
+        // a person who may not open the thread gets to do.
+        if ($refusal = $this->refuseIfExclusive($conversation)) {
+            return $refusal;
+        }
 
         // Read before the update, or there is nothing left to name: the channel
         // has to be told *which* messages turned read, and one statement later
@@ -1069,7 +1087,14 @@ class ConversationController extends Controller
 
     public function accept(int $id)
     {
-        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
+        $conversation = Conversation::visibleTo(Auth::user())->with(['connection', 'agent'])->findOrFail($id);
+
+        // An exclusive thread back in the queue (its handler was removed) is
+        // the owners' to place: accepting it would open its history to
+        // whoever clicked first.
+        if ($refusal = $this->refuseIfExclusive($conversation)) {
+            return $refusal;
+        }
 
         // An agent can pick up a conversation from the unassigned Pending queue
         // or take it over from the AI while it is being handled.
@@ -1148,6 +1173,97 @@ class ConversationController extends Controller
     public function unmute(int $id)
     {
         return $this->setMuted($id, false);
+    }
+
+    /** Hide the thread's content from every agent but its handler and the owners. */
+    public function makeExclusive(int $id)
+    {
+        return $this->setExclusive($id, true);
+    }
+
+    public function removeExclusive(int $id)
+    {
+        return $this->setExclusive($id, false);
+    }
+
+    private function setExclusive(int $id, bool $exclusive)
+    {
+        $actor = Auth::user();
+        $conversation = Conversation::visibleTo($actor)->with(['connection', 'agent'])->findOrFail($id);
+
+        if (! $conversation->canBeExclusive()) {
+            return response()->json([
+                'message' => 'Group and e-mail conversations cannot be made exclusive',
+                'code' => 'exclusive_not_supported',
+            ], 422);
+        }
+
+        // Only someone who may already act on the thread decides who else
+        // reads it: its handler, or an owner.
+        if (! $conversation->isAccessibleBy($actor)) {
+            return response()->json([
+                'message' => 'Only the agent handling this conversation can change who sees it',
+                'code' => 'not_conversation_agent',
+            ], 403);
+        }
+
+        if ($conversation->isExclusive() === $exclusive) {
+            return response()->json([
+                'message' => $exclusive ? 'Conversation is already exclusive' : 'Conversation is not exclusive',
+                'data' => new ConversationResource($conversation),
+            ]);
+        }
+
+        $conversation->forceFill([
+            'exclusive_at' => $exclusive ? now() : null,
+            'exclusive_by_user_id' => $exclusive ? $actor->id : null,
+        ])->save();
+
+        // In the thread, so its readers know when and by whom. Written after
+        // the flag flips: switching on, the note already goes to the readers
+        // only; switching off, it goes to everybody, who can now read it.
+        SystemMessage::info(
+            $conversation,
+            $exclusive
+                ? "{$actor->name} hid this conversation from the other agents."
+                : "{$actor->name} made this conversation visible to the other agents again.",
+            $exclusive ? self::INFO_EXCLUSIVE_ON : self::INFO_EXCLUSIVE_OFF,
+            ['by' => $actor->name],
+        );
+
+        Log::info($exclusive ? 'Conversation made exclusive' : 'Conversation exclusivity removed', [
+            'conversation_id' => $conversation->id,
+            'connection_id' => $conversation->connection_id,
+            'actor_id' => $actor->id,
+        ]);
+
+        // The other agents' dashboards drop the content they cached from this
+        // thread when the masked row arrives (and re-fetch it on open once it
+        // is visible again).
+        broadcast(new ConversationUpdated($conversation->fresh()->load('contact')));
+
+        return response()->json([
+            'message' => $exclusive ? 'Conversation is now exclusive' : 'Conversation is visible to every agent again',
+            'data' => new ConversationResource($conversation->fresh()),
+        ]);
+    }
+
+    /**
+     * 403 for a user who may see the row but not read the exclusive thread
+     * behind it. Names the handler, because "somebody else has this" is only
+     * useful when it says who.
+     */
+    private function refuseIfExclusive(Conversation $conversation): ?\Illuminate\Http\JsonResponse
+    {
+        if ($conversation->isReadableBy(Auth::user())) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'This conversation is exclusive to the agent handling it',
+            'code' => 'conversation_exclusive',
+            'agent' => $conversation->agent?->name,
+        ], 403);
     }
 
     private function setMuted(int $id, bool $muted)
@@ -1324,6 +1440,13 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        // Taking over is the one move that would hand an exclusive thread's
+        // history to someone its handler did not choose. A transfer still
+        // works: that is the handler (or an owner) choosing.
+        if ($refusal = $this->refuseIfExclusive($conversation)) {
+            return $refusal;
+        }
+
         $actor = Auth::user();
         $previousAgent = $conversation->agent;
 
@@ -1386,6 +1509,12 @@ class ConversationController extends Controller
         $conversation = Conversation::visibleTo(Auth::user())
             ->with(['connection', 'contact', 'agent'])
             ->findOrFail($id);
+
+        // Reopening makes the clicker the handler, so it is a take-over of a
+        // closed exclusive thread — same rule.
+        if ($refusal = $this->refuseIfExclusive($conversation)) {
+            return $refusal;
+        }
 
         $check = ConversationReopen::reopen($conversation, Auth::user());
 
@@ -1575,6 +1704,12 @@ class ConversationController extends Controller
                 if ($target === Status::Active) {
                     // Accept: only from the Pending queue or from the AI.
                     if (! in_array($conversation->status, [Status::Pending, Status::AiHandling], true)) {
+                        $skipped++;
+
+                        continue;
+                    }
+
+                    if (! $conversation->isReadableBy(Auth::user())) {
                         $skipped++;
 
                         continue;

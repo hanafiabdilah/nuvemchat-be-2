@@ -107,7 +107,7 @@ class ConversationNoteController extends Controller
 
     private function findConversation(int $id): Conversation
     {
-        return Conversation::visibleTo(Auth::user())->findOrFail($id);
+        return Conversation::readableBy(Auth::user())->findOrFail($id);
     }
 
     /** Scoped through the conversation, so a note id alone reaches nothing. */

@@ -41,12 +41,8 @@ class MessageReceived implements ShouldBroadcast
      */
     public function broadcastOn(): array
     {
-        return [
-            Channels::connection(
-                $this->message->conversation->connection->tenant_id,
-                $this->message->conversation->connection->id,
-            ),
-        ];
+        // Exclusive threads go to their readers' own channels instead.
+        return Channels::forConversationContent($this->message->conversation);
     }
 
     public function broadcastAs(): string

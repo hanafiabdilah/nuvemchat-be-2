@@ -44,7 +44,7 @@ class MessageController extends Controller
                 // visibleTo() is the tenant AND connection-access filter — plain
                 // tenant scoping here used to hand an agent the whole tenant's
                 // message history regardless of which connections they were given.
-                $q->visibleTo($user);
+                $q->readableBy($user);
 
                 // Optional: restrict to one connection. Used by the client to
                 // backfill the history of a connection it was just granted,
@@ -119,7 +119,7 @@ class MessageController extends Controller
             // Unsent messages have a body on disk and nothing on screen.
             ->whereNull('unsend_at')
             ->whereHas('conversation', function ($q) use ($user, $connectionId) {
-                $q->visibleTo($user)
+                $q->readableBy($user)
                     // Same exclusion as ConversationController@index: a removed
                     // group's history stays on disk but never surfaces.
                     ->whereDoesntHave('contact', function ($c) {

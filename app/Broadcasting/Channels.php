@@ -31,4 +31,34 @@ final class Channels
     {
         return new PrivateChannel('tenant.'.$tenantId.'.connection.'.$connectionId);
     }
+
+    /** One user's own channel (routes/channels.php: App.Models.User.{id}). */
+    public static function user(int|string $userId): PrivateChannel
+    {
+        return new PrivateChannel('App.Models.User.'.$userId);
+    }
+
+    /**
+     * Where an event carrying a conversation's content goes.
+     *
+     * Normally the connection channel. An exclusive thread instead goes to the
+     * private channel of each person allowed to read it (its assignee and the
+     * workspace's owners): the connection channel is shared by every agent of
+     * the inbox, and Reverb has no way to hand one subscriber a frame and
+     * withhold it from the next.
+     *
+     * @return array<int, PrivateChannel>
+     */
+    public static function forConversationContent(\App\Models\Conversation $conversation): array
+    {
+        $connection = $conversation->getRelationValue('connection') ?? $conversation->connection()->first();
+
+        if (! $conversation->isExclusive()) {
+            return [self::connection($connection->tenant_id, $connection->id)];
+        }
+
+        return $conversation->exclusiveReaderIds()
+            ->map(fn (int $id) => self::user($id))
+            ->all();
+    }
 }

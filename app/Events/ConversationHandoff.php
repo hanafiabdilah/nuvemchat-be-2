@@ -51,7 +51,7 @@ class ConversationHandoff implements ShouldBroadcast
     {
         return [
             'reason' => $this->reason,
-            'conversation' => (new ConversationResource($this->conversation))->resolve(),
+            'conversation' => ConversationResource::forSharedChannel($this->conversation),
         ];
     }
 }

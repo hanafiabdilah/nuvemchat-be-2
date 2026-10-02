@@ -200,6 +200,13 @@ class PushNotifier
             return false;
         }
 
+        // An exclusive thread is none of the other agents' business — not
+        // even as "a new message from Ana". Taken-over notices stay: they tell
+        // the person who lost the thread, who could read it until then.
+        if ($type !== self::TAKEN_OVER && ! $conversation->isReadableBy($user)) {
+            return false;
+        }
+
         return match ($type) {
             self::MESSAGE_RECEIVED => $this->wantsMessages($user, $conversation)
                 && ($user->canAccessAllConnections()

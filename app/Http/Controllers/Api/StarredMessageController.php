@@ -52,7 +52,7 @@ class StarredMessageController extends Controller
             'conversation.tags',
         ])
             ->whereNotNull('starred_at')
-            ->whereHas('conversation', fn ($query) => $query->visibleTo(Auth::user()))
+            ->whereHas('conversation', fn ($query) => $query->readableBy(Auth::user()))
             ->orderByDesc('starred_at')
             ->orderByDesc('id')
             ->limit($limit)
@@ -83,7 +83,7 @@ class StarredMessageController extends Controller
      */
     private function setStarred(int $id, int $message_id, ?\Illuminate\Support\Carbon $starredAt): JsonResponse
     {
-        $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
+        $conversation = Conversation::readableBy(Auth::user())->findOrFail($id);
         $message = $conversation->messages()->where('id', $message_id)->firstOrFail();
 
         $alreadyInTargetState = $starredAt !== null

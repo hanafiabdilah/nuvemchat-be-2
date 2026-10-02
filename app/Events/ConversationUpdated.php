@@ -53,7 +53,7 @@ class ConversationUpdated implements ShouldBroadcast
      */
     public function broadcastWith(): array
     {
-        $data = (new ConversationResource($this->conversation))->resolve();
+        $data = ConversationResource::forSharedChannel($this->conversation);
 
         // last_message here only feeds the conversation-list preview (one
         // line), but a full email body pushes the frame over Reverb's

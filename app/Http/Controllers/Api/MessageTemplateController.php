@@ -168,7 +168,7 @@ class MessageTemplateController extends Controller
         $user = $request->user();
 
         if (! empty($data['conversation_id'])) {
-            $conversation = Conversation::visibleTo($user)
+            $conversation = Conversation::readableBy($user)
                 ->whereHas('connection', fn ($q) => $q->where('channel', Channel::WhatsappOfficial))
                 ->findOrFail($data['conversation_id']);
         } else {

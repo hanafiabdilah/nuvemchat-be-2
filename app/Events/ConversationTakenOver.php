@@ -56,7 +56,7 @@ class ConversationTakenOver implements ShouldBroadcast
         return [
             'from_agent' => ['id' => $this->fromAgent->id, 'name' => $this->fromAgent->name],
             'to_agent' => ['id' => $this->toAgent->id, 'name' => $this->toAgent->name],
-            'conversation' => (new ConversationResource($this->conversation))->resolve(),
+            'conversation' => ConversationResource::forSharedChannel($this->conversation),
         ];
     }
 }

@@ -24,6 +24,8 @@ class Conversation extends Model
         'handoff_reason',
         'handoff_at',
         'muted_at',
+        'exclusive_at',
+        'exclusive_by_user_id',
         'last_message_at',
     ];
 
@@ -34,6 +36,7 @@ class Conversation extends Model
         'needs_human' => 'boolean',
         'handoff_at' => 'datetime',
         'muted_at' => 'datetime',
+        'exclusive_at' => 'datetime',
         'last_message_at' => 'datetime',
     ];
 
@@ -44,6 +47,83 @@ class Conversation extends Model
     public function isGroup(): bool
     {
         return $this->type === Type::Group;
+    }
+
+    /**
+     * Exclusive threads are read only by whoever handles them and by owners.
+     *
+     * Only one-to-one threads on a channel with an assignee can be exclusive:
+     * a group has no single person handling it, and an e-mail inbox is shared
+     * by design — hiding it from the people it is shared with is a contradiction.
+     */
+    public function isExclusive(): bool
+    {
+        return $this->exclusive_at !== null;
+    }
+
+    public function canBeExclusive(): bool
+    {
+        $connection = $this->getRelationValue('connection');
+
+        return ! $this->isGroup()
+            && $connection !== null
+            && $connection->channel !== Channel::Email;
+    }
+
+    /**
+     * Whether the user may read this thread's content (messages, notes,
+     * variables). Seeing the row in the list is visibleTo()'s question; this
+     * one adds exclusivity on top: owners always, otherwise only the agent
+     * currently assigned — so a transfer hands the history over and a
+     * colleague can never pull it out by taking the thread over.
+     */
+    public function isReadableBy(User $user): bool
+    {
+        if ($user->canAccessAllConnections()) {
+            return (int) $this->getRelationValue('connection')?->tenant_id === (int) $user->tenant_id;
+        }
+
+        $connection = $this->getRelationValue('connection');
+
+        if (! $connection
+            || (int) $connection->tenant_id !== (int) $user->tenant_id
+            || ! $user->canAccessConnection($connection)) {
+            return false;
+        }
+
+        return ! $this->isExclusive()
+            || ($this->user_id !== null && (int) $this->user_id === (int) $user->id);
+    }
+
+    /**
+     * The users who may read an exclusive thread: its assignee and the
+     * workspace's owners. Used to address the realtime events that carry
+     * content, which for an exclusive thread go to these people's own
+     * channels instead of the connection channel every agent shares.
+     *
+     * @return \Illuminate\Support\Collection<int, int>
+     */
+    public function exclusiveReaderIds(): \Illuminate\Support\Collection
+    {
+        $connection = $this->getRelationValue('connection');
+
+        if (! $connection) {
+            return collect();
+        }
+
+        $owners = User::query()
+            ->where('tenant_id', $connection->tenant_id)
+            // Same check as canAccessAllConnections(), as a query: the owner
+            // role is global, so it is matched by name rather than resolved
+            // through Spatie (which looks names up per guard, not per tenant).
+            ->whereHas('roles', fn ($q) => $q->where('name', 'owner'))
+            ->pluck('id');
+
+        return $owners
+            ->when($this->user_id !== null, fn ($ids) => $ids->push($this->user_id))
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
     }
 
     /** Muted threads still collect messages; they just raise no toast or sound. */
@@ -172,6 +252,25 @@ class Conversation extends Model
      * A null user (unauthenticated context) matches nothing rather than
      * everything — an empty result is a safe failure, a full one is not.
      */
+    /**
+     * visibleTo() plus exclusivity: the conversations whose *content* this
+     * user may read. Every path that returns messages, notes or flow data
+     * goes through here; the inbox list keeps using visibleTo(), because an
+     * exclusive thread stays in everybody's list — only its content is hidden.
+     */
+    public function scopeReadableBy(Builder $query, ?User $user): Builder
+    {
+        $query->visibleTo($user);
+
+        if ($user && ! $user->canAccessAllConnections()) {
+            $query->where(fn ($q) => $q
+                ->whereNull('conversations.exclusive_at')
+                ->orWhere('conversations.user_id', $user->id));
+        }
+
+        return $query;
+    }
+
     public function scopeVisibleTo(Builder $query, ?User $user): Builder
     {
         if (! $user) {
