@@ -257,6 +257,10 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
                 ->whereIn('status', [ConversationStatus::Active, ConversationStatus::Pending, ConversationStatus::AiHandling])
                 ->first();
 
+            // A contact back within the connection's tolerance, while the agent who
+            // served them is online, continues that thread instead of a new one.
+            $conversation ??= LastAgentRouter::reopenPrevious($connection, $contact, (string) $phone, (string) $messageId);
+
             if (! $conversation) {
                 $conversation = Conversation::create([
                     'contact_id' => $contact->id,

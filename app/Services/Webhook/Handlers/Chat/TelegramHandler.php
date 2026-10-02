@@ -178,6 +178,10 @@ class TelegramHandler implements ChatHandlerInterface, DownloadsInboundMedia
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
 
+            // A contact back within the connection's tolerance, while the agent who
+            // served them is online, continues that thread instead of a new one.
+            $conversation ??= LastAgentRouter::reopenPrevious($connection, $contact, (string) $conversationId, (string) $messageId);
+
             if (! $conversation) {
                 $conversation = Conversation::create([
                     'contact_id' => $contact->id,

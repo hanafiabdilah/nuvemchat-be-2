@@ -6,23 +6,27 @@ use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status;
 use App\Events\ConversationUpdated;
 use App\Models\Connection;
+use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\User;
+use App\Observers\ConversationObserver;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Send a contact who comes straight back to the agent who was just helping
  * them, instead of through the chatbot and the unassigned queue.
  *
- * An inbound message never re-opens a resolved conversation — the chat handlers
- * start a fresh one — which is correct for the record and wrong for the person:
+ * An inbound message used to always start a fresh conversation after a
+ * resolved one — correct for the record and wrong for the person:
  * someone who remembers one more question thirty seconds after the thread was
  * closed is not a new customer, but every channel treats them as one. They get
  * the greeting again, answer the menu again, and land at the back of a queue
  * that the agent who already has their context is not necessarily watching.
  *
- * So this runs at exactly one moment — a brand-new thread, before the flow gets
- * a chance to start — and answers one question: is this the same visit? Three
+ * So this answers one question at the moment an inbound message would open a
+ * thread: is this the same visit? When it is, reopenPrevious() reopens the
+ * closed conversation itself (no second row); route() is the fallback for a
+ * thread that was created anyway — e.g. the latest visit was bot-only. Three
  * things have to hold, and each one failing means the normal path is the better
  * path, not that something went wrong:
  *
@@ -42,6 +46,124 @@ class LastAgentRouter
 {
     /** Code the SPA translates for the note this leaves in the thread. */
     public const INFO_RETURNED = 'conversation_returned_to_agent';
+
+    /**
+     * Reopen the contact's last conversation for an inbound message, instead of
+     * opening a new one.
+     *
+     * Called by the chat handlers inside their transaction, right where they
+     * would otherwise create a thread. "The same visit" is the same three
+     * conditions as route() — closed within the tolerance, agent still reaches
+     * the connection, agent online — and when they hold, a second thread for
+     * it only splits one conversation in two: the question in one row, the
+     * follow-up in another, and the Reopen button on the first one refused
+     * because the second is open. So the closed row comes back, assigned to the
+     * same agent, and the message lands in it.
+     *
+     * When any condition fails this returns null and the caller does what it
+     * always did — a fresh thread, through route() and the flow. That is the
+     * deliberate split: a customer nobody is waiting for starts over.
+     *
+     * Only the contact's *latest* conversation is a candidate. If a newer
+     * thread exists (say the bot handled one in between), reopening an older
+     * one would scatter the visit across rows out of order; route() still sends
+     * the new thread to the agent in that case.
+     *
+     * @param  string|null  $messageExternalId  The inbound message's channel id. A
+     *                                          redelivery of a message the closed thread
+     *                                          already holds returns that thread untouched,
+     *                                          so the caller's duplicate check drops it
+     *                                          instead of reopening anything.
+     */
+    public static function reopenPrevious(
+        Connection $connection,
+        Contact $contact,
+        string $externalId,
+        ?string $messageExternalId = null,
+    ): ?Conversation {
+        if (! $connection->return_to_last_agent || $connection->channel === Channel::Email || $contact->is_group) {
+            return null;
+        }
+
+        $previous = Conversation::query()
+            ->where('connection_id', $connection->id)
+            ->where('contact_id', $contact->id)
+            ->latest('id')
+            ->first();
+
+        if (! $previous
+            || $previous->status !== Status::Resolved
+            || $previous->user_id === null
+            || $previous->isGroup()
+            // Same address the message came in on. On WhatsApp this is the
+            // phone; on Telegram/Discord/IG it is an id the platform minted,
+            // and a mismatch means replies from this row would go elsewhere.
+            || (string) $previous->external_id !== $externalId) {
+            return null;
+        }
+
+        if ($messageExternalId !== null && $previous->messages()->where('external_id', $messageExternalId)->exists()) {
+            return $previous;
+        }
+
+        $deadline = ConversationReopen::deadline($previous, $connection);
+
+        if ($deadline === null || $deadline->isPast()) {
+            return null;
+        }
+
+        $locked = Conversation::query()->with('agent')->lockForUpdate()->find($previous->id);
+
+        if (! $locked) {
+            return null;
+        }
+
+        // A message delivered a moment earlier reopened it already (or an agent
+        // pressed Reopen). It is the live thread now — continue it.
+        if (in_array($locked->status, OutboundConversationResolver::OPEN_STATUSES, true)) {
+            return $locked;
+        }
+
+        if ($locked->status !== Status::Resolved) {
+            return null;
+        }
+
+        $agent = $locked->agent;
+
+        if (! self::agentIsAvailable($agent, $connection)) {
+            return null;
+        }
+
+        $locked->status = Status::Active;
+        $locked->needs_human = false;
+        // Same trade ConversationReopen makes: an open thread does not keep a
+        // resolution time, and markResolved() stamps a fresh one next close.
+        $locked->resolved_at = null;
+        $locked->resolved_by_user_id = null;
+
+        // The note below names the agent; "resolved → active" only implies it.
+        ConversationObserver::withoutStatusNote(fn () => $locked->save());
+
+        // Written before the customer's message so the thread reads in order.
+        // The caller broadcasts ConversationUpdated once its message is stored.
+        SystemMessage::info(
+            $locked,
+            "Reopened with {$agent->name}, who last spoke with this contact.",
+            self::INFO_RETURNED,
+            ['agent' => $agent->name],
+        );
+
+        Log::info('Conversation reopened by the contact', [
+            'conversation_id' => $locked->id,
+            'connection_id' => $connection->id,
+            'tenant_id' => $connection->tenant_id,
+            'agent_id' => $agent->id,
+            'minutes_since_close' => (int) ConversationReopen::closedAt($previous)?->diffInMinutes(now()),
+            'tolerance_minutes' => $connection->returnToLastAgentMinutes(),
+        ]);
+
+        return $locked;
+    }
 
     /**
      * Route a freshly created conversation back to its contact's last agent.

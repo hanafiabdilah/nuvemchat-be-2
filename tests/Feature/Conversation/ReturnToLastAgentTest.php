@@ -365,3 +365,98 @@ test('an inbound message from a stranger still starts the flow', function () {
         ->and($conversation->user_id)->toBeNull()
         ->and(FlowState::count())->toBe(1);
 });
+
+test('a contact who comes back inside the tolerance continues the same conversation', function () {
+    $owner = rtlaOwner();
+    $connection = rtlaConnection($owner);
+    $agent = rtlaAgent($connection);
+    $contact = rtlaContact($connection);
+    $previous = rtlaPreviousConversation($connection, $contact, $agent);
+
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage());
+
+    $previous->refresh();
+    $incoming = Message::where('message_type', '!=', MessageType::Info)->sole();
+    $note = Message::where('message_type', MessageType::Info)->sole();
+
+    expect(Conversation::count())->toBe(1)
+        ->and($previous->status)->toBe(ConversationStatus::Active)
+        ->and($previous->user_id)->toBe($agent->id)
+        ->and($previous->resolved_at)->toBeNull()
+        ->and($incoming->conversation_id)->toBe($previous->id)
+        // The note sits above the customer's message, not below it.
+        ->and($note->conversation_id)->toBe($previous->id)
+        ->and($note->id)->toBeLessThan($incoming->id)
+        ->and($note->meta['info']['code'])->toBe(LastAgentRouter::INFO_RETURNED);
+});
+
+test('a contact who comes back after the tolerance starts a new conversation', function () {
+    $owner = rtlaOwner();
+    $connection = rtlaConnection($owner);
+    $agent = rtlaAgent($connection);
+    $contact = rtlaContact($connection);
+    $previous = rtlaPreviousConversation($connection, $contact, $agent, closedMinutesAgo: 30);
+
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage());
+
+    expect(Conversation::count())->toBe(2)
+        ->and($previous->fresh()->status)->toBe(ConversationStatus::Resolved);
+});
+
+test('a contact whose last agent is offline starts a new conversation', function () {
+    $owner = rtlaOwner();
+    $connection = rtlaConnection($owner);
+    $agent = rtlaAgent($connection, now()->subHour());
+    $contact = rtlaContact($connection);
+    $previous = rtlaPreviousConversation($connection, $contact, $agent);
+
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage());
+
+    $new = Conversation::where('id', '!=', $previous->id)->sole();
+
+    expect($previous->fresh()->status)->toBe(ConversationStatus::Resolved)
+        ->and($new->status)->toBe(ConversationStatus::Pending)
+        ->and($new->user_id)->toBeNull();
+});
+
+test('a contact whose last agent lost access starts a new conversation', function () {
+    $owner = rtlaOwner();
+    $connection = rtlaConnection($owner);
+    $agent = rtlaAgent($connection);
+    $agent->connections()->detach($connection->id);
+    $contact = rtlaContact($connection);
+    $previous = rtlaPreviousConversation($connection, $contact, $agent);
+
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage());
+
+    expect(Conversation::count())->toBe(2)
+        ->and($previous->fresh()->status)->toBe(ConversationStatus::Resolved);
+});
+
+test('nothing is reopened while the switch is off', function () {
+    $owner = rtlaOwner();
+    $connection = rtlaConnection($owner, ['return_to_last_agent' => false]);
+    $agent = rtlaAgent($connection);
+    $contact = rtlaContact($connection);
+    $previous = rtlaPreviousConversation($connection, $contact, $agent);
+
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage());
+
+    expect(Conversation::count())->toBe(2)
+        ->and($previous->fresh()->status)->toBe(ConversationStatus::Resolved);
+});
+
+test('a second message continues the reopened conversation', function () {
+    $owner = rtlaOwner();
+    $connection = rtlaConnection($owner);
+    $agent = rtlaAgent($connection);
+    $contact = rtlaContact($connection);
+    $previous = rtlaPreviousConversation($connection, $contact, $agent);
+
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage());
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage(['message_id' => 42, 'text' => 'Mais uma']));
+
+    expect(Conversation::count())->toBe(1)
+        ->and(Message::where('message_type', MessageType::Info)->count())->toBe(1)
+        ->and($previous->messages()->where('message_type', '!=', MessageType::Info)->count())->toBe(2);
+});
