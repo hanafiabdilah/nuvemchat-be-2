@@ -21,6 +21,12 @@ class RoleAndPermissionSeeder extends Seeder
             // Contacts
             'contacts.update',
 
+            // Conversations. Both sit on top of the assignee / connection-access
+            // rules, never instead of them: transfer still needs the thread to
+            // be yours, take-over still needs the connection.
+            'conversations.transfer',
+            'conversations.take-over',
+
             // Connections
             'connections.create',
             'connections.update',

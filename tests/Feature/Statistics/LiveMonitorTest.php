@@ -301,6 +301,7 @@ it('reports what agents did to conversations, newest first', function () {
 
     // …taken over by somebody else…
     $held = liveConversation($connection, ['status' => ConversationStatus::Active, 'user_id' => $agent->id]);
+    $owner->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate('conversations.take-over', 'web'));
     $this->actingAs($owner)->postJson("/api/conversations/{$held->id}/take-over")->assertOk();
 
     // …and closed.

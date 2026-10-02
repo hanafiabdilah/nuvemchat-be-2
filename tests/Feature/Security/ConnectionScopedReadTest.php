@@ -171,6 +171,7 @@ test('a thread cannot be transferred to an agent without access to its connectio
     $conversation->update(['status' => ConversationStatus::Active, 'user_id' => $agent->id]);
 
     $stranger = User::factory()->create(['tenant_id' => $tenant->id]);
+    $owner->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate('conversations.transfer', 'web'));
 
     Sanctum::actingAs($owner);
 

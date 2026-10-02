@@ -17,6 +17,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Spatie\Permission\Models\Permission;
 
 uses(RefreshDatabase::class);
 
@@ -25,6 +26,7 @@ function takeOverOwner(): User
     $user = User::factory()->create();
     $tenant = Tenant::create(['user_id' => $user->id]);
     $user->forceFill(['tenant_id' => $tenant->id])->save();
+    $user->givePermissionTo(Permission::findOrCreate('conversations.take-over', 'web'));
 
     return $user->fresh();
 }
@@ -48,6 +50,7 @@ function takeOverAgent(User $owner, Connection $connection, ?string $name = null
         'name' => $name,
     ]));
     $agent->connections()->syncWithoutDetaching([$connection->id]);
+    $agent->givePermissionTo(Permission::findOrCreate('conversations.take-over', 'web'));
 
     return $agent->fresh();
 }
@@ -238,6 +241,7 @@ test('an agent without the connection cannot take the thread over', function () 
     // Same tenant, but no connection_user row: the thread is not in their inbox
     // at all, so it must not be claimable either.
     $outsider = User::factory()->create(['tenant_id' => $owner->tenant_id]);
+    $outsider->givePermissionTo('conversations.take-over');
 
     $this->actingAs($outsider, 'sanctum')
         ->postJson("/api/conversations/{$conversation->id}/take-over")
@@ -258,4 +262,20 @@ test('a conversation from another tenant cannot be taken over', function () {
         ->assertNotFound();
 
     expect($conversation->fresh()->user_id)->toBeNull();
+});
+
+test('an agent without the take-over permission cannot take a thread over', function () {
+    Event::fake();
+    $owner = takeOverOwner();
+    $connection = takeOverConnection($owner);
+    $holder = takeOverAgent($owner, $connection);
+    $taker = takeOverAgent($owner, $connection);
+    $taker->revokePermissionTo('conversations.take-over');
+    $conversation = takeOverConversation($connection, $holder);
+
+    $this->actingAs($taker->fresh())
+        ->postJson("/api/conversations/{$conversation->id}/take-over")
+        ->assertForbidden();
+
+    expect($conversation->fresh()->user_id)->toBe($holder->id);
 });

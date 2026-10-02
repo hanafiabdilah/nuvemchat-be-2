@@ -16,6 +16,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
@@ -32,6 +33,7 @@ function transferTestOwner(string $name = 'Ana Owner'): User
     $user->forceFill(['tenant_id' => $tenant->id])->save();
 
     $user->assignRole(Role::findOrCreate('owner', 'web'));
+    $user->givePermissionTo(Permission::findOrCreate('conversations.transfer', 'web'));
 
     return $user->fresh();
 }
@@ -51,6 +53,7 @@ function transferTestAgent(User $owner, Connection $connection, string $name): U
 {
     $agent = User::factory()->create(['tenant_id' => $owner->tenant_id, 'name' => $name]);
     $agent->connections()->syncWithoutDetaching([$connection->id]);
+    $agent->givePermissionTo(Permission::findOrCreate('conversations.transfer', 'web'));
 
     return $agent->fresh();
 }
@@ -160,4 +163,22 @@ test('a refused transfer leaves no note behind', function () {
 
     expect($conversation->messages()->where('message_type', MessageType::Info)->exists())->toBeFalse()
         ->and((int) $conversation->fresh()->user_id)->toBe((int) $holder->id);
+});
+
+test('an assignee without the transfer permission cannot transfer', function () {
+    $owner = transferTestOwner();
+    $connection = transferTestConnection($owner);
+    $holder = transferTestAgent($owner, $connection, 'Bruno');
+    $target = transferTestAgent($owner, $connection, 'Carla');
+    $holder->revokePermissionTo('conversations.transfer');
+    $conversation = transferTestConversation($connection, $holder);
+
+    $this->actingAs($holder->fresh())
+        ->postJson("/api/conversations/{$conversation->id}/transfer", ['agent_id' => $target->id])
+        ->assertForbidden();
+    $this->actingAs($holder->fresh())
+        ->getJson("/api/conversations/{$conversation->id}/transfer-targets")
+        ->assertForbidden();
+
+    expect($conversation->fresh()->user_id)->toBe($holder->id);
 });
