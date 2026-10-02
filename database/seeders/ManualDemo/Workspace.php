@@ -70,7 +70,7 @@ trait Workspace
     {
         $all = [
             'chat' => true, 'whatsapp_api' => true, 'crm' => true, 'flow' => true,
-            'flow_assistant' => true, 'ai_agent_hub' => true, 'statistics' => true, 'catalog' => true,
+            'flow_assistant' => true, 'ai_agent_hub' => true, 'statistics' => true, 'catalog' => true, 'mcp' => true,
         ];
 
         Plan::where('slug', 'business')->first()?->forceFill([
@@ -103,9 +103,10 @@ trait Workspace
             'Supervisor' => [
                 'agents.view', 'agents.update-avatar', 'agents.sync-connections', 'statistics.tenant.view',
                 'statistics.agents.view', 'leads.view', 'leads.create', 'leads.update', 'contacts.update',
+                'conversations.transfer', 'conversations.take-over',
                 'tags.create', 'tags.update', 'tags.delete', 'broadcasts.view', 'flows.view', 'gallery.view',
             ],
-            'Atendente' => ['contacts.update', 'templates.send', 'templates.view', 'gallery.view'],
+            'Atendente' => ['contacts.update', 'templates.send', 'templates.view', 'gallery.view', 'conversations.transfer', 'conversations.take-over'],
             'Vendas' => ['leads.view', 'leads.create', 'leads.update', 'contacts.update'],
             'Financeiro' => ['billing.view', 'integrations.view'],
             'Estagiário' => [],

@@ -99,6 +99,10 @@ trait Catalog
                     'cart' => true,
                     'payment' => ['enabled' => true, 'integration_id' => $this->integrations['openpix']->id, 'method' => 'pix', 'expires_in_minutes' => 30],
                 ],
+                'follow_up' => ['enabled' => true, 'steps' => [
+                    ['delay_minutes' => 30, 'delay_unit' => 'minutes', 'instruction' => 'Pergunte com leveza se ficou alguma dúvida sobre o produto que ele estava vendo.'],
+                    ['delay_minutes' => 240, 'delay_unit' => 'hours', 'instruction' => 'Lembre que o carrinho continua separado e ofereça gerar o Pix.'],
+                ]],
             ], 300, 160],
             ['paid', 'message', ['label' => 'Pagamento confirmado', 'messages' => [
                 $text('Pagamento confirmado! ✅ Seu pedido #{{order_id}} ({{order_items}}) já está sendo separado.'),
