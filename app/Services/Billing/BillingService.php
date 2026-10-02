@@ -20,6 +20,7 @@ use App\Models\SavedCard;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
+use App\Services\Billing\Gateways\AuthorisesRecurringSeparately;
 use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
 use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
@@ -354,32 +355,19 @@ class BillingService
             return $this->subscribeWithOpenedCard($tenant, $plan, $gateway, $opts);
         }
 
+        if ($gateway instanceof AuthorisesRecurringSeparately) {
+            return $this->subscribeWithCardThenMandate($tenant, $plan, $gateway, $opts);
+        }
+
         // A kept card (Mercado Pago): the token was minted from its id and the
         // CVV typed now, and the payer has to be the customer the card belongs to.
         /** @var SavedCard|null $card */
         $card = $opts['saved_card'] ?? null;
         $payerEmail = $card?->customer_email ?: ($opts['payer_email'] ?? null);
         $quote = $opts['quote'] ?? null;
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name(), $quote);
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name(), $quote, deferSwitch: true);
         $periodEnd = $this->nextPeriodEnd($subscription, now());
-        $first = $this->firstCharge($subscription, $quote);
-
-        $invoice = Invoice::create([
-            'tenant_id' => $tenant->id,
-            'subscription_id' => $subscription->id,
-            'status' => InvoiceStatus::Pending,
-            'payment_method' => PaymentMethod::Card,
-            'gateway' => $gateway->name(),
-            'amount_cents' => $first['amount_cents'],
-            'proration_credit_cents' => $first['proration_credit_cents'],
-            // From the subscription, which froze both halves of the price when
-            // it was created — see createPendingSubscription().
-            'currency' => $subscription->currency ?: ($plan->currency ?? 'BRL'),
-            'period_start' => $subscription->current_period_start,
-            'period_end' => $periodEnd,
-            'order_reference' => $this->orderReference($subscription, $subscription->current_period_start),
-            'idempotency_key' => (string) Str::uuid(),
-        ]);
+        $invoice = $this->firstCardInvoice($subscription, $plan, $gateway->name(), $quote, $periodEnd);
 
         try {
             $response = $gateway->createPayment([
@@ -405,6 +393,7 @@ class BillingService
             // The row exists before the call because its reference goes in the
             // payload; a refusal must not strand it looking payable.
             $this->markInvoiceFailed($invoice, 'subscribe_card', $e);
+            $this->abandonDeferredSubscription($subscription);
 
             if ($card && ($opts['discard_card_on_failure'] ?? false)) {
                 $this->savedCards->discardIfNeverUsed($card);
@@ -434,14 +423,201 @@ class BillingService
             // Declined, or the rare `unknown` where the gateway never answered.
             // Neither activates anything; `unknown` resolves by itself and its
             // webhook lands on this same invoice through order_reference.
-            in_array($payment['status'] ?? null, ['unknown', 'pending'], true)
-                ? $invoice->update(['status' => InvoiceStatus::Pending])
-                : $this->markInvoiceFailed($invoice, 'subscribe_card', payment: $payment);
+            if (in_array($payment['status'] ?? null, ['unknown', 'pending'], true)) {
+                $invoice->update(['status' => InvoiceStatus::Pending]);
+            } else {
+                $this->markInvoiceFailed($invoice, 'subscribe_card', payment: $payment);
+                $this->abandonDeferredSubscription($subscription);
+            }
         }
 
         $this->fireUpdated($subscription);
 
         return $subscription->fresh();
+    }
+
+    /**
+     * Card on a gateway that sets up renewals after the first payment (Mercado
+     * Pago in Brazil — see AuthorisesRecurringSeparately for why).
+     *
+     * 1. The first cycle is a plain `/v1/payments` charge on the saved card,
+     *    with the first of the two tokens the browser minted. This is the call
+     *    that decides the purchase: paid activates the plan, refused leaves
+     *    the workspace exactly as it was.
+     * 2. Only then is the second token turned into a preapproval starting when
+     *    the paid period ends. Its refusal does not undo the purchase — the
+     *    plan is paid for — it leaves the subscription without an instrument,
+     *    the state a card that stopped working is already in (renewal falls to
+     *    past_due → grace, and the customer is asked for a card). The reason is
+     *    kept on the invoice (`meta.mandate_failure`) for the Back Office.
+     *
+     * A card is always kept for a subscription: it is what the renewals run on.
+     */
+    protected function subscribeWithCardThenMandate(
+        Tenant $tenant,
+        Plan $plan,
+        BillingGateway&AuthorisesRecurringSeparately $gateway,
+        array $opts,
+    ): Subscription {
+        /** @var SavedCard|null $card */
+        $card = $opts['saved_card'] ?? null;
+        $chargeToken = (string) ($opts['card_token'] ?? '');
+        $mandateToken = (string) ($opts['mandate_token'] ?? '');
+
+        if (! $card || $card->gateway !== $gateway->name() || $chargeToken === '' || $mandateToken === '') {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'saved_card_id' => __('Choose a card and enter its security code.'),
+            ]);
+        }
+
+        $quote = $opts['quote'] ?? null;
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name(), $quote, deferSwitch: true);
+        $periodEnd = $this->nextPeriodEnd($subscription, now());
+        $invoice = $this->firstCardInvoice($subscription, $plan, $gateway->name(), $quote, $periodEnd);
+
+        try {
+            $response = $gateway->createPayment([
+                'order_reference' => $invoice->order_reference,
+                'amount' => $invoice->amount_cents,
+                'currency' => $invoice->currency,
+                'payment_method' => 'card',
+                'once' => true,
+                'card_token' => $chargeToken,
+                'card_brand' => $card->brand,
+                'card_issuer_id' => $card->issuer_id,
+                'customer_id' => $card->customer_id,
+                'description' => "Assinatura {$plan->name}",
+                'customer' => $this->customerPayload($tenant, $card->customer_email),
+                'metadata' => ['tenant_id' => $tenant->id, 'subscription_id' => $subscription->id],
+            ], $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            $this->markInvoiceFailed($invoice, 'subscribe_card', $e);
+            $this->abandonDeferredSubscription($subscription);
+
+            if ($opts['discard_card_on_failure'] ?? false) {
+                $this->savedCards->discardIfNeverUsed($card);
+            }
+
+            throw $e;
+        }
+
+        $payment = $response['data'] ?? [];
+        $status = $payment['status'] ?? null;
+
+        if (filled($payment['id'] ?? null)) {
+            $invoice->update(['payment_id' => (string) $payment['id']]);
+        }
+
+        if ($status === 'paid') {
+            $this->savedCards->markUsed($card);
+            $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]);
+            $this->activate($subscription, $periodEnd);
+            $this->authoriseRenewals($subscription->fresh(), $gateway, $invoice, $card, $mandateToken, $periodEnd);
+        } elseif (in_array($status, ['pending', 'unknown'], true)) {
+            // In review (`in_process`): the webhook settles the invoice. The
+            // mandate token does not live that long, so the renewals are not
+            // set up — the customer is asked for a card before the period ends.
+            $this->savedCards->markUsed($card);
+            $invoice->update([
+                'status' => InvoiceStatus::Pending,
+                'meta' => array_merge($invoice->meta ?? [], [
+                    'mandate_failure' => $this->failureRecord($invoice, 'mandate', message: 'First charge still in review; renewals not authorised.'),
+                ]),
+            ]);
+        } else {
+            $this->markInvoiceFailed($invoice, 'subscribe_card', payment: $payment);
+            $this->abandonDeferredSubscription($subscription);
+
+            if ($opts['discard_card_on_failure'] ?? false) {
+                $this->savedCards->discardIfNeverUsed($card);
+            }
+        }
+
+        $this->fireUpdated($subscription);
+
+        return $subscription->fresh();
+    }
+
+    /**
+     * The second half of subscribeWithCardThenMandate(): the standing
+     * authorisation for every cycle after the one just paid. Never throws —
+     * the purchase already succeeded.
+     */
+    protected function authoriseRenewals(
+        Subscription $subscription,
+        AuthorisesRecurringSeparately $gateway,
+        Invoice $invoice,
+        SavedCard $card,
+        string $mandateToken,
+        CarbonInterface $periodEnd,
+    ): void {
+        try {
+            $instrumentId = $gateway->authoriseRecurring([
+                'amount' => (int) $subscription->price_cents,
+                'currency' => $subscription->currency ?: 'BRL',
+                'card_token' => $mandateToken,
+                'start_date' => $periodEnd,
+                'recurring' => $subscription->plan->billing_cycle->mercadoPagoFrequency(),
+                'description' => "Assinatura {$subscription->plan->name}",
+                'customer' => $this->customerPayload($subscription->tenant, $card->customer_email),
+                'subscription_id' => $subscription->id,
+            ], 'mandate-'.$invoice->idempotency_key);
+
+            $subscription->forceFill(['payment_instrument_id' => $instrumentId])->save();
+        } catch (\Throwable $e) {
+            Log::warning('Card subscription paid, but its renewals could not be authorised', [
+                'subscription_id' => $subscription->id,
+                'invoice_id' => $invoice->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            $invoice->update([
+                'meta' => array_merge($invoice->meta ?? [], [
+                    'mandate_failure' => $this->failureRecord($invoice, 'mandate', $e),
+                ]),
+            ]);
+        }
+    }
+
+    /**
+     * The invoice for a card subscription's first cycle. Created before the
+     * gateway call because its reference goes in the payload.
+     */
+    protected function firstCardInvoice(Subscription $subscription, Plan $plan, string $gateway, ?array $quote, CarbonInterface $periodEnd): Invoice
+    {
+        $first = $this->firstCharge($subscription, $quote);
+
+        return Invoice::create([
+            'tenant_id' => $subscription->tenant_id,
+            'subscription_id' => $subscription->id,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => PaymentMethod::Card,
+            'gateway' => $gateway,
+            'amount_cents' => $first['amount_cents'],
+            'proration_credit_cents' => $first['proration_credit_cents'],
+            // From the subscription, which froze both halves of the price when
+            // it was created — see createPendingSubscription().
+            'currency' => $subscription->currency ?: ($plan->currency ?? 'BRL'),
+            'period_start' => $subscription->current_period_start,
+            'period_end' => $periodEnd,
+            'order_reference' => $this->orderReference($subscription, $subscription->current_period_start),
+            'idempotency_key' => (string) Str::uuid(),
+        ]);
+    }
+
+    /**
+     * A refused card purchase that was waiting to replace a plan: closed, so
+     * it never shows up as a pending change and the plan it would have
+     * replaced simply carries on. A purchase that replaced nothing is left as
+     * it always was (it is the workspace's only row).
+     */
+    protected function abandonDeferredSubscription(Subscription $subscription): void
+    {
+        if (! $subscription->replaces_subscription_id) {
+            return;
+        }
+
+        $subscription->update(['status' => SubscriptionStatus::Cancelled, 'cancelled_at' => now()]);
     }
 
     /**
@@ -2101,8 +2277,19 @@ class BillingService
         PaymentMethod $method,
         ?string $gateway = null,
         ?array $quote = null,
+        bool $deferSwitch = false,
     ): Subscription {
         $upgrade = ($quote['type'] ?? null) === PlanChange::UPGRADE;
+
+        // A card pays (or is refused) in this same request, so the plan it
+        // replaces keeps being the workspace's plan until the money is in —
+        // the upgrade mechanism, used for every card purchase. Without it a
+        // refused card cancelled a working plan (a comp, a lapsed-but-paid
+        // period) and left the workspace locked behind a past_due row.
+        $replaces = $upgrade
+            ? ($quote['current']['subscription_id'] ?? null)
+            : ($deferSwitch ? $tenant->current_subscription_id : null);
+        $deferred = $upgrade || $replaces !== null;
 
         // A change started earlier and never paid is abandoned by starting
         // another: two pending upgrades would both take over once paid.
@@ -2114,7 +2301,7 @@ class BillingService
         //
         // ⚠️ Not for an upgrade. The plan it replaces keeps working — and keeps
         // its charges — until the new one is paid; see completePlanSwitch().
-        if (! $upgrade) {
+        if (! $deferred) {
             $this->voidSupersededCharges($tenant);
         }
 
@@ -2122,15 +2309,15 @@ class BillingService
         // here, because everything downstream reads the subscription.
         $price = $plan->priceForMarket($tenant->market_code);
 
-        return DB::transaction(function () use ($tenant, $plan, $method, $price, $gateway, $upgrade, $quote) {
-            if (! $upgrade) {
+        return DB::transaction(function () use ($tenant, $plan, $method, $price, $gateway, $upgrade, $quote, $replaces, $deferred) {
+            if (! $deferred) {
                 $this->supersedeCurrent($tenant);
             }
 
             $subscription = Subscription::create([
                 'tenant_id' => $tenant->id,
                 'plan_id' => $plan->id,
-                'replaces_subscription_id' => $upgrade ? ($quote['current']['subscription_id'] ?? null) : null,
+                'replaces_subscription_id' => $replaces,
                 'proration_balance_cents' => $upgrade && ($quote['balance_credit_cents'] ?? 0) > 0
                     ? (int) $quote['balance_credit_cents']
                     : null,
@@ -2154,9 +2341,9 @@ class BillingService
                 'trial_ends_at' => ! $upgrade && $plan->trial_days > 0 ? now()->addDays($plan->trial_days) : null,
             ]);
 
-            // An upgrade is not pointed at until it is paid: the plan it
-            // replaces stays the workspace's plan in the meantime.
-            if (! $upgrade) {
+            // An upgrade (or a card purchase) is not pointed at until it is
+            // paid: the plan it replaces stays the workspace's plan meanwhile.
+            if (! $deferred) {
                 $this->setCurrent($tenant, $subscription);
             }
 
@@ -2254,19 +2441,35 @@ class BillingService
      */
     protected function markInvoiceFailed(Invoice $invoice, string $stage, ?\Throwable $e = null, ?array $payment = null): void
     {
+        $invoice->update([
+            'status' => InvoiceStatus::Failed,
+            'meta' => array_merge($invoice->meta ?? [], ['failure' => $this->failureRecord($invoice, $stage, $e, $payment)]),
+        ]);
+    }
+
+    /**
+     * What markInvoiceFailed() keeps — also used for a refused renewal
+     * authorisation, which is recorded without failing the paid invoice.
+     *
+     * @param  array<string, mixed>|null  $payment
+     * @return array<string, mixed>
+     */
+    protected function failureRecord(Invoice $invoice, string $stage, ?\Throwable $e = null, ?array $payment = null, ?string $message = null): array
+    {
         $failure = array_filter([
             'at' => now()->toIso8601String(),
             'stage' => $stage,
             'gateway' => $invoice->gateway ?? 'payment_service',
+            'message' => $message,
         ]);
 
         if ($e instanceof UpstreamServiceException) {
-            $failure += array_filter([
+            $failure = array_merge($failure, array_filter([
                 'ref' => $e->reference ?: null,
                 'code' => $e->errorCode,
                 'message' => $e->rawMessage,
                 'response' => $e->details ?: null,
-            ]);
+            ]));
         } elseif ($e) {
             $failure['message'] = class_basename($e).': '.Str::limit($e->getMessage(), 1000);
         }
@@ -2279,10 +2482,7 @@ class BillingService
             ]);
         }
 
-        $invoice->update([
-            'status' => InvoiceStatus::Failed,
-            'meta' => array_merge($invoice->meta ?? [], ['failure' => $failure]),
-        ]);
+        return $failure;
     }
 
     protected function setCurrent(Tenant $tenant, Subscription $subscription): void
