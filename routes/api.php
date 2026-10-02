@@ -1020,6 +1020,9 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         // balance without holding the keys.
         Route::middleware('permission:bo.credits.manage')->group(function () {
             Route::get('/credits', [AdminCreditController::class, 'index']);
+            // The top-up floor and the low-balance warning of one market, in
+            // that market's own money.
+            Route::put('/credits/balance-settings', [AdminCreditController::class, 'updateBalanceSettings']);
             // The markup and FX rate the whole offering is priced on. Under the
             // credits permission rather than the token pool's: setting a price
             // is a commercial act, not custody of the platform's secrets.

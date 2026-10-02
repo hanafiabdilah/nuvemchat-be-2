@@ -116,3 +116,80 @@ it('rounds a converted minimum up to two significant digits, never down', functi
     // R$ 10,00 → US$2 → Rp 31.234 → Rp 32.000.
     expect(CreditPricing::minTopupCents('IDR'))->toBe(3200000);
 });
+
+function balanceSettingsAdmin(): \App\Models\Admin
+{
+    $role = \Spatie\Permission\Models\Role::findOrCreate('super-admin', 'web');
+    $role->forceFill(['is_platform' => true])->save();
+    $role->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate('bo.credits.manage', 'web'));
+
+    $admin = \App\Models\Admin::factory()->create();
+    $admin->assignRole($role);
+
+    return $admin->fresh();
+}
+
+it('lets a market state its own top-up floor and warning, in its own currency', function () {
+    $this->actingAs(balanceSettingsAdmin())
+        ->putJson('/api/admin/credits/balance-settings', [
+            'market' => 'ID',
+            'min_topup_cents' => 5000000,
+            'low_balance_cents' => 2500000,
+        ])
+        ->assertOk()
+        ->assertJsonPath('balance_settings.min_topup_custom', true)
+        ->assertJsonPath('balance_settings.min_topup_cents', 5000000)
+        // The converted home number is still reported, for the "convert" toggle.
+        ->assertJsonPath('balance_settings.min_topup_default_cents', 3200000);
+
+    // Exactly what was typed — no rounding over an amount an admin chose.
+    expect(CreditPricing::minTopupCents('IDR'))->toBe(5000000)
+        ->and(CreditPricing::lowBalanceCents('IDR'))->toBe(2500000)
+        // The home market and its numbers are untouched.
+        ->and(CreditPricing::minTopupCents('BRL'))->toBe(1000)
+        ->and(CreditPricing::lowBalanceCents('BRL'))->toBe(500);
+
+    // Presets below the market's own floor are not offered.
+    expect(min(CreditPricing::topupPresetsCents('IDR', 100000)))->toBeGreaterThanOrEqual(5000000);
+});
+
+it('returns a market to the converted home amount when its own is cleared', function () {
+    $admin = balanceSettingsAdmin();
+
+    $this->actingAs($admin)->putJson('/api/admin/credits/balance-settings', [
+        'market' => 'ID', 'min_topup_cents' => 5000000, 'low_balance_cents' => null,
+    ])->assertOk()->assertJsonPath('balance_settings.low_balance_custom', false);
+
+    $this->actingAs($admin)->putJson('/api/admin/credits/balance-settings', [
+        'market' => 'ID', 'min_topup_cents' => null, 'low_balance_cents' => null,
+    ])->assertOk();
+
+    expect(CreditPricing::minTopupCents('IDR'))->toBe(3200000)
+        ->and(CreditPricing::lowBalanceCents('IDR'))->toBe(1600000);
+});
+
+it('edits the platform numbers from the home market and refuses to blank them', function () {
+    $admin = balanceSettingsAdmin();
+
+    $this->actingAs($admin)->putJson('/api/admin/credits/balance-settings', [
+        'market' => 'BR', 'min_topup_cents' => null, 'low_balance_cents' => 500,
+    ])->assertUnprocessable()->assertJsonValidationErrors('min_topup_cents');
+
+    $this->actingAs($admin)->putJson('/api/admin/credits/balance-settings', [
+        'market' => 'BR', 'min_topup_cents' => 2000, 'low_balance_cents' => 800,
+    ])->assertOk()->assertJsonPath('balance_settings.is_base', true);
+
+    // R$ 20,00 → Rp 64.000: markets without their own floor follow the home one.
+    expect(CreditPricing::minTopupCents('BRL'))->toBe(2000)
+        ->and(CreditPricing::minTopupCents('IDR'))->toBe(6400000);
+});
+
+it('serves the selected market balance settings on the Back Office credits page', function () {
+    CreditPricing::storeBalanceSettingsFor('IDR', ['min_topup_cents' => 5000000]);
+
+    $this->actingAs(balanceSettingsAdmin())
+        ->getJson('/api/admin/credits?market=ID')
+        ->assertOk()
+        ->assertJsonPath('balance_settings.currency', 'IDR')
+        ->assertJsonPath('balance_settings.min_topup_cents', 5000000);
+});

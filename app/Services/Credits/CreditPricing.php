@@ -103,9 +103,23 @@ class CreditPricing
         );
     }
 
-    /** Smallest top-up we will issue a Pix for. */
+    /**
+     * Smallest top-up we will issue a charge for, in `$currency`.
+     *
+     * A market may state its own floor (BO → Credits → Balance settings, with
+     * that market selected): a converted R$ 10,00 is an arithmetic accident in
+     * another country, and the payment fee that the floor exists to outrun is
+     * set by that country's rails, not by ours. Without an override the floor
+     * is the home one converted and rounded up — what every market got before.
+     */
     public static function minTopupCents(?string $currency = null): int
     {
+        $own = self::marketOverride(self::KEY_MIN_TOPUP_CENTS, $currency);
+
+        if ($own !== null) {
+            return max(1, $own);
+        }
+
         $cents = max(1, self::inCurrency(
             max(1, (int) self::number(self::KEY_MIN_TOPUP_CENTS, 'min_topup_cents', 1000)),
             $currency,
@@ -166,10 +180,101 @@ class CreditPricing
     /** Balance under which the workspace is warned it is about to lose its AI. */
     public static function lowBalanceCents(?string $currency = null): int
     {
+        $own = self::marketOverride(self::KEY_LOW_BALANCE_CENTS, $currency);
+
+        if ($own !== null) {
+            return max(0, $own);
+        }
+
         return self::inCurrency(
             max(0, (int) self::number(self::KEY_LOW_BALANCE_CENTS, 'low_balance_cents', 500)),
             $currency,
         );
+    }
+
+    /**
+     * The balance settings as one market sees them: what applies in its
+     * currency, and whether each number is that market's own or the home one
+     * converted.
+     *
+     * Keyed by currency, not by market code, because these are amounts — and a
+     * market's currency is locked once it has a workspace, so for every market
+     * that matters the two are the same key. Two markets sharing a currency
+     * share a floor, which is what a floor in that currency means.
+     *
+     * @return array{currency: string, is_base: bool, min_topup_cents: int, low_balance_cents: int, min_topup_custom: bool, low_balance_custom: bool, min_topup_default_cents: int, low_balance_default_cents: int}
+     */
+    public static function balanceSettingsFor(string $currency): array
+    {
+        $currency = strtoupper($currency);
+        $isBase = ! self::isConverted($currency);
+
+        $minOwn = $isBase ? null : self::marketOverride(self::KEY_MIN_TOPUP_CENTS, $currency);
+        $lowOwn = $isBase ? null : self::marketOverride(self::KEY_LOW_BALANCE_CENTS, $currency);
+
+        $minDefault = $isBase ? self::minTopupCents() : Money::roundUpSignificant(max(1, self::inCurrency(
+            max(1, (int) self::number(self::KEY_MIN_TOPUP_CENTS, 'min_topup_cents', 1000)),
+            $currency,
+        )));
+        $lowDefault = $isBase ? self::lowBalanceCents() : self::inCurrency(
+            max(0, (int) self::number(self::KEY_LOW_BALANCE_CENTS, 'low_balance_cents', 500)),
+            $currency,
+        );
+
+        return [
+            'currency' => $currency,
+            'is_base' => $isBase,
+            'min_topup_cents' => self::minTopupCents($currency),
+            'low_balance_cents' => self::lowBalanceCents($currency),
+            'min_topup_custom' => $minOwn !== null,
+            'low_balance_custom' => $lowOwn !== null,
+            'min_topup_default_cents' => $minDefault,
+            'low_balance_default_cents' => $lowDefault,
+        ];
+    }
+
+    /**
+     * Store one market's balance settings. In the home currency this writes
+     * the platform numbers themselves; elsewhere it writes that currency's
+     * override, and a null clears it — back to the converted home number.
+     *
+     * Only the keys present are touched, like store().
+     *
+     * @param  array{min_topup_cents?: int|null, low_balance_cents?: int|null}  $values
+     */
+    public static function storeBalanceSettingsFor(string $currency, array $values): void
+    {
+        $currency = strtoupper($currency);
+
+        if (! self::isConverted($currency)) {
+            self::store(array_intersect_key($values, array_flip(['min_topup_cents', 'low_balance_cents'])));
+
+            return;
+        }
+
+        $map = [
+            'min_topup_cents' => self::KEY_MIN_TOPUP_CENTS,
+            'low_balance_cents' => self::KEY_LOW_BALANCE_CENTS,
+        ];
+
+        foreach ($map as $short => $key) {
+            if (array_key_exists($short, $values)) {
+                $value = $values[$short];
+                Setting::set("{$key}.{$currency}", $value === null ? null : (string) (int) $value);
+            }
+        }
+    }
+
+    /** A currency's own amount for a balance setting, or null when it has none. */
+    private static function marketOverride(string $key, ?string $currency): ?int
+    {
+        if (! self::isConverted($currency)) {
+            return null;
+        }
+
+        $value = Setting::get($key.'.'.strtoupper((string) $currency));
+
+        return is_numeric($value) ? (int) $value : null;
     }
 
     /**

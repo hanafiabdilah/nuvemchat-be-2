@@ -99,6 +99,9 @@ class AdminCreditController extends Controller
                 'total' => $wallets->total(),
             ],
             'pricing' => CreditPricing::settings(),
+            // The floor and the warning as this market sees them, in its own
+            // money — the numbers the Balance settings dialog edits.
+            'balance_settings' => CreditPricing::balanceSettingsFor($currency),
             'market' => [
                 'code' => $market?->code,
                 'name' => $market?->name,
@@ -179,6 +182,54 @@ class AdminCreditController extends Controller
 
         return response()->json([
             'message' => 'Pricing updated',
+            'pricing' => CreditPricing::settings(),
+        ]);
+    }
+
+    /**
+     * Set one market's top-up floor and low-balance warning, in its currency.
+     *
+     * In the home market this edits the platform numbers every other market is
+     * converted from. Elsewhere it stores that currency's own amounts; sending
+     * null for a field returns it to the converted home number.
+     */
+    public function updateBalanceSettings(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'market' => ['required', 'string', 'exists:markets,code'],
+            'min_topup_cents' => ['present', 'nullable', 'integer', 'min:1', 'max:100000000000'],
+            'low_balance_cents' => ['present', 'nullable', 'integer', 'min:0', 'max:100000000000'],
+        ]);
+
+        $market = Market::query()->findOrFail(strtoupper($validated['market']));
+        $currency = $market->currency ?: MarketMoney::baseCurrency();
+        $values = array_intersect_key($validated, array_flip(['min_topup_cents', 'low_balance_cents']));
+
+        // The home market has nothing to fall back to: its numbers are the
+        // fallback. A blank there is a mistake, not a reset.
+        if (strtoupper($currency) === strtoupper(MarketMoney::baseCurrency())) {
+            $request->validate([
+                'min_topup_cents' => ['required'],
+                'low_balance_cents' => ['required'],
+            ]);
+        }
+
+        $before = CreditPricing::balanceSettingsFor($currency);
+
+        CreditPricing::storeBalanceSettingsFor($currency, $values);
+
+        $after = CreditPricing::balanceSettingsFor($currency);
+
+        AuditLog::record(
+            'credit.balance_settings_updated',
+            "Balance settings for {$market->code} ({$currency})",
+            ['market' => $market->code, 'before' => $before, 'after' => $after],
+            $request->user(),
+        );
+
+        return response()->json([
+            'message' => 'Balance settings updated',
+            'balance_settings' => $after,
             'pricing' => CreditPricing::settings(),
         ]);
     }
