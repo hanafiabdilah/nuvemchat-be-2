@@ -301,6 +301,7 @@ class PaymentServiceClient implements BillingGateway
             upstreamCode: is_array($body) ? ($body['code'] ?? null) : null,
             status: $response->status(),
             context: ['payment_service_status' => $response->status()],
+            details: UpstreamError::httpDetails($response),
         );
     }
 

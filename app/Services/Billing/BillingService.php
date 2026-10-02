@@ -10,6 +10,7 @@ use App\Enums\Notification\NotificationType;
 use App\Events\SubscriptionUpdated;
 use App\Exceptions\Billing\MissingBillingIdentityException;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
+use App\Exceptions\UpstreamServiceException;
 use App\Exceptions\UserFacingException;
 use App\Models\Admin;
 use App\Models\ApiwaySubscription;
@@ -403,7 +404,7 @@ class BillingService
         } catch (\Throwable $e) {
             // The row exists before the call because its reference goes in the
             // payload; a refusal must not strand it looking payable.
-            $invoice->update(['status' => InvoiceStatus::Failed]);
+            $this->markInvoiceFailed($invoice, 'subscribe_card', $e);
 
             if ($card && ($opts['discard_card_on_failure'] ?? false)) {
                 $this->savedCards->discardIfNeverUsed($card);
@@ -433,11 +434,9 @@ class BillingService
             // Declined, or the rare `unknown` where the gateway never answered.
             // Neither activates anything; `unknown` resolves by itself and its
             // webhook lands on this same invoice through order_reference.
-            $invoice->update([
-                'status' => in_array($payment['status'] ?? null, ['unknown', 'pending'], true)
-                    ? InvoiceStatus::Pending
-                    : InvoiceStatus::Failed,
-            ]);
+            in_array($payment['status'] ?? null, ['unknown', 'pending'], true)
+                ? $invoice->update(['status' => InvoiceStatus::Pending])
+                : $this->markInvoiceFailed($invoice, 'subscribe_card', payment: $payment);
         }
 
         $this->fireUpdated($subscription);
@@ -524,7 +523,7 @@ class BillingService
                 $this->customerPayload($tenant, $opts['payer_email'] ?? null),
             );
         } catch (\Throwable $e) {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
+            $this->markInvoiceFailed($invoice, 'subscribe_card', $e);
 
             throw $e;
         }
@@ -545,7 +544,7 @@ class BillingService
         } elseif (in_array($status, ['pending', 'unknown'], true)) {
             $invoice->update(['checkout_url' => $payment['instructions']['redirect_url'] ?? null]);
         } else {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
+            $this->markInvoiceFailed($invoice, 'subscribe_card', payment: $payment);
         }
 
         $this->fireUpdated($subscription);
@@ -673,7 +672,7 @@ class BillingService
             // payload), so a rejection would otherwise strand a pending invoice
             // that looks payable but carries no QR — and the $hasOpen guard in
             // billing:pix-generate would then refuse to issue a real one.
-            $invoice->update(['status' => InvoiceStatus::Failed]);
+            $this->markInvoiceFailed($invoice, 'cycle_charge', $e);
 
             throw $e;
         }
@@ -753,7 +752,7 @@ class BillingService
                 'metadata' => ['tenant_id' => $tenant->id, 'purpose' => 'credit_topup'],
             ], $invoice->idempotency_key);
         } catch (\Throwable $e) {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
+            $this->markInvoiceFailed($invoice, 'topup', $e);
 
             throw $e;
         }
@@ -831,7 +830,7 @@ class BillingService
                 'metadata' => ['tenant_id' => $tenant->id, 'purpose' => 'credit_topup'],
             ], $invoice->idempotency_key);
         } catch (\Throwable $e) {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
+            $this->markInvoiceFailed($invoice, 'topup_card', $e);
 
             if ($discardCardOnFailure || $dropAfter) {
                 $this->savedCards->discardIfNeverUsed($card);
@@ -858,7 +857,7 @@ class BillingService
         if ($status === 'paid') {
             $this->applyAssetPaymentUpdate($invoice->fresh(), $payment['id'] ?? null, 'paid');
         } elseif (! in_array($status, ['pending', 'unknown'], true)) {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
+            $this->markInvoiceFailed($invoice, 'topup_card', payment: $payment);
 
             if ($discardCardOnFailure && ! $dropAfter) {
                 $this->savedCards->discardIfNeverUsed($card);
@@ -978,7 +977,7 @@ class BillingService
                 'metadata' => ['tenant_id' => $subscription->tenant_id, 'subscription_id' => $subscription->id],
             ], $invoice->idempotency_key);
         } catch (\Throwable $e) {
-            $invoice->update(['status' => InvoiceStatus::Failed]);
+            $this->markInvoiceFailed($invoice, 'card_renewal', $e);
 
             Log::warning('Card renewal charge failed', [
                 'subscription_id' => $subscription->id,
@@ -1043,7 +1042,7 @@ class BillingService
             return;
         }
 
-        DB::transaction(function () use ($invoice, $paymentId, $status) {
+        DB::transaction(function () use ($invoice, $paymentId, $status, $payment) {
             $subscription = Subscription::lockForUpdate()->find($invoice->subscription_id);
             $invoice->refresh();
 
@@ -1064,7 +1063,7 @@ class BillingService
                 $status === 'paid' => $this->onInvoicePaid($subscription, $invoice),
                 $this->reversesAPayment($status) => $invoice->update(['status' => InvoiceStatus::Refunded]),
                 $status === 'expired' => $invoice->update(['status' => InvoiceStatus::Expired]),
-                in_array($status, ['declined', 'voided'], true) => $invoice->update(['status' => InvoiceStatus::Failed]),
+                in_array($status, ['declined', 'voided'], true) => $this->markInvoiceFailed($invoice, 'webhook', payment: $payment),
                 // created / pending / authorized — and `unknown`, which is the
                 // one worth naming: the gateway did not answer, so nobody knows
                 // whether the charge exists. It is not a failure and must never
@@ -1105,7 +1104,7 @@ class BillingService
                 $status === 'paid' => tap($invoice)->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]),
                 $this->reversesAPayment($status) => $invoice->update(['status' => InvoiceStatus::Refunded]),
                 $status === 'expired' => $invoice->update(['status' => InvoiceStatus::Expired]),
-                in_array($status, ['declined', 'voided'], true) => $invoice->update(['status' => InvoiceStatus::Failed]),
+                in_array($status, ['declined', 'voided'], true) => $this->markInvoiceFailed($invoice, 'webhook'),
                 default => $invoice->save(),
             };
 
@@ -2062,7 +2061,7 @@ class BillingService
             return;
         }
 
-        $invoice->update(['status' => InvoiceStatus::Failed]);
+        $this->markInvoiceFailed($invoice, 'card_renewal', payment: $payment);
 
         $category = $payment['decline']['category'] ?? 'unknown';
 
@@ -2240,6 +2239,50 @@ class BillingService
             // the old price next to the new plan.
             $this->setRecurringState($current, 'cancelled');
         }
+    }
+
+    /**
+     * Mark an invoice failed and keep *why* on the row itself.
+     *
+     * Production keeps no application log across deploys (storage/logs lives
+     * inside the container), and a refused card is exactly the kind of failure
+     * someone asks about days later. So the gateway's own answer — endpoint,
+     * status, body, decline code — is written to `meta.failure`, where the Back
+     * Office shows it. Operators only: tenants never read this field.
+     *
+     * @param  array<string, mixed>|null  $payment  A normalized payment that came back declined.
+     */
+    protected function markInvoiceFailed(Invoice $invoice, string $stage, ?\Throwable $e = null, ?array $payment = null): void
+    {
+        $failure = array_filter([
+            'at' => now()->toIso8601String(),
+            'stage' => $stage,
+            'gateway' => $invoice->gateway ?? 'payment_service',
+        ]);
+
+        if ($e instanceof UpstreamServiceException) {
+            $failure += array_filter([
+                'ref' => $e->reference ?: null,
+                'code' => $e->errorCode,
+                'message' => $e->rawMessage,
+                'response' => $e->details ?: null,
+            ]);
+        } elseif ($e) {
+            $failure['message'] = class_basename($e).': '.Str::limit($e->getMessage(), 1000);
+        }
+
+        if ($payment) {
+            $failure += array_filter([
+                'payment_id' => $this->paymentIdOf($payment),
+                'payment_status' => $payment['status'] ?? null,
+                'decline' => $payment['decline'] ?? null,
+            ]);
+        }
+
+        $invoice->update([
+            'status' => InvoiceStatus::Failed,
+            'meta' => array_merge($invoice->meta ?? [], ['failure' => $failure]),
+        ]);
     }
 
     protected function setCurrent(Tenant $tenant, Subscription $subscription): void

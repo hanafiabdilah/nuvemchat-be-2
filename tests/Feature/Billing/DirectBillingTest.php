@@ -249,6 +249,40 @@ it('subscribes a Brazilian card as a Mercado Pago preapproval that renews itself
     expect(app(BillingService::class)->chargeRenewal($subscription->fresh()))->toBeNull();
 });
 
+it('keeps the gateway answer on the invoice when Mercado Pago refuses the card', function () {
+    Http::fake(['api.mercadopago.com/preapproval' => Http::response([
+        'message' => 'CC_VAL_433 Credit card validation has failed',
+        'error' => 'bad_request',
+        'status' => 400,
+        'cause' => [],
+    ], 400)]);
+
+    $tenant = directWorkspace('BR');
+
+    expect(fn () => app(BillingService::class)->subscribe($tenant, directPlan(), PaymentMethod::Card, [
+        'card_token' => 'tok_secret',
+        'provider' => 'mercadopago',
+        'payer_email' => 'ana@example.test',
+    ]))->toThrow(App\Exceptions\UpstreamServiceException::class);
+
+    $invoice = App\Models\Invoice::where('tenant_id', $tenant->id)->latest('id')->firstOrFail();
+    $failure = $invoice->meta['failure'];
+
+    expect($invoice->status)->toBe(App\Enums\Billing\InvoiceStatus::Failed)
+        ->and($failure['stage'])->toBe('subscribe_card')
+        ->and($failure['gateway'])->toBe('mercadopago')
+        ->and($failure['ref'])->not->toBeEmpty()
+        ->and($failure['message'])->toContain('CC_VAL_433')
+        ->and($failure['response']['http_status'])->toBe(400)
+        ->and($failure['response']['body']['message'])->toBe('CC_VAL_433 Credit card validation has failed')
+        // The card token never lands in the table.
+        ->and(json_encode($invoice->meta))->not->toContain('tok_secret');
+
+    // The Back Office reads it; the tenant's own invoice resource does not.
+    expect((new App\Http\Resources\Admin\AdminInvoiceResource($invoice))->resolve()['failure']['code'])->toBe('payment_refused')
+        ->and((new App\Http\Resources\Billing\InvoiceResource($invoice))->resolve())->not->toHaveKey('failure');
+});
+
 it('attaches the first preapproval debit to the first invoice and bills later ones as renewals', function () {
     Http::fake(['api.mercadopago.com/preapproval' => Http::response(['id' => 'pre_1', 'status' => 'authorized'])]);
 

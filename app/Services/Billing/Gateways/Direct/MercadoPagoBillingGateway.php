@@ -528,6 +528,7 @@ class MercadoPagoBillingGateway implements BillingGateway, HoldsRecurringAuthori
             upstreamCode: $code,
             status: $response->status(),
             context: ['gateway' => 'mercadopago', 'gateway_status' => $response->status()],
+            details: UpstreamError::httpDetails($response),
         );
     }
 }

@@ -51,6 +51,10 @@ class AdminInvoiceResource extends JsonResource
                 'number' => $this->fiscalInvoice->number,
                 'message' => $this->fiscalInvoice->message,
             ] : null),
+            // Why a charge failed, in the gateway's own words (endpoint, status,
+            // body, decline code) — written by BillingService::markInvoiceFailed.
+            // Operators only; the tenant-facing InvoiceResource never ships it.
+            'failure' => $this->meta['failure'] ?? null,
             'market_code' => $this->whenLoaded('tenant', fn () => $this->tenant->market_code),
             'created_at' => $this->created_at,
         ];

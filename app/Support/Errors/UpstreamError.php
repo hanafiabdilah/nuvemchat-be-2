@@ -3,6 +3,7 @@
 namespace App\Support\Errors;
 
 use App\Exceptions\UpstreamServiceException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -48,6 +49,7 @@ final class UpstreamError
         int $status = 502,
         array $context = [],
         ?\Throwable $previous = null,
+        array $details = [],
     ): UpstreamServiceException {
         [$code, $message, $httpStatus] = self::resolve($provider, $raw, $upstreamCode, $status);
         $ref = self::log($provider, $raw, $upstreamCode, $status, $code, $context);
@@ -60,6 +62,7 @@ final class UpstreamError
             reference: $ref,
             rawMessage: $raw,
             previous: $previous,
+            details: $details,
         );
     }
 
@@ -69,7 +72,7 @@ final class UpstreamError
      *
      * @param  array<string, mixed>  $context
      * @param  array<string, mixed>  $extra  Fields the caller needs alongside
-     *         the message (balances, caps): payload, never prose.
+     *                                       the message (balances, caps): payload, never prose.
      */
     public static function response(
         UpstreamProvider $provider,
@@ -201,7 +204,7 @@ final class UpstreamError
     ];
 
     /**
-     * @return array{0: string,1: string, 2: int}  [code, message, httpStatus]
+     * @return array{0: string,1: string, 2: int} [code, message, httpStatus]
      */
     private static function resolve(UpstreamProvider $provider, ?string $raw, ?string $upstreamCode, int $status): array
     {
@@ -500,7 +503,7 @@ final class UpstreamError
             str_contains($m, 'not in allowed list') => [
                 'recipient_not_allowed',
                 'Este número não está na lista de destinatários permitidos da conta do WhatsApp. '
-                    . 'Enquanto a conta estiver em modo de teste, só é possível enviar para os números cadastrados no Meta Business.',
+                    .'Enquanto a conta estiver em modo de teste, só é possível enviar para os números cadastrados no Meta Business.',
                 422,
             ],
 
@@ -1168,5 +1171,47 @@ final class UpstreamError
         ]));
 
         return $ref;
+    }
+
+    /**
+     * What an HTTP upstream answered, in the shape kept for operators:
+     * endpoint (no query string — it can carry keys), status, and the body.
+     *
+     * @return array{method: ?string, endpoint: ?string, http_status: int, request: ?array, body: mixed}
+     */
+    public static function httpDetails(Response $response): array
+    {
+        $request = $response->transferStats?->getRequest();
+        $uri = $request?->getUri() ?? $response->effectiveUri();
+        $body = $response->json();
+
+        $sent = $request ? json_decode((string) $request->getBody(), true) : null;
+
+        return [
+            'method' => $request?->getMethod(),
+            'endpoint' => $uri ? $uri->getScheme().'://'.$uri->getHost().$uri->getPath() : null,
+            'http_status' => $response->status(),
+            // What we sent, minus anything that pays or authenticates: a card
+            // token is single-use but still a card, and this lands in a table.
+            'request' => is_array($sent) ? self::redact($sent) : null,
+            'body' => is_array($body) ? $body : Str::limit($response->body(), 4000),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected static function redact(array $data): array
+    {
+        foreach ($data as $key => $value) {
+            if (is_array($value)) {
+                $data[$key] = self::redact($value);
+            } elseif (is_string($key) && preg_match('/token|secret|password|cvv|security_code|card_number|authorization/i', $key)) {
+                $data[$key] = '[redacted]';
+            }
+        }
+
+        return $data;
     }
 }

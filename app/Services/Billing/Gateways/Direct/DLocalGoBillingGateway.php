@@ -491,6 +491,7 @@ class DLocalGoBillingGateway implements BillingGateway, OpensCardCheckouts
             upstreamCode: $code,
             status: $response->status(),
             context: ['gateway' => 'dlocalgo', 'gateway_status' => $response->status()],
+            details: UpstreamError::httpDetails($response),
         );
     }
 }

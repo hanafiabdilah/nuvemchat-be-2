@@ -33,6 +33,14 @@ class UpstreamServiceException extends RuntimeException implements HasUserSafeMe
         public readonly string $reference = '',
         public readonly ?string $rawMessage = null,
         ?\Throwable $previous = null,
+        /**
+         * What the upstream actually answered — endpoint, status, body. For
+         * whatever records the failure where an operator can read it (the
+         * invoice row, in billing); never rendered for a tenant.
+         *
+         * @var array<string, mixed>
+         */
+        public readonly array $details = [],
     ) {
         parent::__construct($userMessage, 0, $previous);
     }
@@ -44,7 +52,7 @@ class UpstreamServiceException extends RuntimeException implements HasUserSafeMe
 
     /**
      * @param  array<string, mixed>  $extra  Payload the caller needs alongside
-     *         the message (a balance, a cap). Never prose.
+     *                                       the message (a balance, a cap). Never prose.
      */
     public function toResponse(array $extra = []): JsonResponse
     {
