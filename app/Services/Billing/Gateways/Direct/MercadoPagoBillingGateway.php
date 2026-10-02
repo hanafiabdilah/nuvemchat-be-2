@@ -5,6 +5,7 @@ namespace App\Services\Billing\Gateways\Direct;
 use App\Models\Tenant;
 use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
+use App\Services\Billing\Gateways\HoldsRecurringAuthorisations;
 use App\Services\Billing\Gateways\SavesCards;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
@@ -39,7 +40,7 @@ use Illuminate\Support\Str;
  * ::MercadoPago: that dictionary is written for a *customer's own* account
  * ("confira a variável do nó"), and this account is ours.
  */
-class MercadoPagoBillingGateway implements BillingGateway, SavesCards
+class MercadoPagoBillingGateway implements BillingGateway, HoldsRecurringAuthorisations, SavesCards
 {
     /** How a preapproval is stored in `subscriptions.payment_instrument_id`. */
     public const INSTRUMENT_PREFIX = 'mp_preapproval:';
@@ -181,6 +182,25 @@ class MercadoPagoBillingGateway implements BillingGateway, SavesCards
         }
 
         $this->decode($response);
+    }
+
+    /**
+     * A scheduled downgrade: every later debit of the preapproval charges the
+     * new price. Only the amount moves — Mercado Pago keeps the frequency, which
+     * is why a downgrade that also changes the cycle is refused before this.
+     */
+    public function updateRecurringAmount(string $instrumentId, int $amountCents, string $currency): void
+    {
+        if (! $this->renewsItself($instrumentId)) {
+            return;
+        }
+
+        $this->decode($this->http()->put('/preapproval/'.$this->preapprovalId($instrumentId), [
+            'auto_recurring' => [
+                'transaction_amount' => $this->decimal($amountCents),
+                'currency_id' => $currency,
+            ],
+        ]));
     }
 
     public function preapprovalId(string $instrumentId): string

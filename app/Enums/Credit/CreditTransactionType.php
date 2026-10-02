@@ -37,6 +37,12 @@ enum CreditTransactionType: string
      * reconcile.
      */
     case Reversal = 'reversal';
+    /**
+     * The unused part of a plan the workspace upgraded away from, paid into
+     * the balance because the new plan's first charge could not carry it as
+     * a discount (a Mercado Pago preapproval charges its fixed amount). Positive.
+     */
+    case PlanCredit = 'plan_credit';
     /** A top-up the bank later refunded or charged back. Negative. */
     case Refund = 'refund';
     /** A Back Office correction, either direction. */
@@ -50,6 +56,7 @@ enum CreditTransactionType: string
             self::Purchase => 'Compra',
             self::Renewal => 'Renovação',
             self::Reversal => 'Devolução',
+            self::PlanCredit => 'Crédito de troca de plano',
             self::Refund => 'Estorno',
             self::Adjustment => 'Ajuste manual',
         };

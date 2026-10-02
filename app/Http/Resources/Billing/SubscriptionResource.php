@@ -47,6 +47,16 @@ class SubscriptionResource extends JsonResource
             'trial_ends_at' => $this->trial_ends_at,
             'grace_ends_at' => $this->grace_ends_at,
             'cancel_at_period_end' => $this->cancel_at_period_end,
+            // A downgrade waiting for the end of the paid period.
+            'scheduled_change' => $this->hasScheduledChange() ? [
+                'plan' => $this->scheduledPlan ? [
+                    'id' => $this->scheduledPlan->id,
+                    'name' => $this->scheduledPlan->name,
+                ] : null,
+                'price_cents' => $this->scheduled_price_cents,
+                'billing_cycle' => $this->scheduled_billing_cycle,
+                'effective_at' => $this->scheduled_change_at,
+            ] : null,
             'plan' => new PlanResource($this->whenLoaded('plan')),
             'tenant' => $this->whenLoaded('tenant', fn () => [
                 'id' => $this->tenant->id,

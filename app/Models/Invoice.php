@@ -21,6 +21,9 @@ class Invoice extends Model
         // Which gateway the charge was made on (null = payment service).
         'gateway',
         'amount_cents',
+        // Unused value of the plan this one replaced, already taken off
+        // amount_cents. Kept so the period's full value can be read back.
+        'proration_credit_cents',
         'currency',
         'period_start',
         'period_end',
@@ -43,6 +46,7 @@ class Invoice extends Model
         'payment_method' => PaymentMethod::class,
         'purpose' => InvoicePurpose::class,
         'amount_cents' => 'integer',
+        'proration_credit_cents' => 'integer',
         'period_start' => 'datetime',
         'period_end' => 'datetime',
         'due_date' => 'date',

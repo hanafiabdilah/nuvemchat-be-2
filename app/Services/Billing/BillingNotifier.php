@@ -42,11 +42,18 @@ class BillingNotifier
             return false;
         }
 
+        // A due reminder is about the cycle that is about to be billed — at the
+        // scheduled downgrade's price and name when that cycle is the first
+        // one after it.
+        $terms = $type === NotificationType::SubscriptionDue && $subscription->current_period_end
+            ? PlanChange::termsFor($subscription, $subscription->current_period_end)
+            : ['plan' => $subscription->plan, 'price_cents' => $subscription->price_cents];
+
         // Every placeholder is passed regardless of the event: render() only
         // substitutes the ones the template actually uses.
         return $this->notifications->send($type, $owner->whatsapp_number, [
             'name' => $owner->name,
-            'plan' => $subscription->plan?->name ?? '',
+            'plan' => $terms['plan']?->name ?? $subscription->plan?->name ?? '',
             // In the workspace's own zone, not the database's: a period ending
             // at 02:00 UTC is still the previous day for a Brazilian customer
             // and already the next one for an Indonesian.
@@ -55,7 +62,7 @@ class BillingNotifier
             // an Indonesian workspace reading "R$ 149.000,00" for its own
             // rupiah is the platform telling a customer the wrong price.
             'amount' => Money::format(
-                $subscription->price_cents,
+                $terms['price_cents'],
                 $subscription->currency ?: $subscription->tenant?->currency(),
             ),
         ], $owner->id);

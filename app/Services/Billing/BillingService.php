@@ -22,6 +22,7 @@ use App\Models\TrainedAgentHire;
 use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
 use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
+use App\Services\Billing\Gateways\HoldsRecurringAuthorisations;
 use App\Services\Billing\Gateways\OpensCardCheckouts;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditService;
@@ -56,6 +57,7 @@ class BillingService
         protected SubscriptionGate $gate,
         protected BillingNotifier $notifier,
         protected SavedCardService $savedCards,
+        protected PlanChange $planChange,
     ) {}
 
     /**
@@ -110,6 +112,24 @@ class BillingService
                 'method' => __('This plan cannot be paid for this way in your country.'),
             ]);
         }
+
+        // Upgrade, downgrade or a first plan — decided once, here, by the same
+        // rule the checkout drew its numbers from (see PlanChange).
+        $quote = $this->planChange->quote($tenant, $plan, $method);
+
+        if ($quote['type'] === PlanChange::DOWNGRADE) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'plan_id' => __('This plan costs less than yours, so it starts when the period you already paid for ends. Schedule the change instead of paying now.'),
+            ]);
+        }
+
+        if ($quote['type'] === PlanChange::CURRENT) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'plan_id' => __('This is already your plan.'),
+            ]);
+        }
+
+        $opts['quote'] = $quote;
 
         return match ($method) {
             PaymentMethod::Card => $this->subscribeWithCard($tenant, $plan, $opts),
@@ -255,13 +275,22 @@ class BillingService
 
         $this->assertBillable($tenant);
 
+        $quote = $this->planChange->quote($tenant, $plan, PaymentMethod::Card);
+
+        if (in_array($quote['type'], [PlanChange::DOWNGRADE, PlanChange::CURRENT], true)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'plan_id' => __('This plan is not charged now.'),
+            ]);
+        }
+
         $currency = $price->currency ?: ($plan->currency ?: $tenant->currency());
         $reference = 'pingly-card-'.$tenant->id.'-'.Str::lower(Str::random(16));
         $expiresAt = now()->addMinutes(self::CARD_CHECKOUT_MINUTES);
 
         $opened = $gateway->openCardCheckout([
             'order_reference' => $reference,
-            'amount' => $price->amount_cents,
+            // The upgrade's charge, credit already off — the form is bound to it.
+            'amount' => $quote['charge_now_cents'],
             'currency' => $currency,
             'description' => "Assinatura {$plan->name}",
             'customer' => $this->customerPayload($tenant, $payerEmail),
@@ -270,7 +299,15 @@ class BillingService
 
         Cache::put($this->cardCheckoutKey($tenant, $opened['checkout_token']), [
             'plan_id' => $plan->id,
-            'amount_cents' => $price->amount_cents,
+            'plan_price_cents' => $price->amount_cents,
+            'amount_cents' => $quote['charge_now_cents'],
+            // The credit frozen at the moment the form opened. It only shrinks
+            // as time passes, so honouring the opened number is never a loss
+            // the customer can feel — and re-pricing under a typed card is.
+            'quote_type' => $quote['type'],
+            'replaces_subscription_id' => $quote['current']['subscription_id'] ?? null,
+            'discount_cents' => $quote['discount_cents'],
+            'balance_credit_cents' => $quote['balance_credit_cents'],
             'currency' => $currency,
             'order_reference' => $reference,
             'payment_id' => $opened['payment']['id'] ?? null,
@@ -321,8 +358,10 @@ class BillingService
         /** @var SavedCard|null $card */
         $card = $opts['saved_card'] ?? null;
         $payerEmail = $card?->customer_email ?: ($opts['payer_email'] ?? null);
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name());
+        $quote = $opts['quote'] ?? null;
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name(), $quote);
         $periodEnd = $this->nextPeriodEnd($subscription, now());
+        $first = $this->firstCharge($subscription, $quote);
 
         $invoice = Invoice::create([
             'tenant_id' => $tenant->id,
@@ -330,7 +369,8 @@ class BillingService
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Card,
             'gateway' => $gateway->name(),
-            'amount_cents' => $subscription->price_cents,
+            'amount_cents' => $first['amount_cents'],
+            'proration_credit_cents' => $first['proration_credit_cents'],
             // From the subscription, which froze both halves of the price when
             // it was created — see createPendingSubscription().
             'currency' => $subscription->currency ?: ($plan->currency ?? 'BRL'),
@@ -429,17 +469,33 @@ class BillingService
         // Expired, from another workspace, for another plan, or opened at a
         // price that has since changed: the form is not the charge it claims
         // to be, so the customer types the card again on a fresh one.
+        $quote = $opts['quote'] ?? null;
+
+        // The plan being replaced has changed under the form (it lapsed, an
+        // upgrade elsewhere went through): the credit it was opened with is no
+        // longer the credit that applies.
+        $sameChange = is_array($opened)
+            && ($opened['quote_type'] ?? PlanChange::NEW) === ($quote['type'] ?? PlanChange::NEW)
+            && (int) ($opened['replaces_subscription_id'] ?? 0) === (int) ($quote['current']['subscription_id'] ?? 0);
+
         if (! is_array($opened)
+            || ! $sameChange
             || (int) $opened['plan_id'] !== (int) $plan->id
             || ($opened['gateway'] ?? null) !== $gateway->name()
             || $price === null
-            || (int) $opened['amount_cents'] !== (int) $price->amount_cents) {
+            || (int) ($opened['plan_price_cents'] ?? $opened['amount_cents']) !== (int) $price->amount_cents) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'checkout_token' => __('This card form has expired. Please enter your card again.'),
             ]);
         }
 
-        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name());
+        if ($quote !== null) {
+            $quote['discount_cents'] = (int) ($opened['discount_cents'] ?? 0);
+            $quote['balance_credit_cents'] = (int) ($opened['balance_credit_cents'] ?? 0);
+            $quote['charge_now_cents'] = (int) $opened['amount_cents'];
+        }
+
+        $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name(), $quote);
         $periodEnd = $this->nextPeriodEnd($subscription, now());
 
         $invoice = Invoice::create([
@@ -449,6 +505,7 @@ class BillingService
             'payment_method' => PaymentMethod::Card,
             'gateway' => $gateway->name(),
             'amount_cents' => $opened['amount_cents'],
+            'proration_credit_cents' => ($opened['discount_cents'] ?? 0) ?: null,
             'currency' => $opened['currency'],
             'period_start' => $subscription->current_period_start,
             'period_end' => $periodEnd,
@@ -505,14 +562,16 @@ class BillingService
         $this->assertBillable($tenant);
 
         // Starts past_due (createPendingSubscription); becomes active once paid.
+        $quote = $opts['quote'] ?? null;
         $subscription = $this->createPendingSubscription(
             $tenant,
             $plan,
             $method,
             $this->gateways->forTenant($tenant)->name(),
+            $quote,
         );
 
-        $this->createCycleInvoice($subscription, $method, $opts['payer_email'] ?? null);
+        $this->createCycleInvoice($subscription, $method, $opts['payer_email'] ?? null, $this->firstCharge($subscription, $quote));
         $this->fireUpdated($subscription);
 
         return $subscription;
@@ -559,17 +618,24 @@ class BillingService
      * Issue the invoice the customer pays by hand for a subscription's next
      * period: a Pix QR, or a link to the gateway's hosted checkout.
      */
-    public function createCycleInvoice(Subscription $subscription, PaymentMethod $method, ?string $payerEmail = null): Invoice
-    {
+    public function createCycleInvoice(
+        Subscription $subscription,
+        PaymentMethod $method,
+        ?string $payerEmail = null,
+        ?array $first = null,
+    ): Invoice {
         $tenant = $subscription->tenant;
         $this->assertBillable($tenant);
 
         $gateway = $this->gateways->forTenant($tenant);
-        $plan = $subscription->plan;
         $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
             ? $subscription->current_period_end->copy()
             : now();
-        $periodEnd = $this->nextPeriodEnd($subscription, $periodStart);
+        // A renewal bills the period it starts at those terms — the scheduled
+        // downgrade when that period is the first one after it.
+        $terms = PlanChange::termsFor($subscription, $periodStart);
+        $plan = $terms['plan'] ?? $subscription->plan;
+        $periodEnd = $terms['cycle']->advance(Carbon::instance($periodStart));
         $expiresAt = now()->addHours(self::PIX_WINDOW_HOURS);
 
         $invoice = Invoice::create([
@@ -578,7 +644,8 @@ class BillingService
             'status' => InvoiceStatus::Pending,
             'payment_method' => $method,
             'gateway' => $gateway->name(),
-            'amount_cents' => $subscription->price_cents,
+            'amount_cents' => $first['amount_cents'] ?? $terms['price_cents'],
+            'proration_credit_cents' => $first['proration_credit_cents'] ?? null,
             // The snapshot taken when the workspace subscribed, not today's
             // plan: the price is frozen, so its unit has to be frozen with it.
             'currency' => $subscription->currency ?: ($plan?->currency ?? 'BRL'),
@@ -860,7 +927,8 @@ class BillingService
         $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
             ? $subscription->current_period_end->copy()
             : now();
-        $periodEnd = $this->nextPeriodEnd($subscription, $periodStart);
+        $terms = PlanChange::termsFor($subscription, $periodStart);
+        $periodEnd = $terms['cycle']->advance(Carbon::instance($periodStart));
         $reference = $this->orderReference($subscription, $periodStart);
 
         // Cheap local guard so a re-run does not even make the call. The
@@ -883,7 +951,7 @@ class BillingService
             'status' => InvoiceStatus::Pending,
             'payment_method' => PaymentMethod::Card,
             'gateway' => $gateway->name(),
-            'amount_cents' => $subscription->price_cents,
+            'amount_cents' => $terms['price_cents'],
             // ⚠️ The snapshot, never the live plan. Reading the currency off
             // the plan while the amount comes from the subscription meant a
             // plan edited from one currency to another silently re-denominated
@@ -906,7 +974,7 @@ class BillingService
                 // Nobody is at a screen: no security code, no 3-D Secure, and
                 // the provider must be one that can take such a charge at all.
                 'initiator' => 'merchant',
-                'description' => "Renovação {$subscription->plan?->name}",
+                'description' => 'Renovação '.($terms['plan']?->name ?? $subscription->plan?->name),
                 'metadata' => ['tenant_id' => $subscription->tenant_id, 'subscription_id' => $subscription->id],
             ], $invoice->idempotency_key);
         } catch (\Throwable $e) {
@@ -1173,7 +1241,8 @@ class BillingService
             $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
                 ? $subscription->current_period_end->copy()
                 : now();
-            $periodEnd = $this->nextPeriodEnd($subscription, $periodStart);
+            $terms = PlanChange::termsFor($subscription, $periodStart);
+            $periodEnd = $terms['cycle']->advance(Carbon::instance($periodStart));
 
             Invoice::firstOrCreate(
                 ['order_reference' => $this->orderReference($subscription, $periodStart)],
@@ -1183,7 +1252,7 @@ class BillingService
                     'status' => InvoiceStatus::Paid,
                     'payment_method' => PaymentMethod::Card,
                     'gateway' => $gateway,
-                    'amount_cents' => $subscription->price_cents,
+                    'amount_cents' => $terms['price_cents'],
                     'currency' => $subscription->currency ?: 'BRL',
                     'period_start' => $periodStart,
                     'period_end' => $periodEnd,
@@ -1504,6 +1573,332 @@ class BillingService
         $this->notifier->notify(NotificationType::SubscriptionSuspended, $subscription);
     }
 
+    // --- Changing plan --------------------------------------------------------
+
+    /**
+     * The upgrade waiting for its first payment, if there is one.
+     *
+     * It is not the tenant's current subscription — the plan it replaces is,
+     * until it is paid — so every screen that offers to pay or abandon it has
+     * to ask for it by name.
+     */
+    public function pendingChangeFor(Tenant $tenant): ?Subscription
+    {
+        if (! $tenant->current_subscription_id) {
+            return null;
+        }
+
+        return Subscription::query()
+            ->where('tenant_id', $tenant->id)
+            ->where('replaces_subscription_id', $tenant->current_subscription_id)
+            ->where('status', SubscriptionStatus::PastDue->value)
+            ->whereNull('current_period_end')
+            ->latest('id')
+            ->first();
+    }
+
+    /**
+     * Abandon every upgrade that was started and never paid.
+     *
+     * Runs before any new checkout: two pending upgrades would each take over
+     * the workspace the moment their own charge settled.
+     */
+    public function discardPendingChanges(Tenant $tenant): void
+    {
+        $pending = Subscription::query()
+            ->where('tenant_id', $tenant->id)
+            ->whereNotNull('replaces_subscription_id')
+            ->where('status', SubscriptionStatus::PastDue->value)
+            ->whereNull('current_period_end')
+            ->when($tenant->current_subscription_id, fn ($q, $id) => $q->whereKeyNot($id))
+            ->get();
+
+        foreach ($pending as $subscription) {
+            try {
+                $this->cancelPendingCheckout($subscription);
+            } catch (PaymentAlreadySettledException) {
+                // Paid in the seconds before: it has already taken over, which
+                // is the right outcome for money that arrived.
+            }
+        }
+    }
+
+    /**
+     * An upgrade's first charge settled: it becomes the workspace's plan and
+     * the one it replaced ends.
+     *
+     * Only when the replaced plan is still the current one. If the workspace
+     * moved on meanwhile (an admin grant, another plan paid), the late payment
+     * is kept on its own row and logged rather than allowed to yank the
+     * workspace onto a plan somebody already walked away from.
+     */
+    protected function completePlanSwitch(Subscription $subscription): void
+    {
+        if (! $subscription->replaces_subscription_id) {
+            return;
+        }
+
+        $tenant = Tenant::find($subscription->tenant_id);
+
+        if (! $tenant || (int) $tenant->current_subscription_id === (int) $subscription->id) {
+            return;
+        }
+
+        if ((int) $tenant->current_subscription_id !== (int) $subscription->replaces_subscription_id) {
+            Log::warning('Upgrade paid after the plan it replaced was no longer current', [
+                'subscription_id' => $subscription->id,
+                'replaces_subscription_id' => $subscription->replaces_subscription_id,
+                'current_subscription_id' => $tenant->current_subscription_id,
+            ]);
+
+            return;
+        }
+
+        $old = Subscription::find($subscription->replaces_subscription_id);
+
+        if ($old && $old->status !== SubscriptionStatus::Cancelled) {
+            $old->update([
+                'status' => SubscriptionStatus::Cancelled,
+                'cancelled_at' => now(),
+                'scheduled_plan_id' => null,
+                'scheduled_price_cents' => null,
+                'scheduled_billing_cycle' => null,
+                'scheduled_change_at' => null,
+            ]);
+        }
+
+        $this->setCurrent($tenant, $subscription);
+
+        $balance = (int) ($subscription->proration_balance_cents ?? 0);
+        $planName = $subscription->plan?->name;
+
+        // Gateway calls and the wallet write wait for the commit: the webhook
+        // paths call this inside their transaction, and neither a cancelled
+        // preapproval nor a balance credit can be rolled back with it.
+        DB::afterCommit(function () use ($old, $tenant, $subscription, $balance, $planName) {
+            if ($old) {
+                try {
+                    $this->voidOpenPixInvoices($old);
+                } catch (\Throwable $e) {
+                    Log::warning('Could not close the replaced plan\'s open charges', [
+                        'subscription_id' => $old->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+
+                // ⚠️ A preapproval on the replaced plan would go on charging
+                // the old price next to the new one.
+                $this->setRecurringState($old, 'cancelled');
+            }
+
+            if ($balance > 0) {
+                app(CreditService::class)->creditPlanChange(
+                    $tenant,
+                    $balance,
+                    $subscription->id,
+                    "Crédito do plano anterior na troca para {$planName}",
+                    ['replaced_subscription_id' => $old?->id],
+                );
+            }
+        });
+
+        Log::info('Plan upgraded', [
+            'tenant_id' => $tenant->id,
+            'from_subscription_id' => $old?->id,
+            'to_subscription_id' => $subscription->id,
+            'balance_credit_cents' => $balance,
+        ]);
+    }
+
+    /**
+     * Schedule a downgrade for the end of what is already paid for.
+     *
+     * Same subscription row, new terms from `scheduled_change_at`: nothing is
+     * charged now and nothing is taken away early. Choosing a cheaper plan on
+     * a subscription set to end also keeps it — that is what the choice means.
+     */
+    public function schedulePlanChange(Tenant $tenant, Plan $plan): Subscription
+    {
+        $quote = $this->planChange->quote($tenant, $plan);
+
+        if ($quote['type'] !== PlanChange::DOWNGRADE) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'plan_id' => __('Only a plan that costs less than yours is scheduled. This one is paid now.'),
+            ]);
+        }
+
+        if ($quote['blocked_reason'] !== null) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['plan_id' => $quote['blocked_reason']]);
+        }
+
+        /** @var Subscription $current */
+        $current = $tenant->currentSubscription;
+        $price = (int) $quote['plan']['price_cents'];
+
+        // Gateway first: a preapproval left at the old amount would charge the
+        // old price for the new plan, and that is the customer's money.
+        $this->syncRecurringAmount($current, $price);
+
+        $this->discardPendingChanges($tenant);
+
+        if ($current->cancel_at_period_end) {
+            $this->setRecurringState($current, 'active');
+        }
+
+        $current->update([
+            'scheduled_plan_id' => $plan->id,
+            'scheduled_price_cents' => $price,
+            'scheduled_billing_cycle' => $plan->billing_cycle,
+            'scheduled_change_at' => $current->current_period_end,
+            'cancel_at_period_end' => false,
+            'cancelled_at' => null,
+        ]);
+
+        // A renewal already issued at the old price for the cycle the change
+        // starts at is closed, so the next run issues it at the new one.
+        $this->voidCycleChargesFrom($current, $current->scheduled_change_at);
+
+        $this->fireUpdated($current);
+
+        return $current->fresh();
+    }
+
+    /** Keep the current plan after all: drop a scheduled downgrade. */
+    public function cancelScheduledChange(Tenant $tenant): ?Subscription
+    {
+        $current = $tenant->currentSubscription;
+
+        if (! $current || ! $current->hasScheduledChange()) {
+            return $current;
+        }
+
+        $this->syncRecurringAmount($current, (int) $current->price_cents);
+
+        $from = $current->scheduled_change_at;
+
+        $current->update([
+            'scheduled_plan_id' => null,
+            'scheduled_price_cents' => null,
+            'scheduled_billing_cycle' => null,
+            'scheduled_change_at' => null,
+        ]);
+
+        $this->voidCycleChargesFrom($current, $from);
+        $this->fireUpdated($current);
+
+        return $current->fresh();
+    }
+
+    /**
+     * Move a subscription onto its scheduled plan once the period it was
+     * waiting for has ended. Returns whether anything changed.
+     */
+    public function applyScheduledChange(Subscription $subscription): bool
+    {
+        if (! $subscription->hasScheduledChange() || $subscription->scheduled_change_at->isFuture()) {
+            return false;
+        }
+
+        if ($subscription->status === SubscriptionStatus::Cancelled) {
+            $subscription->update([
+                'scheduled_plan_id' => null,
+                'scheduled_price_cents' => null,
+                'scheduled_billing_cycle' => null,
+                'scheduled_change_at' => null,
+            ]);
+
+            return false;
+        }
+
+        $plan = $subscription->scheduledPlan;
+        $from = $subscription->plan_id;
+
+        $subscription->update([
+            'plan_id' => $subscription->scheduled_plan_id,
+            'price_cents' => $subscription->scheduled_price_cents,
+            'billing_cycle' => $subscription->scheduled_billing_cycle ?? $subscription->billing_cycle,
+            // Snapshotted now, like at subscribe time: what the plan grants on
+            // the day the workspace moves onto it.
+            'quotas_snapshot' => $plan?->quotas ?? $subscription->quotas_snapshot,
+            'features_snapshot' => $plan?->features ?? $subscription->features_snapshot,
+            'scheduled_plan_id' => null,
+            'scheduled_price_cents' => null,
+            'scheduled_billing_cycle' => null,
+            'scheduled_change_at' => null,
+        ]);
+
+        $this->gate->forget($subscription->tenant);
+        $this->fireUpdated($subscription);
+
+        Log::info('Scheduled plan change applied', [
+            'subscription_id' => $subscription->id,
+            'from_plan_id' => $from,
+            'to_plan_id' => $subscription->plan_id,
+        ]);
+
+        return true;
+    }
+
+    /** Every downgrade whose period has ended. Called by billing:process-overdue. */
+    public function applyDueScheduledChanges(): int
+    {
+        $applied = 0;
+
+        Subscription::query()
+            ->whereNotNull('scheduled_plan_id')
+            ->whereNotNull('scheduled_change_at')
+            ->where('scheduled_change_at', '<=', now())
+            ->each(function (Subscription $subscription) use (&$applied) {
+                try {
+                    $applied += $this->applyScheduledChange($subscription) ? 1 : 0;
+                } catch (\Throwable $e) {
+                    Log::error('Could not apply a scheduled plan change', [
+                        'subscription_id' => $subscription->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            });
+
+        return $applied;
+    }
+
+    /**
+     * Tell a gateway that charges a fixed amount on its own schedule what the
+     * next cycles cost. Throws: a downgrade the gateway did not hear about is
+     * one charged at the old price.
+     */
+    protected function syncRecurringAmount(Subscription $subscription, int $amountCents): void
+    {
+        $instrumentId = $subscription->payment_instrument_id;
+
+        if (! $instrumentId) {
+            return;
+        }
+
+        $gateway = $this->gateways->forSubscription($subscription);
+
+        if (! $gateway instanceof HoldsRecurringAuthorisations || ! $gateway->renewsItself($instrumentId)) {
+            return;
+        }
+
+        $gateway->updateRecurringAmount($instrumentId, $amountCents, $subscription->currency ?: 'BRL');
+    }
+
+    /** Close per-cycle charges already issued for the periods starting at `$from`. */
+    protected function voidCycleChargesFrom(Subscription $subscription, ?CarbonInterface $from): void
+    {
+        if ($from === null) {
+            return;
+        }
+
+        $subscription->invoices()
+            ->where('status', InvoiceStatus::Pending->value)
+            ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
+            ->where('period_start', '>=', $from)
+            ->get()
+            ->each(fn (Invoice $invoice) => $this->cancelInvoice($invoice));
+    }
+
     // --- internals -------------------------------------------------------
 
     /**
@@ -1701,23 +2096,45 @@ class BillingService
         $this->fireUpdated($subscription);
     }
 
-    protected function createPendingSubscription(Tenant $tenant, Plan $plan, PaymentMethod $method, ?string $gateway = null): Subscription
-    {
+    protected function createPendingSubscription(
+        Tenant $tenant,
+        Plan $plan,
+        PaymentMethod $method,
+        ?string $gateway = null,
+        ?array $quote = null,
+    ): Subscription {
+        $upgrade = ($quote['type'] ?? null) === PlanChange::UPGRADE;
+
+        // A change started earlier and never paid is abandoned by starting
+        // another: two pending upgrades would both take over once paid.
+        $this->discardPendingChanges($tenant);
+
         // Before the tenant moves on: close whatever charge the old
         // subscription still has open (talks to the payment service, so keep it
         // out of the transaction).
-        $this->voidSupersededCharges($tenant);
+        //
+        // ⚠️ Not for an upgrade. The plan it replaces keeps working — and keeps
+        // its charges — until the new one is paid; see completePlanSwitch().
+        if (! $upgrade) {
+            $this->voidSupersededCharges($tenant);
+        }
 
         // The country's own price, snapshotted with its currency. Resolved once,
         // here, because everything downstream reads the subscription.
         $price = $plan->priceForMarket($tenant->market_code);
 
-        return DB::transaction(function () use ($tenant, $plan, $method, $price, $gateway) {
-            $this->supersedeCurrent($tenant);
+        return DB::transaction(function () use ($tenant, $plan, $method, $price, $gateway, $upgrade, $quote) {
+            if (! $upgrade) {
+                $this->supersedeCurrent($tenant);
+            }
 
             $subscription = Subscription::create([
                 'tenant_id' => $tenant->id,
                 'plan_id' => $plan->id,
+                'replaces_subscription_id' => $upgrade ? ($quote['current']['subscription_id'] ?? null) : null,
+                'proration_balance_cents' => $upgrade && ($quote['balance_credit_cents'] ?? 0) > 0
+                    ? (int) $quote['balance_credit_cents']
+                    : null,
                 // Must NOT be a usable status. This row is committed and pointed at
                 // by tenant.current_subscription_id before the provider is called,
                 // so anything usable here grants free access when that call throws —
@@ -1734,13 +2151,38 @@ class BillingService
                 'quotas_snapshot' => $plan->quotas,
                 'features_snapshot' => $plan->features,
                 'current_period_start' => now(),
-                'trial_ends_at' => $plan->trial_days > 0 ? now()->addDays($plan->trial_days) : null,
+                // A trial is for somebody arriving, not somebody already paying.
+                'trial_ends_at' => ! $upgrade && $plan->trial_days > 0 ? now()->addDays($plan->trial_days) : null,
             ]);
 
-            $this->setCurrent($tenant, $subscription);
+            // An upgrade is not pointed at until it is paid: the plan it
+            // replaces stays the workspace's plan in the meantime.
+            if (! $upgrade) {
+                $this->setCurrent($tenant, $subscription);
+            }
 
             return $subscription;
         });
+    }
+
+    /**
+     * The first charge of a new subscription: the plan's price, minus the
+     * unused part of the plan an upgrade replaces.
+     *
+     * @return array{amount_cents: int, proration_credit_cents: int|null}
+     */
+    protected function firstCharge(Subscription $subscription, ?array $quote): array
+    {
+        if (($quote['type'] ?? null) !== PlanChange::UPGRADE) {
+            return ['amount_cents' => (int) $subscription->price_cents, 'proration_credit_cents' => null];
+        }
+
+        $discount = (int) ($quote['discount_cents'] ?? 0);
+
+        return [
+            'amount_cents' => max(0, (int) $subscription->price_cents - $discount),
+            'proration_credit_cents' => $discount > 0 ? $discount : null,
+        ];
     }
 
     protected function activate(Subscription $subscription, ?CarbonInterface $periodEnd): void
@@ -1757,6 +2199,9 @@ class BillingService
             'grace_ends_at' => null,
         ]);
         $this->gate->forget($subscription->tenant);
+
+        // An upgrade's first payment is what makes it the workspace's plan.
+        $this->completePlanSwitch($subscription);
 
         if (! $wasActive) {
             $this->notifier->notify(NotificationType::SubscriptionActivated, $subscription);

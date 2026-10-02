@@ -179,6 +179,37 @@ class CreditService
     }
 
     /**
+     * Pay the unused part of a replaced plan into the balance.
+     *
+     * Keyed by the subscription that took over, so the activation path —
+     * which a webhook can reach twice — never credits the same switch twice.
+     *
+     * @param  array<string, mixed>  $meta
+     */
+    public function creditPlanChange(
+        Tenant $tenant,
+        int $amountCents,
+        int $subscriptionId,
+        string $description,
+        array $meta = [],
+    ): ?CreditTransaction {
+        if ($amountCents <= 0) {
+            return null;
+        }
+
+        return $this->record(
+            $tenant,
+            CreditTransactionType::PlanCredit,
+            $amountCents,
+            [
+                'reference' => "plan-change:{$subscriptionId}",
+                'description' => $description,
+                'meta' => $meta + ['subscription_id' => $subscriptionId],
+            ],
+        );
+    }
+
+    /**
      * Give back a debit named by its reference, for the amount it actually took.
      *
      * Reads the amount off the original row instead of trusting a caller to

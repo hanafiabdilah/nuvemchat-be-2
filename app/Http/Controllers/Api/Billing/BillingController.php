@@ -13,6 +13,7 @@ use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Tenant;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\PlanChange;
 use App\Services\Billing\Fiscal\FiscalInvoiceService;
 use App\Services\Billing\SavedCardService;
 use App\Services\Market\MarketDocuments;
@@ -247,8 +248,88 @@ class BillingController extends Controller
         // while its own subscription was in rupiah. In-memory only.
         $subscription?->plan?->applyMarketPrice($tenant->market_code);
 
+        $pending = $this->billing->pendingChangeFor($tenant);
+        $pendingInvoice = $pending?->invoices()->where('status', InvoiceStatus::Pending->value)->latest('id')->first();
+
         return response()->json([
             'data' => $subscription ? (new SubscriptionResource($subscription))->withUsage() : null,
+            // An upgrade started and not yet paid. The plan above keeps working
+            // until it is; this is what lets the page offer to pay or drop it.
+            'pending_change' => $pending ? [
+                'subscription_id' => $pending->id,
+                'plan' => $pending->plan ? ['id' => $pending->plan->id, 'name' => $pending->plan->name] : null,
+                'price_cents' => $pending->price_cents,
+                'currency' => $pending->currency,
+                'invoice' => $pendingInvoice ? new InvoiceResource($pendingInvoice) : null,
+            ] : null,
+        ]);
+    }
+
+    /**
+     * What switching to a plan costs and when it takes effect — the checkout
+     * shows exactly this, and subscribe/schedule charge exactly this.
+     */
+    public function planChangeQuote(Request $request)
+    {
+        $validated = $request->validate([
+            'plan_id' => ['required', 'exists:plans,id'],
+            'method' => ['nullable', Rule::enum(PaymentMethod::class)],
+        ]);
+
+        $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
+        $method = filled($validated['method'] ?? null) ? PaymentMethod::from($validated['method']) : null;
+
+        return response()->json([
+            'data' => app(PlanChange::class)->quote($this->tenant($request), $plan, $method),
+        ]);
+    }
+
+    /** Move to a cheaper plan when the period already paid for ends. */
+    public function schedulePlanChange(Request $request)
+    {
+        $validated = $request->validate([
+            'plan_id' => ['required', 'exists:plans,id'],
+        ]);
+
+        $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
+        $tenant = $this->tenant($request);
+
+        try {
+            $subscription = $this->billing->schedulePlanChange($tenant, $plan);
+        } catch (\Throwable $e) {
+            if ($e instanceof HasUserSafeMessage || $e instanceof \Illuminate\Validation\ValidationException) {
+                throw $e;
+            }
+
+            Log::error('Billing schedule plan change failed', ['error' => $e->getMessage(), 'plan_id' => $plan->id]);
+
+            return response()->json([
+                'message' => 'Não foi possível agendar a troca de plano. Tente novamente.',
+            ], 500);
+        }
+
+        return response()->json(['data' => new SubscriptionResource($subscription->loadMissing('plan'))]);
+    }
+
+    /** Keep the current plan: drop the scheduled downgrade. */
+    public function cancelScheduledPlanChange(Request $request)
+    {
+        try {
+            $subscription = $this->billing->cancelScheduledChange($this->tenant($request));
+        } catch (\Throwable $e) {
+            if ($e instanceof HasUserSafeMessage) {
+                throw $e;
+            }
+
+            Log::error('Billing cancel scheduled plan change failed', ['error' => $e->getMessage()]);
+
+            return response()->json([
+                'message' => 'Não foi possível manter o plano atual. Tente novamente.',
+            ], 500);
+        }
+
+        return response()->json([
+            'data' => $subscription ? new SubscriptionResource($subscription->loadMissing('plan')) : null,
         ]);
     }
 
@@ -416,7 +497,21 @@ class BillingController extends Controller
      */
     public function cancelPending(Request $request)
     {
-        $subscription = $this->tenant($request)->currentSubscription;
+        $tenant = $this->tenant($request);
+
+        // An unpaid upgrade first: it is the checkout the customer is looking
+        // at, while the plan it would replace is live and must be left alone.
+        if ($pending = $this->billing->pendingChangeFor($tenant)) {
+            try {
+                $this->billing->cancelPendingCheckout($pending);
+            } catch (PaymentAlreadySettledException) {
+                return $this->paymentSettledResponse($request);
+            }
+
+            return response()->json(['data' => null]);
+        }
+
+        $subscription = $tenant->currentSubscription;
         abort_if($subscription === null, 404, 'No subscription');
 
         // A live plan is cancelled at period end, never voided outright.

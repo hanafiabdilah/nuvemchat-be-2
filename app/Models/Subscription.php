@@ -12,6 +12,12 @@ class Subscription extends Model
     protected $fillable = [
         'tenant_id',
         'plan_id',
+        // An upgrade waiting for its first charge: the subscription it takes
+        // over from once paid — see BillingService::completePlanSwitch().
+        'replaces_subscription_id',
+        // Unused value of the replaced plan paid into the balance once this one
+        // is active, where the gateway could not discount the first charge.
+        'proration_balance_cents',
         'status',
         'payment_method',
         // Which gateway holds the stored instrument (null = payment service).
@@ -29,6 +35,11 @@ class Subscription extends Model
         'grace_ends_at',
         'cancel_at_period_end',
         'cancelled_at',
+        // A downgrade: the terms this row moves to at `scheduled_change_at`.
+        'scheduled_plan_id',
+        'scheduled_price_cents',
+        'scheduled_billing_cycle',
+        'scheduled_change_at',
         'payment_instrument_id',
         'payment_customer_id',
         'manual_granted_by',
@@ -49,6 +60,10 @@ class Subscription extends Model
         'due_reminder_sent_at' => 'datetime',
         'cancel_at_period_end' => 'boolean',
         'cancelled_at' => 'datetime',
+        'proration_balance_cents' => 'integer',
+        'scheduled_price_cents' => 'integer',
+        'scheduled_billing_cycle' => BillingCycle::class,
+        'scheduled_change_at' => 'datetime',
     ];
 
     public function tenant()
@@ -59,6 +74,21 @@ class Subscription extends Model
     public function plan()
     {
         return $this->belongsTo(Plan::class);
+    }
+
+    public function scheduledPlan()
+    {
+        return $this->belongsTo(Plan::class, 'scheduled_plan_id');
+    }
+
+    public function replaces()
+    {
+        return $this->belongsTo(self::class, 'replaces_subscription_id');
+    }
+
+    public function hasScheduledChange(): bool
+    {
+        return $this->scheduled_plan_id !== null && $this->scheduled_change_at !== null;
     }
 
     public function invoices()

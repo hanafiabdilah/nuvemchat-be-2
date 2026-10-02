@@ -13,10 +13,14 @@ class ProcessOverdueSubscriptions extends Command
 {
     protected $signature = 'billing:process-overdue';
 
-    protected $description = 'Move overdue subscriptions through past_due → grace → suspended and expire stale pix charges';
+    protected $description = 'Apply due plan downgrades, move overdue subscriptions through past_due → grace → suspended and expire stale pix charges';
 
     public function handle(BillingService $billing): int
     {
+        // 0. Downgrades whose paid period has ended move onto their new plan.
+        // First, so a workspace is never read against a plan it already left.
+        $changed = $billing->applyDueScheduledChanges();
+
         // 1. Expire stale (unpaid, past-expiry) pix invoices.
         $expired = Invoice::query()
             ->where('status', InvoiceStatus::Pending->value)
@@ -53,7 +57,7 @@ class ProcessOverdueSubscriptions extends Command
             $billing->suspend($subscription);
         }
 
-        $this->info("Expired {$expired} pix invoice(s); {$lapsed->count()} lapsed; {$toSuspend->count()} suspended.");
+        $this->info("Applied {$changed} scheduled plan change(s); expired {$expired} pix invoice(s); {$lapsed->count()} lapsed; {$toSuspend->count()} suspended.");
 
         return self::SUCCESS;
     }

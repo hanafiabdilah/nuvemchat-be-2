@@ -21,6 +21,19 @@ enum BillingCycle: string
     }
 
     /**
+     * Ordering by length, for deciding whether a plan change commits the
+     * customer to more (an upgrade, applied now) or less (applied at period end).
+     */
+    public function rank(): int
+    {
+        return match ($this) {
+            self::Daily => 1,
+            self::Monthly => 2,
+            self::Yearly => 3,
+        };
+    }
+
+    /**
      * The same cycle in Mercado Pago preapproval terms — which only knows days
      * and months, so a year is twelve of them.
      *
