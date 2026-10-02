@@ -707,7 +707,40 @@ class BillingService
 
         $this->applyInstructions($invoice, $response['data'] ?? [], $expiresAt);
 
+        // Open dashboards learn a charge is waiting (the Billing badge and the
+        // renewal banner read it from the user payload, which this refreshes).
+        $this->fireUpdated($subscription);
+
         return $invoice->fresh();
+    }
+
+    /**
+     * The renewal this workspace still has to pay by hand: an open Pix (or
+     * hosted checkout) on its current subscription, for a cycle after the
+     * first. The first payment and a pending upgrade have banners of their
+     * own; this is the one that used to live only in the invoice table, where
+     * nobody looked until the plan lapsed.
+     */
+    public function renewalDue(Tenant $tenant): ?Invoice
+    {
+        $subscription = $tenant->currentSubscription;
+
+        if (! $subscription
+            || ! $subscription->current_period_end
+            || ! in_array($subscription->status, [
+                SubscriptionStatus::Active,
+                SubscriptionStatus::Trialing,
+                SubscriptionStatus::PastDue,
+                SubscriptionStatus::Grace,
+            ], true)) {
+            return null;
+        }
+
+        return $subscription->invoices()
+            ->where('status', InvoiceStatus::Pending->value)
+            ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
+            ->latest('id')
+            ->first();
     }
 
     /**

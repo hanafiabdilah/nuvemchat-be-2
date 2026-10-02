@@ -3,12 +3,13 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Api\Onboarding\OnboardingController;
-use App\Services\Onboarding\OnboardingState;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\MarketResource;
 use App\Http\Resources\UserResource;
 use App\Models\Connection;
+use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Onboarding\OnboardingState;
 use App\Services\User\AvatarStorage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -36,9 +37,22 @@ class UserController extends Controller
             // Mirrors EnsureSubscriptionActive so the UI can hide what the API would
             // 403 on. Entitlements alone are status-blind (they come from the plan
             // snapshot), so they cannot answer "is this tenant paid up?".
+            $renewal = app(BillingService::class)->renewalDue($tenant);
+
             $data['billing'] = [
                 'enforced' => (bool) config('services.billing.enforce'),
                 'subscription_usable' => $gate->usable($tenant),
+                // A renewal waiting to be paid by hand (Pix / hosted checkout):
+                // the Billing badge and the plan page's renewal banner.
+                'renewal_due' => $renewal ? [
+                    'invoice_id' => $renewal->id,
+                    'amount_cents' => $renewal->amount_cents,
+                    'currency' => $renewal->currency,
+                    // The cycle it pays starts when the current one ends —
+                    // that is the date the plan stops without it.
+                    'due_date' => $renewal->period_start?->toIso8601String(),
+                    'overdue' => $renewal->period_start !== null && $renewal->period_start->isPast(),
+                ] : null,
             ];
 
             // Whether the first-run guide still stands between this workspace

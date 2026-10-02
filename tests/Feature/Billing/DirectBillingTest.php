@@ -20,6 +20,7 @@ use App\Services\Billing\PaymentService\PaymentServiceConfig;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 
 /*
@@ -192,6 +193,38 @@ it('activates the plan when the Mercado Pago webhook says the Pix was paid', fun
 
     expect($subscription->fresh()->status)->toBe(SubscriptionStatus::Active)
         ->and($subscription->invoices()->first()->status)->toBe(InvoiceStatus::Paid);
+});
+
+it('tells the dashboard a Pix renewal is waiting, and stops once it is paid', function () {
+    Http::fake(['api.mercadopago.com/v1/payments' => Http::sequence()
+        ->push(mpPixPayment(['id' => 111]))
+        ->push(mpPixPayment(['id' => 222]))]);
+
+    $tenant = directWorkspace('BR');
+    $billing = app(BillingService::class);
+    $subscription = $billing->subscribe($tenant, directPlan(), PaymentMethod::Pix, ['payer_email' => 'ana@example.test']);
+    $first = $subscription->invoices()->first();
+    $billing->applyPaymentUpdate(['id' => $first->payment_id, 'order_reference' => $first->order_reference, 'status' => 'paid'], 'mercadopago');
+
+    $renewal = fn () => $this->actingAs($tenant->user, 'sanctum')->getJson('/api/user')->json('data.billing.renewal_due');
+
+    // The first payment has its own banner; once paid there is nothing due.
+    expect($renewal())->toBeNull();
+
+    Event::fake([\App\Events\SubscriptionUpdated::class]);
+    $next = $billing->createCycleInvoice($subscription->fresh(), PaymentMethod::Pix);
+    Event::assertDispatched(\App\Events\SubscriptionUpdated::class);
+
+    expect($renewal())->toMatchArray([
+        'invoice_id' => $next->id,
+        'amount_cents' => 9990,
+        'currency' => 'BRL',
+        'overdue' => false,
+    ]);
+
+    $billing->applyPaymentUpdate(['id' => $next->payment_id, 'order_reference' => $next->order_reference, 'status' => 'paid'], 'mercadopago');
+
+    expect($renewal())->toBeNull();
 });
 
 it('refuses a Mercado Pago notification whose signature does not match', function () {
