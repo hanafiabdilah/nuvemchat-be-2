@@ -26,6 +26,7 @@ use App\Jobs\RunFlowIntervalNode;
 use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowWaitResponseBuffer;
 use App\Jobs\RunFlowWaitResponseTimeout;
+use App\Jobs\SendAiFollowUp;
 use App\Jobs\SendAiHoldingMessage;
 use App\Jobs\SendPixelEvent;
 use App\Models\AiHubAgent;
@@ -50,6 +51,7 @@ use App\Services\AiAgentHub\AiAttachments;
 use App\Services\AiAgentHub\AiConversationContext;
 use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiFirstMessage;
+use App\Services\AiAgentHub\AiFollowUp;
 use App\Services\AiAgentHub\AiHoldingMessage;
 use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
@@ -67,9 +69,11 @@ use App\Services\Lead\LeadResolver;
 use App\Services\Lead\TemperatureScorer;
 use App\Services\Live\LiveActivity;
 use App\Services\Message\MessageService;
+use App\Services\Messaging\MessagingWindow;
 use App\Support\Errors\TransportFailure;
 use App\Support\OutboundHttp;
 use App\Support\PublicUrl;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -3436,6 +3440,10 @@ class FlowExecutor
 
         $stateData = $flowState->state_data ?? [];
         $stateData[$this->aiDebounceKey($node->id)] = $token;
+        // The customer wrote, so whatever follow-up was waiting on their
+        // silence is over. The turn this arms re-arms a fresh chain from the
+        // first step once it has answered.
+        unset($stateData[$this->aiFollowUpKey($node->id)]);
         $flowState->update(['state_data' => $stateData]);
 
         RunAiAgentTurn::dispatch($flowState->id, $node->id, $token)
@@ -3790,6 +3798,264 @@ class FlowExecutor
         }
     }
 
+    /** Where the pending follow-up for this node is claimed in the flow state. */
+    protected function aiFollowUpKey(int $nodeId): string
+    {
+        return "_ai_follow_up_{$nodeId}";
+    }
+
+    /**
+     * Arm step $step of the node's follow-up, counted from now.
+     *
+     * The claim records the newest message in the thread at this moment: any
+     * customer message after it means they answered, and the job steps aside
+     * even if the token it carries has not been cleared yet.
+     */
+    protected function armAiFollowUp(FlowState $flowState, FlowNode $node, int $step = 0): void
+    {
+        $config = AiFollowUp::config($node->data ?? []);
+        $key = $this->aiFollowUpKey($node->id);
+
+        $flowState->refresh();
+        $stateData = $flowState->state_data ?? [];
+
+        if (! $config['enabled'] || ! isset($config['steps'][$step])) {
+            if (array_key_exists($key, $stateData)) {
+                unset($stateData[$key]);
+                $flowState->update(['state_data' => $stateData]);
+            }
+
+            return;
+        }
+
+        $token = (string) Str::uuid();
+        $delayMinutes = $config['steps'][$step]['delay_minutes'];
+
+        $stateData[$key] = [
+            'token' => $token,
+            'step' => $step,
+            'after_message_id' => (int) Message::where('conversation_id', $flowState->conversation_id)->max('id'),
+            'due_at' => now()->addMinutes($delayMinutes)->toIso8601String(),
+        ];
+        $flowState->update(['state_data' => $stateData]);
+
+        SendAiFollowUp::dispatch($flowState->id, $node->id, $token)
+            ->delay(now()->addMinutes($delayMinutes));
+
+        Log::info('FlowExecutor: AIAgent follow-up armed', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'step' => $step + 1,
+            'delay_minutes' => $delayMinutes,
+        ]);
+    }
+
+    /**
+     * Send one follow-up step — unless, by now, the customer is not silent.
+     *
+     * Reached only from SendAiFollowUp. Every abandoned path says why, for the
+     * same reason the holding message does: "the follow-up never arrived" has
+     * to be tellable apart from a guard doing its job.
+     */
+    public function runAiFollowUp(int $flowStateId, int $nodeId, string $token): void
+    {
+        $skip = function (string $why) use ($flowStateId, $nodeId): void {
+            Log::info('FlowExecutor: AIAgent follow-up not sent', [
+                'flow_state_id' => $flowStateId,
+                'node_id' => $nodeId,
+                'reason' => $why,
+            ]);
+        };
+
+        $flowState = FlowState::find($flowStateId);
+
+        if (! $flowState || $flowState->status !== FlowStateStatus::Running) {
+            $skip('flow no longer running');
+
+            return;
+        }
+
+        $claim = ($flowState->state_data ?? [])[$this->aiFollowUpKey($nodeId)] ?? null;
+
+        if (! is_array($claim) || ($claim['token'] ?? null) !== $token) {
+            $skip('the silence it was armed for is over');
+
+            return;
+        }
+
+        $node = $flowState->currentNode;
+        $conversation = $flowState->conversation;
+
+        if (! $node || $node->id !== $nodeId || ! $node->type->isAiAgent()) {
+            $skip('the flow moved to another node');
+
+            return;
+        }
+
+        if (! $conversation || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            $skip('somebody took the conversation');
+
+            return;
+        }
+
+        $config = AiFollowUp::config($node->data ?? []);
+        $step = (int) ($claim['step'] ?? 0);
+
+        if (! $config['enabled'] || ! isset($config['steps'][$step])) {
+            $this->clearAiFollowUp($flowState, $nodeId);
+            $skip('the node no longer follows up');
+
+            return;
+        }
+
+        // The second fence: the customer may have written while this job was
+        // already on its way, before the turn that clears the token ran.
+        $replied = Message::where('conversation_id', $conversation->id)
+            ->where('sender_type', SenderType::Incoming)
+            ->where('message_type', '!=', MessageType::Info)
+            ->where('id', '>', (int) ($claim['after_message_id'] ?? 0))
+            ->exists();
+
+        if ($replied || ! empty(($flowState->state_data ?? [])[$this->aiDebounceKey($nodeId)])) {
+            $skip('the customer replied');
+
+            return;
+        }
+
+        // A free-form message after the window closes is accepted by WhatsApp
+        // and then fails — the thread would show a nudge nobody received.
+        if (! MessagingWindow::isOpen($conversation)) {
+            $this->clearAiFollowUp($flowState, $nodeId);
+            $skip('the messaging window is closed');
+
+            return;
+        }
+
+        $agent = AiHubAgent::find(($node->data ?? [])['ai_hub_agent_id'] ?? null);
+
+        if (! $agent) {
+            $this->clearAiFollowUp($flowState, $nodeId);
+            $skip('the node has no agent');
+
+            return;
+        }
+
+        // A turn holding the conversation means the customer just wrote.
+        $lock = Cache::lock($this->aiTurnLockKey($conversation->id), self::AI_TURN_LOCK_SECONDS);
+
+        if (! $lock->get()) {
+            $skip('an AI turn is running');
+
+            return;
+        }
+
+        try {
+            $flowState->refresh();
+            $claim = ($flowState->state_data ?? [])[$this->aiFollowUpKey($nodeId)] ?? null;
+
+            if (! is_array($claim) || ($claim['token'] ?? null) !== $token || $flowState->current_node_id !== $nodeId) {
+                $skip('the silence it was armed for is over');
+
+                return;
+            }
+
+            $lastMessageAt = Message::where('conversation_id', $conversation->id)->latest('id')->value('created_at');
+            $silentMinutes = $lastMessageAt ? (int) Carbon::parse($lastMessageAt)->diffInMinutes(now(), absolute: true) : 0;
+
+            LiveActivity::aiThinking($conversation, $node);
+
+            $run = $this->aiAgentHubService->runAgent(
+                $agent,
+                $conversation,
+                AiFollowUp::prompt($step + 1, count($config['steps']), max(1, $silentMinutes), $config['steps'][$step]['instruction']),
+                $flowState->id,
+                $node->id,
+                metadata: ['purpose' => 'follow_up', 'followUpStep' => $step + 1],
+            );
+
+            if (! $this->stillWithTheFlow($conversation) || ! empty(($run->metadata ?? [])['responseSuppressed'])) {
+                $skip('the conversation left the AI during the run');
+
+                return;
+            }
+
+            $text = trim((string) $run->output_message);
+
+            if ($text === '') {
+                $this->clearAiFollowUp($flowState, $nodeId);
+                $skip('the agent returned nothing');
+
+                return;
+            }
+
+            // The customer may have answered while the model was writing; a
+            // nudge landing under their reply reads as not listening.
+            $answeredMeanwhile = Message::where('conversation_id', $conversation->id)
+                ->where('sender_type', SenderType::Incoming)
+                ->where('message_type', '!=', MessageType::Info)
+                ->where('id', '>', (int) ($claim['after_message_id'] ?? 0))
+                ->exists();
+
+            if ($answeredMeanwhile) {
+                $skip('the customer replied during the run');
+
+                return;
+            }
+
+            $message = $this->messageService->sendMessage($conversation, ['message' => $text]);
+
+            if ($message) {
+                $this->stampAiMessage($message, $flowState, $agent, $run, [
+                    AiFollowUp::META_FLAG => $step + 1,
+                ]);
+                $run->update(['message_id' => $message->id]);
+            }
+
+            // A handoff the hub detected on our own synthetic prompt is not the
+            // customer asking for anything — they have not said a word.
+            if ($run->handoff_triggered) {
+                Log::info('FlowExecutor: AIAgent follow-up ignored a hub handoff signal', [
+                    'node_id' => $nodeId,
+                    'conversation_id' => $conversation->id,
+                    'run_id' => $run->id,
+                ]);
+            }
+
+            Log::info('FlowExecutor: AIAgent follow-up sent', [
+                'node_id' => $nodeId,
+                'conversation_id' => $conversation->id,
+                'step' => $step + 1,
+                'run_id' => $run->id,
+            ]);
+
+            $this->armAiFollowUp($flowState, $node, $step + 1);
+        } catch (\Throwable $th) {
+            // A nudge, not an answer owed: no handoff, no retry.
+            Log::warning('FlowExecutor: AIAgent follow-up failed', [
+                'node_id' => $nodeId,
+                'conversation_id' => $conversation->id,
+                'step' => $step + 1,
+                'error' => $th->getMessage(),
+            ]);
+
+            $this->clearAiFollowUp($flowState, $nodeId);
+        } finally {
+            LiveActivity::idle($conversation);
+            $lock->release();
+        }
+    }
+
+    protected function clearAiFollowUp(FlowState $flowState, int $nodeId): void
+    {
+        $flowState->refresh();
+        $stateData = $flowState->state_data ?? [];
+
+        if (array_key_exists($this->aiFollowUpKey($nodeId), $stateData)) {
+            unset($stateData[$this->aiFollowUpKey($nodeId)]);
+            $flowState->update(['state_data' => $stateData]);
+        }
+    }
+
     /**
      * Assemble one AI turn out of what the customer has actually sent, and run
      * it: their text, the screenshots that text is about, and the voice notes
@@ -4104,6 +4370,7 @@ class FlowExecutor
 
         $stateData = $flowState->state_data ?? [];
         $stateData[$this->aiDebounceKey($node->id)] = $token;
+        unset($stateData[$this->aiFollowUpKey($node->id)]);
         $flowState->update(['state_data' => $stateData]);
 
         AiTypingPresence::start($flowState->conversation);
@@ -4139,6 +4406,13 @@ class FlowExecutor
         }
 
         $flowState->update(['state_data' => $stateData]);
+
+        // A greeting the customer never answered is the first silence a
+        // follow-up exists for. A held welcome is not one: it goes out with
+        // the answer, and the turn that sends it arms the chain itself.
+        if (! $holdForAnswer) {
+            $this->armAiFollowUp($flowState, $node);
+        }
 
         Log::info($holdForAnswer
             ? 'FlowExecutor: AIAgent welcoming message held for the first answer'
@@ -4427,6 +4701,10 @@ class FlowExecutor
 
             $stateData[$turnsKey] = $turns + 1;
             $flowState->update(['state_data' => $stateData]);
+
+            // The agent has answered and the ball is in the customer's court:
+            // start counting their silence.
+            $this->armAiFollowUp($flowState, $node);
 
             Log::info('FlowExecutor: AIAgent turn completed, waiting for next user input', [
                 'node_id' => $node->id,

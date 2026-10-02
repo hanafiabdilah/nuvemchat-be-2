@@ -80,6 +80,15 @@ return [
 
     'presence_queue' => env('AI_PRESENCE_QUEUE', 'default'),
 
+    /*
+    | Follow-up — the agent writes again when the customer stops answering.
+    | Configured per node (`follow_up` on AI nodes, see App\Services\AiAgentHub\AiFollowUp);
+    | this is only the platform kill switch.
+    */
+    'follow_up' => [
+        'enabled' => (bool) env('AI_FOLLOW_UP_ENABLED', true),
+    ],
+
     'holding' => [
 
         'enabled' => (bool) env('AI_HOLDING_MESSAGES_ENABLED', true),

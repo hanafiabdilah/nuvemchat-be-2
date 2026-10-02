@@ -4,6 +4,7 @@ namespace App\Services\Flow;
 
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Integration\IntegrationCategory;
+use App\Services\AiAgentHub\AiFollowUp;
 use App\Services\AiAgentHub\AiHoldingMessage;
 use App\Services\Integrations\Pixels\PixelEvents;
 use App\Services\Market\MarketCapabilities;
@@ -256,6 +257,14 @@ class FlowBlueprint
                 'capabilities.payment.expires_in_minutes' => ['nullable', 'integer', 'min:'.PaymentNodes::MIN_EXPIRES_MINUTES, 'max:'.PaymentNodes::MAX_EXPIRES_MINUTES],
                 'capabilities.payment.payer_document' => ['nullable', 'string', 'max:64'],
                 'capabilities.payment.payer_email' => ['nullable', 'string', 'max:255'],
+                // Follow-up when the customer goes silent. Absent = off; steps
+                // are clamped again at runtime (AiFollowUp::config).
+                'follow_up' => ['nullable', 'array'],
+                'follow_up.enabled' => ['nullable', 'boolean'],
+                'follow_up.steps' => ['nullable', 'array', 'max:'.AiFollowUp::MAX_STEPS],
+                'follow_up.steps.*.delay_minutes' => ['nullable', 'integer', 'min:'.AiFollowUp::MIN_DELAY_MINUTES, 'max:'.AiFollowUp::MAX_DELAY_MINUTES],
+                'follow_up.steps.*.delay_unit' => ['nullable', 'string', Rule::in(['minutes', 'hours'])],
+                'follow_up.steps.*.instruction' => ['nullable', 'string', 'max:'.AiFollowUp::MAX_INSTRUCTION_LENGTH],
             ]),
             // Lengths mirror the WhatsApp Cloud API limits so the builder warns
             // long before a send fails. Texts stay nullable (like http_request)
@@ -905,6 +914,9 @@ class FlowBlueprint
         $invoiceVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', InvoiceNodes::VARIABLES));
         $branchingTypes = self::branchingTypesSentence();
         $toolsHandoff = AiToolNodes::BRANCH_HANDOFF;
+        $followUpMax = AiFollowUp::MAX_STEPS;
+        $followUpMin = AiFollowUp::MIN_DELAY_MINUTES;
+        $followUpMaxMinutes = AiFollowUp::MAX_DELAY_MINUTES;
         $toolsPaid = AiToolNodes::BRANCH_PAID;
         $toolsPaymentFailed = AiToolNodes::BRANCH_PAYMENT_FAILED;
         $orderVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', AiToolNodes::ORDER_VARIABLES));
@@ -1105,6 +1117,15 @@ class FlowBlueprint
           `payment` (needs cart): charge the cart; `integration_id` MUST be one of
           the payment integrations listed in the context, `method` {$paymentMethods}.
           The amount is always the cart total — there is no amount field.
+        - `follow_up` (optional, off when absent): the agent writes again when the
+          customer stops answering. { "enabled": true, "steps": [
+            { "delay_minutes": 30, "instruction": "" },
+            { "delay_minutes": 240, "instruction": "Offer free shipping." } ] }
+          Up to {$followUpMax} steps, each counted from the previous message, between
+          {$followUpMin} and {$followUpMaxMinutes} minutes. The AI writes the text; `instruction`
+          is optional guidance for that step. The customer replying cancels the rest,
+          and nothing is sent once the WhatsApp 24h window has closed. Only add it
+          when the person asks for follow-ups / reminders / "if they don't answer".
         - Use this node instead of a chain of response + http_request + condition +
           payment nodes whenever the person wants a sales conversation that flows
           naturally.
