@@ -138,10 +138,11 @@ class AdminReportController extends Controller
                         $s->tenant?->user?->email,
                         $s->plan?->name,
                         $s->status instanceof \BackedEnum ? $s->status->value : $s->status,
-                        number_format((int) ($s->plan?->price_cents ?? 0) / 100, 2, '.', ''),
-                        $s->plan?->billing_cycle instanceof \BackedEnum
-                            ? $s->plan->billing_cycle->value
-                            : $s->plan?->billing_cycle,
+                        // The subscription's own snapshot: one plan can be sold
+                        // at several cycles and prices, so the plan row no
+                        // longer says which one this customer bought.
+                        number_format((int) ($s->price_cents ?? $s->plan?->price_cents ?? 0) / 100, 2, '.', ''),
+                        ($s->billing_cycle ?? $s->plan?->billing_cycle)?->value,
                         $s->current_period_start?->toDateString(),
                         $s->current_period_end?->toDateString(),
                         $s->trial_ends_at?->toDateString(),

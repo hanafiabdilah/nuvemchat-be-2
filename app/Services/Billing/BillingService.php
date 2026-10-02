@@ -300,6 +300,8 @@ class BillingService
 
         Cache::put($this->cardCheckoutKey($tenant, $opened['checkout_token']), [
             'plan_id' => $plan->id,
+            // One plan, several cycles: the form is bound to this one's price.
+            'billing_cycle' => $plan->billing_cycle->value,
             'plan_price_cents' => $price->amount_cents,
             'amount_cents' => $quote['charge_now_cents'],
             // The credit frozen at the moment the form opened. It only shrinks
@@ -508,6 +510,7 @@ class BillingService
         if (! is_array($opened)
             || ! $sameChange
             || (int) $opened['plan_id'] !== (int) $plan->id
+            || ($opened['billing_cycle'] ?? $plan->billing_cycle->value) !== $plan->billing_cycle->value
             || ($opened['gateway'] ?? null) !== $gateway->name()
             || $price === null
             || (int) ($opened['plan_price_cents'] ?? $opened['amount_cents']) !== (int) $price->amount_cents) {

@@ -77,6 +77,11 @@ class AdminPlanController extends Controller
         $validated['slug'] ??= Str::slug($validated['name']);
         $prices = $this->pricesFrom($validated);
 
+        // The row's own cycle and price are derived from the price list (see
+        // Plan::syncPrimaryCycle()); these only seed it until that runs.
+        $validated['billing_cycle'] ??= $this->firstCycle($prices) ?? BillingCycle::Monthly->value;
+        $validated['price_cents'] ??= 0;
+
         $plan = Plan::create($validated);
 
         // Absent, the plan keeps the home-market price the model seeded from
@@ -84,6 +89,7 @@ class AdminPlanController extends Controller
         // still produce a plan that is on sale.
         if ($prices !== null) {
             $plan->syncMarketPrices($prices);
+            $plan->syncPrimaryCycle();
         }
 
         return (new PlanResource($plan->load('marketPrices')))->response()->setStatusCode(201);
@@ -101,6 +107,7 @@ class AdminPlanController extends Controller
         // everywhere by omitting them.
         if ($prices !== null) {
             $plan->syncMarketPrices($prices);
+            $plan->syncPrimaryCycle();
         }
 
         return new PlanResource($plan->fresh()->load('marketPrices'));
@@ -119,8 +126,12 @@ class AdminPlanController extends Controller
      * Null (rather than an empty list) when the key is absent, so "did not say"
      * and "said: nowhere" stay different answers.
      *
+     * Two shapes, both understood by Plan::syncMarketPrices(): a list of rows
+     * (one per country **and cycle** — what the editor sends now that a plan
+     * can be sold monthly and yearly), or the older `market code => price`.
+     *
      * @param  array<string, mixed>  $validated
-     * @return array<string, int>|null
+     * @return array<int|string, mixed>|null
      */
     private function pricesFrom(array &$validated): ?array
     {
@@ -131,22 +142,26 @@ class AdminPlanController extends Controller
         $prices = $validated['prices'] ?? [];
         unset($validated['prices']);
 
-        // Either shape: a bare amount (what the editor sent before payment
-        // methods moved per country) or the whole row. The trait accepts both,
-        // so an older client keeps working and simply leaves the methods alone.
-        //
-        // ⚠️ A foreach rather than array_map because the market code is the key,
-        // and the key is what decides which rails a tick may name at all.
+        $isList = array_is_list($prices) && $prices !== [] && is_array($prices[0]) && array_key_exists('market_code', $prices[0]);
+
+        // ⚠️ A foreach rather than array_map because the market code decides
+        // which rails a tick may name at all.
         $clean = [];
 
-        foreach ($prices as $code => $value) {
+        foreach ($prices as $key => $value) {
             if (! is_array($value)) {
-                $clean[$code] = (int) $value;
+                $clean[$key] = (int) $value;
 
                 continue;
             }
 
+            $code = strtoupper((string) ($isList ? ($value['market_code'] ?? '') : $key));
             $row = ['amount_cents' => (int) ($value['amount_cents'] ?? 0)];
+
+            if ($isList) {
+                $row['market_code'] = $code;
+                $row['billing_cycle'] = $value['billing_cycle'] ?? null;
+            }
 
             // Clamped, not merely validated: "Pix in Indonesia" is not a
             // decision an admin is allowed to record (see MarketBillingMethods),
@@ -154,14 +169,25 @@ class AdminPlanController extends Controller
             // accessor on MarketPrice exists to undo.
             foreach (['card_enabled' => 'card', 'pix_enabled' => 'pix'] as $flag => $method) {
                 if (array_key_exists($flag, $value)) {
-                    $row[$flag] = (bool) $value[$flag] && MarketBillingMethods::has((string) $code, $method);
+                    $row[$flag] = (bool) $value[$flag] && MarketBillingMethods::has($code, $method);
                 }
             }
 
-            $clean[$code] = $row;
+            $clean[$key] = $row;
         }
 
         return $clean;
+    }
+
+    /** @param  array<int|string, mixed>|null  $prices */
+    private function firstCycle(?array $prices): ?string
+    {
+        $cycles = collect($prices ?? [])
+            ->map(fn ($row) => is_array($row) ? BillingCycle::tryFrom((string) ($row['billing_cycle'] ?? '')) : null)
+            ->filter()
+            ->sortBy(fn (BillingCycle $cycle) => $cycle->rank());
+
+        return $cycles->first()?->value;
     }
 
     private function validatePlan(Request $request, ?Plan $plan = null): array
@@ -176,15 +202,21 @@ class AdminPlanController extends Controller
             // in that country. Pix is a Brazilian rail, so the question is per
             // country — `plans.pix_enabled` answered it for the whole world.
             'prices.*' => ['nullable'],
+            // A row per country and cycle: one plan sold monthly and yearly is
+            // still one plan, with one set of quotas and features.
+            'prices.*.market_code' => ['sometimes', 'string', 'size:2'],
+            'prices.*.billing_cycle' => ['sometimes', Rule::enum(BillingCycle::class)],
             'prices.*.amount_cents' => ['sometimes', 'integer', 'min:0'],
             'prices.*.card_enabled' => ['sometimes', 'boolean'],
             'prices.*.pix_enabled' => ['sometimes', 'boolean'],
             'name' => ['required', 'string', 'max:100'],
             'slug' => ['nullable', 'string', 'max:120', Rule::unique('plans', 'slug')->ignore($plan?->id)],
             'description' => ['nullable', 'string', 'max:500'],
-            'price_cents' => ['required', 'integer', 'min:0'],
+            // Derived from the price list once it is saved (Plan::syncPrimaryCycle).
+            // Still accepted from an editor that predates cycles per price.
+            'price_cents' => [$plan ? 'sometimes' : 'nullable', 'integer', 'min:0'],
             'currency' => ['nullable', 'string', 'size:3'],
-            'billing_cycle' => ['required', Rule::enum(BillingCycle::class)],
+            'billing_cycle' => ['sometimes', Rule::enum(BillingCycle::class)],
             'trial_days' => ['nullable', 'integer', 'min:0'],
             // Both blocks are sent whole and stored whole, so an unknown key is
             // never a harmless extra — it is a feature nobody will ever enforce,

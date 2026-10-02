@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources\Billing;
 
+use App\Enums\Billing\BillingCycle;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -24,15 +25,34 @@ class PlanResource extends JsonResource
             'prices' => $this->when(
                 $this->relationLoaded('marketPrices'),
                 fn () => $this->marketPrices
-                    ->sortBy('market_code')
+                    ->sortBy(fn ($price) => [$price->market_code, BillingCycle::tryFrom((string) $price->billing_cycle)?->rank() ?? 0])
                     ->map(fn ($price) => [
                         'market_code' => $price->market_code,
+                        'billing_cycle' => $price->billing_cycle,
                         'amount_cents' => $price->amount_cents,
+                        'currency' => $price->currency,
+                        'card_enabled' => (bool) $price->card_enabled,
+                        'pix_enabled' => (bool) $price->pix_enabled,
+                    ])
+                    ->values(),
+            ),
+            // The cycle `price_cents` above is for — the one asked for, or the
+            // shortest sold in this market.
+            'billing_cycle' => $this->billing_cycle,
+            // Every cycle this plan is sold at in the market it was resolved
+            // for, shortest first: what the catalogue's cycle switch is built
+            // from. One plan, several prices — not one plan per cycle.
+            'cycle_prices' => $this->when(
+                $this->resolvedMarketCode() !== null,
+                fn () => $this->pricesForMarket($this->resolvedMarketCode())
+                    ->filter(fn ($price) => BillingCycle::tryFrom((string) $price->billing_cycle) !== null)
+                    ->map(fn ($price) => [
+                        'billing_cycle' => $price->billing_cycle,
+                        'price_cents' => $price->amount_cents,
                         'currency' => $price->currency,
                     ])
                     ->values(),
             ),
-            'billing_cycle' => $this->billing_cycle,
             'trial_days' => $this->trial_days,
             'quotas' => $this->quotas ?? [],
             'features' => $this->features ?? [],

@@ -209,11 +209,14 @@ class PlanChange
             return self::NEW;
         }
 
-        if ((int) $current->plan_id === (int) $plan->id) {
+        $currentCycle = $current->billing_cycle ?? $current->plan?->billing_cycle ?? BillingCycle::Monthly;
+
+        // The same plan at another cycle is a change like any other (monthly →
+        // yearly is an upgrade, paid now with the month's unused part credited);
+        // only the same plan at the same cycle is "already yours".
+        if ((int) $current->plan_id === (int) $plan->id && $plan->billing_cycle === $currentCycle) {
             return self::CURRENT;
         }
-
-        $currentCycle = $current->billing_cycle ?? $current->plan?->billing_cycle ?? BillingCycle::Monthly;
 
         return $plan->billing_cycle->rank() >= $currentCycle->rank() && $priceCents > (int) $current->price_cents
             ? self::UPGRADE
@@ -283,14 +286,18 @@ class PlanChange
             'effective_at' => $effective->toIso8601String(),
             'next_renewal_at' => $effective->toIso8601String(),
             'blocked_reason' => $this->downgradeBlocker($current, $plan),
-            'scheduled' => (int) $current->scheduled_plan_id === (int) $plan->id,
+            'scheduled' => (int) $current->scheduled_plan_id === (int) $plan->id
+                && ($current->scheduled_billing_cycle ?? $current->billing_cycle) === $plan->billing_cycle,
         ]);
     }
 
     /** @return array<string, mixed> */
     protected function describe(Subscription $current, Tenant $tenant): array
     {
-        $plan = $current->plan?->applyMarketPrice($tenant->market_code);
+        $plan = $current->plan?->applyMarketPrice(
+            $tenant->market_code,
+            $current->plan->isSoldIn($tenant->market_code, $current->billing_cycle) ? $current->billing_cycle : null,
+        );
 
         return [
             'subscription_id' => $current->id,

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Billing;
 
+use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
@@ -94,10 +95,13 @@ class BillingController extends Controller
     {
         $validated = $request->validate([
             'plan_id' => ['required', 'exists:plans,id'],
+            // Which of the plan's prices: one plan is sold monthly and yearly.
+            // Absent = the plan's own cycle (a client that predates this).
+            'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
             'payer_email' => ['nullable', 'email'],
         ]);
 
-        $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
+        $plan = $this->planFor($request, $validated);
 
         return response()->json([
             'data' => $this->billing->openCardCheckout(
@@ -246,7 +250,13 @@ class BillingController extends Controller
         // otherwise — the catalog above already does this, and a workspace that
         // reached "Your plan" from a manual grant was reading R$ off a plan row
         // while its own subscription was in rupiah. In-memory only.
-        $subscription?->plan?->applyMarketPrice($tenant->market_code);
+        // At the subscription's own cycle where the plan still sells it — the
+        // same plan can be on sale monthly and yearly.
+        $cycle = $subscription?->billing_cycle;
+        $subscription?->plan?->applyMarketPrice(
+            $tenant->market_code,
+            $cycle && $subscription->plan->isSoldIn($tenant->market_code, $cycle) ? $cycle : null,
+        );
 
         $pending = $this->billing->pendingChangeFor($tenant);
         $pendingInvoice = $pending?->invoices()->where('status', InvoiceStatus::Pending->value)->latest('id')->first();
@@ -259,6 +269,7 @@ class BillingController extends Controller
                 'subscription_id' => $pending->id,
                 'plan' => $pending->plan ? ['id' => $pending->plan->id, 'name' => $pending->plan->name] : null,
                 'price_cents' => $pending->price_cents,
+                'billing_cycle' => $pending->billing_cycle?->value,
                 'currency' => $pending->currency,
                 'invoice' => $pendingInvoice ? new InvoiceResource($pendingInvoice) : null,
             ] : null,
@@ -273,10 +284,13 @@ class BillingController extends Controller
     {
         $validated = $request->validate([
             'plan_id' => ['required', 'exists:plans,id'],
+            // Which of the plan's prices: one plan is sold monthly and yearly.
+            // Absent = the plan's own cycle (a client that predates this).
+            'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
             'method' => ['nullable', Rule::enum(PaymentMethod::class)],
         ]);
 
-        $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
+        $plan = $this->planFor($request, $validated);
         $method = filled($validated['method'] ?? null) ? PaymentMethod::from($validated['method']) : null;
 
         return response()->json([
@@ -289,9 +303,12 @@ class BillingController extends Controller
     {
         $validated = $request->validate([
             'plan_id' => ['required', 'exists:plans,id'],
+            // Which of the plan's prices: one plan is sold monthly and yearly.
+            // Absent = the plan's own cycle (a client that predates this).
+            'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
         ]);
 
-        $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
+        $plan = $this->planFor($request, $validated);
         $tenant = $this->tenant($request);
 
         try {
@@ -351,6 +368,9 @@ class BillingController extends Controller
     {
         $validated = $request->validate([
             'plan_id' => ['required', 'exists:plans,id'],
+            // Which of the plan's prices: one plan is sold monthly and yearly.
+            // Absent = the plan's own cycle (a client that predates this).
+            'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
             'method' => ['required', Rule::enum(PaymentMethod::class)],
             'card_token' => ['required_if:method,card', 'string'],
             // Which gateway minted the token, from the card session. Not the
@@ -373,7 +393,7 @@ class BillingController extends Controller
         // count plan ids and subscribe to one deliberately kept off the
         // shelf — an internal, legacy or partner plan, which is exactly the
         // kind with better quotas or a lower price.
-        $plan = Plan::active()->public()->findOrFail($validated['plan_id']);
+        $plan = $this->planFor($request, $validated);
         $method = PaymentMethod::from($validated['method']);
         $savedCard = filled($validated['saved_card_id'] ?? null) && $method === PaymentMethod::Card
             ? app(SavedCardService::class)->find($this->tenant($request), (int) $validated['saved_card_id'])
@@ -592,6 +612,33 @@ class BillingController extends Controller
             'address_supported' => $tenant->market_code === FiscalInvoiceService::MARKET,
             'billing_address' => $tenant->market_code === FiscalInvoiceService::MARKET ? $tenant->billing_address : null,
         ];
+    }
+
+    /**
+     * The plan asked for, at the cycle asked for, priced for this workspace's
+     * country — the one shape every checkout path hands to BillingService.
+     *
+     * ⚠️ `->public()` as well as active, matching plans(): without it a tenant
+     * could count plan ids and subscribe to one deliberately kept off the
+     * shelf. And a cycle the plan is not sold at here is refused, not quietly
+     * swapped for another — the customer would be charged for a cycle they
+     * did not pick.
+     *
+     * @param  array<string, mixed>  $validated
+     */
+    private function planFor(Request $request, array $validated): Plan
+    {
+        $plan = Plan::active()->public()->with('marketPrices')->findOrFail($validated['plan_id']);
+        $market = $this->tenant($request)->market_code;
+        $cycle = filled($validated['billing_cycle'] ?? null) ? BillingCycle::from($validated['billing_cycle']) : null;
+
+        if ($cycle !== null && ! $plan->isSoldIn($market, $cycle)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'billing_cycle' => __('This plan is not sold with this billing cycle in your country.'),
+            ]);
+        }
+
+        return $plan->applyMarketPrice($market, $cycle);
     }
 
     private function tenant(Request $request): Tenant

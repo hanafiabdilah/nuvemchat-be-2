@@ -20,6 +20,8 @@ class MarketPrice extends Model
         'priceable_type',
         'priceable_id',
         'market_code',
+        // The cycle this price buys (a plan); null for something bought once.
+        'billing_cycle',
         'amount_cents',
         'currency',
         'card_enabled',
