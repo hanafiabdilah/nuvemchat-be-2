@@ -3,6 +3,7 @@
 namespace App\Http\Resources\Billing;
 
 use App\Models\Connection;
+use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\Apiway\ApiwayService;
@@ -74,12 +75,18 @@ class SubscriptionResource extends JsonResource
      */
     protected function currentUsage(): array
     {
-        $tenantId = $this->tenant_id;
-        $tenant = $this->tenant;
+        return self::usageFor($this->tenant);
+    }
 
+    /**
+     * Shared with the Back Office entitlements tab, so the two meters an
+     * operator compares side by side cannot be counting different things.
+     */
+    public static function usageFor(?Tenant $tenant): array
+    {
         return [
-            'connections' => Connection::where('tenant_id', $tenantId)->count(),
-            'agents' => User::where('tenant_id', $tenantId)->count(),
+            'connections' => $tenant ? Connection::where('tenant_id', $tenant->id)->count() : 0,
+            'agents' => $tenant ? User::where('tenant_id', $tenant->id)->count() : 0,
             // Every quota a plan can carry has a meter here, read from the same
             // service that enforces it — a usage panel showing two of five
             // limits leaves the customer to discover the other three by

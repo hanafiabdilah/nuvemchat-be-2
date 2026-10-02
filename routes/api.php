@@ -65,7 +65,6 @@ use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\ConversationNoteController;
 use App\Http\Controllers\Api\Credits\CreditController;
-use App\Http\Controllers\Api\Onboarding\OnboardingController;
 use App\Http\Controllers\Api\FlowAssistantController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\Gallery\GalleryAssetController;
@@ -85,6 +84,7 @@ use App\Http\Controllers\Api\Mcp\ConnectionController as McpConnectionController
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\MessageTemplateController;
 use App\Http\Controllers\Api\Numbers\VirtualNumberController;
+use App\Http\Controllers\Api\Onboarding\OnboardingController;
 use App\Http\Controllers\Api\OtpController;
 use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\PermissionController;
@@ -1111,6 +1111,7 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         Route::middleware('permission:bo.subscriptions.manage')->group(function () {
             Route::get('/subscriptions', [AdminSubscriptionController::class, 'index']);
             Route::get('/apiway/subscriptions', [AdminApiwayController::class, 'subscriptions']);
+            Route::get('/apiway/subscriptions/summary', [AdminApiwayController::class, 'summary']);
             // Books a manual refund against a purchase that was
             // captured but never provisioned — clears it off the Health page.
             Route::post('/apiway/subscriptions/{subscription}/settle-refund', [AdminApiwayController::class, 'settleRefund']);

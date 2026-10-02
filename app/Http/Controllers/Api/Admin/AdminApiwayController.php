@@ -2,11 +2,15 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\Apiway\ApiwaySubscriptionSource;
+use App\Enums\Apiway\ApiwaySubscriptionStatus;
 use App\Exceptions\ApiwayPartnerException;
 use App\Http\Controllers\Controller;
+use App\Models\ApiwayInstance;
 use App\Models\ApiwaySubscription;
 use App\Models\AuditLog;
 use App\Services\Connection\Apiway\ApiwayPartnerClient;
+use App\Services\Money\MarketMoney;
 use Illuminate\Http\Request;
 
 class AdminApiwayController extends Controller
@@ -66,6 +70,10 @@ class AdminApiwayController extends Controller
             'status' => ['sometimes', 'string', 'max:30'],
             'source' => ['sometimes', 'string', 'max:30'],
             'attention' => ['sometimes', 'boolean'],
+            // Renewal window: ProxyBR has no grace, so "what lapses this week"
+            // is the list an operator actually works through.
+            'expiring' => ['sometimes', 'boolean'],
+            'search' => ['sometimes', 'nullable', 'string', 'max:120'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
 
@@ -75,6 +83,26 @@ class AdminApiwayController extends Controller
             ->when($validated['status'] ?? null, fn ($q, $status) => $q->where('status', $status))
             ->when($validated['source'] ?? null, fn ($q, $source) => $q->where('source', $source))
             ->when($validated['attention'] ?? false, fn ($q) => $q->needsAttention())
+            ->when($validated['expiring'] ?? false, fn ($q) => $q->live()
+                ->whereNotNull('expires_at')
+                ->where('expires_at', '<=', now()->addDays(7)))
+            ->when(trim((string) ($validated['search'] ?? '')) !== '', function ($q) use ($validated) {
+                $term = trim((string) $validated['search']);
+                $like = '%'.$term.'%';
+
+                $q->where(fn ($q) => $q
+                    ->when(ctype_digit($term), fn ($q) => $q->orWhere('id', (int) $term)->orWhere('tenant_id', (int) $term))
+                    ->orWhere('provider_subscription_id', 'like', $like)
+                    ->orWhere('external_ref', 'like', $like)
+                    // Grouped: a bare orWhere inside whereHas escapes the
+                    // relation's own key constraint and matches every row.
+                    ->orWhereHas('instances', fn ($q) => $q->where(fn ($q) => $q
+                        ->where('provider_instance_id', 'like', $like)
+                        ->orWhere('name', 'like', $like)))
+                    ->orWhereHas('tenant.user', fn ($q) => $q->where(fn ($q) => $q
+                        ->where('name', 'like', $like)
+                        ->orWhere('email', 'like', $like))));
+            })
             ->orderByDesc('id')
             ->paginate($validated['per_page'] ?? 25);
 
@@ -83,6 +111,62 @@ class AdminApiwayController extends Controller
         );
 
         return response()->json($subscriptions);
+    }
+
+    /**
+     * The platform's exposure on API Way, across every workspace: what is
+     * live, what lapses this week (ProxyBR revokes at expiry, no grace), what
+     * someone is owed, and what the paid units bring in per month.
+     *
+     * Revenue is kept per currency — rows carry their workspace's money, and
+     * reais plus rupiah is not an amount. Plan-included units are counted, not
+     * priced: their cost is inside the plan.
+     */
+    public function summary()
+    {
+        $live = ApiwaySubscription::query()->live();
+
+        $base = MarketMoney::baseCurrency();
+        $monthly = [];
+
+        (clone $live)
+            ->where('source', ApiwaySubscriptionSource::Unit->value)
+            ->get(['cycle', 'total_price_cents', 'currency'])
+            ->each(function (ApiwaySubscription $row) use (&$monthly, $base) {
+                $currency = strtoupper($row->currency ?: $base);
+                $cents = $row->cycle === 'anual'
+                    ? intdiv((int) $row->total_price_cents, 12)
+                    : (int) $row->total_price_cents;
+                $monthly[$currency] = ($monthly[$currency] ?? 0) + $cents;
+            });
+
+        return response()->json(['data' => [
+            'configured' => $this->partner->isConfigured(),
+            'live_count' => (clone $live)->count(),
+            'live_units' => (int) (clone $live)->sum('quantity'),
+            'included_units' => (int) (clone $live)
+                ->where('source', ApiwaySubscriptionSource::PlanIncluded->value)
+                ->sum('quantity'),
+            'live_instances' => ApiwayInstance::query()
+                ->whereHas('subscription', fn ($q) => $q->live())
+                ->count(),
+            'linked_instances' => ApiwayInstance::query()
+                ->whereNotNull('connection_id')
+                ->whereHas('subscription', fn ($q) => $q->live())
+                ->count(),
+            'expiring_count' => (clone $live)
+                ->whereNotNull('expires_at')
+                ->where('expires_at', '<=', now()->addDays(7))
+                ->count(),
+            'provisioning_count' => ApiwaySubscription::query()
+                ->where('status', ApiwaySubscriptionStatus::Provisioning->value)
+                ->count(),
+            'attention_count' => ApiwaySubscription::query()->needsAttention()->count(),
+            'tenant_count' => (clone $live)->distinct()->count('tenant_id'),
+            'base_currency' => $base,
+            'monthly_revenue_cents' => $monthly[$base] ?? 0,
+            'revenue_by_currency' => array_diff_key($monthly, [$base => true]),
+        ]]);
     }
 
     /**
@@ -136,6 +220,8 @@ class AdminApiwayController extends Controller
             'failure' => $meta['failure'] ?? null,
             'capacity_hold' => $meta['capacity_hold'] ?? null,
             'needs_attention' => $row->needsAttention(),
+            'tenant_name' => $row->tenant?->user?->name,
+            'tenant_email' => $row->tenant?->user?->email,
         ]);
     }
 }

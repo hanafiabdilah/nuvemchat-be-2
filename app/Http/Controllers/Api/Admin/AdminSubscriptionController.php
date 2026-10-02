@@ -37,10 +37,12 @@ class AdminSubscriptionController extends Controller
 
     public function show(Tenant $tenant)
     {
-        $subscription = $tenant->currentSubscription?->loadMissing('plan');
+        $subscription = $tenant->currentSubscription?->loadMissing(['plan', 'tenant', 'scheduledPlan']);
 
+        // With usage: the operator's question on this tab is "how close are
+        // they to each limit", not only "what does the plan say".
         return response()->json([
-            'data' => $subscription ? new SubscriptionResource($subscription) : null,
+            'data' => $subscription ? (new SubscriptionResource($subscription))->withUsage() : null,
         ]);
     }
 

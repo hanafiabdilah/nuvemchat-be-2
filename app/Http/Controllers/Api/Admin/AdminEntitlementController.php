@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Admin;
 use App\Enums\Billing\Feature;
 use App\Enums\Billing\Quota;
 use App\Http\Controllers\Controller;
+use App\Http\Resources\Billing\SubscriptionResource;
 use App\Models\AuditLog;
 use App\Models\Tenant;
 use App\Services\Billing\SubscriptionGate;
@@ -56,10 +57,7 @@ class AdminEntitlementController extends Controller
                 // grant is still on the record — the UI needs to distinguish
                 // "no exception" from "the exception ran out on the 3rd".
                 'override_active' => $tenant->activeEntitlementOverrides() !== null,
-                'usage' => [
-                    'connections' => $tenant->connections()->count(),
-                    'agents' => $tenant->users()->count(),
-                ],
+                'usage' => SubscriptionResource::usageFor($tenant),
             ],
         ]);
     }
