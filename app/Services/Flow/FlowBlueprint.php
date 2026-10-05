@@ -40,7 +40,7 @@ class FlowBlueprint
     public const NODE_TYPES = [
         'start', 'message', 'interval', 'response', 'wait_response', 'status',
         'tagging', 'condition', 'action', 'ai_agent', 'ai_tools', 'http_request',
-        'interactive', 'payment', 'invoice', 'pixel', 'receipt', 'go_to_flow', 'lead',
+        'interactive', 'payment', 'invoice', 'pixel', 'receipt', 'ai_media', 'go_to_flow', 'lead',
     ];
 
     /**
@@ -78,6 +78,7 @@ class FlowBlueprint
         'payment' => PaymentNodes::BRANCHES,
         'invoice' => InvoiceNodes::BRANCHES,
         'receipt' => ReceiptNodes::BRANCHES,
+        'ai_media' => AiMediaNodes::BRANCHES,
     ];
 
     /**
@@ -389,6 +390,39 @@ class FlowBlueprint
                 'parameters' => ['nullable', 'array', 'max:20'],
                 'parameters.*.key' => ['nullable', 'string', 'max:40'],
                 'parameters.*.value' => ['nullable', 'string', 'max:500'],
+            ],
+            // Half-built saves, like every node; at runtime one without a
+            // credential or an instruction leaves through `failed`. The
+            // credential must be this workspace's.
+            'ai_media' => [
+                'media_type' => ['nullable', 'string', Rule::in(AiMediaNodes::TYPES)],
+                'provider_credential_id' => [
+                    'nullable',
+                    'integer',
+                    Rule::exists('ai_hub_provider_credentials', 'id')->where(function ($query) {
+                        $tenantId = self::tenantId();
+                        $query->whereIn('ai_hub_tenant_id', fn ($sub) => $sub
+                            ->select('id')
+                            ->from('ai_hub_tenants')
+                            ->where('tenant_id', $tenantId));
+                    }),
+                ],
+                'model' => ['nullable', 'string', 'max:120'],
+                'prompt' => ['nullable', 'string', 'max:'.AiMediaNodes::MAX_PROMPT_LENGTH],
+                'use_customer_image' => ['nullable', 'boolean'],
+                'reference_urls' => ['nullable', 'array', 'max:'.AiMediaNodes::MAX_REFERENCES],
+                'reference_urls.*' => ['nullable', 'string', 'max:2000'],
+                'image' => ['nullable', 'array'],
+                'image.size' => ['nullable', 'string', Rule::in(AiMediaNodes::IMAGE_SIZES)],
+                'image.quality' => ['nullable', 'string', Rule::in(AiMediaNodes::IMAGE_QUALITIES)],
+                'audio' => ['nullable', 'array'],
+                'audio.voice' => ['nullable', 'string', 'max:120'],
+                'video' => ['nullable', 'array'],
+                'video.seconds' => ['nullable', 'integer', Rule::in(AiMediaNodes::VIDEO_SECONDS)],
+                'video.size' => ['nullable', 'string', Rule::in(AiMediaNodes::VIDEO_SIZES)],
+                'wait_message' => ['nullable', 'string', 'max:4096'],
+                'caption' => ['nullable', 'string', 'max:1024'],
+                'send_to_customer' => ['nullable', 'boolean'],
             ],
             // Lenient like payment: a half-built node saves, and at runtime one
             // with no AI agent leaves through `rejected` without asking the

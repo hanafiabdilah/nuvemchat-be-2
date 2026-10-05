@@ -303,7 +303,7 @@ it('is accepted by the flow file contract with its dynamic outputs', function ()
 
 it('names every branching node type in its error, the new one included', function () {
     expect(\App\Services\Flow\FlowBlueprint::branchingTypesSentence())
-        ->toBe('condition, http_request, wait_response, payment, invoice, receipt, interactive and ai_tools');
+        ->toBe('condition, http_request, wait_response, payment, invoice, receipt, ai_media, interactive and ai_tools');
 });
 
 it('knows both AI node types are AI nodes', function () {

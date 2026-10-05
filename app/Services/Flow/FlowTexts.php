@@ -68,6 +68,10 @@ final class FlowTexts
         'invoice' => [
             'message' => 2000,
         ],
+        'ai_media' => [
+            'wait_message' => 4096,
+            'caption' => 1024,
+        ],
         'receipt' => [
             'message' => ReceiptNodes::MAX_MESSAGE_LENGTH,
             'invalid_message' => ReceiptNodes::MAX_MESSAGE_LENGTH,

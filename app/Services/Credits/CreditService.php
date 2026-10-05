@@ -7,6 +7,7 @@ use App\Enums\Notification\NotificationType;
 use App\Events\CreditUpdated;
 use App\Exceptions\Billing\InsufficientCreditException;
 use App\Models\AiHubRun;
+use App\Models\AiMediaGeneration;
 use App\Models\CreditTransaction;
 use App\Models\CreditWallet;
 use App\Models\Invoice;
@@ -304,6 +305,57 @@ class CreditService
                     'estimated' => $price['estimated'],
                     'total_tokens' => $run->total_tokens,
                     'conversation_id' => $run->conversation_id,
+                ],
+            ],
+        );
+    }
+
+    /**
+     * Charge one generated image, audio or video to the wallet.
+     *
+     * The same pricing as a run — provider cost, the workspace's rate, the
+     * markup — keyed by reference instead of by run id, because a generation
+     * is not a run. Null when it had already been charged.
+     */
+    public function chargeMedia(AiMediaGeneration $generation): ?CreditTransaction
+    {
+        $tenant = $generation->tenant;
+
+        if ($tenant === null) {
+            return null;
+        }
+
+        $price = CreditPricing::priceRun(
+            $generation->cost_usd === null ? null : (float) $generation->cost_usd,
+            $generation->provider,
+            $generation->model,
+            $this->currencyFor($tenant),
+        );
+
+        if ($price['estimated'] || ($price['rate_missing'] ?? false)) {
+            Log::warning('CreditService: media generation priced without a reported cost or rate', [
+                'tenant_id' => $tenant->id,
+                'ai_media_generation_id' => $generation->id,
+                'estimated' => $price['estimated'],
+                'rate_missing' => $price['rate_missing'] ?? false,
+                'cents' => $price['cents'],
+            ]);
+        }
+
+        return $this->record(
+            $tenant,
+            CreditTransactionType::Usage,
+            -$price['cents'],
+            [
+                'reference' => "ai-media:{$generation->id}",
+                'cost_usd' => $price['cost_usd'],
+                'usd_rate' => $price['rate'],
+                'markup_pct' => $price['markup_pct'],
+                'description' => trim(($generation->provider ?? 'AI').' '.($generation->model ?? '').' '.$generation->type),
+                'meta' => [
+                    'estimated' => $price['estimated'],
+                    'conversation_id' => $generation->conversation_id,
+                    'media_type' => $generation->type,
                 ],
             ],
         );

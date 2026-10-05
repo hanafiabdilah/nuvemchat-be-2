@@ -67,6 +67,8 @@ class UserController extends Controller
         // one saved in a flow still runs, as a plain AI agent.
         $data['platform'] = [
             'ai_tools' => (bool) config('ai.tools.enabled', false),
+            // Whether the AI Hub can generate media yet (config ai.media.enabled).
+            'ai_media' => (bool) config('ai.media.enabled', false),
         ];
 
         return response()->json([

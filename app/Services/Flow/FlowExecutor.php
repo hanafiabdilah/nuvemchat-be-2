@@ -21,6 +21,7 @@ use App\Events\MessageReceived;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Jobs\CheckFlowReceipt;
 use App\Jobs\ExpireFlowPayment;
+use App\Jobs\GenerateFlowMedia;
 use App\Jobs\ReleaseFlowInvoice;
 use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunAiToolsPaymentBranch;
@@ -33,7 +34,9 @@ use App\Jobs\SendAiFollowUp;
 use App\Jobs\SendAiHoldingMessage;
 use App\Jobs\SendPixelEvent;
 use App\Models\AiHubAgent;
+use App\Models\AiHubProviderCredential;
 use App\Models\AiHubRun;
+use App\Models\AiMediaGeneration;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -58,6 +61,7 @@ use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiFirstMessage;
 use App\Services\AiAgentHub\AiFollowUp;
 use App\Services\AiAgentHub\AiHoldingMessage;
+use App\Services\AiAgentHub\AiMediaGenerator;
 use App\Services\AiAgentHub\AiReceiptReader;
 use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
@@ -364,6 +368,10 @@ class FlowExecutor
 
             case NodeType::Receipt:
                 $this->executeReceiptNode($flowState, $node);
+                break;
+
+            case NodeType::AiMedia:
+                $this->executeAiMediaNode($flowState, $node);
                 break;
 
             case NodeType::GoToFlow:
@@ -3013,6 +3021,17 @@ class FlowExecutor
             }
 
             $this->receiveWaitResponseInput($flowState, $currentNode, $userInput);
+
+            return;
+        }
+
+        // An AI media node waits for the model, not for the customer: what they
+        // write meanwhile does not move the flow, and running the node again
+        // would pay for a second file.
+        if ($currentNode->type === NodeType::AiMedia) {
+            if (! array_key_exists(AiMediaNodes::stateKey($currentNode->id), $flowState->state_data ?? [])) {
+                $this->executeAiMediaNode($flowState, $currentNode);
+            }
 
             return;
         }
@@ -5903,6 +5922,260 @@ class FlowExecutor
         }
 
         $this->moveToNextNode($flowState, $node);
+    }
+
+    // ──────────────────────────────  AI media  ──────────────────────────────
+
+    /**
+     * Execute an AI media node — ask the hub for an image, an audio or a video.
+     *
+     * Only the asking happens here. Generation takes seconds for a picture and
+     * minutes for a video, so the node parks and GenerateFlowMedia carries it:
+     * start, look again, and when the file is home, send it and move on.
+     */
+    protected function executeAiMediaNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+        $tenantId = (int) $conversation->connection->tenant_id;
+
+        $credential = AiMediaNodes::isConfigured($data)
+            ? AiHubProviderCredential::find(AiMediaNodes::credentialId($data))
+            : null;
+
+        $reason = match (true) {
+            ! config('ai.media.enabled') => 'disabled',
+            ! $credential || (int) $credential->aiHubTenant?->tenant_id !== $tenantId => 'not_configured',
+            default => null,
+        };
+
+        if ($reason !== null) {
+            Log::info('FlowExecutor: AI media node cannot run, leaving through failed', [
+                'node_id' => $node->id,
+                'reason' => $reason,
+            ]);
+
+            $this->leaveAiMediaNode($flowState, $node, null, $reason);
+
+            return;
+        }
+
+        $this->sendReceiptText($flowState, (string) ($data['wait_message'] ?? ''));
+
+        $type = AiMediaNodes::type($data);
+
+        $generation = AiMediaGeneration::create([
+            'tenant_id' => $tenantId,
+            'conversation_id' => $conversation->id,
+            'flow_state_id' => $flowState->id,
+            'flow_node_id' => $node->id,
+            'ai_hub_provider_credential_id' => $credential->id,
+            'external_id' => 'pingly-mg-'.Str::lower((string) Str::ulid()),
+            'type' => $type,
+            'status' => AiMediaGeneration::STATUS_PENDING,
+            'provider' => $credential->provider,
+            'model' => trim((string) ($data['model'] ?? '')) ?: null,
+            'prompt' => Str::limit($this->interpolateVariables((string) $data['prompt'], $flowState), AiMediaNodes::MAX_PROMPT_LENGTH, ''),
+            'request' => [
+                'options' => AiMediaNodes::options($data, $conversation->connection->channel->voiceReplyFormat()),
+                'reference_urls' => array_map(
+                    fn (string $url) => $this->interpolateVariables($url, $flowState),
+                    AiMediaNodes::referenceUrls($data),
+                ),
+                'use_customer_image' => AiMediaNodes::usesCustomerImage($data),
+            ],
+        ]);
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[AiMediaNodes::stateKey($node->id)] = $generation->id;
+        $flowState->update(['state_data' => $stateData]);
+
+        LiveActivity::aiThinking($conversation, $node);
+
+        GenerateFlowMedia::dispatch($generation->id);
+    }
+
+    /**
+     * One step of a generation. Called by GenerateFlowMedia.
+     */
+    public function runAiMedia(int $generationId): void
+    {
+        $generation = AiMediaGeneration::find($generationId);
+
+        if (! $generation || $generation->isTerminal()) {
+            return;
+        }
+
+        $flowState = FlowState::find($generation->flow_state_id);
+        $node = $flowState ? FlowNode::find($generation->flow_node_id) : null;
+
+        // The flow left this node, or somebody took the conversation. Nothing
+        // more is asked of the hub, and nothing is sent over a person.
+        if (! $node
+            || $node->type !== NodeType::AiMedia
+            || $flowState->status !== FlowStateStatus::Running
+            || $flowState->current_node_id !== $node->id
+            || (int) (($flowState->state_data ?? [])[AiMediaNodes::stateKey($node->id)] ?? 0) !== $generation->id
+            || ! $this->stillWithTheFlow($flowState->conversation)) {
+            return;
+        }
+
+        $generator = new AiMediaGenerator;
+        $pollSeconds = max(1, (int) config('ai.media.poll_seconds', 4));
+        $maxPolls = (int) ceil(((int) config("ai.media.deadline_seconds.{$generation->type}", 180)) / $pollSeconds);
+        $again = function () use ($generation, $generator, $pollSeconds, $maxPolls): bool {
+            if ($generation->polls >= $maxPolls) {
+                $generator->fail($generation, 'timeout');
+
+                return false;
+            }
+
+            $generation->increment('polls');
+            GenerateFlowMedia::dispatch($generation->id)->delay(now()->addSeconds($pollSeconds));
+
+            return true;
+        };
+
+        if (! $generation->hub_generation_id) {
+            $references = $this->aiMediaReferences($generation, $flowState->conversation);
+
+            if ($references === null) {
+                // The customer's photo is still downloading.
+                if ($again()) {
+                    return;
+                }
+            } elseif ($references === false) {
+                $generator->fail($generation, 'no_reference');
+            } else {
+                $generator->start($generation, $references);
+            }
+        } else {
+            $generator->refresh($generation);
+        }
+
+        $generation->refresh();
+
+        if (! $generation->isTerminal() && $again()) {
+            return;
+        }
+
+        $generation->refresh();
+        $this->leaveAiMediaNode($flowState->fresh(), $node, $generation, $generation->error_code);
+    }
+
+    /**
+     * The pictures the model works from: the customer's latest photo when the
+     * node asks for it, then the author's own references.
+     *
+     * @return list<array{url: string, name?: string}>|null|false null while
+     *                                                            the customer's photo is still being downloaded, false when the
+     *                                                            node needs one and there is none
+     */
+    protected function aiMediaReferences(AiMediaGeneration $generation, Conversation $conversation): array|null|false
+    {
+        $request = $generation->request ?? [];
+        $images = [];
+
+        if ($request['use_customer_image'] ?? false) {
+            $photo = Message::where('conversation_id', $conversation->id)
+                ->where('sender_type', SenderType::Incoming)
+                ->whereIn('message_type', [MessageType::Image, MessageType::Document])
+                ->orderByDesc('id')
+                ->first();
+
+            if ($photo && $photo->attachment_status === AttachmentStatus::Pending) {
+                return null;
+            }
+
+            $attachment = $photo ? AiAttachments::forMessage($photo) : null;
+
+            if (($attachment['type'] ?? null) !== 'image') {
+                return false;
+            }
+
+            $images[] = array_filter(['url' => $attachment['url'], 'name' => $attachment['name'] ?? null]);
+        }
+
+        foreach ($request['reference_urls'] ?? [] as $url) {
+            if (is_string($url) && str_starts_with($url, 'https://')) {
+                $images[] = ['url' => $url];
+            }
+        }
+
+        return $images;
+    }
+
+    /**
+     * Stop waiting: send the file when there is one, and take a branch.
+     */
+    protected function leaveAiMediaNode(FlowState $flowState, FlowNode $node, ?AiMediaGeneration $generation, ?string $reason): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+        $url = $generation?->status === AiMediaGeneration::STATUS_COMPLETED && $generation->path
+            ? MediaStorage::publishedUrl($generation->path)
+            : null;
+
+        if ($url !== null && AiMediaNodes::sendsToCustomer($data)) {
+            try {
+                $message = $this->sendByMessageType($conversation, [
+                    'message_type' => $generation->type,
+                    'attachment_url' => $url,
+                    'body' => (string) ($data['caption'] ?? ''),
+                ], $flowState);
+
+                if ($message) {
+                    broadcast(new MessageReceived($message));
+                } else {
+                    $reason = 'send_failed';
+                }
+            } catch (\Throwable $th) {
+                Log::error('FlowExecutor: Failed to send generated media', [
+                    'node_id' => $node->id,
+                    'ai_media_generation_id' => $generation->id,
+                    'error' => $th->getMessage(),
+                ]);
+
+                $reason = 'send_failed';
+            }
+        }
+
+        $generated = $url !== null && $reason === null;
+
+        $stateData = $flowState->fresh()->state_data ?? [];
+        unset($stateData[AiMediaNodes::stateKey($node->id)]);
+        $stateData['ai_media_url'] = (string) $url;
+        $stateData['ai_media_type'] = (string) ($generation?->type ?? AiMediaNodes::type($data));
+        $stateData['ai_media_status'] = $generated ? 'generated' : 'failed';
+        $stateData['ai_media_error'] = $generated ? '' : (string) $reason;
+        $flowState->update(['state_data' => $stateData]);
+
+        LiveActivity::idle($conversation);
+
+        if (! $generated) {
+            SystemMessage::info(
+                $conversation,
+                'AI media was not generated'.($reason ? " ({$reason})." : '.'),
+                'flow_ai_media_failed',
+                ['media_reason' => (string) $reason, 'media_type' => $stateData['ai_media_type']],
+            );
+        }
+
+        $edge = $node->outgoingEdges()
+            ->where('condition_value', $generated ? AiMediaNodes::BRANCH_GENERATED : AiMediaNodes::BRANCH_FAILED)
+            ->first();
+
+        if (! $edge && $generated) {
+            $edge = $node->outgoingEdges()->whereNull('condition_value')->first();
+        }
+
+        if (! $edge) {
+            $this->endFlowHere($flowState, FlowStateStatus::Completed);
+
+            return;
+        }
+
+        $this->followEdge($flowState, $edge, ['branch' => $generated ? AiMediaNodes::BRANCH_GENERATED : AiMediaNodes::BRANCH_FAILED]);
     }
 
     // ───────────────────────────────  Receipt  ──────────────────────────────

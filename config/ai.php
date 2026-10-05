@@ -501,6 +501,45 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Media generation for the "AI media" flow node (ai_media)
+    |--------------------------------------------------------------------------
+    |
+    | An image, a spoken audio or a video made by the AI Hub in the middle of a
+    | flow (App\Services\AiAgentHub\AiMediaGenerator).
+    |
+    | ⚠️ Off by default, and it must stay off until the hub ships the endpoint:
+    | today POST /v1/media-generations answers 404. The contract this is built
+    | against is PINGLY-MEDIA-GENERATION-20261005.md at the monorepo root. While
+    | off, the builder hides the node and one already saved leaves through its
+    | `failed` output without calling anything.
+    |
+    */
+
+    'media' => [
+
+        'enabled' => (bool) env('AI_MEDIA_ENABLED', false),
+
+        // Path under the hub base URL. Configurable so a rename on their side
+        // is an env change, not a deploy.
+        'endpoint' => env('AI_MEDIA_ENDPOINT', 'media-generations'),
+
+        // Seconds between status reads while a generation is running.
+        'poll_seconds' => (int) env('AI_MEDIA_POLL_SECONDS', 4),
+
+        // How long a generation may take before the flow gives up on it.
+        'deadline_seconds' => [
+            'image' => (int) env('AI_MEDIA_IMAGE_DEADLINE', 180),
+            'audio' => (int) env('AI_MEDIA_AUDIO_DEADLINE', 120),
+            'video' => (int) env('AI_MEDIA_VIDEO_DEADLINE', 900),
+        ],
+
+        // Largest result kept, in megabytes. A video past this would not go
+        // through WhatsApp anyway.
+        'max_mb' => (int) env('AI_MEDIA_MAX_MB', 64),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Tools for the "Agente IA com ações" node (ai_tools)
     |--------------------------------------------------------------------------
     |
@@ -530,7 +569,6 @@ return [
         */
 
         'run_field' => env('AI_TOOLS_RUN_FIELD', 'tools'),
-
 
         /*
         | Ceiling on tool calls per conversation per hour, on top of the per-key

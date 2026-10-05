@@ -28,6 +28,7 @@ enum NodeType: string
     case Invoice = 'invoice';
     case Pixel = 'pixel';
     case Receipt = 'receipt';
+    case AiMedia = 'ai_media';
     case GoToFlow = 'go_to_flow';
     case Lead = 'lead';
 
@@ -232,6 +233,9 @@ enum NodeType: string
             // customers before its author chose an account would be a side
             // effect nobody asked for. Outputs follow the capabilities — see
             // AiToolNodes::branches().
+            // Has a model make an image, an audio or a video and sends it.
+            // See App\Services\Flow\AiMediaNodes.
+            self::AiMedia => \App\Services\Flow\AiMediaNodes::defaults(),
             // Asks for proof of payment, has an AI read it, branches on the
             // result. See App\Services\Flow\ReceiptNodes.
             self::Receipt => \App\Services\Flow\ReceiptNodes::defaults(),
