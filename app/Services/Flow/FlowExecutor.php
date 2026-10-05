@@ -567,6 +567,10 @@ class FlowExecutor
 
         $stateData[$this->messageChainKey($node->id)] = [
             'token' => $token,
+            // Which bubble is next. Nothing reads it while the chain runs — the
+            // job carries its own index — but a paused flow needs it to pick
+            // the sequence up where it stopped instead of from the top.
+            'index' => $index,
             'expires_at' => $this->messageChainExpiry($items, $index, $delay),
         ];
 
@@ -785,6 +789,15 @@ class FlowExecutor
         }
 
         $nextDelay = (int) ($next['delay'] ?? 0);
+
+        // Kept in step with the job, so a flow paused during this wait knows
+        // which bubble it still owes.
+        $stateData = $flowState->state_data ?? [];
+
+        if (is_array($stateData[$this->messageChainKey($nodeId)] ?? null)) {
+            $stateData[$this->messageChainKey($nodeId)]['index'] = $index + 1;
+            $flowState->update(['state_data' => $stateData]);
+        }
 
         RunFlowMessageNode::dispatch($flowStateId, $nodeId, $index + 1, $token)
             ->delay(now()->addSeconds($nextDelay));
@@ -2322,6 +2335,245 @@ class FlowExecutor
         // (accept, handoff, resolve). One that has not would leave a thread in
         // the AI tab with nothing behind it that will ever answer.
         $this->releaseAiHandling($conversation);
+    }
+
+    /** Where a paused flow keeps what it needs to pick its current node back up. */
+    protected const PAUSE_KEY = '_paused';
+
+    /**
+     * Pause the flow a person asked to pause — and keep it resumable.
+     *
+     * Not stopFlow(): that one means somebody took the conversation, and it is
+     * final. A paused flow stays on its node with its variables, answers
+     * nobody, and waits for resumePausedFlow(). The conversation stays in the
+     * queue; nothing is assigned to whoever pressed the button.
+     *
+     * Every timer the flow had running (a message sequence, an interval, a
+     * reply timeout) finds the flow not Running when it fires and stands down,
+     * clearing its own claim on the way. What those claims knew is therefore
+     * copied aside here, before any of them can fire.
+     *
+     * @return bool whether there was a running flow to pause
+     */
+    public function pauseFlow(Conversation $conversation): bool
+    {
+        $flowState = FlowState::where('conversation_id', $conversation->id)->first();
+
+        if (! $flowState || $flowState->status !== FlowStateStatus::Running) {
+            return false;
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        $nodeId = (int) $flowState->current_node_id;
+        $chain = $stateData[$this->messageChainKey($nodeId)] ?? null;
+
+        $stateData[self::PAUSE_KEY] = [
+            'node_id' => $nodeId,
+            'message_index' => is_array($chain) && isset($chain['index']) ? (int) $chain['index'] : null,
+        ];
+
+        $flowState->update([
+            'status' => FlowStateStatus::Paused,
+            'state_data' => $stateData,
+        ]);
+
+        LiveActivity::idle($conversation);
+        $this->clearAiHoldingMessage($conversation);
+        AiTypingPresence::stop($conversation);
+        FlowPresence::stop($conversation);
+
+        // A paused AI node answers nobody, so the thread must not sit in the
+        // AI tab as if it did.
+        $this->releaseAiHandling($conversation);
+
+        Log::info('FlowExecutor: Flow paused by a person', [
+            'conversation_id' => $conversation->id,
+            'flow_state_id' => $flowState->id,
+            'current_node_id' => $nodeId,
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Resume a paused flow from the node it was paused on.
+     *
+     * Nodes that wait for the customer (reply, menu, AI) need nothing but the
+     * status: the next message moves them. Nodes that wait for a clock or a
+     * gateway lost their wake-up while paused, so each gets it back here — and
+     * none of them is re-run in a way that would repeat what the customer
+     * already received or was already charged for.
+     *
+     * @return bool whether a paused flow was resumed
+     */
+    public function resumePausedFlow(Conversation $conversation): bool
+    {
+        $flowState = FlowState::where('conversation_id', $conversation->id)->first();
+
+        if (! $flowState
+            || $flowState->status !== FlowStateStatus::Paused
+            || $conversation->isGroup()
+            || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return false;
+        }
+
+        $node = $flowState->currentNode;
+
+        if (! $node) {
+            // The step it was paused on was deleted from the flow meanwhile.
+            $this->endFlowHere($flowState, FlowStateStatus::Failed);
+
+            return false;
+        }
+
+        $stateData = $flowState->state_data ?? [];
+        $paused = is_array($stateData[self::PAUSE_KEY] ?? null) ? $stateData[self::PAUSE_KEY] : [];
+        $samePlace = (int) ($paused['node_id'] ?? 0) === (int) $node->id;
+        unset($stateData[self::PAUSE_KEY]);
+
+        $flowState->update([
+            'status' => FlowStateStatus::Running,
+            'state_data' => $stateData,
+        ]);
+
+        Log::info('FlowExecutor: Paused flow resumed by a person', [
+            'conversation_id' => $conversation->id,
+            'flow_state_id' => $flowState->id,
+            'current_node_id' => $node->id,
+            'node_type' => $node->type->value,
+        ]);
+
+        if ($node->type === NodeType::Message) {
+            // Mid-sequence: carry on with the bubble that was next, at once —
+            // its pause was spent (and then some) while the flow was paused.
+            $this->clearMessageChain($flowState, $node->id);
+            $items = MessageNodes::items($node->data ?? []);
+            $index = $samePlace ? ($paused['message_index'] ?? null) : null;
+
+            if ($index !== null && isset($items[(int) $index])) {
+                $this->startMessageChain($flowState, $node, $items, (int) $index, 0);
+            } else {
+                $this->finishMessageNode($flowState, $node);
+            }
+
+            return true;
+        }
+
+        if ($node->type === NodeType::Interval) {
+            // The clock starts again: how much of the wait was left is not
+            // something the author's "wait 10 minutes" can answer either way.
+            $this->clearIntervalClaim($flowState, $node->id);
+            $this->executeFromNode($flowState, $node);
+
+            return true;
+        }
+
+        if ($node->type === NodeType::WaitResponse
+            && array_key_exists(WaitResponseNodes::parkedKey($node->id), $stateData)) {
+            $this->armWaitResponseTimeout($flowState, $node);
+
+            return true;
+        }
+
+        // A charge or an invoice that settled while the flow was paused found
+        // nobody waiting. Nothing will announce it a second time.
+        if ($node->type === NodeType::Payment && ($paymentId = $this->pendingPaymentId($flowState, $node)) !== null) {
+            $payment = FlowPayment::find($paymentId);
+
+            if ($payment && $payment->status->isFinal()) {
+                $this->resumeFromPayment($payment);
+            }
+
+            return true;
+        }
+
+        if ($node->type === NodeType::Invoice && ($invoiceId = $this->pendingInvoiceId($flowState, $node)) !== null) {
+            $invoice = FlowInvoice::find($invoiceId);
+
+            if ($invoice && $invoice->status->isFinal()) {
+                $this->resumeFromInvoice($invoice);
+            }
+
+            return true;
+        }
+
+        // What the customer wrote while the AI was paused is still unanswered.
+        // An empty turn stands down on its own.
+        if ($node->type->isAiAgent()) {
+            $this->scheduleAIAgentTurn($flowState, $node);
+        }
+
+        return true;
+    }
+
+    /**
+     * Start a flow a person picked, from its start node, whatever was running.
+     *
+     * The conversation's one flow state is moved onto the chosen flow — the
+     * same move a Go-to-flow node makes, and for the same reason (see
+     * FlowLinkNodes). Variables collected so far go along; node bookkeeping of
+     * the flow being left does not, which is also what makes any timer that
+     * flow still had queued stand down when it fires.
+     *
+     * The caller has already put the conversation where a flow may run
+     * (Pending, unassigned) and checked the flow belongs to the workspace.
+     *
+     * @return bool false when the flow has no start node to run from
+     */
+    public function triggerFlow(Conversation $conversation, Flow $flow): bool
+    {
+        if ($conversation->isGroup()) {
+            return false;
+        }
+
+        $start = FlowNode::where('flow_id', $flow->id)->where('type', NodeType::Start)->first();
+
+        if (! $start) {
+            return false;
+        }
+
+        $this->clearAiHoldingMessage($conversation);
+        AiTypingPresence::stop($conversation);
+        FlowPresence::stop($conversation);
+
+        // The new flow may never reach an AI node; one that does marks the
+        // conversation again on its way in.
+        $this->releaseAiHandling($conversation);
+
+        $flowState = FlowState::where('conversation_id', $conversation->id)->first();
+
+        $attributes = [
+            'flow_id' => $flow->id,
+            'current_node_id' => $start->id,
+            'state_data' => FlowLinkNodes::carriedState($flowState?->state_data ?? [], true),
+            'status' => FlowStateStatus::Running,
+            'completed_at' => null,
+        ];
+
+        if ($flowState) {
+            $flowState->update($attributes);
+            $flowState->unsetRelation('currentNode');
+            $flowState->unsetRelation('flow');
+            $flowState->unsetRelation('conversation');
+        } else {
+            $flowState = FlowState::create(['conversation_id' => $conversation->id] + $attributes);
+        }
+
+        Log::info('FlowExecutor: Flow started by a person', [
+            'conversation_id' => $conversation->id,
+            'flow_id' => $flow->id,
+            'flow_state_id' => $flowState->id,
+        ]);
+
+        $this->executeFromNode($flowState, $start);
+
+        return true;
+    }
+
+    /** Whether somebody paused the flow while this request was holding it. */
+    protected function pausedMeanwhile(FlowState $flowState): bool
+    {
+        return FlowState::whereKey($flowState->getKey())->value('status') === FlowStateStatus::Paused;
     }
 
     /**
@@ -4627,7 +4879,7 @@ class FlowExecutor
             // accept message is already in the thread: a bot reply landing under
             // it would talk over them, and a handoff would undo the assignment.
             // The run is spent either way; its reply is not sent.
-            if (! $this->stillWithTheFlow($conversation)) {
+            if (! $this->stillWithTheFlow($conversation) || $this->pausedMeanwhile($flowState)) {
                 Log::info('FlowExecutor: AIAgent reply dropped, a person took the conversation during the run', [
                     'node_id' => $node->id,
                     'conversation_id' => $conversation->id,

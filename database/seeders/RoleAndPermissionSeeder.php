@@ -26,6 +26,8 @@ class RoleAndPermissionSeeder extends Seeder
             // be yours, take-over still needs the connection.
             'conversations.transfer',
             'conversations.take-over',
+            // Start, pause and resume a flow in one conversation by hand.
+            'conversations.manage-flow',
 
             // Connections
             'connections.create',

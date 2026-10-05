@@ -63,6 +63,7 @@ use App\Http\Controllers\Api\Catalog\ProductController as CatalogProductControll
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
+use App\Http\Controllers\Api\ConversationFlowController;
 use App\Http\Controllers\Api\ConversationNoteController;
 use App\Http\Controllers\Api\Credits\CreditController;
 use App\Http\Controllers\Api\FlowAssistantController;
@@ -452,6 +453,17 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // return-to-last-agent routing — the connection decides how long a
         // closed conversation is still the same visit.
         Route::post('/conversations/{id}/reopen', [ConversationController::class, 'reopen']);
+        // Steering one conversation's automation by hand: start a flow of the
+        // agent's choosing, pause the one that is running, resume it. Its own
+        // permission, because starting a flow can charge a customer or hand the
+        // thread to an AI — not something every seat should do by default
+        // forever, even though every seat gets it on the day it ships.
+        Route::middleware(['feature:flow', 'permission:conversations.manage-flow'])->group(function () {
+            Route::get('/conversations/{id}/flows', [ConversationFlowController::class, 'options']);
+            Route::post('/conversations/{id}/flow/trigger', [ConversationFlowController::class, 'trigger'])->middleware('throttle:30,1');
+            Route::post('/conversations/{id}/flow/pause', [ConversationFlowController::class, 'pause']);
+            Route::post('/conversations/{id}/flow/resume', [ConversationFlowController::class, 'resume']);
+        });
         // Suggestions run on the tenant's AI Hub agents, so the plan must
         // include the hub feature.
         Route::post('/conversations/{id}/ai-suggest', [AiSuggestController::class, 'suggest'])->middleware(['feature:ai_agent_hub', 'throttle:15,1']);
