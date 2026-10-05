@@ -8,6 +8,7 @@ use App\Models\AuditLog;
 use App\Models\Market;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\Market\MarketDocuments;
 use App\Services\Otp\OtpService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -151,5 +152,116 @@ class CustomerController extends Controller
         ]);
 
         return (new CustomerResource($tenant))->response()->setStatusCode(201);
+    }
+
+    /**
+     * Correct what a customer registered with: the owner's name, e-mail and
+     * WhatsApp number, and the workspace's billing name and tax document.
+     *
+     * The market is not here and never will be — a workspace does not change
+     * country. Neither is the password, which the Users page already resets.
+     */
+    public function update(Request $request, Tenant $tenant): JsonResponse
+    {
+        $owner = $tenant->user;
+
+        if (! $owner) {
+            return response()->json(['message' => __('This workspace has no owner account.')], 422);
+        }
+
+        $market = $tenant->market_code;
+        $needsDocument = MarketDocuments::required($market);
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($owner->id)],
+            'whatsapp_number' => ['nullable', 'string', 'max:32'],
+            'whatsapp_verified' => ['sometimes', 'boolean'],
+            'billing_name' => ['nullable', 'string', 'max:191'],
+            'billing_document_type' => ['nullable', 'string', 'max:8'],
+            'billing_document_number' => ['nullable', 'string', 'max:32'],
+        ]);
+
+        $number = OtpService::normalizeNumber((string) ($validated['whatsapp_number'] ?? ''));
+
+        if ($number !== '' && (strlen($number) < 8 || strlen($number) > 15)) {
+            return $this->fieldError('whatsapp_number', __('Enter the WhatsApp number with its country code.'));
+        }
+
+        // A document is a pair. Both blank clears it (a workspace that has not
+        // paid yet has none); one without the other is a half-typed form.
+        $documentType = strtoupper(trim((string) ($validated['billing_document_type'] ?? '')));
+        $documentNumber = preg_replace('/\D/', '', (string) ($validated['billing_document_number'] ?? '')) ?? '';
+
+        if (! $needsDocument) {
+            $documentType = $documentNumber = '';
+        } elseif ($documentType !== '' || $documentNumber !== '') {
+            if ($documentType === '') {
+                return $this->fieldError('billing_document_type', __('Choose one of: :types.', [
+                    'types' => implode(', ', MarketDocuments::codes($market)),
+                ]));
+            }
+
+            $problem = MarketDocuments::problem($market, $documentType, $documentNumber);
+
+            if ($problem !== null) {
+                return $this->fieldError('billing_document_number', $problem);
+            }
+        }
+
+        $previous = ['email' => $owner->email, 'whatsapp_number' => $owner->whatsapp_number];
+
+        $owner->name = $validated['name'];
+        $owner->email = $validated['email'];
+        $owner->whatsapp_number = $number !== '' ? $number : null;
+
+        // The tick is the operator vouching for the number as it now stands.
+        // A number that changed loses the old confirmation either way; one
+        // that did not keeps the date it was really confirmed on.
+        $verified = $number !== '' && ($validated['whatsapp_verified']
+            ?? ($owner->whatsapp_verified_at !== null && ! $owner->isDirty('whatsapp_number')));
+
+        if (! $verified) {
+            $owner->whatsapp_verified_at = null;
+        } elseif ($owner->isDirty('whatsapp_number') || $owner->whatsapp_verified_at === null) {
+            $owner->whatsapp_verified_at = now();
+        }
+
+        $tenant->billing_name = filled($validated['billing_name'] ?? null) ? trim($validated['billing_name']) : null;
+        $tenant->billing_document_type = $documentType !== '' ? $documentType : null;
+        $tenant->billing_document_number = $documentNumber !== '' ? $documentNumber : null;
+
+        $changingEmail = $owner->isDirty('email');
+        $changed = array_merge(array_keys($owner->getDirty()), array_keys($tenant->getDirty()));
+
+        DB::transaction(function () use ($owner, $tenant) {
+            $owner->save();
+            $tenant->save();
+        });
+
+        // Same rule as every other e-mail change: sessions opened under the
+        // old address stop working.
+        if ($changingEmail) {
+            $owner->tokens()->delete();
+        }
+
+        if ($changed !== []) {
+            AuditLog::record('customers.update', "Updated customer {$owner->email} (tenant #{$tenant->id})", array_filter([
+                'tenant_id' => $tenant->id,
+                'user_id' => $owner->id,
+                'changed' => $changed,
+                'previous_email' => $changingEmail ? $previous['email'] : null,
+                'previous_whatsapp_number' => in_array('whatsapp_number', $changed, true) ? $previous['whatsapp_number'] : null,
+            ]));
+        }
+
+        $tenant->load('user')->loadCount(['users', 'connections', 'contacts', 'conversations']);
+
+        return (new CustomerResource($tenant))->response();
+    }
+
+    private function fieldError(string $field, string $message): JsonResponse
+    {
+        return response()->json(['message' => $message, 'errors' => [$field => [$message]]], 422);
     }
 }

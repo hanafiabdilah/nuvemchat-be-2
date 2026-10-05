@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources\Admin;
 
+use App\Services\Market\MarketDocuments;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -28,6 +29,15 @@ class CustomerResource extends JsonResource
                 'whatsapp_number' => $this->user?->whatsapp_number,
                 'whatsapp_verified' => $this->user?->whatsapp_verified_at !== null,
             ]),
+            // Who is charged. The number is whole here, unlike the tenant's own
+            // billing page: an operator correcting it has to see what is wrong.
+            'billing' => [
+                'name' => $this->billing_name,
+                'document_type' => $this->billing_document_type,
+                'document_number' => $this->billing_document_number,
+                // What this workspace's country accepts; empty = it asks for none.
+                'document_types' => MarketDocuments::forMarket($this->market_code),
+            ],
             'counts' => [
                 'users' => $this->users_count ?? 0,
                 'connections' => $this->connections_count ?? 0,

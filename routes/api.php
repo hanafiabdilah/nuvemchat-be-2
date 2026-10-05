@@ -925,6 +925,9 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::get('/customers/{tenant}', [AdminCustomerController::class, 'show']);
         });
 
+        Route::put('/customers/{tenant}', [AdminCustomerController::class, 'update'])
+            ->middleware('permission:bo.customers.update');
+
         // Users (tenant users) — platform-wide
         Route::get('/users', [AdminUserController::class, 'index'])
             ->middleware('permission:bo.users.view');

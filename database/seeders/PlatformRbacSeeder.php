@@ -18,6 +18,9 @@ class PlatformRbacSeeder extends Seeder
         // Opening a workspace on someone's behalf. A write, so not folded into
         // the view permission support desks are handed.
         'bo.customers.create',
+        // Correcting what a customer registered with — owner e-mail and
+        // WhatsApp, billing name and tax document.
+        'bo.customers.update',
         'bo.users.view',
         // Rewriting a customer's e-mail or password is taking the account over,
         // so it is not something the read-only Users page grants.
