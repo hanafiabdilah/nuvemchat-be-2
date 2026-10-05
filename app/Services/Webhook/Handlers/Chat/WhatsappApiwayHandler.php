@@ -16,6 +16,7 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
+use App\Models\ParkedInboundMessage;
 use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\CallLog;
 use App\Services\Conversation\GroupConversationService;
@@ -211,7 +212,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         ]);
     }
 
-    private function handleReceived(Connection $connection, array $event)
+    private function handleReceived(Connection $connection, array $event, bool $replayed = false)
     {
         $info = $event['Info'] ?? [];
         $messageId = $info['ID'] ?? null;
@@ -223,12 +224,17 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         if (! $messageId || ! $phone) {
             // An unresolvable @lid means a re-delivery for someone we have
             // never seen with a phone. Keying a contact off the @lid would
-            // create an unrepliable ghost thread, so drop it instead.
+            // create an unrepliable ghost thread, so it is never stored as
+            // one — but it is not thrown away either: it waits until a later
+            // event says whose @lid that is.
+            $parked = $messageId && $lid && $this->park($connection, $lid, $messageId, $event);
+
             Log::warning('WhatsappApiwayHandler: missing required fields', [
                 'message_id' => $messageId,
                 'phone' => $phone,
                 'lid' => $lid,
                 'unavailable_request_id' => $event['UnavailableRequestID'] ?? null,
+                'parked' => $parked,
             ]);
 
             return;
@@ -299,6 +305,26 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
 
         broadcast(new MessageReceived($message));
         broadcast(new ConversationUpdated($message->conversation->load('contact')));
+
+        // Anything this person sent earlier that had to wait for their number
+        // goes in ahead of the flow, so the flow starts once, on the thread as
+        // it really happened.
+        if (! $replayed) {
+            $this->replayParked($connection, $lid);
+        }
+
+        if ($replayed && ! $isNewConversation) {
+            // A message from the past is never an answer to whatever the flow
+            // is asking now. The one thing it can still be is the opening
+            // message nobody greeted.
+            try {
+                FlowRunner::openIfFirst($message->conversation);
+            } catch (\Throwable $th) {
+                Log::error('WhatsappApiwayHandler: failed to start flow', ['error' => $th->getMessage()]);
+            }
+
+            return;
+        }
 
         if ($isNewConversation && $conversationForWelcome) {
             // A contact who came straight back reaches the agent who was
@@ -377,6 +403,10 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation));
         }
+
+        // An echo from the phone names both identities of the person it was
+        // sent to, which may be the first time their @lid is tied to a number.
+        $this->replayParked($connection, $lid);
     }
 
     /**
@@ -1115,6 +1145,68 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         return Contact::where('tenant_id', $connection->tenant_id)
             ->where('lid', $lid)
             ->value('external_id');
+    }
+
+    /**
+     * Hold a message whose sender is only a `@lid` nobody here has seen with a
+     * number. False when it was already held, or already stored.
+     */
+    private function park(Connection $connection, string $lid, string $messageId, array $event): bool
+    {
+        if ($this->alreadyStored($connection, $messageId)) {
+            return false;
+        }
+
+        ParkedInboundMessage::where('created_at', '<', now()->subDays(ParkedInboundMessage::RETENTION_DAYS))->delete();
+
+        return ParkedInboundMessage::firstOrCreate(
+            ['connection_id' => $connection->id, 'message_id' => $messageId],
+            ['lid' => $lid, 'payload' => $event],
+        )->wasRecentlyCreated;
+    }
+
+    /**
+     * Deliver what was held for this `@lid`, now that a contact carries it.
+     * Each row is claimed before it is handled, so two webhooks arriving
+     * together cannot both store it.
+     */
+    private function replayParked(Connection $connection, ?string $lid): void
+    {
+        if ($lid === null) {
+            return;
+        }
+
+        $parked = ParkedInboundMessage::where('connection_id', $connection->id)
+            ->where('lid', $lid)
+            ->whereNull('replayed_at')
+            ->where('created_at', '>=', now()->subHours(ParkedInboundMessage::REPLAY_WINDOW_HOURS))
+            ->orderBy('id')
+            ->get();
+
+        foreach ($parked as $row) {
+            $claimed = ParkedInboundMessage::whereKey($row->id)
+                ->whereNull('replayed_at')
+                ->update(['replayed_at' => now()]);
+
+            if (! $claimed) {
+                continue;
+            }
+
+            Log::info('WhatsappApiwayHandler: replaying a parked message', [
+                'connection_id' => $connection->id,
+                'message_id' => $row->message_id,
+                'lid' => $lid,
+            ]);
+
+            try {
+                $this->handleReceived($connection, $row->payload, replayed: true);
+            } catch (\Throwable $th) {
+                Log::error('WhatsappApiwayHandler: failed to replay a parked message', [
+                    'message_id' => $row->message_id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**

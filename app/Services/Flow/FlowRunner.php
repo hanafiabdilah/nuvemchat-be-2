@@ -44,11 +44,7 @@ final class FlowRunner
         // real message is treated as a follow-up and resumed. With no flow
         // state there is nothing to resume, and the bot never greets them.
         // That message is still the opening one, so it gets the opening move.
-        if (self::opensThread($conversation)) {
-            if (! LastAgentRouter::route($conversation) && $conversation->connection?->flow_id) {
-                self::start($conversation);
-            }
-
+        if (self::openIfFirst($conversation)) {
             return;
         }
 
@@ -56,10 +52,35 @@ final class FlowRunner
     }
 
     /**
+     * Give the thread its opening move if the message just stored is the
+     * customer's first word in it; false, and nothing done, if it is not.
+     */
+    public static function openIfFirst(Conversation $conversation): bool
+    {
+        if (! self::opensThread($conversation)) {
+            return false;
+        }
+
+        if (! LastAgentRouter::route($conversation) && $conversation->connection?->flow_id) {
+            self::start($conversation);
+        }
+
+        return true;
+    }
+
+    /**
      * Whether the message just stored is the customer's first word in a
      * thread nobody has acted on: still in the queue, unassigned, no flow ever
      * run, nothing said to them, and exactly one message from them. Info notes
      * (call logs, transfers) are not conversation and do not count.
+     *
+     * "Nothing said to them" is judged by when things were said, not by when
+     * they reached us. On WhatsApp the business phone can answer a message we
+     * have not been handed yet — its first delivery failed to decrypt and the
+     * retry is still on its way — so the phone's echo opens the thread and the
+     * customer's message lands second. They still spoke first, and it is still
+     * the opening message. A thread the business started stays as it was: the
+     * bot does not walk into a conversation somebody else began.
      */
     private static function opensThread(Conversation $conversation): bool
     {
@@ -76,8 +97,36 @@ final class FlowRunner
             ->groupBy('sender_type')
             ->pluck('total', 'sender_type');
 
-        return (int) ($said[SenderType::Incoming->value] ?? 0) === 1
-            && (int) ($said[SenderType::Outgoing->value] ?? 0) === 0;
+        if ((int) ($said[SenderType::Incoming->value] ?? 0) !== 1) {
+            return false;
+        }
+
+        if ((int) ($said[SenderType::Outgoing->value] ?? 0) === 0) {
+            return true;
+        }
+
+        $askedAt = $conversation->messages()
+            ->where('message_type', '!=', MessageType::Info)
+            ->where('sender_type', SenderType::Incoming)
+            ->toBase()
+            ->value('sent_at');
+
+        if ($askedAt === null) {
+            return false;
+        }
+
+        // Every reply has to be the connected phone's own (nothing sent from
+        // the panel, a flow or the AI) and strictly later than the customer.
+        return ! $conversation->messages()
+            ->where('message_type', '!=', MessageType::Info)
+            ->where('sender_type', SenderType::Outgoing)
+            ->where(fn ($q) => $q
+                ->whereNotNull('sent_by_user_id')
+                ->orWhereNotNull('sent_by_flow_id')
+                ->orWhereNotNull('sent_by_ai_hub_agent_id')
+                ->orWhereNull('sent_at')
+                ->orWhere('sent_at', '<=', $askedAt))
+            ->exists();
     }
 
     private static function run(Conversation $conversation, string $mode, string $userInput = ''): void
