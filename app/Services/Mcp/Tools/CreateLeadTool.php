@@ -10,6 +10,7 @@ use App\Models\Contact;
 use App\Models\McpConnection;
 use App\Models\User;
 use App\Services\Lead\LeadResolver;
+use App\Services\Lead\LeadSettings;
 use App\Services\Lead\TemperatureScorer;
 use App\Services\Mcp\Scopes;
 use App\Services\Mcp\Tools\Concerns\WorksWithLeads;
@@ -104,6 +105,10 @@ class CreateLeadTool extends Tool
         // Resolved before anything is written: a refused owner must not leave
         // a card behind.
         $ownerId = $this->resolveOwnerId($arguments['owner_id'] ?? null, $user);
+
+        if (! LeadSettings::for($user->tenant)->acceptsOwnLeads()) {
+            throw new ToolException('This workspace only accepts leads through its public API, so one cannot be added here. The setting is in the funnel settings of the dashboard.');
+        }
 
         $lead = $this->resolver->open($contact, null, LeadSource::Manual);
 

@@ -49,7 +49,28 @@ final class LeadSettings
          * someone calls it "Em atendimento".
          */
         public readonly ?int $attendedStageId = null,
+        /**
+         * Leads enter only through the public API (POST /api/v1/leads).
+         *
+         * Stronger than switching `auto_create` off, which still leaves two
+         * other doors open — a flow's Lead node and adding one by hand. A
+         * workspace whose funnel is fed by another system wants a board where
+         * every card is one that system sent, and a single stray card from a
+         * conversation is enough to make the board untrustworthy.
+         *
+         * Cards that already exist are untouched and can still be worked,
+         * moved and closed from anywhere.
+         */
+        public readonly bool $apiOnly = false,
     ) {}
+
+    /**
+     * Whether something other than the public API may open a new card.
+     */
+    public function acceptsOwnLeads(): bool
+    {
+        return ! $this->apiOnly;
+    }
 
     public static function for(Tenant $tenant): self
     {
@@ -67,6 +88,7 @@ final class LeadSettings
             autoCloseDays: self::clampDays((int) ($raw['auto_close_days'] ?? self::DEFAULT_AUTO_CLOSE_DAYS)),
             autoCloseEngaged: (bool) ($raw['auto_close_engaged'] ?? false),
             attendedStageId: (int) ($raw['attended_stage_id'] ?? 0) > 0 ? (int) $raw['attended_stage_id'] : null,
+            apiOnly: (bool) ($raw['api_only'] ?? false),
         );
     }
 
@@ -79,6 +101,7 @@ final class LeadSettings
             'auto_close_days' => $this->autoCloseDays,
             'auto_close_engaged' => $this->autoCloseEngaged,
             'attended_stage_id' => $this->attendedStageId,
+            'api_only' => $this->apiOnly,
         ];
     }
 

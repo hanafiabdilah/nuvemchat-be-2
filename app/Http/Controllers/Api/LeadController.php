@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Lead\LeadSource;
+use App\Enums\Lead\StageKind;
 use App\Enums\Lead\Temperature;
 use App\Events\LeadUpdated;
 use App\Http\Controllers\Controller;
@@ -12,9 +13,11 @@ use App\Models\Lead;
 use App\Models\LeadPipeline;
 use App\Models\LeadStage;
 use App\Services\Lead\LeadResolver;
+use App\Services\Lead\LeadSettings;
 use App\Services\Lead\PipelineProvisioner;
 use App\Services\Lead\TemperatureScorer;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -142,6 +145,13 @@ class LeadController extends Controller
             ]);
         }
 
+        if (! LeadSettings::for($request->user()->tenant)->acceptsOwnLeads()) {
+            return response()->json([
+                'message' => 'Este funil só recebe leads pela API. Mude isso nas configurações do funil para adicionar um lead manualmente.',
+                'code' => 'leads_api_only',
+            ], 422);
+        }
+
         if ($existing = $this->resolver->openLeadFor($contact)) {
             throw ValidationException::withMessages([
                 'contact_id' => "Este contato já tem um lead aberto (#{$existing->id}).",
@@ -162,6 +172,63 @@ class LeadController extends Controller
         return (new LeadResource($lead->load(['contact', 'owner'])))
             ->response()
             ->setStatusCode(201);
+    }
+
+    /**
+     * Close every open lead sitting in one stage, at once.
+     *
+     * The automatic sweep closes what has gone quiet; this is the same move
+     * made on purpose — a column that filled up with cards nobody is going to
+     * work. Nothing is deleted: each card goes to its funnel's lost stage with
+     * the reason given, and one drag brings it back.
+     */
+    public function bulkClose(Request $request)
+    {
+        $data = $request->validate([
+            'stage_id' => ['required', 'integer'],
+            'lost_reason' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $tenantId = $request->user()->tenant_id;
+
+        $stage = LeadStage::whereKey($data['stage_id'])
+            ->where('kind', StageKind::Open)
+            ->whereHas('pipeline', fn ($query) => $query->where('tenant_id', $tenantId))
+            ->firstOrFail();
+
+        $lostStage = LeadStage::where('pipeline_id', $stage->pipeline_id)
+            ->where('kind', StageKind::Lost)
+            ->orderBy('position')
+            ->first();
+
+        if (! $lostStage) {
+            return response()->json([
+                'message' => 'Este funil não tem uma etapa de perdidos para onde mover os leads.',
+                'code' => 'no_closing_stage',
+            ], 422);
+        }
+
+        $closed = 0;
+        $reason = trim((string) ($data['lost_reason'] ?? '')) ?: null;
+
+        Lead::where('tenant_id', $tenantId)
+            ->where('stage_id', $stage->id)
+            ->open()
+            ->chunkById(200, function ($leads) use ($lostStage, $request, $reason, &$closed) {
+                foreach ($leads as $lead) {
+                    $lead->moveToStage($lostStage, $request->user(), $reason);
+                    $closed++;
+                }
+            });
+
+        Log::info('Leads closed in bulk', [
+            'tenant_id' => $tenantId,
+            'actor_id' => $request->user()->id,
+            'stage_id' => $stage->id,
+            'closed' => $closed,
+        ]);
+
+        return response()->json(['closed' => $closed]);
     }
 
     /** Everything about a card except which column it is in. */

@@ -62,7 +62,9 @@ class EnsureLeadForConversation implements ShouldQueue
 
         // A workspace that works its funnel by hand should not have cards
         // appearing behind it.
-        if (! LeadSettings::for($tenant)->autoCreate) {
+        $settings = LeadSettings::for($tenant);
+
+        if (! $settings->autoCreate || ! $settings->acceptsOwnLeads()) {
             return;
         }
 

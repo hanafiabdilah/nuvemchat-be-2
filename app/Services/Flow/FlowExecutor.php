@@ -76,6 +76,7 @@ use App\Services\Contact\ContactIdentity;
 use App\Services\Contact\ContactTags;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Lead\LeadResolver;
+use App\Services\Lead\LeadSettings;
 use App\Services\Lead\TemperatureScorer;
 use App\Services\Live\LiveActivity;
 use App\Services\Media\MediaStorage;
@@ -6766,6 +6767,18 @@ class FlowExecutor
             Log::info('FlowExecutor: Lead node skipped, the plan has no CRM', [
                 'node_id' => $node->id,
                 'tenant_id' => $tenant->id,
+            ]);
+
+            return;
+        }
+
+        // A funnel fed only by the API takes no new cards from a flow. One
+        // the contact already has is still this node's to move and fill in.
+        if (! LeadSettings::for($tenant)->acceptsOwnLeads()
+            && (! $conversation->contact || ! app(LeadResolver::class)->openLeadFor($conversation->contact))) {
+            Log::info('FlowExecutor: Lead node skipped, this funnel only takes leads from the API', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
             ]);
 
             return;

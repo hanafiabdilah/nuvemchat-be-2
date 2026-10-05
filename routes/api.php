@@ -548,6 +548,8 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             Route::get('/leads/owners', [LeadController::class, 'owners'])->middleware('permission:leads.view');
             Route::get('/leads', [LeadController::class, 'index'])->middleware('permission:leads.view');
             Route::post('/leads', [LeadController::class, 'store'])->middleware('permission:leads.create');
+            // Before /leads/{id}, like `owners` above.
+            Route::post('/leads/bulk-close', [LeadController::class, 'bulkClose'])->middleware(['permission:leads.update', 'throttle:10,1']);
             Route::get('/leads/{id}', [LeadController::class, 'show'])->middleware('permission:leads.view');
             Route::patch('/leads/{id}', [LeadController::class, 'update'])->middleware('permission:leads.update');
             // The drag. Its own verb because it writes the audit row the

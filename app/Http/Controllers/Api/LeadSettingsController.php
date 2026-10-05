@@ -41,6 +41,7 @@ class LeadSettingsController extends Controller
     {
         $data = $request->validate([
             'auto_create' => ['sometimes', 'boolean'],
+            'api_only' => ['sometimes', 'boolean'],
             'auto_close_enabled' => ['sometimes', 'boolean'],
             'auto_close_days' => [
                 'sometimes',
