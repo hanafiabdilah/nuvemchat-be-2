@@ -698,6 +698,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             Route::delete('/flows/{id}/assistant/messages', [FlowAssistantController::class, 'clear']);
         });
 
+        // A translated copy. `flows.create` rather than `flows.update`: the
+        // flow named in the URL is only read, and what gets written is new.
+        Route::post('/flows/{id}/translate', [FlowAssistantController::class, 'translate'])
+            ->middleware(['feature:flow_assistant', 'permission:flows.create', 'throttle:6,1']);
+
         Route::get('/flows/{id}/export', [FlowController::class, 'export'])->middleware('permission:flows.view');
         Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
         Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');

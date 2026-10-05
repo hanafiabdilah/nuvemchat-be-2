@@ -495,11 +495,88 @@ class FlowAssistantService
     }
 
     /**
+     * Translate a batch of strings into one language.
+     *
+     * The same hub agent as the builder, asked for something narrower: it is
+     * handed strings, never the graph, so nothing it writes can move a branch
+     * or drop a node. What comes back is keyed by the ids that went in; an id
+     * the model left out is simply absent, and the caller keeps the original.
+     *
+     * @param  list<array{id: string, text: string, max?: int|null}>  $strings
+     * @return array<string, string>
+     */
+    public function translate(array $strings, string $language): array
+    {
+        if (! FlowAssistantConfig::ready()) {
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                'The flow assistant is not configured.',
+                status: 503,
+                upstreamCode: 'flow_assistant_unconfigured',
+            );
+        }
+
+        $this->syncPromptIfStale();
+
+        $items = $this->encode(array_map(fn (array $string) => array_filter([
+            'id' => $string['id'],
+            'max' => $string['max'] ?? null,
+            'text' => $string['text'],
+        ], fn ($value) => $value !== null), $strings));
+
+        $content = <<<PROMPT
+        This is a TRANSLATION task, not a flow-building task. Do not build or
+        describe a flow.
+
+        Translate each string below into {$language}. They are messages a
+        business sends to its customers on WhatsApp and similar apps.
+
+        Rules:
+        - Write the way a native speaker of {$language} would write to a
+          customer: natural and in the same tone, not word for word.
+        - Keep every {{placeholder}} exactly as written — same name, same braces.
+        - Keep emojis, line breaks, URLs, numbers, prices, brand and product
+          names, and formatting marks such as *bold* and _italic_.
+        - When a string has "max", the translation must not be longer than that
+          many characters. Shorten it naturally rather than cutting it off.
+        - A string already in {$language} is returned unchanged.
+        - Return every id you were given, and no others.
+
+        Reply with ONE JSON object and nothing else:
+
+        {"reply": "ok", "flow": null, "translations": {"<id>": "<translated text>"}}
+
+        Strings:
+        {$items}
+        PROMPT;
+
+        $json = $this->extractJsonObject($this->runRaw($content));
+        $decoded = $json !== null ? json_decode($json, true) : null;
+        $translations = is_array($decoded) ? ($decoded['translations'] ?? null) : null;
+
+        if (! is_array($translations)) {
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                'The flow assistant returned no translations.',
+                upstreamCode: 'run_failed',
+            );
+        }
+
+        return array_map('strval', array_filter($translations, 'is_string'));
+    }
+
+    /**
      * One hub run: post the message, read the envelope back out.
      *
      * @return array{reply: string, flow: ?array}
      */
     private function runTurn(string $content): array
+    {
+        return $this->parseEnvelope($this->runRaw($content));
+    }
+
+    /** One hub run, returning exactly what the model wrote. */
+    private function runRaw(string $content): string
     {
         // A fresh conversation id per turn — see "Turns are stateless" above.
         $conversationId = 'flow-assistant-' . bin2hex(random_bytes(8));
@@ -566,7 +643,7 @@ class FlowAssistantService
             'cost_usd' => $data['providerCostUsd'] ?? null,
         ]);
 
-        return $this->parseEnvelope((string) ($data['output']['message'] ?? ''));
+        return (string) ($data['output']['message'] ?? '');
     }
 
     /**
