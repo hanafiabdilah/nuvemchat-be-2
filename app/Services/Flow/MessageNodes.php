@@ -60,7 +60,7 @@ class MessageNodes
     {
         $raw = $data['messages'] ?? null;
 
-        if (!is_array($raw) || $raw === []) {
+        if (! is_array($raw) || $raw === []) {
             $raw = [[
                 'message_type' => $data['message_type'] ?? 'text',
                 'body' => $data['body'] ?? '',
@@ -73,7 +73,7 @@ class MessageNodes
         $items = [];
 
         foreach (array_values($raw) as $entry) {
-            if (!is_array($entry)) {
+            if (! is_array($entry)) {
                 continue;
             }
 
@@ -106,6 +106,8 @@ class MessageNodes
             'attachment_url' => is_string($url) && trim($url) !== '' ? $url : null,
             'delay' => self::clampDelay($entry['delay'] ?? 0),
             'presence' => self::presenceEnabled($entry),
+            // Only a picture or a video can be view once; see ViewOnce.
+            'view_once' => in_array($type, ['image', 'video'], true) && (bool) ($entry['view_once'] ?? false),
         ];
     }
 

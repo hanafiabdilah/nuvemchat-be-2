@@ -25,6 +25,7 @@ use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\VCard;
+use App\Services\Message\ViewOnce;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
@@ -83,6 +84,18 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             return;
         }
 
+        // A view-once picture WhatsApp did not hand to this linked device —
+        // the phone has it, we are only told it exists. Kept as a message with
+        // nothing in it, so the thread shows that the customer sent something
+        // (and the flow hears it) instead of looking silent.
+        if ($type === 'UndecryptableMessage' && ($event['UnavailableType'] ?? null) === 'view_once' && isset($event['Info'])) {
+            $type = 'Message';
+            $event['Message'] = [];
+            $event['IsViewOnce'] = true;
+        }
+
+        $event = ViewOnce::unwrap($event);
+
         $isMessage = $type === 'Message' || (isset($event['Info']) && array_key_exists('Message', $event));
         $isReceipt = $type === 'Receipt' || isset($event['MessageIDs']);
 
@@ -120,7 +133,7 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             // blank "unsupported" bubble, and — racing the second — a duplicate
             // conversation, because both events missed the same find-or-create
             // SELECT. Envelope-only events carry nothing, so they are dropped.
-            if ($this->isEnvelopeOnly($event['Message'] ?? [])) {
+            if (! ViewOnce::is($event) && $this->isEnvelopeOnly($event['Message'] ?? [])) {
                 Log::info('WhatsappApiwayHandler: skipping envelope-only message', [
                     'connection_id' => $connection->id,
                     'message_id' => $info['ID'] ?? null,

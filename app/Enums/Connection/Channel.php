@@ -249,6 +249,17 @@ enum Channel: string
     }
 
     /**
+     * Whether media can be sent as "view once" — opened a single time on the
+     * recipient's phone. WhatsApp through API Way only: the Cloud API has no
+     * such option, and no other channel has the concept. Mirrored by the
+     * dashboard in lib/channelCapabilities.ts.
+     */
+    public function supportsViewOnce(): bool
+    {
+        return $this === self::WhatsappApiway;
+    }
+
+    /**
      * Whether an AI agent can answer here with a voice note.
      *
      * Every channel below already sends agent-recorded audio, so this asks a

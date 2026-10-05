@@ -37,7 +37,7 @@ class MessageService
         return $this->guard($conversation, 'send a template', function () use ($conversation, $data) {
             $handler = MessageFactory::make($conversation->connection->channel, $data);
 
-            if (!$handler instanceof WhatsappOfficialHandler) {
+            if (! $handler instanceof WhatsappOfficialHandler) {
                 throw new ChannelCapabilityException('Templates só podem ser enviados em conexões WhatsApp Oficial.');
             }
 
@@ -50,7 +50,7 @@ class MessageService
         return $this->guard($conversation, 'send an interactive message', function () use ($conversation, $data) {
             $handler = MessageFactory::make($conversation->connection->channel, $data);
 
-            if (!$handler instanceof WhatsappOfficialHandler) {
+            if (! $handler instanceof WhatsappOfficialHandler) {
                 throw new ChannelCapabilityException('Mensagens com botões só podem ser enviadas em conexões WhatsApp Oficial.');
             }
 
@@ -67,7 +67,7 @@ class MessageService
      * a silent false; one that can but fails is a logged warning.
      *
      * @param  Collection<int, Message>|null  $messages  The messages that just
-     *         flipped to read, when the caller knows them (see the contract).
+     *                                                   flipped to read, when the caller knows them (see the contract).
      */
     public function markAsRead(Conversation $conversation, ?Collection $messages = null): bool
     {
@@ -132,9 +132,10 @@ class MessageService
     public function sendImage(Conversation $conversation, array $data): ?Message
     {
         return $this->guard($conversation, 'send an image', function () use ($conversation, $data) {
+            $data = $this->withViewOnce($conversation, $data);
             $handler = MessageFactory::make($conversation->connection->channel, $data);
 
-            return $handler->handleSendImage($conversation, $data);
+            return $this->markViewOnce($handler->handleSendImage($conversation, $data), $data);
         });
     }
 
@@ -150,10 +151,32 @@ class MessageService
     public function sendVideo(Conversation $conversation, array $data): ?Message
     {
         return $this->guard($conversation, 'send a video', function () use ($conversation, $data) {
+            $data = $this->withViewOnce($conversation, $data);
             $handler = MessageFactory::make($conversation->connection->channel, $data);
 
-            return $handler->handleSendVideo($conversation, $data);
+            return $this->markViewOnce($handler->handleSendVideo($conversation, $data), $data);
         });
+    }
+
+    /**
+     * Keep `view_once` only where the channel can honour it. Elsewhere the
+     * file is sent normally: the flag is about how it is shown, not whether it
+     * goes, and a flow built for one channel should not fail on another.
+     */
+    private function withViewOnce(Conversation $conversation, array $data): array
+    {
+        $data['view_once'] = ViewOnce::requested($data) && $conversation->connection->channel->supportsViewOnce();
+
+        return $data;
+    }
+
+    private function markViewOnce(?Message $message, array $data): ?Message
+    {
+        if ($message && $data['view_once']) {
+            ViewOnce::mark($message);
+        }
+
+        return $message;
     }
 
     public function sendDocument(Conversation $conversation, array $data): ?Message
@@ -214,6 +237,7 @@ class MessageService
      * the marker exists to prevent and the one nothing records.
      *
      * @template T
+     *
      * @param  callable(): T  $send
      * @return T
      */

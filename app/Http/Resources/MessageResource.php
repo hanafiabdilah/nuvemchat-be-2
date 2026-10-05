@@ -9,6 +9,7 @@ use App\Enums\Message\SenderType;
 use App\Models\Message;
 use App\Services\Media\MediaRetention;
 use App\Services\Message\VCard;
+use App\Services\Message\ViewOnce;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Str;
@@ -30,20 +31,19 @@ class MessageResource extends JsonResource
             'sender_type' => $this->sender_type,
             'message_type' => $this->message_type,
             'body' => $this->body,
-            'attachment_url' => $this->when(!$this->withoutAttachmentUrl, fn() =>
-                $this->resolveAttachmentUrl($this->attachment)
+            'attachment_url' => $this->when(! $this->withoutAttachmentUrl, fn () => $this->resolveAttachmentUrl($this->attachment)
             ),
             // Only set while the file is still being fetched off the channel
             // (or after that gave up) — see App\Jobs\DownloadInboundMedia —
             // and once retention deleted it. The chat panel reads it to draw a
             // placeholder instead of a bubble pointing at nothing.
             'attachment_status' => $this->resolveAttachmentStatus(),
-            'replied_message' => $this->when($this->repliedMessage, fn() => [
+            'replied_message' => $this->when($this->repliedMessage, fn () => [
                 'id' => $this->repliedMessage->id,
                 'sender_type' => $this->repliedMessage->sender_type,
                 'message_type' => $this->repliedMessage->message_type,
                 'body' => $this->repliedMessage->body,
-                'attachment_url' => !$this->withoutAttachmentUrl
+                'attachment_url' => ! $this->withoutAttachmentUrl
                     // The quoted message has its own age, so its own purge date:
                     // a reply written today does not extend the life of the
                     // photo it quotes.
@@ -113,7 +113,7 @@ class MessageResource extends JsonResource
         }
 
         if ($this->attachment
-            && !MediaRetention::isExternal($this->attachment)
+            && ! MediaRetention::isExternal($this->attachment)
             && MediaRetention::isExpired($this->resource, $this->conversation)) {
             return AttachmentStatus::Expired;
         }
@@ -138,6 +138,7 @@ class MessageResource extends JsonResource
             // private conversation the sender is the conversation's contact.
             if ($this->contact_id) {
                 $contact = $this->contact;
+
                 return [
                     'source' => 'contact',
                     'contact' => $contact ? [
@@ -158,6 +159,7 @@ class MessageResource extends JsonResource
 
         if ($this->sent_by_user_id) {
             $user = $this->sentByUser;
+
             return [
                 'source' => 'human',
                 'user' => $user ? [
@@ -170,6 +172,7 @@ class MessageResource extends JsonResource
         if ($this->sent_by_ai_hub_agent_id) {
             $agent = $this->sentByAiHubAgent;
             $flow = $this->sentByFlow;
+
             return [
                 'source' => 'ai_flow',
                 'flow' => $flow ? [
@@ -185,6 +188,7 @@ class MessageResource extends JsonResource
 
         if ($this->sent_by_flow_id) {
             $flow = $this->sentByFlow;
+
             return [
                 'source' => 'static_flow',
                 'flow' => $flow ? [
@@ -212,11 +216,11 @@ class MessageResource extends JsonResource
 
         $channel = $this->conversation->connection->channel ?? null;
 
-        if (!$channel) {
+        if (! $channel) {
             return null;
         }
 
-        $meta = match($channel) {
+        $meta = match ($channel) {
             Channel::WhatsappApiway => $this->getWhatsappApiwayMeta(),
             Channel::WhatsappOfficial => $this->getWhatsappOfficialMeta(),
             Channel::Instagram => $this->getInstagramMeta(),
@@ -241,6 +245,12 @@ class MessageResource extends JsonResource
 
         if ($filename !== null) {
             $meta = array_merge($meta ?? [], $filename);
+        }
+
+        // Likewise a platform fact: sent that way from here, or delivered that
+        // way by WhatsApp. The thread still shows the file; the bubble says so.
+        if (ViewOnce::is($this->meta)) {
+            $meta = array_merge($meta ?? [], ['view_once' => true]);
         }
 
         return $meta;
@@ -307,24 +317,25 @@ class MessageResource extends JsonResource
     {
         $email = $this->meta['email'] ?? null;
 
-        if (!is_array($email)) {
+        if (! is_array($email)) {
             return null;
         }
 
         // Turn each attachment's private storage path into a signed, downloadable
         // URL. Skipped for the conversation-list preview (withoutAttachmentUrl) to
         // avoid signing URLs for rows the user never opens.
-        if (!$this->withoutAttachmentUrl && !empty($email['attachments']) && is_array($email['attachments'])) {
+        if (! $this->withoutAttachmentUrl && ! empty($email['attachments']) && is_array($email['attachments'])) {
             $email['attachments'] = array_map(function ($attachment) {
                 $path = $attachment['path'] ?? null;
                 $attachment['url'] = $path ? $this->resolveAttachmentUrl($path) : null;
+
                 return $attachment;
             }, $email['attachments']);
         }
 
         // The HTML body itself stays on disk (too large for broadcasts and
         // IndexedDB); the SPA fetches it on demand when this flag is set.
-        $email['has_html'] = !empty($email['html_path']);
+        $email['has_html'] = ! empty($email['html_path']);
         unset($email['html_path']);
 
         return ['email' => $email];
@@ -337,7 +348,7 @@ class MessageResource extends JsonResource
      */
     private function getWhatsappOfficialMeta(): ?array
     {
-        return match($this->message_type) {
+        return match ($this->message_type) {
             MessageType::Interactive => $this->getWhatsappOfficialInteractiveData(),
             // A template carrying buttons is recorded in the interactive shape
             // too (see TemplateBody), because that is what the customer saw.
@@ -383,7 +394,7 @@ class MessageResource extends JsonResource
      */
     private function getWhatsappApiwayMeta(): ?array
     {
-        return match($this->message_type) {
+        return match ($this->message_type) {
             MessageType::Location => $this->getWhatsappApiwayLocationData(),
             MessageType::Contact => $this->getWhatsappApiwayContactData(),
             default => null,
@@ -426,7 +437,7 @@ class MessageResource extends JsonResource
     {
         $location = $this->apiwayMessageNode()['locationMessage'] ?? null;
 
-        if (!$location) {
+        if (! $location) {
             return null;
         }
 

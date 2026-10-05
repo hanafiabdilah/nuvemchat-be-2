@@ -61,6 +61,7 @@ final class AiMediaNodes
             'wait_message' => '',
             'caption' => '',
             'send_to_customer' => true,
+            'view_once' => false,
         ];
     }
 

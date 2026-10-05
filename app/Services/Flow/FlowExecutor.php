@@ -6122,6 +6122,7 @@ class FlowExecutor
                     'message_type' => $generation->type,
                     'attachment_url' => $url,
                     'body' => (string) ($data['caption'] ?? ''),
+                    'view_once' => (bool) ($data['view_once'] ?? false),
                 ], $flowState);
 
                 if ($message) {
@@ -7039,10 +7040,13 @@ class FlowExecutor
             ]));
         }
 
+        $viewOnce = (bool) ($nodeData['view_once'] ?? false);
+
         return $send(match ($messageType) {
             'image' => $this->messageService->sendImage($conversation, [
                 'media_url' => $attachmentUrl,
                 'message' => $body,
+                'view_once' => $viewOnce,
             ]),
             'audio' => $this->messageService->sendAudio($conversation, [
                 'media_url' => $attachmentUrl,
@@ -7050,6 +7054,7 @@ class FlowExecutor
             'video' => $this->messageService->sendVideo($conversation, [
                 'media_url' => $attachmentUrl,
                 'message' => $body,
+                'view_once' => $viewOnce,
             ]),
             'document' => $this->messageService->sendDocument($conversation, [
                 'media_url' => $attachmentUrl,

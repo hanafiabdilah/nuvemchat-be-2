@@ -17,6 +17,7 @@ use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
+use App\Services\Message\ViewOnce;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Collection;
@@ -34,6 +35,20 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
     private function base(): string
     {
         return \App\Services\Connection\Proxy\ApiwayConfig::baseUrl();
+    }
+
+    /**
+     * The send-payload field that makes a picture or a video "view once".
+     *
+     * MessageService only leaves `view_once` set where the channel supports
+     * it, so this handler does not ask again. `viewOnce` is whatsmeow's own
+     * name for the flag on an image or video message.
+     *
+     * @return array<string, bool>
+     */
+    private function viewOnceFields(array $data): array
+    {
+        return ViewOnce::requested($data) ? ['viewOnce' => true] : [];
     }
 
     /**
@@ -264,7 +279,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                     'image',
                     MessageType::Image,
                     $media->url,
-                    ['caption' => $data['message'] ?? null],
+                    ['caption' => $data['message'] ?? null] + $this->viewOnceFields($data),
                     [],
                     $data['message'] ?? null,
                 );
@@ -296,7 +311,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'phone' => $conversation->external_id,
                 'image' => $imageDataUri,
                 'caption' => $data['message'] ?? null,
-            ];
+            ] + $this->viewOnceFields($data);
 
             if ($repliedMessageExternalId) {
                 $payload['messageId'] = $repliedMessageExternalId;
@@ -505,7 +520,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                     'video',
                     MessageType::Video,
                     $media->url,
-                    ['caption' => $data['message'] ?? null],
+                    ['caption' => $data['message'] ?? null] + $this->viewOnceFields($data),
                     [],
                     $data['message'] ?? null,
                 );
@@ -544,7 +559,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'phone' => $conversation->external_id,
                 'video' => $videoUrl,
                 'caption' => $data['message'] ?? null,
-            ];
+            ] + $this->viewOnceFields($data);
 
             if ($repliedMessageExternalId) {
                 $payload['messageId'] = $repliedMessageExternalId;

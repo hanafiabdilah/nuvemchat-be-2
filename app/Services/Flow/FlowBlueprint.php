@@ -121,6 +121,10 @@ class FlowBlueprint
                 'messages.*.delay' => ['nullable', 'integer', 'min:0', 'max:'.MessageNodes::MAX_DELAY_SECONDS],
                 'presence' => ['nullable', 'boolean'],
                 'messages.*.presence' => ['nullable', 'boolean'],
+                // Image and video only, and only honoured where the channel can
+                // (App\Services\Message\ViewOnce); elsewhere it is sent normally.
+                'view_once' => ['nullable', 'boolean'],
+                'messages.*.view_once' => ['nullable', 'boolean'],
             ],
             // Waits for the clock and carries on. Every field optional: with
             // nothing set it is the five-second beat a new node starts as.
@@ -423,6 +427,7 @@ class FlowBlueprint
                 'wait_message' => ['nullable', 'string', 'max:4096'],
                 'caption' => ['nullable', 'string', 'max:1024'],
                 'send_to_customer' => ['nullable', 'boolean'],
+                'view_once' => ['nullable', 'boolean'],
             ],
             // Lenient like payment: a half-built node saves, and at runtime one
             // with no AI agent leaves through `rejected` without asking the
@@ -1035,6 +1040,9 @@ class FlowBlueprint
         - `presence` (per bubble, default true): show "digitando…" — or "gravando
           áudio…" before an audio bubble — for that bubble's pause. Only set it to
           false where the silence is deliberate.
+        - `view_once` (per image or video bubble, default false): the customer can
+          open it a single time. Only WhatsApp connected through API Way honours
+          it; other channels send the file normally. Set it only when asked.
         - One output.
 
         ### interval — wait a while, then carry on
