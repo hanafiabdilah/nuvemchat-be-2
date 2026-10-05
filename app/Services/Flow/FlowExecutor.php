@@ -11,6 +11,7 @@ use App\Enums\Flow\FlowStateStatus;
 use App\Enums\Flow\NodeType;
 use App\Enums\Integration\IntegrationCategory;
 use App\Enums\Lead\StageKind;
+use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Events\ConversationHandoff;
@@ -18,12 +19,14 @@ use App\Events\ConversationUpdated;
 use App\Events\LeadUpdated;
 use App\Events\MessageReceived;
 use App\Exceptions\Billing\CreditExhaustedException;
+use App\Jobs\CheckFlowReceipt;
 use App\Jobs\ExpireFlowPayment;
 use App\Jobs\ReleaseFlowInvoice;
 use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunAiToolsPaymentBranch;
 use App\Jobs\RunFlowIntervalNode;
 use App\Jobs\RunFlowMessageNode;
+use App\Jobs\RunFlowReceiptTimeout;
 use App\Jobs\RunFlowWaitResponseBuffer;
 use App\Jobs\RunFlowWaitResponseTimeout;
 use App\Jobs\SendAiFollowUp;
@@ -39,11 +42,13 @@ use App\Models\FlowEdge;
 use App\Models\FlowInvoice;
 use App\Models\FlowNode;
 use App\Models\FlowPayment;
+use App\Models\FlowReceipt;
 use App\Models\FlowState;
 use App\Models\Integration;
 use App\Models\LeadStage;
 use App\Models\Message;
 use App\Models\Order;
+use App\Models\Tenant;
 use App\Models\User;
 use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
@@ -53,21 +58,23 @@ use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiFirstMessage;
 use App\Services\AiAgentHub\AiFollowUp;
 use App\Services\AiAgentHub\AiHoldingMessage;
+use App\Services\AiAgentHub\AiReceiptReader;
 use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
 use App\Services\AiAgentHub\AiTypingPresence;
 use App\Services\AiAgentHub\AiVoiceReply;
 use App\Services\AiAgentHub\Tools\AiToolCatalog;
 use App\Services\AiAgentHub\Tools\AiToolHubSync;
-use App\Services\Catalog\OrderService;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
+use App\Services\Catalog\OrderService;
 use App\Services\Contact\ContactIdentity;
 use App\Services\Contact\ContactTags;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Lead\LeadResolver;
 use App\Services\Lead\TemperatureScorer;
 use App\Services\Live\LiveActivity;
+use App\Services\Media\MediaStorage;
 use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
 use App\Support\Errors\TransportFailure;
@@ -319,9 +326,9 @@ class FlowExecutor
                 $this->executeTaggingNode($flowState, $node);
                 break;
 
-            // One machinery for both: the AI-with-actions node is an AI Agent
-            // node that may also act, and everything keyed to the node id —
-            // turns, burst window, welcome, handoff — works for either.
+                // One machinery for both: the AI-with-actions node is an AI Agent
+                // node that may also act, and everything keyed to the node id —
+                // turns, burst window, welcome, handoff — works for either.
             case NodeType::AIAgent:
             case NodeType::AiTools:
                 $this->executeAIAgentNode($flowState, $node);
@@ -353,6 +360,10 @@ class FlowExecutor
 
             case NodeType::Pixel:
                 $this->executePixelNode($flowState, $node);
+                break;
+
+            case NodeType::Receipt:
+                $this->executeReceiptNode($flowState, $node);
                 break;
 
             case NodeType::GoToFlow:
@@ -609,7 +620,7 @@ class FlowExecutor
      * @param  array<int, array<string, mixed>>  $items
      * @param  int  $index  Bubble about to run.
      * @param  int  $waitBefore  Seconds until it does — its own pause, or a
-     *         retry backoff, which is not the same number.
+     *                           retry backoff, which is not the same number.
      */
     protected function messageChainExpiry(array $items, int $index, int $waitBefore): int
     {
@@ -3006,6 +3017,20 @@ class FlowExecutor
             return;
         }
 
+        // A receipt node waits for a file. One that was reached without running
+        // runs first; a parked one looks at what just arrived.
+        if ($currentNode->type === NodeType::Receipt) {
+            if (! array_key_exists(ReceiptNodes::stateKey($currentNode->id), $flowState->state_data ?? [])) {
+                $this->executeReceiptNode($flowState, $currentNode);
+
+                return;
+            }
+
+            $this->receiveReceiptInput($flowState, $currentNode);
+
+            return;
+        }
+
         // A payment node waits for the gateway, not for the customer. Writing
         // "já paguei" does not move it — the webhook, the expiry job or the
         // sweep does, through resumeFromPayment(). Re-running the node here
@@ -4575,6 +4600,18 @@ class FlowExecutor
 
         $node = $flowState->currentNode;
 
+        // A receipt node holding out for this very file: it is here (or it
+        // failed to arrive, which the check reports as unreadable).
+        if ($node && $node->type === NodeType::Receipt) {
+            $waiting = ($flowState->state_data ?? [])[ReceiptNodes::stateKey($node->id)] ?? null;
+
+            if (is_array($waiting) && (int) ($waiting['checking'] ?? 0) === $message->id) {
+                CheckFlowReceipt::dispatch($flowState->id, $node->id, $message->id);
+            }
+
+            return;
+        }
+
         if (! $node || ! $node->type->isAiAgent()) {
             return;
         }
@@ -5866,6 +5903,543 @@ class FlowExecutor
         }
 
         $this->moveToNextNode($flowState, $node);
+    }
+
+    // ───────────────────────────────  Receipt  ──────────────────────────────
+
+    /**
+     * Execute a Receipt node — ask for proof of payment and wait for the file.
+     *
+     * Nothing is read here. The customer's picture arrives in a later webhook,
+     * its bytes later still (media is downloaded off the queue), and the model
+     * call that reads it runs in CheckFlowReceipt. What this does is say what
+     * is wanted and start waiting.
+     */
+    protected function executeReceiptNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+
+        if (ReceiptNodes::agentId($data) === null) {
+            // No AI chosen, so nothing here can read a file. Asking the
+            // customer for one anyway would be collecting a receipt to ignore.
+            Log::info('FlowExecutor: Receipt node has no AI agent, leaving through rejected', [
+                'node_id' => $node->id,
+            ]);
+
+            $this->setReceiptVariables($flowState, 'rejected', 'not_configured');
+            $this->leaveReceiptNode($flowState, $node, ReceiptNodes::BRANCH_REJECTED, 'not_configured');
+
+            return;
+        }
+
+        if (trim((string) ($data['message'] ?? '')) !== '') {
+            try {
+                $message = $this->sendByMessageType($conversation, ['message_type' => 'text', 'body' => $data['message']], $flowState);
+            } catch (\Throwable $th) {
+                $message = null;
+
+                Log::error('FlowExecutor: Error sending the receipt request', [
+                    'node_id' => $node->id,
+                    'error' => $th->getMessage(),
+                ]);
+            }
+
+            if (! $message) {
+                // Not parked: the customer never saw the request, so their next
+                // message runs the node again.
+                return;
+            }
+
+            broadcast(new MessageReceived($message));
+        }
+
+        $this->parkReceiptNode($flowState, $node, 0);
+    }
+
+    /**
+     * Start (or restart) waiting for a file. The watermark keeps whatever led
+     * here — including a receipt that was just turned down — from being read
+     * as the next attempt.
+     */
+    protected function parkReceiptNode(FlowState $flowState, FlowNode $node, int $attempts): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[ReceiptNodes::stateKey($node->id)] = [
+            'watermark' => (int) Message::where('conversation_id', $conversation->id)->max('id'),
+            'attempts' => $attempts,
+            'checking' => null,
+            'reminded' => false,
+        ];
+
+        $seconds = ReceiptNodes::timeoutSeconds($data);
+        $timeoutKey = ReceiptNodes::timeoutKey($node->id);
+        unset($stateData[$timeoutKey]);
+
+        if ($seconds > 0) {
+            $stateData[$timeoutKey] = (string) Str::uuid();
+        }
+
+        $flowState->update(['state_data' => $stateData]);
+
+        if ($seconds > 0) {
+            RunFlowReceiptTimeout::dispatch($flowState->id, $node->id, $stateData[$timeoutKey])
+                ->delay(now()->addSeconds($seconds));
+        }
+
+        LiveActivity::flowAwaiting($conversation, $node, $seconds, ['receipt' => true]);
+    }
+
+    /**
+     * Something arrived while the node waited.
+     *
+     * A picture or a document is taken as the receipt and handed to the
+     * check. Words are not an attempt — "já paguei" is somebody about to send
+     * the file, not a bad file — so they get the request once more and nothing
+     * else.
+     */
+    protected function receiveReceiptInput(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+        $stateData = $flowState->state_data ?? [];
+        $key = ReceiptNodes::stateKey($node->id);
+        $waiting = is_array($stateData[$key] ?? null) ? $stateData[$key] : [];
+
+        // A file is being read. Whatever is said meanwhile waits for the
+        // verdict — unless the check has been gone so long it must have died.
+        if (($waiting['checking'] ?? null) !== null && (int) ($waiting['checking_at'] ?? 0) > now()->subMinutes(5)->timestamp) {
+            return;
+        }
+
+        $latest = Message::where('conversation_id', $conversation->id)
+            ->where('id', '>', (int) ($waiting['watermark'] ?? 0))
+            ->where('sender_type', SenderType::Incoming)
+            ->where('message_type', '!=', MessageType::Info)
+            ->orderByDesc('id')
+            ->first();
+
+        if (! $latest) {
+            return;
+        }
+
+        if (in_array($latest->message_type, [MessageType::Image, MessageType::Document], true)) {
+            $waiting['checking'] = $latest->id;
+            $waiting['checking_at'] = now()->timestamp;
+            $stateData[$key] = $waiting;
+
+            // The customer answered, so the silence the clock was timing
+            // never happened.
+            unset($stateData[ReceiptNodes::timeoutKey($node->id)]);
+            $flowState->update(['state_data' => $stateData]);
+
+            LiveActivity::aiThinking($conversation, $node);
+
+            // Still downloading: DownloadInboundMedia calls resumeAfterMedia()
+            // when the file lands, and that starts the check.
+            if ($latest->attachment_status !== AttachmentStatus::Pending) {
+                CheckFlowReceipt::dispatch($flowState->id, $node->id, $latest->id);
+            }
+
+            return;
+        }
+
+        if (($waiting['reminded'] ?? false) || trim((string) ($data['message'] ?? '')) === '') {
+            return;
+        }
+
+        $waiting['reminded'] = true;
+        $stateData[$key] = $waiting;
+        $flowState->update(['state_data' => $stateData]);
+
+        $this->sendReceiptText($flowState, (string) $data['message']);
+    }
+
+    /**
+     * Read the file and decide. Called by CheckFlowReceipt.
+     */
+    public function runReceiptCheck(int $flowStateId, int $nodeId, int $messageId): void
+    {
+        $flowState = FlowState::find($flowStateId);
+        $node = $flowState ? $this->parkedReceiptNode($flowState, $nodeId) : null;
+
+        if (! $node) {
+            return;
+        }
+
+        $key = ReceiptNodes::stateKey($nodeId);
+        $waiting = ($flowState->state_data ?? [])[$key] ?? null;
+
+        if (! is_array($waiting) || (int) ($waiting['checking'] ?? 0) !== $messageId) {
+            return;
+        }
+
+        $lock = Cache::lock("flow-receipt:{$flowStateId}:{$messageId}", 300);
+
+        if (! $lock->get()) {
+            return;
+        }
+
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+        $message = Message::find($messageId);
+        $tenantId = (int) $conversation->connection->tenant_id;
+
+        $reason = null;
+        $reading = null;
+        $fileHash = null;
+
+        try {
+            $agent = AiHubAgent::find(ReceiptNodes::agentId($data));
+
+            if (! $agent || (int) $agent->aiHubTenant?->tenant_id !== $tenantId) {
+                $reason = 'not_configured';
+            } elseif (! $message || ! $message->attachment) {
+                $reason = 'unreadable';
+            } else {
+                $fileHash = $this->receiptFileHash($message);
+
+                // The same file again — here or in another conversation — is
+                // turned down before anything is spent reading it.
+                if ($fileHash !== null && $this->receiptAlreadyUsed($tenantId, 'file_hash', $fileHash)) {
+                    $reason = 'duplicate';
+                } else {
+                    $reading = (new AiReceiptReader($this->aiAgentHubService))->read(
+                        $agent,
+                        $conversation,
+                        $message,
+                        trim($this->interpolateVariables((string) ($data['expected_recipient'] ?? ''), $flowState)) ?: null,
+                        $flowState->id,
+                        $node->id,
+                    );
+
+                    $reason = $this->judgeReceipt($reading, $data, $flowState, $tenantId);
+                }
+            }
+        } catch (\Throwable $th) {
+            // Out of balance, the hub down, an answer that was not the format
+            // asked for. Not the customer's doing, so it is not counted
+            // against them: the flow leaves through `rejected` with the reason
+            // on the thread for whoever picks it up.
+            Log::error('FlowExecutor: Receipt check failed', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'message_id' => $messageId,
+                'error' => $th->getMessage(),
+            ]);
+
+            $reason = 'ai_unavailable';
+        }
+
+        // Somebody took the conversation while the model was reading. The
+        // receipt is still recorded; the flow does not speak over them.
+        $stillOurs = $this->stillWithTheFlow($conversation);
+        $approved = $reason === null;
+        $currency = $reading['currency'] ?? null ?: (Tenant::find($tenantId)?->currency() ?? 'BRL');
+
+        $receipt = FlowReceipt::create([
+            'tenant_id' => $tenantId,
+            'conversation_id' => $conversation->id,
+            'flow_id' => $flowState->flow_id,
+            'flow_node_id' => $node->id,
+            'message_id' => $messageId,
+            'ai_hub_run_id' => $reading['run_id'] ?? null,
+            'status' => $approved ? FlowReceipt::STATUS_APPROVED : FlowReceipt::STATUS_REJECTED,
+            'reason' => $reason,
+            'amount_cents' => $reading['amount_cents'] ?? null,
+            'currency' => $currency,
+            'payer' => $reading['payer'] ?? null,
+            'recipient' => $reading['recipient'] ?? null,
+            'paid_on' => $reading['paid_on'] ?? null,
+            'transaction_id' => $reading['transaction_id'] ?? null,
+            'file_hash' => $fileHash,
+            'result' => $reading['raw'] ?? null,
+        ]);
+
+        $flowState->refresh();
+        $this->setReceiptVariables($flowState, $approved ? 'approved' : 'rejected', $reason, $reading);
+
+        LiveActivity::idle($conversation);
+
+        if (! $stillOurs) {
+            return;
+        }
+
+        if ($approved) {
+            SystemMessage::info(
+                $conversation,
+                'Payment receipt accepted: '.ReceiptNodes::displayAmount((int) $receipt->amount_cents).' '.$currency.'.',
+                'flow_receipt_approved',
+                ['amount_cents' => (int) $receipt->amount_cents, 'currency' => $currency],
+            );
+
+            $this->sendReceiptPurchaseEvent($flowState, $node, $receipt);
+            $this->leaveReceiptNode($flowState, $node, ReceiptNodes::BRANCH_APPROVED, null);
+
+            return;
+        }
+
+        $attempts = (int) ($waiting['attempts'] ?? 0) + 1;
+        $final = in_array($reason, ['not_configured', 'ai_unavailable'], true) || $attempts >= ReceiptNodes::maxAttempts($data);
+        $hasRejectedEdge = $node->outgoingEdges()->where('condition_value', ReceiptNodes::BRANCH_REJECTED)->exists();
+
+        if ($final && $hasRejectedEdge) {
+            $this->leaveReceiptNode($flowState, $node, ReceiptNodes::BRANCH_REJECTED, $reason);
+
+            return;
+        }
+
+        // Another try — or no way out was drawn, and waiting beats a dead end.
+        $this->sendReceiptText($flowState, (string) ($data['invalid_message'] ?? ''));
+        $this->parkReceiptNode($flowState, $node, $attempts);
+    }
+
+    /**
+     * Why a reading is not good enough, or null when it is.
+     *
+     * Decided here, from the fields, rather than asked of the model: every one
+     * of these is a comparison somebody can check afterwards.
+     *
+     * @param  array<string, mixed>  $reading
+     * @param  array<string, mixed>  $data
+     */
+    protected function judgeReceipt(array $reading, array $data, FlowState $flowState, int $tenantId): ?string
+    {
+        if (! $reading['readable']) {
+            return 'unreadable';
+        }
+
+        if (! $reading['is_receipt']) {
+            return 'not_a_receipt';
+        }
+
+        if (! $reading['completed']) {
+            return 'not_completed';
+        }
+
+        if ($reading['amount_cents'] === null) {
+            return 'amount_unreadable';
+        }
+
+        // "At least", not "exactly": somebody who rounds up or pays for two has
+        // paid. A variable that resolved to nothing sets no expectation.
+        $expected = trim($this->interpolateVariables((string) ($data['expected_amount'] ?? ''), $flowState));
+        $expectedCents = $expected !== '' ? PaymentNodes::parseAmount($expected) : null;
+
+        if ($expectedCents !== null && $reading['amount_cents'] < $expectedCents) {
+            return 'amount_mismatch';
+        }
+
+        if (trim((string) ($data['expected_recipient'] ?? '')) !== '' && $reading['recipient_matches'] === false) {
+            return 'recipient_mismatch';
+        }
+
+        if ($reading['transaction_id'] !== null && $this->receiptAlreadyUsed($tenantId, 'transaction_id', $reading['transaction_id'])) {
+            return 'duplicate';
+        }
+
+        return null;
+    }
+
+    protected function receiptAlreadyUsed(int $tenantId, string $column, string $value): bool
+    {
+        return FlowReceipt::where('tenant_id', $tenantId)
+            ->where('status', FlowReceipt::STATUS_APPROVED)
+            ->where($column, $value)
+            ->exists();
+    }
+
+    protected function receiptFileHash(Message $message): ?string
+    {
+        try {
+            $bytes = MediaStorage::disk()->get($message->attachment);
+
+            return $bytes ? hash('sha256', $bytes) : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * What the rest of the flow can read: `{{receipt_value}}` is the form a
+     * Pixel node or an HTTP body wants, `{{receipt_amount}}` the one a message
+     * does.
+     *
+     * @param  array<string, mixed>|null  $reading
+     */
+    protected function setReceiptVariables(FlowState $flowState, string $status, ?string $reason, ?array $reading = null): void
+    {
+        $cents = $reading['amount_cents'] ?? null;
+        $stateData = $flowState->state_data ?? [];
+
+        $stateData['receipt_status'] = $status;
+        $stateData['receipt_reason'] = (string) $reason;
+        $stateData['receipt_amount'] = $cents !== null ? ReceiptNodes::displayAmount($cents) : '';
+        $stateData['receipt_value'] = $cents !== null ? ReceiptNodes::plainAmount($cents) : '';
+        $stateData['receipt_payer'] = (string) ($reading['payer'] ?? '');
+        $stateData['receipt_recipient'] = (string) ($reading['recipient'] ?? '');
+        $stateData['receipt_date'] = (string) ($reading['paid_on'] ?? '');
+        $stateData['receipt_id'] = (string) ($reading['transaction_id'] ?? '');
+
+        $flowState->update(['state_data' => $stateData]);
+    }
+
+    /**
+     * Report the sale to the pixels the node names, with the amount read off
+     * the receipt. The event id is the receipt's, so a retried job cannot count
+     * one sale twice.
+     */
+    protected function sendReceiptPurchaseEvent(FlowState $flowState, FlowNode $node, FlowReceipt $receipt): void
+    {
+        $ids = ReceiptNodes::pixelIntegrationIds($node->data ?? []);
+
+        if ($ids === [] || $receipt->amount_cents === null) {
+            return;
+        }
+
+        try {
+            $conversation = $flowState->conversation;
+
+            $integrations = Integration::forTenant((int) $receipt->tenant_id)
+                ->inCategory(IntegrationCategory::Pixel)
+                ->whereIn('id', $ids)
+                ->where('enabled', true)
+                ->get();
+
+            $event = PixelNodes::buildEvent(
+                [
+                    'integration_ids' => $ids,
+                    'event' => 'purchase',
+                    'value' => ReceiptNodes::plainAmount((int) $receipt->amount_cents),
+                    'currency' => $receipt->currency,
+                ],
+                fn (string $template) => $template,
+                $conversation->contact,
+                "receipt-{$receipt->id}",
+            );
+
+            foreach ($integrations as $integration) {
+                SendPixelEvent::dispatch($integration->id, $event->toArray());
+            }
+
+            Log::info('FlowExecutor: Purchase event queued from a receipt', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'flow_receipt_id' => $receipt->id,
+                'integrations' => $integrations->pluck('id')->all(),
+            ]);
+        } catch (\Throwable $th) {
+            // Tracking never costs the customer their next message.
+            Log::error('FlowExecutor: Error sending the purchase event for a receipt', [
+                'node_id' => $node->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
+    protected function sendReceiptText(FlowState $flowState, string $text): void
+    {
+        if (trim($text) === '') {
+            return;
+        }
+
+        try {
+            $message = $this->sendByMessageType($flowState->conversation, ['message_type' => 'text', 'body' => $text], $flowState);
+
+            if ($message) {
+                broadcast(new MessageReceived($message));
+            }
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Failed to send a receipt node message', [
+                'flow_state_id' => $flowState->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Stop waiting and take a branch. A rejection leaves a note saying why —
+     * the customer is usually on their way to a person, and that person should
+     * not have to guess.
+     */
+    protected function leaveReceiptNode(FlowState $flowState, FlowNode $node, string $branch, ?string $reason): void
+    {
+        $stateData = $flowState->state_data ?? [];
+        unset($stateData[ReceiptNodes::stateKey($node->id)], $stateData[ReceiptNodes::timeoutKey($node->id)]);
+        $flowState->update(['state_data' => $stateData]);
+
+        if ($branch === ReceiptNodes::BRANCH_REJECTED) {
+            SystemMessage::info(
+                $flowState->conversation,
+                'Payment receipt not accepted'.($reason ? " ({$reason})." : '.'),
+                'flow_receipt_rejected',
+                ['receipt_reason' => (string) $reason],
+            );
+        }
+
+        $edge = $node->outgoingEdges()->where('condition_value', $branch)->first();
+
+        if (! $edge && $branch === ReceiptNodes::BRANCH_APPROVED) {
+            $edge = $node->outgoingEdges()->whereNull('condition_value')->first();
+        }
+
+        if (! $edge) {
+            $this->endFlowHere($flowState, FlowStateStatus::Completed);
+
+            return;
+        }
+
+        $this->followEdge($flowState, $edge, ['branch' => $branch]);
+    }
+
+    /**
+     * The node, when the flow is still parked on it in a conversation the flow
+     * may still act in.
+     */
+    protected function parkedReceiptNode(FlowState $flowState, int $nodeId): ?FlowNode
+    {
+        if ($flowState->status !== FlowStateStatus::Running || $flowState->current_node_id !== $nodeId) {
+            return null;
+        }
+
+        $node = FlowNode::find($nodeId);
+
+        if (! $node || $node->type !== NodeType::Receipt) {
+            return null;
+        }
+
+        $conversation = $flowState->conversation;
+
+        if (! $conversation || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return null;
+        }
+
+        return $node;
+    }
+
+    /**
+     * Nobody sent a file in time. Called by RunFlowReceiptTimeout; with no
+     * `timeout` branch drawn the node simply goes on waiting.
+     */
+    public function runReceiptTimeout(int $flowStateId, int $nodeId, string $token): void
+    {
+        $flowState = FlowState::find($flowStateId);
+
+        if (! $flowState || ($flowState->state_data[ReceiptNodes::timeoutKey($nodeId)] ?? null) !== $token) {
+            return;
+        }
+
+        $node = $this->parkedReceiptNode($flowState, $nodeId);
+
+        if (! $node || ! $node->outgoingEdges()->where('condition_value', ReceiptNodes::BRANCH_TIMEOUT)->exists()) {
+            return;
+        }
+
+        $this->setReceiptVariables($flowState, 'timeout', null);
+        $this->leaveReceiptNode($flowState, $node, ReceiptNodes::BRANCH_TIMEOUT, null);
     }
 
     // ────────────────────────────────  Lead  ────────────────────────────────

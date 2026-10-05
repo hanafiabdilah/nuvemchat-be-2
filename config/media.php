@@ -96,4 +96,11 @@ return [
 
     'ffmpeg_path' => env('FFMPEG_PATH', 'ffmpeg'),
 
+    /*
+    | poppler's pdftoppm, which turns the first page of a PDF receipt into a
+    | picture a vision model can read (App\Services\Media\PdfPreview). Without
+    | it a PDF sent to a Receipt node is answered as unreadable.
+    */
+    'pdftoppm_path' => env('PDFTOPPM_PATH', 'pdftoppm'),
+
 ];

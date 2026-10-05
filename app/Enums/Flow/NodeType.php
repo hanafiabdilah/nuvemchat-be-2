@@ -27,6 +27,7 @@ enum NodeType: string
     case Payment = 'payment';
     case Invoice = 'invoice';
     case Pixel = 'pixel';
+    case Receipt = 'receipt';
     case GoToFlow = 'go_to_flow';
     case Lead = 'lead';
 
@@ -231,6 +232,9 @@ enum NodeType: string
             // customers before its author chose an account would be a side
             // effect nobody asked for. Outputs follow the capabilities — see
             // AiToolNodes::branches().
+            // Asks for proof of payment, has an AI read it, branches on the
+            // result. See App\Services\Flow\ReceiptNodes.
+            self::Receipt => \App\Services\Flow\ReceiptNodes::defaults(),
             self::AiTools => array_merge(self::AIAgent->data(), [
                 'capabilities' => [
                     'catalog' => false,

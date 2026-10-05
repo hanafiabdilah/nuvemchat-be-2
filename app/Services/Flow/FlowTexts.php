@@ -68,6 +68,10 @@ final class FlowTexts
         'invoice' => [
             'message' => 2000,
         ],
+        'receipt' => [
+            'message' => ReceiptNodes::MAX_MESSAGE_LENGTH,
+            'invalid_message' => ReceiptNodes::MAX_MESSAGE_LENGTH,
+        ],
     ];
 
     /**

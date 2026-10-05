@@ -898,7 +898,8 @@ class AiAgentHubTenantService
         array $attachments = [],
         array $responseAudio = [],
         array $inputAudio = [],
-        array $tools = []
+        array $tools = [],
+        bool $retryWithoutExtras = true
     ): AiHubRun {
         $tenant = $agent->aiHubTenant;
         $conversation->loadMissing(['contact', 'connection']);
@@ -1011,7 +1012,10 @@ class AiAgentHubTenantService
         // under a new run id, which our idempotency cannot recognise as the
         // same call. The hub's contract says the same: fatal failures are not
         // replayed. The node hands off instead.
-        $carriesExtras = $tools === [] && ($attachments !== [] || $responseAudio !== [] || $inputAudio !== []);
+        // `$retryWithoutExtras` is false for a caller whose whole question is
+        // about the attachment — a receipt check answered without its image
+        // would be a verdict on nothing.
+        $carriesExtras = $retryWithoutExtras && $tools === [] && ($attachments !== [] || $responseAudio !== [] || $inputAudio !== []);
 
         // Strip everything optional and keep the words. Shared by both ways a
         // run can fail — an HTTP error, and a 200 carrying a failed run.

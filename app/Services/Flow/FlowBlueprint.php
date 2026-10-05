@@ -40,7 +40,7 @@ class FlowBlueprint
     public const NODE_TYPES = [
         'start', 'message', 'interval', 'response', 'wait_response', 'status',
         'tagging', 'condition', 'action', 'ai_agent', 'ai_tools', 'http_request',
-        'interactive', 'payment', 'invoice', 'pixel', 'go_to_flow', 'lead',
+        'interactive', 'payment', 'invoice', 'pixel', 'receipt', 'go_to_flow', 'lead',
     ];
 
     /**
@@ -77,6 +77,7 @@ class FlowBlueprint
         'wait_response' => WaitResponseNodes::BRANCHES,
         'payment' => PaymentNodes::BRANCHES,
         'invoice' => InvoiceNodes::BRANCHES,
+        'receipt' => ReceiptNodes::BRANCHES,
     ];
 
     /**
@@ -389,6 +390,22 @@ class FlowBlueprint
                 'parameters.*.key' => ['nullable', 'string', 'max:40'],
                 'parameters.*.value' => ['nullable', 'string', 'max:500'],
             ],
+            // Lenient like payment: a half-built node saves, and at runtime one
+            // with no AI agent leaves through `rejected` without asking the
+            // customer for anything. Ownership is strict — the agent and the
+            // pixels must be this workspace's.
+            'receipt' => [
+                'ai_hub_agent_id' => self::rulesFor('ai_agent')['ai_hub_agent_id'],
+                'message' => ['nullable', 'string', 'max:'.ReceiptNodes::MAX_MESSAGE_LENGTH],
+                'expected_amount' => ['nullable', 'string', 'max:64'],
+                'expected_recipient' => ['nullable', 'string', 'max:255'],
+                'invalid_message' => ['nullable', 'string', 'max:'.ReceiptNodes::MAX_MESSAGE_LENGTH],
+                'max_attempts' => ['nullable', 'integer', 'min:1', 'max:'.ReceiptNodes::MAX_ATTEMPTS],
+                'timeout_seconds' => ['nullable', 'integer', 'min:0', 'max:'.WaitResponseNodes::MAX_TIMEOUT_SECONDS],
+                'timeout_unit' => ['nullable', 'string', Rule::in(array_keys(WaitResponseNodes::TIMEOUT_UNITS))],
+                'pixel_integration_ids' => ['nullable', 'array', 'max:10'],
+                'pixel_integration_ids.*' => self::rulesFor('pixel')['integration_ids.*'],
+            ],
             'go_to_flow' => [
                 'flow_id' => ['nullable', 'integer', Rule::exists('flows', 'id')->where('tenant_id', self::tenantId())],
                 'carry_variables' => ['nullable', 'boolean'],
@@ -580,6 +597,10 @@ class FlowBlueprint
 
         foreach ($nodes as $node) {
             $type = $node['type'] ?? null;
+
+            if ($type === 'receipt' && empty(((array) ($node['data'] ?? []))['ai_hub_agent_id'])) {
+                $problems[] = 'Node "'.($node['key'] ?? '').'" (receipt) needs an ai_hub_agent_id from the AI agents listed in the context. If none is listed, do not use this node type.';
+            }
 
             if ($type !== 'ai_agent' && $type !== 'ai_tools') {
                 continue;
@@ -906,6 +927,8 @@ class FlowBlueprint
         $minExpiry = PaymentNodes::MIN_EXPIRES_MINUTES;
         $maxExpiry = PaymentNodes::MAX_EXPIRES_MINUTES;
         $pixelEvents = self::quoted(PixelEvents::EVENTS);
+        $receiptAttempts = ReceiptNodes::MAX_ATTEMPTS;
+        $receiptVariables = '{{receipt_status}}, {{receipt_reason}}, {{receipt_amount}} (e.g. "49,90"), {{receipt_value}} (e.g. "49.90"), {{receipt_payer}}, {{receipt_recipient}}, {{receipt_date}}, {{receipt_id}}';
         $paymentVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', PaymentNodes::VARIABLES));
         $issued = InvoiceNodes::BRANCH_ISSUED;
         $invoiceFailed = InvoiceNodes::BRANCH_FAILED;
@@ -1238,6 +1261,28 @@ class FlowBlueprint
         - TWO outputs: "{$issued}" (authorized, document sent) and "{$invoiceFailed}"
           (rejected, could not be requested, or still unanswered at the deadline).
           Wire BOTH. Natural place: on a payment node's "{$paid}" branch.
+
+        ### receipt — ask for proof of payment and have an AI read it
+        { "ai_hub_agent_id": 3, "message": "Envie o comprovante do pagamento, por favor.", "expected_amount": "49,90", "expected_recipient": "", "invalid_message": "Não consegui confirmar esse comprovante. Pode enviar novamente?", "max_attempts": 2, "timeout_seconds": 0, "pixel_integration_ids": [] }
+        - For sales paid outside a gateway (a Pix key or bank transfer the
+          business typed in a message). Sends `message`, waits for the customer
+          to send a picture or a PDF, and has the AI agent read it.
+        - `ai_hub_agent_id` MUST come from the AI agents in the context. If none
+          is listed, DO NOT use this node.
+        - `expected_amount` (optional, accepts {{variable}}): the receipt must
+          show at least this much. `expected_recipient` (optional): the name or
+          Pix key the money must have gone to.
+        - A receipt that is not accepted gets `invalid_message` and another try,
+          up to `max_attempts` ({$receiptAttempts} at most).
+        - `pixel_integration_ids` (optional, pixel integrations from the
+          context): on approval a "purchase" event is sent to them with the
+          amount read from the receipt — no separate pixel node needed.
+        - Sets these variables for later nodes: {$receiptVariables}.
+        - THREE outputs: "approved", "rejected" (wire it to a person —
+          action / transfer_human) and "timeout" (only reachable when
+          `timeout_seconds` > 0).
+        - It reads a picture; it does not confirm money in a bank. Never use it
+          where a payment node (a real gateway charge) is possible.
 
         ### pixel — report a conversion to an ad or analytics account
         { "integration_ids": [7], "event": "purchase", "value": "{{payment_value}}", "currency": "BRL" }
