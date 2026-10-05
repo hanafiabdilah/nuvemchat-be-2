@@ -163,6 +163,17 @@ test('what the model reports decides the reason', function (array $reading, arra
     'paid to somebody else' => [['recipient_matches' => false], ['expected_recipient' => 'Loja Aurora'], 'recipient_mismatch'],
 ]);
 
+test('an amount the model only copied as printed is still read', function () {
+    [$conversation] = receiptFlow(['expected_amount' => '165.000,00']);
+    fakeReceiptHub(receiptReading(['amount' => null, 'amount_text' => 'Rp 165.000,00', 'currency' => 'IDR']));
+
+    AiAgentFixtures::openWithWelcome($conversation);
+    customerSendsReceipt($conversation);
+
+    expect(FlowReceipt::sole()->only(['status', 'amount_cents', 'currency']))
+        ->toBe(['status' => 'approved', 'amount_cents' => 16500000, 'currency' => 'IDR']);
+});
+
 test('the same file or the same transaction is not accepted twice', function () {
     [$conversation, $node] = receiptFlow();
     fakeReceiptHub(receiptReading());

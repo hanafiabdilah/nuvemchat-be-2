@@ -85,7 +85,10 @@ class AiReceiptReader
                 throw new \RuntimeException('The receipt reader returned no structured answer.');
             }
 
-            $amount = is_scalar($answer['amount'] ?? null) ? PaymentNodes::parseAmount((string) $answer['amount']) : null;
+            // The converted figure first; failing that, the amount as printed —
+            // a model that balks at the conversion has usually still copied
+            // the text, and "Rp 165.000,00" parses once the sign is gone.
+            $amount = self::amount($answer['amount'] ?? null) ?? self::amount($answer['amount_text'] ?? null);
 
             return [
                 'readable' => true,
@@ -143,13 +146,16 @@ class AiReceiptReader
 
         Reply with ONE JSON object and nothing else, no code fence:
 
-        {"is_receipt": true, "completed": true, "amount": "49.90", "currency": "BRL", "payer": null, "recipient": null,
+        {"is_receipt": true, "completed": true, "amount": "49.90", "amount_text": "R$ 49,90", "currency": "BRL", "payer": null, "recipient": null,
          "recipient_key": null, "date": "2026-01-31", "transaction_id": null, "recipient_matches": null, "note": ""}
 
         - "is_receipt": false for anything that is not a payment document: a photo, a chat screenshot, a product picture.
         - "completed": false when the payment is scheduled, pending, cancelled or refused, and for a charge still waiting
           to be paid (a boleto, a QR code, an invoice, a payment request).
-        - "amount": the amount paid, digits with a dot for decimals and no thousands separator. null if it cannot be read.
+        - "amount": the amount paid, converted to digits with a dot for decimals and no thousands separator or currency
+          sign: "R$ 1.234,56" is "1234.56", "Rp 165.000,00" is "165000.00". Whenever an amount is visible, convert it;
+          null only when no amount can be read at all.
+        - "amount_text": the same amount exactly as printed on the document.
         - "recipient": who received the money, as written. "recipient_key": their Pix key or account, if shown.
         - "transaction_id": the transaction, authentication or end-to-end id, as written.
         - "date": the day of the payment, as YYYY-MM-DD.
@@ -173,6 +179,19 @@ class AiReceiptReader
         $decoded = json_decode(substr($raw, $start, $end - $start + 1), true);
 
         return is_array($decoded) && array_key_exists('is_receipt', $decoded) ? $decoded : null;
+    }
+
+    private static function amount(mixed $value): ?int
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        // Currency signs and codes vary by country; the digits and their
+        // separators are all the parser needs.
+        $digits = trim((string) preg_replace('/[^\d.,]+/u', '', (string) $value), '.,');
+
+        return $digits === '' ? null : PaymentNodes::parseAmount($digits);
     }
 
     private static function text(mixed $value, int $max = 255): ?string
