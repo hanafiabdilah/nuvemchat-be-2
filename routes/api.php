@@ -916,6 +916,8 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         // Users (tenant users) — platform-wide
         Route::get('/users', [AdminUserController::class, 'index'])
             ->middleware('permission:bo.users.view');
+        Route::put('/users/{user}', [AdminUserController::class, 'update'])
+            ->middleware('permission:bo.users.manage');
 
         // Connections — platform-wide channel health
         Route::get('/connections', [AdminConnectionController::class, 'index'])

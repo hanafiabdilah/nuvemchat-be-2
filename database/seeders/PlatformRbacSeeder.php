@@ -19,6 +19,9 @@ class PlatformRbacSeeder extends Seeder
         // the view permission support desks are handed.
         'bo.customers.create',
         'bo.users.view',
+        // Rewriting a customer's e-mail or password is taking the account over,
+        // so it is not something the read-only Users page grants.
+        'bo.users.manage',
         'bo.connections.view',
         'bo.statistics.view',
         'bo.impersonate',
