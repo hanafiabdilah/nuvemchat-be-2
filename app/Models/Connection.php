@@ -33,6 +33,7 @@ class Connection extends Model
         'closing_message',
         'return_to_last_agent',
         'return_to_last_agent_minutes',
+        'return_to_last_agent_require_online',
         'service_hours',
         'ai_suggest_agent_id',
     ];
@@ -55,6 +56,7 @@ class Connection extends Model
         'service_hours' => 'array',
         'return_to_last_agent' => 'boolean',
         'return_to_last_agent_minutes' => 'integer',
+        'return_to_last_agent_require_online' => 'boolean',
     ];
 
     /**
@@ -90,6 +92,17 @@ class Connection extends Model
     public function returnToLastAgentMinutes(): int
     {
         return max(1, (int) ($this->return_to_last_agent_minutes ?: 15));
+    }
+
+    /**
+     * Whether a returning contact only goes back to their last agent while
+     * that agent is online. Null (a row loaded before the column existed, or a
+     * freshly created model) reads as true — the rule every connection ran
+     * under before this was a choice.
+     */
+    public function requiresOnlineAgentToReturn(): bool
+    {
+        return (bool) ($this->return_to_last_agent_require_online ?? true);
     }
 
     /**

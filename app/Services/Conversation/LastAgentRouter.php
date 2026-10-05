@@ -32,7 +32,8 @@ use Illuminate\Support\Facades\Log;
  *
  *   - the contact's last *served* conversation closed within the tolerance;
  *   - the agent who served it can still reach this connection;
- *   - that agent is online right now.
+ *   - that agent is online right now — unless the connection switched that
+ *     requirement off (`return_to_last_agent_require_online`).
  *
  * The last one is what stops this from being worse than the bot: an unattended
  * assignment is a customer sitting in someone's inbox with no one coming, while
@@ -282,6 +283,14 @@ class LastAgentRouter
         if ((int) $agent->tenant_id !== (int) $connection->tenant_id
             || ! $agent->canAccessConnection($connection->id)) {
             return false;
+        }
+
+        // The connection decides whether an agent who is away still gets
+        // their customer back. Required by default: an assignment to an empty
+        // chair is somebody waiting on a person who is not coming. A team that
+        // keeps one agent per customer turns it off and answers when back.
+        if (! $connection->requiresOnlineAgentToReturn()) {
+            return true;
         }
 
         return $agent->isOnline();

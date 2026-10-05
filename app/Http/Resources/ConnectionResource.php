@@ -68,6 +68,7 @@ class ConnectionResource extends JsonResource
             'return_to_last_agent' => [
                 'enabled' => (bool) $this->return_to_last_agent,
                 'tolerance_minutes' => (int) $this->return_to_last_agent_minutes,
+                'require_online' => $this->requiresOnlineAgentToReturn(),
             ],
             'flow' => new FlowResource($this->flow),
             // 'webhook_url' => route('webhook.chat', $this->id),

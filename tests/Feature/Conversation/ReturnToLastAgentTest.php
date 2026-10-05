@@ -460,3 +460,74 @@ test('a second message continues the reopened conversation', function () {
         ->and(Message::where('message_type', MessageType::Info)->count())->toBe(1)
         ->and($previous->messages()->where('message_type', '!=', MessageType::Info)->count())->toBe(2);
 });
+
+test('an offline agent still gets the conversation back when the connection does not require them online', function () {
+    $owner = rtlaOwner();
+
+    $flow = Flow::create(['tenant_id' => $owner->tenant_id, 'name' => 'Menu']);
+    $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
+
+    $connection = rtlaConnection($owner, ['flow_id' => $flow->id, 'return_to_last_agent_require_online' => false]);
+    $agent = rtlaAgent($connection, now()->subHour());
+    $contact = rtlaContact($connection);
+    $previous = rtlaPreviousConversation($connection, $contact, $agent);
+
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage());
+
+    $previous->refresh();
+
+    expect(Conversation::count())->toBe(1)
+        ->and($previous->status)->toBe(ConversationStatus::Active)
+        ->and($previous->user_id)->toBe($agent->id)
+        ->and(FlowState::count())->toBe(0);
+});
+
+test('an agent who lost access is skipped even when being online is not required', function () {
+    $owner = rtlaOwner();
+    $connection = rtlaConnection($owner, ['return_to_last_agent_require_online' => false]);
+    $agent = rtlaAgent($connection);
+    $agent->connections()->detach($connection->id);
+    $contact = rtlaContact($connection);
+    $previous = rtlaPreviousConversation($connection, $contact, $agent);
+
+    (new TelegramHandler)->handle($connection, rtlaTelegramMessage());
+
+    expect(Conversation::count())->toBe(2)
+        ->and($previous->fresh()->status)->toBe(ConversationStatus::Resolved);
+});
+
+test('requiring the agent online is the default and can be switched off on the connection', function () {
+    $owner = rtlaOwner();
+    $connection = rtlaConnection($owner);
+
+    expect($connection->fresh()->requiresOnlineAgentToReturn())->toBeTrue();
+
+    $connection->update(['return_to_last_agent_require_online' => false]);
+
+    expect($connection->fresh()->requiresOnlineAgentToReturn())->toBeFalse();
+});
+
+test('the online requirement is saved and read back through the API', function () {
+    $owner = rtlaOwner();
+    $role = Role::findOrCreate('owner', 'web');
+    $role->givePermissionTo(Permission::findOrCreate('connections.update', 'web'));
+    $owner->assignRole($role);
+
+    $connection = rtlaConnection($owner);
+
+    // A client that predates the setting leaves it as it was.
+    $this->actingAs($owner, 'sanctum')
+        ->putJson("/api/connections/{$connection->id}", ['name' => 'Renomeado'])
+        ->assertOk()
+        ->assertJsonPath('data.return_to_last_agent.require_online', true);
+
+    $this->actingAs($owner, 'sanctum')
+        ->putJson("/api/connections/{$connection->id}", [
+            'name' => 'Renomeado',
+            'return_to_last_agent_require_online' => false,
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.return_to_last_agent.require_online', false);
+
+    expect($connection->fresh()->requiresOnlineAgentToReturn())->toBeFalse();
+});

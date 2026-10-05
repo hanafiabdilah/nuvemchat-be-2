@@ -177,6 +177,7 @@ class ConnectionController extends Controller
             'closing_message' => $connection->closing_message,
             'return_to_last_agent' => $connection->return_to_last_agent,
             'return_to_last_agent_minutes' => $connection->return_to_last_agent_minutes,
+            'return_to_last_agent_require_online' => $connection->requiresOnlineAgentToReturn(),
             'service_hours' => $connection->service_hours,
             'ai_suggest_agent_id' => $connection->ai_suggest_agent_id,
         ]);
@@ -545,6 +546,8 @@ class ConnectionController extends Controller
             // A day is the ceiling on purpose — past that it stops being "the
             // same visit" and becomes a routing rule nobody remembers writing.
             'return_to_last_agent_minutes' => ['sometimes', 'integer', 'min:1', 'max:1440'],
+            // Off = the thread goes back to its agent even when they are away.
+            'return_to_last_agent_require_online' => ['sometimes', 'boolean'],
         ]);
 
         $connection->update($validated);
