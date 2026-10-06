@@ -19,6 +19,7 @@ use App\Services\Integrations\IntegrationDrivers;
 use App\Services\Integrations\Payments\CancelsCharges;
 use App\Services\Integrations\Payments\ChargeRequest;
 use App\Services\Money\MarketMoney;
+use App\Services\Sales\SalesLedger;
 use App\Support\AppTime;
 use App\Support\Errors\UpstreamError;
 use Carbon\CarbonImmutable;
@@ -395,6 +396,9 @@ class FlowPaymentService
         }
 
         $payment->refresh();
+
+        // Paid on time or late, the money came in: it is a sale either way.
+        SalesLedger::fromPayment($payment);
 
         // Before anything that can throw on the flow side: the stock and the
         // order follow the money, whether or not a flow is still waiting.

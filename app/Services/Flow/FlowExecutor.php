@@ -82,6 +82,7 @@ use App\Services\Live\LiveActivity;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
+use App\Services\Sales\SalesLedger;
 use App\Support\Errors\TransportFailure;
 use App\Support\OutboundHttp;
 use App\Support\PublicUrl;
@@ -6433,6 +6434,8 @@ class FlowExecutor
             'file_hash' => $fileHash,
             'result' => $reading['raw'] ?? null,
         ]);
+
+        SalesLedger::fromReceipt($receipt);
 
         $flowState->refresh();
         $this->setReceiptVariables($flowState, $approved ? 'approved' : 'rejected', $reason, $reading);

@@ -7,6 +7,7 @@ use App\Services\Statistics\AgentStats;
 use App\Services\Statistics\AutomationStats;
 use App\Services\Statistics\HealthStats;
 use App\Services\Statistics\OverviewStats;
+use App\Services\Statistics\SalesStats;
 use App\Services\Statistics\ServiceStats;
 use App\Services\Statistics\StatsScope;
 use App\Services\Statistics\TopicStats;
@@ -31,6 +32,36 @@ class StatisticsController extends Controller
         $scope = $this->scope($request);
 
         return $this->respond($scope, (new OverviewStats($scope))->build());
+    }
+
+    /**
+     * Revenue, average ticket, front offer against upsell, sales per ad and the
+     * progress towards the workspace's revenue goal.
+     */
+    public function sales(Request $request)
+    {
+        $scope = $this->scope($request);
+
+        return $this->respond($scope, (new SalesStats($scope, Auth::user()->tenant))->build());
+    }
+
+    /** Set, change or clear (amount 0) the revenue goal. */
+    public function updateSalesGoal(Request $request)
+    {
+        $data = $request->validate([
+            'amount_cents' => ['required', 'integer', 'min:0', 'max:99999999999'],
+            'period' => ['nullable', 'string', 'in:'.implode(',', SalesStats::GOAL_PERIODS)],
+            'timezone' => ['nullable', 'string', 'timezone'],
+        ]);
+
+        $tenant = Auth::user()->tenant;
+        $tenant->forceFill([
+            'sales_goal' => SalesStats::normalizeGoal(['amount_cents' => $data['amount_cents'], 'period' => $data['period'] ?? 'month']),
+        ])->save();
+
+        return response()->json([
+            'data' => ['goal' => SalesStats::goal($tenant, $data['timezone'] ?? config('app.timezone', 'UTC'))],
+        ]);
     }
 
     public function volume(Request $request)

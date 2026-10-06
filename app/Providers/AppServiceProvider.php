@@ -46,6 +46,7 @@ class AppServiceProvider extends ServiceProvider
         Message::observe(MessageAttachmentObserver::class);
         Message::observe(MessageGalleryObserver::class);
         Message::observe(MessageLeadObserver::class);
+        Message::observe(\App\Observers\MessageAdReferralObserver::class);
         // Paid invoice (Brazil) → nota fiscal via Plugnotas; refunded → cancelled.
         \App\Models\Invoice::observe(InvoiceFiscalObserver::class);
 

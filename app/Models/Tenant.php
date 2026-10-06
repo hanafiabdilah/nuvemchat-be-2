@@ -31,6 +31,7 @@ class Tenant extends Model
 
     protected $casts = [
         'lead_settings' => 'array',
+        'sales_goal' => 'array',
         'entitlement_overrides' => 'array',
         'audio_dictionary' => 'array',
         'billing_address' => 'array',

@@ -4,6 +4,7 @@ namespace App\Services\Flow;
 
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Integration\IntegrationCategory;
+use App\Models\Sale;
 use App\Services\AiAgentHub\AiFollowUp;
 use App\Services\AiAgentHub\AiHoldingMessage;
 use App\Services\Integrations\Pixels\PixelEvents;
@@ -349,6 +350,10 @@ class FlowBlueprint
                 'send_link' => ['nullable', 'boolean'],
                 'payer_email' => ['nullable', 'string', 'max:255'],
                 'payer_document' => ['nullable', 'string', 'max:64'],
+                // How this node's sales are counted on the sales page: the front
+                // offer or an upsell, and which offer. Unset = unclassified.
+                'sale_kind' => ['nullable', 'string', Rule::in(Sale::KINDS)],
+                'sale_offer' => ['nullable', 'string', 'max:120'],
             ],
             // The same leniency as payment: a half-built node saves, and at
             // runtime one without an integration, an amount, a description or
@@ -444,6 +449,10 @@ class FlowBlueprint
                 'timeout_unit' => ['nullable', 'string', Rule::in(array_keys(WaitResponseNodes::TIMEOUT_UNITS))],
                 'pixel_integration_ids' => ['nullable', 'array', 'max:10'],
                 'pixel_integration_ids.*' => self::rulesFor('pixel')['integration_ids.*'],
+                // How this node's sales are counted on the sales page: the front
+                // offer or an upsell, and which offer. Unset = unclassified.
+                'sale_kind' => ['nullable', 'string', Rule::in(Sale::KINDS)],
+                'sale_offer' => ['nullable', 'string', 'max:120'],
             ],
             'go_to_flow' => [
                 'flow_id' => ['nullable', 'integer', Rule::exists('flows', 'id')->where('tenant_id', self::tenantId())],

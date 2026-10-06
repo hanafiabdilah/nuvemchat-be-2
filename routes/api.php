@@ -726,6 +726,8 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             Route::get('/statistics/filters', [StatisticsController::class, 'filters']);
             Route::get('/statistics/overview', [StatisticsController::class, 'overview']);
             Route::get('/statistics/volume', [StatisticsController::class, 'volume']);
+            Route::get('/statistics/sales', [StatisticsController::class, 'sales']);
+            Route::put('/statistics/sales/goal', [StatisticsController::class, 'updateSalesGoal']);
             Route::get('/statistics/service', [StatisticsController::class, 'service']);
             Route::get('/statistics/topics', [StatisticsController::class, 'topics']);
             Route::get('/statistics/automation', [StatisticsController::class, 'automation']);
