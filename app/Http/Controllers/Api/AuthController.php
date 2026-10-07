@@ -7,6 +7,7 @@ use App\Http\Resources\UserResource;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Auth\LoginThrottle;
+use App\Services\Auth\SingleSession;
 use App\Services\Auth\TwoFactor;
 use App\Services\Otp\OtpService;
 use Illuminate\Http\Request;
@@ -69,7 +70,7 @@ class AuthController extends Controller
             ]);
         }
 
-        $token = $user->createToken('auth_token')->plainTextToken;
+        $token = $user->createToken(SingleSession::TOKEN_NAME)->plainTextToken;
 
         return response()->json([
             'access_token' => $token,
@@ -200,7 +201,12 @@ class AuthController extends Controller
 
     private function grant(User $user)
     {
-        $token = $user->createToken('auth_token')->plainTextToken;
+        $issued = $user->createToken(SingleSession::TOKEN_NAME);
+        $token = $issued->plainTextToken;
+
+        // One sign-in per account: whoever was signed in before is told, in
+        // real time, and returned to the login screen with the reason on it.
+        app(SingleSession::class)->claim($user, $issued, request());
 
         // Present from this second rather than from the first heartbeat a
         // minute later — signing in is the clearest statement there is that

@@ -153,6 +153,30 @@ return Application::configure(basePath: dirname(__DIR__))
             );
         });
 
+        // A session ended by a later sign-in (App\Services\Auth\SingleSession).
+        // The token is gone, so on its own this is an ordinary "Unauthenticated"
+        // — and the dashboard would drop the person on the login screen without
+        // a word. The realtime event covers the tab that was open; this covers
+        // the one that was not, and the socket that happened to be down.
+        $exceptions->render(function (\Illuminate\Auth\AuthenticationException $e, \Illuminate\Http\Request $request) {
+            if (! $request->is('api/*') || $request->is('api/admin/*')) {
+                return null;
+            }
+
+            $by = \App\Services\Auth\SingleSession::supersededBy($request->bearerToken());
+
+            if ($by === null) {
+                return null;
+            }
+
+            return response()->json([
+                'message' => 'This account was signed in on another device, so this session was ended.',
+                'code' => 'session_superseded',
+                'device' => $by['device'],
+                'at' => $by['at'],
+            ], 401);
+        });
+
         // Spatie's permission middleware answers 403 with its own English
         // sentence — "User does not have the right permissions." — which the
         // dashboard printed as-is. A stable code lets the SPA say it in the
