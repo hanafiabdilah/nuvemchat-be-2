@@ -25,6 +25,7 @@ use App\Models\LeadStage;
 use App\Models\Tag;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\Message\InteractiveDelivery;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Conversation\SystemMessage;
@@ -313,7 +314,7 @@ final class LeadIntakeService
      * What the first message is, checked against what the channel allows before
      * anything is created.
      *
-     * @return array{type: 'text'|'template', data: array<string, mixed>}|null
+     * @return array{type: 'text'|'template'|'buttons', data: array<string, mixed>}|null
      */
     private function openingFor(Connection $connection, array $data): ?array
     {
@@ -339,6 +340,14 @@ final class LeadIntakeService
             ]];
         }
 
+        $buttons = array_values((array) ($data['buttons'] ?? []));
+
+        if ($buttons !== [] && ($template || $text === '')) {
+            throw ValidationException::withMessages([
+                'buttons' => 'Os botões acompanham o texto de message. Envie message junto com buttons.',
+            ]);
+        }
+
         if ($text === '') {
             return null;
         }
@@ -350,7 +359,38 @@ final class LeadIntakeService
             );
         }
 
-        return ['type' => 'text', 'data' => ['message' => $text]];
+        if ($buttons === []) {
+            return ['type' => 'text', 'data' => ['message' => $text]];
+        }
+
+        // Refused rather than quietly sent as text: the caller built a message
+        // whose answer is a tap, and a channel that cannot draw the buttons
+        // would deliver a question with nothing to answer it with.
+        if ($connection->channel !== Channel::WhatsappApiway) {
+            throw new PublicApiException(
+                'Botões na primeira mensagem só existem no WhatsApp API Way. No WhatsApp Oficial, os botões fazem parte do modelo (template).',
+                'buttons_not_supported',
+            );
+        }
+
+        // Buttons switched off platform-wide: the text is still worth sending.
+        if (! $connection->channel->supportsInteractiveType('button')) {
+            return ['type' => 'text', 'data' => ['message' => $text]];
+        }
+
+        // A message that is too long for a button body still fits as text.
+        if (mb_strlen($text) > 1024) {
+            throw ValidationException::withMessages([
+                'message' => 'Com botões, message pode ter no máximo 1024 caracteres.',
+            ]);
+        }
+
+        return ['type' => 'buttons', 'data' => array_filter([
+            'interactive_type' => 'button',
+            'body' => $text,
+            'footer' => trim((string) ($data['footer'] ?? '')) ?: null,
+            'buttons' => array_map(fn ($button) => ['id' => (string) $button['id'], 'title' => trim((string) $button['text'])], $buttons),
+        ], fn ($value) => $value !== null)];
     }
 
     /**
@@ -617,10 +657,30 @@ final class LeadIntakeService
             ];
         }
 
+        $type = $opening['type'];
+
         try {
-            $message = $opening['type'] === 'template'
-                ? $this->messages->sendTemplate($conversation, $opening['data'])
-                : $this->messages->sendMessage($conversation, $opening['data']);
+            try {
+                $message = match ($type) {
+                    'template' => $this->messages->sendTemplate($conversation, $opening['data']),
+                    'buttons' => $this->messages->sendInteractive($conversation, $opening['data']),
+                    default => $this->messages->sendMessage($conversation, $opening['data']),
+                };
+            } catch (\Throwable $th) {
+                // The buttons are a nicer way to ask; the lead matters more.
+                // Only when they cannot have arrived, though — see InteractiveDelivery.
+                if ($type !== 'buttons' || ! InteractiveDelivery::canFallBack($th)) {
+                    throw $th;
+                }
+
+                Log::warning('Public API lead: buttons refused, sending the opening message as text', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $th->getMessage(),
+                ]);
+
+                $type = 'text';
+                $message = $this->messages->sendMessage($conversation, ['message' => $opening['data']['body']]);
+            }
         } catch (\Throwable $th) {
             $error = $this->failureReason($th);
 
@@ -639,7 +699,7 @@ final class LeadIntakeService
             $this->quietly(fn () => broadcast(new MessageReceived($message)));
         }
 
-        return ['status' => 'sent', 'message_id' => $message?->id];
+        return ['status' => 'sent', 'type' => $type, 'message_id' => $message?->id];
     }
 
     /** MessageService already translated channel refusals into our words; anything else is not for the caller. */

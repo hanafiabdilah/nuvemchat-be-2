@@ -258,6 +258,93 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
         }
     }
 
+    /**
+     * Reply buttons: POST /v1/message/send-buttons.
+     *
+     * Takes the same data the Cloud API handler takes for `button`, so the
+     * flow node, the composer and the leads API hand both channels one shape.
+     * The core has a single text field, so a header becomes the first line.
+     *
+     * Unlike the other sends here, a refusal throws instead of being stored:
+     * every caller has a plain-text version to fall back on, and it can only
+     * do that if it is told.
+     */
+    public function handleSendInteractive(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'interactive_type' => 'required|in:button',
+            'body' => 'required|string|max:1024',
+            'header' => 'nullable|string|max:60',
+            'footer' => 'nullable|string|max:60',
+            'buttons' => 'required|array|min:1|max:3',
+            'buttons.*.id' => 'nullable|string|max:256',
+            'buttons.*.title' => 'required|string|max:20',
+        ])->validate();
+
+        $connection = $conversation->connection;
+
+        $buttons = array_map(fn ($button, $i) => [
+            'id' => (string) (($button['id'] ?? '') !== '' ? $button['id'] : 'btn_' . ($i + 1)),
+            'title' => $button['title'],
+        ], array_values($data['buttons']), array_keys(array_values($data['buttons'])));
+
+        $header = trim((string) ($data['header'] ?? ''));
+        $footer = trim((string) ($data['footer'] ?? ''));
+
+        $payload = array_filter([
+            'phone' => $conversation->external_id,
+            'message' => $header !== '' ? $header . "\n\n" . $data['body'] : $data['body'],
+            'footerText' => $footer !== '' ? $footer : null,
+            'buttons' => array_map(fn ($button) => ['buttonId' => $button['id'], 'label' => $button['title']], $buttons),
+        ], fn ($value) => $value !== null);
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post($this->base() . '/v1/message/send-buttons?instanceId=' . $connection->credentials['instance_id'], $payload);
+
+            $responseArray = $response->json() ?? [];
+
+            if ($response->failed() || ($responseArray['success'] ?? true) === false) {
+                Log::error('WhatsappApiwayHandler: core refused the buttons', [
+                    'status' => $response->status(),
+                    'response' => $responseArray ?: mb_substr($response->body(), 0, 500),
+                    'conversation_id' => $conversation->id,
+                    'connection_id' => $connection->id,
+                ]);
+
+                throw new Exception('send-buttons refused (HTTP ' . $response->status() . ')');
+            }
+
+            // Stored in the Cloud API's shape: it is what the bubble already
+            // knows how to draw, and what the customer saw is the same thing.
+            $interactive = array_filter([
+                'type' => 'button',
+                'header' => $header !== '' ? ['type' => 'text', 'text' => $header] : null,
+                'body' => ['text' => $data['body']],
+                'footer' => $footer !== '' ? ['text' => $footer] : null,
+                'action' => ['buttons' => array_map(fn ($button) => ['type' => 'reply', 'reply' => $button], $buttons)],
+            ], fn ($value) => $value !== null);
+
+            return $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Interactive,
+                'body' => $data['body'],
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'meta' => array_merge($responseArray, ['interactive' => $interactive]),
+            ]);
+        } catch (\Throwable $th) {
+            Log::error('WhatsappApiwayHandler: Failed to send buttons', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send WhatsApp buttons', 0, $th);
+        }
+    }
+
     public function handleSendImage(Conversation $conversation, array $data): ?Message
     {
         validator($data, [

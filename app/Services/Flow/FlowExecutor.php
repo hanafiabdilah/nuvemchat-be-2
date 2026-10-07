@@ -54,6 +54,8 @@ use App\Models\Order;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Observers\ConversationObserver;
+use App\Services\Message\Apiway\ButtonReply;
+use App\Services\Message\InteractiveDelivery;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
 use App\Services\AiAgentHub\AiConversationContext;
@@ -1159,11 +1161,34 @@ class FlowExecutor
         }
 
         try {
-            $native = $conversation->connection->channel->supportsInteractiveMessages();
+            $native = $conversation->connection->channel->supportsInteractiveType(InteractiveNodes::type($data));
+            $message = null;
 
-            $message = $native
-                ? $this->messageService->sendInteractive($conversation, InteractiveNodes::sendPayload($data))
-                : $this->sendInteractiveAsPlainText($flowState, $conversation, $data);
+            if ($native) {
+                try {
+                    $message = $this->messageService->sendInteractive($conversation, InteractiveNodes::sendPayload($data));
+                } catch (\Throwable $th) {
+                    // The Cloud API refusing is a real failure and stays one.
+                    // Elsewhere the buttons are a nicer drawing of a menu this
+                    // node can also spell out — but only when nothing can have
+                    // gone out, or the customer gets the question twice.
+                    if ($conversation->connection->channel->supportsInteractiveMessages() || ! InteractiveDelivery::canFallBack($th)) {
+                        throw $th;
+                    }
+
+                    Log::warning('FlowExecutor: buttons refused, sending the numbered menu instead', [
+                        'node_id' => $node->id,
+                        'conversation_id' => $conversation->id,
+                        'error' => $th->getMessage(),
+                    ]);
+
+                    $native = false;
+                }
+            }
+
+            if (! $native) {
+                $message = $this->sendInteractiveAsPlainText($flowState, $conversation, $data);
+            }
 
             if (! $message) {
                 Log::error('FlowExecutor: Failed to send interactive message', [
@@ -1332,7 +1357,10 @@ class FlowExecutor
 
         $interactive = $meta['changes'][0]['value']['messages'][0]['interactive'] ?? null;
 
-        return InteractiveNodes::replyFromWebhook(is_array($interactive) ? $interactive : null)['id'] ?? null;
+        return InteractiveNodes::replyFromWebhook(is_array($interactive) ? $interactive : null)['id']
+            // API Way keeps the whatsmeow event instead.
+            ?? ButtonReply::from(is_array($meta['Message'] ?? null) ? $meta['Message'] : null)['id']
+            ?? null;
     }
 
     /**

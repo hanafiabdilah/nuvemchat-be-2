@@ -1140,8 +1140,9 @@ class FlowBlueprint
           readable ("btn_suporte", not "1"). Never use "{$invalidBranch}" — that name
           belongs to the branch below.
         - ONE OUTPUT PER OPTION. Each edge's `condition_value` is that option's id.
-        - Runs on EVERY channel. Only WhatsApp Official draws real buttons;
-          elsewhere the same options go out as a numbered menu and a customer who
+        - Runs on EVERY channel. WhatsApp Official draws all three kinds and
+          WhatsApp API Way draws reply buttons (`button` only); everywhere else
+          the same options go out as a numbered menu and a customer who
           replies "2" takes branch 2, so you never need a message-plus-response
           pair to fake a menu.
         - PLUS one optional output "{$invalidBranch}", taken when the answer is not on

@@ -214,6 +214,8 @@ function apiwayOk(): void
 
 test('on a channel without buttons the options go out as a numbered menu', function () {
     apiwayOk();
+    // API Way with its buttons switched off is a channel without buttons.
+    config(['services.apiway.buttons' => false]);
 
     [$conversation, $nodes] = interactiveFlowFixture(Channel::WhatsappApiway);
 
@@ -417,4 +419,113 @@ test('a carousel goes out as one media message per card, numbers beside the pict
         ->and($sent[2]->message_type)->toBe(MessageType::Image)
         // Numbering runs across cards, so the second card is 2 and not 1 again.
         ->and($sent[2]->body)->toBe("Plano Pro\n2. Quero este");
+});
+
+test('on API Way a button node goes out as real buttons through send-buttons', function () {
+    Http::fake(['*/v1/message/send-buttons*' => Http::response(['success' => true, 'data' => ['id' => 'BTN-1']])]);
+
+    [$conversation, $nodes] = interactiveFlowFixture(Channel::WhatsappApiway, ['header' => 'Menu']);
+
+    (new FlowExecutor())->startFlow($conversation);
+
+    Http::assertSent(function ($request) {
+        return str_contains($request->url(), '/v1/message/send-buttons?instanceId=inst-1')
+            && $request['phone'] === '5511999999999'
+            && $request['message'] === "Menu\n\nHi Ana, pick one"
+            && $request['footerText'] === 'Team'
+            && $request['buttons'] === [
+                ['buttonId' => 'btn_yes', 'label' => 'Yes'],
+                ['buttonId' => 'btn_no', 'label' => 'No'],
+            ];
+    });
+
+    $sent = Message::where('conversation_id', $conversation->id)->where('sender_type', SenderType::Outgoing)->sole();
+
+    // Stored in the shape the bubble already draws.
+    expect($sent->message_type)->toBe(MessageType::Interactive)
+        ->and($sent->external_id)->toBe('BTN-1')
+        ->and($sent->sent_by_flow_id)->not->toBeNull()
+        ->and($sent->meta['interactive']['action']['buttons'][1]['reply'])->toBe(['id' => 'btn_no', 'title' => 'No'])
+        ->and((new \App\Http\Resources\MessageResource($sent))->resolve()['meta']['interactive']['type'])->toBe('button');
+
+    $state = FlowState::where('conversation_id', $conversation->id)->first();
+    expect($state->state_data["_interactive_sent_{$nodes['interactive']->id}"])->toBeTrue();
+});
+
+test('a button tapped on API Way takes its branch by the id, whatever the label says', function () {
+    Http::fake(['*' => Http::response(['success' => true, 'data' => ['id' => 'OUT-' . uniqid()]])]);
+
+    [$conversation, $nodes] = interactiveFlowFixture(Channel::WhatsappApiway);
+
+    $executor = new FlowExecutor();
+    $executor->startFlow($conversation);
+
+    // The whatsmeow event the tap arrives as. The label is not one of the
+    // options, so only the id can be what routes it.
+    $conversation->messages()->create([
+        'external_id' => 'IN-1',
+        'sender_type' => SenderType::Incoming,
+        'message_type' => MessageType::Text,
+        'body' => 'Não',
+        'sent_at' => now(),
+        'meta' => ['Info' => ['ID' => 'IN-1'], 'Message' => [
+            'buttonsResponseMessage' => ['selectedButtonID' => 'btn_no', 'selectedDisplayText' => 'Não', 'type' => 1],
+        ]],
+    ]);
+
+    $executor->resumeFlow($conversation, 'Não');
+
+    expect(FlowState::where('conversation_id', $conversation->id)->first()->current_node_id)->toBe($nodes['noNode']->id);
+});
+
+test('when the core refuses the buttons the node falls back to the numbered menu', function () {
+    Http::fake([
+        '*/v1/message/send-buttons*' => Http::response(['success' => false, 'error' => 'not_supported'], 400),
+        '*' => Http::response(['success' => true, 'data' => ['id' => 'TXT-1']]),
+    ]);
+
+    [$conversation, $nodes] = interactiveFlowFixture(Channel::WhatsappApiway);
+
+    (new FlowExecutor())->startFlow($conversation);
+
+    $sent = Message::where('conversation_id', $conversation->id)->where('sender_type', SenderType::Outgoing)->sole();
+
+    expect($sent->message_type)->toBe(MessageType::Text)
+        ->and($sent->body)->toBe("Hi Ana, pick one\n\n1. Yes\n2. No\n\nTeam");
+
+    $state = FlowState::where('conversation_id', $conversation->id)->first();
+    expect($state->state_data["_interactive_sent_{$nodes['interactive']->id}"])->toBeTrue();
+});
+
+test('buttons that may have gone out are never followed by a text copy', function () {
+    Http::fake(function ($request) {
+        if (str_contains($request->url(), 'send-buttons')) {
+            throw new \Illuminate\Http\Client\ConnectionException('cURL error 28: Operation timed out after 30001 milliseconds with 0 bytes received');
+        }
+
+        return Http::response(['success' => true, 'data' => ['id' => 'TXT-1']]);
+    });
+
+    [$conversation] = interactiveFlowFixture(Channel::WhatsappApiway);
+
+    (new FlowExecutor())->startFlow($conversation);
+
+    expect(Message::where('conversation_id', $conversation->id)->where('sender_type', SenderType::Outgoing)->count())->toBe(0);
+});
+
+test('a list on API Way still goes out as the numbered text menu', function () {
+    apiwayOk();
+
+    [$conversation] = interactiveFlowFixture(Channel::WhatsappApiway, [
+        'interactive_type' => 'list',
+        'button_label' => 'Opções',
+        'sections' => [['title' => 'Planos', 'rows' => [['id' => 'row_a', 'title' => 'Básico'], ['id' => 'row_b', 'title' => 'Pro']]]],
+    ]);
+
+    (new FlowExecutor())->startFlow($conversation);
+
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), 'send-buttons'));
+
+    expect(Message::where('conversation_id', $conversation->id)->where('sender_type', SenderType::Outgoing)->first()->message_type)
+        ->toBe(MessageType::Text);
 });

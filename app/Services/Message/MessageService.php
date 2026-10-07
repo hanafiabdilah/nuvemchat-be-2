@@ -50,8 +50,17 @@ class MessageService
         return $this->guard($conversation, 'send an interactive message', function () use ($conversation, $data) {
             $handler = MessageFactory::make($conversation->connection->channel, $data);
 
-            if (! $handler instanceof WhatsappOfficialHandler) {
-                throw new ChannelCapabilityException('Mensagens com botões só podem ser enviadas em conexões WhatsApp Oficial.');
+            $channel = $conversation->connection->channel;
+            $type = (string) ($data['interactive_type'] ?? 'button');
+
+            // Asked of the channel, not of the handler's class: API Way draws
+            // reply buttons and nothing else, and can have even those switched off.
+            if (! $channel->supportsInteractiveType($type) || ! method_exists($handler, 'handleSendInteractive')) {
+                throw new ChannelCapabilityException(
+                    $channel->interactiveTypes() === []
+                        ? 'Mensagens com botões só podem ser enviadas em conexões WhatsApp.'
+                        : 'Nesta conexão só é possível enviar botões de resposta. Listas e carrosséis exigem o WhatsApp Oficial.'
+                );
             }
 
             return $handler->handleSendInteractive($conversation, $data);

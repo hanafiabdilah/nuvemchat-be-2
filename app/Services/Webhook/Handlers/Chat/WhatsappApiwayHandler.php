@@ -17,6 +17,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\MessageReaction;
 use App\Models\ParkedInboundMessage;
+use App\Services\Message\Apiway\ButtonReply;
 use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\CallLog;
 use App\Services\Conversation\GroupConversationService;
@@ -1001,6 +1002,9 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             // waiting on a reply, a copied thread, search — has only `body` to
             // work with. The names on the card are the closest honest answer.
             ?? $this->contactNames($m)
+            // A tapped button is the customer answering in words they did not
+            // have to type: the label is what they said.
+            ?? (ButtonReply::from($m)['title'] ?? null)
             ?? null;
     }
 
@@ -1021,6 +1025,9 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
 
         return match (true) {
             isset($m['conversation']), isset($m['extendedTextMessage']) => MessageType::Text,
+            // Stored as the text it reads as; the tapped id stays in `meta`,
+            // where the flow engine looks for it.
+            ButtonReply::from($m) !== null => MessageType::Text,
             isset($m['imageMessage']) => MessageType::Image,
             isset($m['videoMessage']) => MessageType::Video,
             isset($m['audioMessage']) => MessageType::Audio,

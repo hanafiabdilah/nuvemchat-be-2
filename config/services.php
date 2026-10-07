@@ -54,6 +54,10 @@ return [
         // How long a paid purchase waits while ProxyBR is at its platform cap
         // before we give up and flag it for refund.
         'capacity_hold_hours' => (int) env('APIWAY_CAPACITY_HOLD_HOURS', 24),
+        // Reply buttons through the core's send-buttons. Off = the Interactive
+        // node goes back to its numbered text menu on this channel, and the
+        // leads API and the chat composer send plain text.
+        'buttons' => (bool) env('APIWAY_BUTTONS_ENABLED', true),
     ],
 
     'billing' => [

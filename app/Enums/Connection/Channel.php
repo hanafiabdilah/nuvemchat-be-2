@@ -296,6 +296,32 @@ enum Channel: string
     }
 
     /**
+     * Which interactive kinds the channel draws as something tappable.
+     *
+     * supportsInteractiveMessages() above answers "all of them", which only
+     * the Cloud API can say. API Way sits in between: its core sends reply
+     * buttons, and nothing else — a list or a carousel still goes out there as
+     * the numbered text menu. `APIWAY_BUTTONS_ENABLED=false` takes the buttons
+     * away again without a deploy: they come from an unofficial client, and
+     * WhatsApp has stopped drawing those before.
+     *
+     * @return list<string>
+     */
+    public function interactiveTypes(): array
+    {
+        return match (true) {
+            $this === self::WhatsappOfficial => ['button', 'list', 'carousel'],
+            $this === self::WhatsappApiway && config('services.apiway.buttons', true) => ['button'],
+            default => [],
+        };
+    }
+
+    public function supportsInteractiveType(string $type): bool
+    {
+        return in_array($type, $this->interactiveTypes(), true);
+    }
+
+    /**
      * The audio format to ask the AI hub for, so the reply arrives as the
      * right *kind* of message here.
      *

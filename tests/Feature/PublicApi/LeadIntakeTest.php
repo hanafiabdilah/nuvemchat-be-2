@@ -390,3 +390,118 @@ it('rejects a phone without enough digits and nested metadata', function () {
         ->assertUnprocessable()
         ->assertJsonValidationErrors('metadata');
 });
+
+/*
+|--------------------------------------------------------------------------
+| Buttons on the opening message (API Way)
+|--------------------------------------------------------------------------
+*/
+
+function leadWithButtons(array $extra = []): array
+{
+    return array_merge([
+        'name' => 'Anderson',
+        'phone' => '5511987654321',
+        'message' => 'Seu proxy venceu. Quer reativar?',
+        'buttons' => [
+            ['id' => 'reativar', 'text' => 'Quero reativar'],
+            ['id' => 'problema', 'text' => 'Tive um problema'],
+        ],
+        'footer' => 'Responda SAIR para não receber mais.',
+    ], $extra);
+}
+
+it('sends the opening message with buttons on API Way and says so', function () {
+    $owner = F::owner();
+    F::connection($owner);
+
+    F::fakeSends()->shouldReceive('sendInteractive')->once()
+        ->withArgs(fn ($conversation, array $data) => $data === [
+            'interactive_type' => 'button',
+            'body' => 'Seu proxy venceu. Quer reativar?',
+            'footer' => 'Responda SAIR para não receber mais.',
+            'buttons' => [
+                ['id' => 'reativar', 'title' => 'Quero reativar'],
+                ['id' => 'problema', 'title' => 'Tive um problema'],
+            ],
+        ])
+        ->andReturnUsing(fn ($conversation, array $data) => (F::storesMessage())($conversation, ['message' => $data['body']]));
+
+    $this->withHeaders(['X-Api-Key' => F::key($owner)])
+        ->postJson('/api/v1/leads', leadWithButtons())
+        ->assertCreated()
+        ->assertJsonPath('data.opening_message.status', 'sent')
+        ->assertJsonPath('data.opening_message.type', 'buttons');
+});
+
+it('falls back to plain text when the buttons are refused', function () {
+    $owner = F::owner();
+    F::connection($owner);
+
+    $sends = F::fakeSends();
+    $sends->shouldReceive('sendInteractive')->once()->andThrow(new RuntimeException('send-buttons refused (HTTP 400)'));
+    $sends->shouldReceive('sendMessage')->once()
+        ->withArgs(fn ($conversation, array $data) => $data === ['message' => 'Seu proxy venceu. Quer reativar?'])
+        ->andReturnUsing(F::storesMessage());
+
+    $this->withHeaders(['X-Api-Key' => F::key($owner)])
+        ->postJson('/api/v1/leads', leadWithButtons())
+        ->assertCreated()
+        ->assertJsonPath('data.opening_message.status', 'sent')
+        ->assertJsonPath('data.opening_message.type', 'text');
+});
+
+it('does not send a text copy over buttons that may have arrived', function () {
+    $owner = F::owner();
+    F::connection($owner);
+
+    $sends = F::fakeSends();
+    $sends->shouldReceive('sendInteractive')->once()->andThrow(new RuntimeException(
+        'Failed to send WhatsApp buttons', 0,
+        new Illuminate\Http\Client\ConnectionException('cURL error 28: Operation timed out after 30001 milliseconds with 0 bytes received'),
+    ));
+    $sends->shouldNotReceive('sendMessage');
+
+    $this->withHeaders(['X-Api-Key' => F::key($owner)])
+        ->postJson('/api/v1/leads', leadWithButtons())
+        ->assertCreated()
+        ->assertJsonPath('data.opening_message.status', 'failed');
+});
+
+it('refuses buttons it could not send, before writing anything', function () {
+    $owner = F::owner();
+    F::connection($owner);
+    $plain = F::key($owner);
+    F::fakeSends()->shouldNotReceive('sendInteractive');
+
+    // No text to hang them on.
+    $this->withHeaders(['X-Api-Key' => $plain])
+        ->postJson('/api/v1/leads', leadWithButtons(['message' => null]))
+        ->assertStatus(422)->assertJsonValidationErrors('buttons');
+
+    // More than WhatsApp draws, and a label longer than a button holds.
+    $this->postJson('/api/v1/leads', leadWithButtons(['buttons' => [
+        ['id' => 'a', 'text' => 'Um'], ['id' => 'b', 'text' => 'Dois'], ['id' => 'c', 'text' => 'Três'], ['id' => 'd', 'text' => 'Quatro'],
+    ]]))->assertStatus(422)->assertJsonValidationErrors('buttons');
+
+    $this->postJson('/api/v1/leads', leadWithButtons(['buttons' => [['id' => 'a', 'text' => str_repeat('x', 21)]]]))
+        ->assertStatus(422)->assertJsonValidationErrors('buttons.0.text');
+
+    expect(Conversation::count())->toBe(0)->and(Lead::count())->toBe(0);
+});
+
+it('sends plain text when API Way buttons are switched off', function () {
+    config(['services.apiway.buttons' => false]);
+
+    $owner = F::owner();
+    F::connection($owner);
+
+    $sends = F::fakeSends();
+    $sends->shouldNotReceive('sendInteractive');
+    $sends->shouldReceive('sendMessage')->once()->andReturnUsing(F::storesMessage());
+
+    $this->withHeaders(['X-Api-Key' => F::key($owner)])
+        ->postJson('/api/v1/leads', leadWithButtons())
+        ->assertCreated()
+        ->assertJsonPath('data.opening_message.type', 'text');
+});

@@ -397,6 +397,9 @@ class MessageResource extends JsonResource
         return match ($this->message_type) {
             MessageType::Location => $this->getWhatsappApiwayLocationData(),
             MessageType::Contact => $this->getWhatsappApiwayContactData(),
+            // Sent buttons are kept in the Cloud API's shape (see the send
+            // handler), so the same bubble draws them.
+            MessageType::Interactive => isset($this->meta['interactive']) ? ['interactive' => $this->meta['interactive']] : null,
             default => null,
         };
     }
