@@ -951,6 +951,45 @@ class ConnectionController extends Controller
     }
 
     /**
+     * Run the chat history import again. WhatsApp can keep sending history for
+     * minutes after pairing, and a run that came too early has no other way
+     * to see what arrived after it. Safe to repeat: chats already here are
+     * skipped and no message id is stored twice.
+     */
+    public function rerunHistoryImport(int $id, Request $request)
+    {
+        $connection = $request->user()->tenant->connections()->findOrFail($id);
+
+        if ($connection->channel !== Channel::WhatsappApiway) {
+            return response()->json([
+                'message' => 'Chat history import is only available on WhatsApp API Way connections.',
+            ], 422);
+        }
+
+        if ($connection->status !== ConnectionStatus::Active) {
+            return response()->json([
+                'message' => 'Connect this number before importing its chat history.',
+                'code' => 'connection_inactive',
+            ], 422);
+        }
+
+        if (! \App\Jobs\ImportWhatsappChatHistory::rerun($connection)) {
+            return response()->json([
+                'message' => 'A chat history import is already running for this connection.',
+                'code' => 'history_import_running',
+            ], 409);
+        }
+
+        $connection->refresh();
+        broadcast(new ConnectionUpdated($connection));
+
+        return response()->json([
+            'message' => 'Chat history import started',
+            'data' => $connection->toResource(ConnectionResource::class),
+        ], 200);
+    }
+
+    /**
      * Link/unlink a "Respond with AI" agent to this connection. A null
      * agent_id turns the feature off; the agents themselves are managed in
      * AiSuggestController.

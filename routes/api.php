@@ -643,6 +643,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
     // `connections.connect` rather than `.update`: this decides what happens the
     // moment the phone pairs, which is the same act as connecting.
     Route::put('/connections/{id}/history-import', [ConnectionController::class, 'updateHistoryImport'])->middleware('permission:connections.connect');
+    Route::post('/connections/{id}/history-import/rerun', [ConnectionController::class, 'rerunHistoryImport'])->middleware(['permission:connections.connect', 'throttle:6,1']);
     Route::put('/connections/{id}/ai-suggest', [ConnectionController::class, 'updateAiSuggest'])->middleware(['feature:ai_agent_hub', 'permission:connections.update']);
 
     // "Respond with AI" — tenant-managed AI agents (openai/gemini/anthropic keys).
