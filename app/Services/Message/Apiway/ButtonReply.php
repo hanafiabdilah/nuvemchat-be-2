@@ -26,12 +26,21 @@ class ButtonReply
 
         $message = self::lower($message);
 
+        // The label is a protobuf oneof, which whatsmeow's JSON nests one
+        // level down: {"Response": {"SelectedDisplayText": …}} beside a
+        // top-level selectedButtonID. Both places are read.
         if (is_array($node = $message['buttonsresponsemessage'] ?? null)) {
-            return self::reply($node['selectedbuttonid'] ?? null, $node['selecteddisplaytext'] ?? null);
+            return self::reply(
+                $node['selectedbuttonid'] ?? null,
+                $node['selecteddisplaytext'] ?? $node['response']['selecteddisplaytext'] ?? null,
+            );
         }
 
         if (is_array($node = $message['templatebuttonreplymessage'] ?? null)) {
-            return self::reply($node['selectedid'] ?? null, $node['selecteddisplaytext'] ?? null);
+            return self::reply(
+                $node['selectedid'] ?? null,
+                $node['selecteddisplaytext'] ?? $node['response']['selecteddisplaytext'] ?? null,
+            );
         }
 
         if (is_array($node = $message['listresponsemessage'] ?? null)) {

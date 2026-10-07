@@ -48,7 +48,14 @@ test('a tapped button arrives as the customer saying its label, with the id kept
     ]);
 
     (new WhatsappApiwayHandler)->handle($connection, buttonReplyEvent([
-        'buttonsResponseMessage' => ['selectedButtonID' => 'reativar', 'selectedDisplayText' => 'Quero reativar', 'type' => 1],
+        // The shape the core really delivers (production, 2026-10-07): the id
+        // at the top, the label inside the oneof wrapper.
+        'buttonsResponseMessage' => [
+            'Response' => ['SelectedDisplayText' => 'Quero reativar'],
+            'contextInfo' => ['stanzaID' => '3EB0D86F13A230E24CF1E5'],
+            'selectedButtonID' => 'reativar',
+            'type' => 1,
+        ],
         'messageContextInfo' => ['deviceListMetadataVersion' => 2],
     ]));
 
