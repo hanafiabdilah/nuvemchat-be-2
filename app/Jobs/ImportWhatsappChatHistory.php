@@ -7,6 +7,7 @@ use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Conversation\Status as ConversationStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Events\ConnectionUpdated;
 use App\Events\ConversationUpdated;
 use App\Exceptions\ChatListNotReadyException;
 use App\Models\Connection;
@@ -144,6 +145,8 @@ class ImportWhatsappChatHistory implements ShouldQueue
 
         self::dispatch($connection->id)
             ->delay(now()->addSeconds(self::INITIAL_DELAY_SECONDS));
+
+        self::announce($connection);
 
         Log::info('ImportWhatsappChatHistory: queued', ['connection_id' => $connection->id]);
     }
@@ -749,5 +752,25 @@ class ImportWhatsappChatHistory implements ShouldQueue
         $credentials = $connection->credentials ?? [];
         $credentials['history_import'] = array_merge($credentials['history_import'] ?? [], $fields);
         $connection->update(['credentials' => $credentials]);
+
+        self::announce($connection);
+    }
+
+    /**
+     * Tell the dashboards the import moved on. The inbox shows a spinner on
+     * this connection's tab while it is queued or running, and without this
+     * the spinner would only appear, or go away, on the next reload.
+     */
+    protected static function announce(Connection $connection): void
+    {
+        try {
+            broadcast(new ConnectionUpdated($connection));
+        } catch (\Throwable $th) {
+            // A dashboard that does not light up is no reason to lose the import.
+            Log::warning('ImportWhatsappChatHistory: could not announce the state', [
+                'connection_id' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
     }
 }
