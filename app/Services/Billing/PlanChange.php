@@ -54,7 +54,7 @@ class PlanChange
     /**
      * @return array<string, mixed>
      */
-    public function quote(Tenant $tenant, Plan $plan, ?PaymentMethod $method = null, ?CarbonInterface $at = null): array
+    public function quote(Tenant $tenant, Plan $plan, ?PaymentMethod $method = null, ?CarbonInterface $at = null, bool $autoRenew = true): array
     {
         $at = $at ? Carbon::instance($at) : now();
         $price = $plan->priceForMarket($tenant->market_code);
@@ -93,7 +93,7 @@ class PlanChange
         ];
 
         return match ($type) {
-            self::UPGRADE => $this->upgradeTerms($base, $current, $plan, $priceCents, $method, $at),
+            self::UPGRADE => $this->upgradeTerms($base, $current, $plan, $priceCents, $method, $at, $autoRenew),
             self::DOWNGRADE => $this->downgradeTerms($base, $current, $plan),
             self::CURRENT => array_merge($base, [
                 'effective_at' => $current->current_period_end?->toIso8601String(),
@@ -242,14 +242,17 @@ class PlanChange
      * @param  array<string, mixed>  $base
      * @return array<string, mixed>
      */
-    protected function upgradeTerms(array $base, Subscription $current, Plan $plan, int $priceCents, ?PaymentMethod $method, Carbon $at): array
+    protected function upgradeTerms(array $base, Subscription $current, Plan $plan, int $priceCents, ?PaymentMethod $method, Carbon $at, bool $autoRenew = true): array
     {
         $unused = $this->unusedValue($current, $at);
         $credit = $unused['cents'];
 
         // A card here is a standing authorisation for a fixed amount: its first
         // debit is that amount, so the credit cannot ride on it.
+        // A card paid by hand each cycle is an ordinary one-off charge, so it
+        // carries the credit like a Pix does.
         $fixedFirstCharge = $method === PaymentMethod::Card
+            && $autoRenew
             && $this->gateways->forCardSubscription($current->tenant) instanceof HoldsRecurringAuthorisations;
 
         if ($fixedFirstCharge) {

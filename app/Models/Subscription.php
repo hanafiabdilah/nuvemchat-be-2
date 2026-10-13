@@ -20,6 +20,8 @@ class Subscription extends Model
         'proration_balance_cents',
         'status',
         'payment_method',
+        // A card only: false = paid by hand each cycle (saved card + CVV).
+        'auto_renew',
         // Which gateway holds the stored instrument (null = payment service).
         'gateway',
         'billing_cycle',
@@ -67,7 +69,34 @@ class Subscription extends Model
         'scheduled_billing_cycle' => BillingCycle::class,
         'scheduled_change_at' => 'datetime',
         'payment_card' => 'array',
+        'auto_renew' => 'boolean',
     ];
+
+    /**
+     * A card subscription the customer pays by hand each cycle: an invoice is
+     * raised, and they settle it with a saved card and its security code.
+     * Nothing is charged with nobody at a screen.
+     */
+    public function paysCardPerCycle(): bool
+    {
+        return $this->payment_method === PaymentMethod::Card && $this->auto_renew === false;
+    }
+
+    /**
+     * The payment methods whose invoices this subscription pays by hand.
+     * Pix and a hosted checkout always; a card only when it does not renew
+     * by itself.
+     *
+     * @return list<string>
+     */
+    public function perCycleMethods(): array
+    {
+        return array_values(array_filter([
+            PaymentMethod::Pix->value,
+            PaymentMethod::Checkout->value,
+            $this->paysCardPerCycle() ? PaymentMethod::Card->value : null,
+        ]));
+    }
 
     public function tenant()
     {

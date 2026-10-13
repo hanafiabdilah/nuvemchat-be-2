@@ -46,6 +46,9 @@ class UserController extends Controller
                 // the Billing badge and the plan page's renewal banner.
                 'renewal_due' => $renewal ? [
                     'invoice_id' => $renewal->id,
+                    // pix | checkout | card — a card here is one paid by hand
+                    // with a saved card, so the banner opens the card form.
+                    'method' => $renewal->payment_method?->value,
                     'amount_cents' => $renewal->amount_cents,
                     'currency' => $renewal->currency,
                     // The cycle it pays starts when the current one ends —

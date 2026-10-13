@@ -116,7 +116,18 @@ class BillingService
 
         // Upgrade, downgrade or a first plan — decided once, here, by the same
         // rule the checkout drew its numbers from (see PlanChange).
-        $quote = $this->planChange->quote($tenant, $plan, $method);
+        // A card without automatic renewal: paid by hand each cycle, with a
+        // saved card and its security code. Only where the workspace's gateway
+        // keeps cards — anywhere else the choice was never offered.
+        $perCycleCard = $method === PaymentMethod::Card && ($opts['auto_renew'] ?? true) === false;
+
+        if ($perCycleCard && ! $this->offersCardPerCycle($tenant)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'auto_renew' => __('A card can only be paid with automatic renewal in your country.'),
+            ]);
+        }
+
+        $quote = $this->planChange->quote($tenant, $plan, $method, autoRenew: ! $perCycleCard);
 
         if ($quote['type'] === PlanChange::DOWNGRADE) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -133,7 +144,9 @@ class BillingService
         $opts['quote'] = $quote;
 
         return match ($method) {
-            PaymentMethod::Card => $this->subscribeWithCard($tenant, $plan, $opts),
+            PaymentMethod::Card => $perCycleCard
+                ? $this->subscribeWithCardPerCycle($tenant, $plan, $opts)
+                : $this->subscribeWithCard($tenant, $plan, $opts),
             PaymentMethod::Pix, PaymentMethod::Checkout => $this->subscribePerCycle($tenant, $plan, $method, $opts),
             PaymentMethod::Manual => throw new \InvalidArgumentException('Use grantManual for manual subscriptions.'),
         };
@@ -257,9 +270,38 @@ class BillingService
      * card subscription. Only the plan checkout asks: a top-up on a saved card
      * reads its key from the saved-cards endpoint instead.
      */
-    public function cardSession(Tenant $tenant): array
+    public function cardSession(Tenant $tenant, bool $autoRenew = true): array
     {
-        return $this->gateways->forCardSubscription($tenant)->cardSession($tenant);
+        if (! $autoRenew) {
+            if (! $this->offersCardPerCycle($tenant)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'auto_renew' => __('A card can only be paid with automatic renewal in your country.'),
+                ]);
+            }
+
+            // The saved-cards form of the workspace's own gateway: a card paid
+            // by hand is charged there, once per cycle.
+            return $this->gateways->forTenant($tenant)->cardSession($tenant) + ['auto_renew' => false];
+        }
+
+        return $this->gateways->forCardSubscription($tenant)->cardSession($tenant) + [
+            'auto_renew' => true,
+            // Whether the checkout may offer "without automatic renewal" at
+            // all. The page shows a tick box for it and never says which
+            // company ends up taking either kind of charge.
+            'per_cycle_available' => $this->offersCardPerCycle($tenant),
+        ];
+    }
+
+    /**
+     * Whether a card can be paid by hand each cycle here: only where the
+     * gateway that bills the workspace keeps cards (Mercado Pago, in Brazil),
+     * because a charge with the security code typed again needs a kept card
+     * to be made on.
+     */
+    public function offersCardPerCycle(Tenant $tenant): bool
+    {
+        return $this->savedCards->gatewayFor($tenant) !== null;
     }
 
     /**
@@ -483,6 +525,213 @@ class BillingService
         $this->fireUpdated($subscription);
 
         return $subscription->fresh();
+    }
+
+    /**
+     * Card without automatic renewal: one charge now on a saved card, and an
+     * invoice each cycle after it that the customer pays the same way.
+     *
+     * The first cycle is charged like a top-up — a single payment on a token
+     * minted from the card and the security code typed now — and nothing is
+     * kept to charge later: no instrument, no standing authorisation. The
+     * renewal is `billing:pix-generate` raising an invoice a few days before
+     * the period ends, and payInvoiceWithCard() settling it.
+     *
+     * The plan being replaced keeps working until this one is paid, as with
+     * every card purchase.
+     */
+    protected function subscribeWithCardPerCycle(Tenant $tenant, Plan $plan, array $opts): Subscription
+    {
+        $this->assertBillable($tenant);
+
+        $gateway = $this->gateways->forTenant($tenant);
+        /** @var SavedCard|null $card */
+        $card = $opts['saved_card'] ?? null;
+
+        // A one-off card charge is made on a card the gateway keeps: that is
+        // where its brand and issuer come from, and what the token is minted on.
+        if (! $card || $card->gateway !== $gateway->name()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'saved_card_id' => __('Choose a saved card to pay with.'),
+            ]);
+        }
+
+        $discard = (bool) ($opts['discard_card_on_failure'] ?? false);
+        $quote = $opts['quote'] ?? null;
+        $subscription = $this->createPendingSubscription(
+            $tenant, $plan, PaymentMethod::Card, $gateway->name(), $quote, deferSwitch: true, autoRenew: false,
+        );
+        $periodEnd = $this->nextPeriodEnd($subscription, now());
+        $invoice = $this->firstCardInvoice($subscription, $plan, $gateway->name(), $quote, $periodEnd);
+
+        try {
+            $payment = $this->chargeSavedCardOnce($invoice, $card, (string) ($opts['card_token'] ?? ''), "Assinatura {$plan->name}");
+        } catch (\Throwable $e) {
+            $this->markInvoiceFailed($invoice, 'subscribe_card', $e);
+            $this->abandonDeferredSubscription($subscription);
+
+            if ($discard) {
+                $this->savedCards->discardIfNeverUsed($card);
+            }
+
+            throw $e;
+        }
+
+        $status = $payment['status'] ?? null;
+
+        if (filled($payment['id'] ?? null)) {
+            $invoice->update(['payment_id' => (string) $payment['id']]);
+        }
+
+        if (in_array($status, ['paid', 'pending', 'unknown'], true)) {
+            $this->savedCards->markUsed($card);
+        } elseif ($discard) {
+            $this->savedCards->discardIfNeverUsed($card);
+        }
+
+        if ($status === 'paid') {
+            $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]);
+            $this->activate($subscription, $periodEnd);
+        } elseif (! in_array($status, ['pending', 'unknown'], true)) {
+            $this->markInvoiceFailed($invoice, 'subscribe_card', payment: $payment);
+            $this->abandonDeferredSubscription($subscription);
+        }
+
+        $this->fireUpdated($subscription);
+
+        return $subscription->fresh();
+    }
+
+    /**
+     * Pay a renewal invoice of a card subscription that does not renew by
+     * itself, with a saved card and the security code typed now.
+     *
+     * ⚠️ A refused card leaves the invoice **pending**, not failed: one cycle
+     * has one invoice (its order reference is unique), and the customer tries
+     * another card on that same one. Only the attempt is forgotten — its
+     * payment id is cleared and the reason kept in `meta.last_failure`.
+     *
+     * ⚠️ An earlier attempt still being reviewed blocks a new one. Charging
+     * again while the first may yet be approved is how one cycle gets paid
+     * twice; the earlier payment is read back first, and only a refusal there
+     * frees the invoice.
+     */
+    public function payInvoiceWithCard(Invoice $invoice, SavedCard $card, string $cardToken, bool $discardCardOnFailure = false): Invoice
+    {
+        $subscription = $invoice->subscription;
+        $gateway = $this->gateways->forInvoice($invoice);
+
+        if ($invoice->status !== InvoiceStatus::Pending
+            || $invoice->payment_method !== PaymentMethod::Card
+            || ! $subscription?->paysCardPerCycle()
+            || $card->gateway !== $gateway->name()
+            || (int) $card->tenant_id !== (int) $invoice->tenant_id) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'invoice' => __('This invoice cannot be paid by card.'),
+            ]);
+        }
+
+        $this->assertBillable($invoice->tenant);
+
+        if ($invoice->payment_id) {
+            $earlier = $gateway->getPayment($invoice->payment_id);
+            $earlierStatus = $earlier['status'] ?? null;
+
+            if ($earlierStatus === 'paid') {
+                $this->applyPaymentUpdate($earlier, $gateway->name());
+
+                return $invoice->fresh();
+            }
+
+            if (! in_array($earlierStatus, ['declined', 'voided', 'expired'], true)) {
+                throw new UserFacingException(
+                    'Um pagamento desta fatura ainda está sendo analisado. Aguarde a confirmação antes de tentar de novo.',
+                    409,
+                    'payment_in_review',
+                );
+            }
+
+            $invoice->forceFill(['payment_id' => null])->save();
+        }
+
+        // A new attempt is a new request: the gateway replays the answer to a
+        // key it has seen, and that answer was a refusal.
+        $invoice->forceFill(['idempotency_key' => (string) Str::uuid()])->save();
+
+        $rememberFailure = function (?\Throwable $e, ?array $payment) use ($invoice, $card, $discardCardOnFailure) {
+            $invoice->forceFill([
+                'payment_id' => null,
+                'meta' => array_merge($invoice->meta ?? [], [
+                    'last_failure' => $this->failureRecord($invoice, 'cycle_card', $e, $payment),
+                ]),
+            ])->save();
+
+            if ($discardCardOnFailure) {
+                $this->savedCards->discardIfNeverUsed($card);
+            }
+        };
+
+        try {
+            $payment = $this->chargeSavedCardOnce(
+                $invoice,
+                $card,
+                $cardToken,
+                'Renovação '.($subscription->plan?->name ?? '')." — fatura #{$invoice->id}",
+            );
+        } catch (\Throwable $e) {
+            $rememberFailure($e, null);
+
+            throw $e;
+        }
+
+        $status = $payment['status'] ?? null;
+
+        if (in_array($status, ['paid', 'pending', 'unknown'], true)) {
+            $this->savedCards->markUsed($card);
+
+            if (filled($payment['id'] ?? null)) {
+                $invoice->forceFill(['payment_id' => (string) $payment['id']])->save();
+            }
+
+            if ($status === 'paid') {
+                $this->applyPaymentUpdate($payment + ['order_reference' => $invoice->order_reference], $gateway->name());
+            }
+
+            return $invoice->fresh();
+        }
+
+        $rememberFailure(null, $payment);
+
+        throw new UserFacingException('O cartão foi recusado. Tente outro cartão.', 422, 'card_declined');
+    }
+
+    /**
+     * One charge on a saved card, with the token minted from it and the
+     * security code — never a subscription at the gateway.
+     *
+     * @return array<string, mixed> The normalized payment.
+     */
+    protected function chargeSavedCardOnce(Invoice $invoice, SavedCard $card, string $cardToken, string $description): array
+    {
+        $response = $this->gateways->forInvoice($invoice)->createPayment([
+            'order_reference' => $invoice->order_reference,
+            'amount' => $invoice->amount_cents,
+            'currency' => $invoice->currency,
+            'payment_method' => 'card',
+            'once' => true,
+            'card_token' => $cardToken,
+            'card_brand' => $card->brand,
+            'card_issuer_id' => $card->issuer_id,
+            'customer_id' => $card->customer_id,
+            'description' => $description,
+            'customer' => $this->customerPayload($invoice->tenant, $card->customer_email),
+            'metadata' => array_filter([
+                'tenant_id' => $invoice->tenant_id,
+                'subscription_id' => $invoice->subscription_id,
+            ]),
+        ], $invoice->idempotency_key);
+
+        return $response['data'] ?? [];
     }
 
     /**
@@ -734,6 +983,13 @@ class BillingService
      */
     public function renewalMethodFor(Subscription $subscription): PaymentMethod
     {
+        // A card paid by hand stays a card for as long as the workspace's
+        // gateway still keeps cards; after that it falls through to whatever
+        // per-cycle method is left, like the rest.
+        if ($subscription->paysCardPerCycle() && $subscription->tenant && $this->offersCardPerCycle($subscription->tenant)) {
+            return PaymentMethod::Card;
+        }
+
         $own = $subscription->payment_method?->isPaidPerCycle() ? $subscription->payment_method : PaymentMethod::Pix;
         $offered = $subscription->tenant ? $this->offeredMethods($subscription->tenant) : null;
 
@@ -792,6 +1048,15 @@ class BillingService
             'idempotency_key' => (string) Str::uuid(),
         ]);
 
+        // A card paid by hand has nothing to issue: no QR, no link. The invoice
+        // waits for the customer to pick a saved card and type its security
+        // code — see payInvoiceWithCard().
+        if ($method === PaymentMethod::Card) {
+            $this->fireUpdated($subscription);
+
+            return $invoice->fresh();
+        }
+
         try {
             $response = $gateway->createPayment([
                 'order_reference' => $invoice->order_reference,
@@ -847,7 +1112,7 @@ class BillingService
 
         return $subscription->invoices()
             ->where('status', InvoiceStatus::Pending->value)
-            ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
+            ->whereIn('payment_method', $subscription->perCycleMethods())
             ->latest('id')
             ->first();
     }
@@ -1080,7 +1345,11 @@ class BillingService
      */
     public function chargeRenewal(Subscription $subscription): ?Invoice
     {
-        if ($subscription->payment_method !== PaymentMethod::Card || ! $subscription->payment_instrument_id) {
+        if ($subscription->payment_method !== PaymentMethod::Card
+            || ! $subscription->payment_instrument_id
+            // Paid by hand each cycle: the customer chose not to be charged
+            // with nobody at a screen, whatever instrument the row carries.
+            || $subscription->paysCardPerCycle()) {
             return null;
         }
 
@@ -1222,6 +1491,16 @@ class BillingService
             // paid, so a blanket return here would make the refund arm below
             // dead code.
             if ($invoice->status === InvoiceStatus::Paid && ! $this->reversesAPayment($status)) {
+                return;
+            }
+
+            // A renewal the customer pays by hand with a card: a refused
+            // attempt is not the end of the invoice — they try another card on
+            // the same one. Only a payment (or its reversal) moves it.
+            if (in_array($status, ['declined', 'voided', 'expired'], true)
+                && $invoice->payment_method === PaymentMethod::Card
+                && $subscription?->paysCardPerCycle()
+                && $subscription->current_period_end !== null) {
                 return;
             }
 
@@ -1658,7 +1937,7 @@ class BillingService
         // Every charge the customer pays by hand: a Pix QR or a hosted link.
         $open = $subscription->invoices()
             ->where('status', InvoiceStatus::Pending->value)
-            ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
+            ->whereIn('payment_method', $subscription->perCycleMethods())
             ->get();
 
         $cancelled = 0;
@@ -2068,7 +2347,7 @@ class BillingService
 
         $subscription->invoices()
             ->where('status', InvoiceStatus::Pending->value)
-            ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
+            ->whereIn('payment_method', $subscription->perCycleMethods())
             ->where('period_start', '>=', $from)
             ->get()
             ->each(fn (Invoice $invoice) => $this->cancelInvoice($invoice));
@@ -2311,6 +2590,7 @@ class BillingService
         ?string $gateway = null,
         ?array $quote = null,
         bool $deferSwitch = false,
+        bool $autoRenew = true,
     ): Subscription {
         $upgrade = ($quote['type'] ?? null) === PlanChange::UPGRADE;
 
@@ -2342,7 +2622,7 @@ class BillingService
         // here, because everything downstream reads the subscription.
         $price = $plan->priceForMarket($tenant->market_code);
 
-        return DB::transaction(function () use ($tenant, $plan, $method, $price, $gateway, $upgrade, $quote, $replaces, $deferred) {
+        return DB::transaction(function () use ($tenant, $plan, $method, $price, $gateway, $upgrade, $quote, $replaces, $deferred, $autoRenew) {
             if (! $deferred) {
                 $this->supersedeCurrent($tenant);
             }
@@ -2361,6 +2641,7 @@ class BillingService
                 // Callers move it to Active once payment is confirmed.
                 'status' => SubscriptionStatus::PastDue,
                 'payment_method' => $method,
+                'auto_renew' => $autoRenew,
                 'gateway' => $gateway,
                 'billing_cycle' => $plan->billing_cycle->value,
                 'price_cents' => $price?->amount_cents ?? $plan->price_cents,

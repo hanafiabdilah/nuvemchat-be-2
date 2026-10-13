@@ -79,8 +79,10 @@ class BillingController extends Controller
      */
     public function cardSession(Request $request)
     {
+        // `auto_renew=false` asks for the form of a card paid by hand each
+        // cycle; absent is the card that renews by itself.
         return response()->json([
-            'data' => $this->billing->cardSession($this->tenant($request)),
+            'data' => $this->billing->cardSession($this->tenant($request), $request->boolean('auto_renew', true)),
         ]);
     }
 
@@ -288,13 +290,21 @@ class BillingController extends Controller
             // Absent = the plan's own cycle (a client that predates this).
             'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
             'method' => ['nullable', Rule::enum(PaymentMethod::class)],
+            // A card paid by hand each cycle carries an upgrade's credit on
+            // the charge, where a self-renewing one sometimes cannot.
+            'auto_renew' => ['sometimes', 'boolean'],
         ]);
 
         $plan = $this->planFor($request, $validated);
         $method = filled($validated['method'] ?? null) ? PaymentMethod::from($validated['method']) : null;
 
         return response()->json([
-            'data' => app(PlanChange::class)->quote($this->tenant($request), $plan, $method),
+            'data' => app(PlanChange::class)->quote(
+                $this->tenant($request),
+                $plan,
+                $method,
+                autoRenew: $request->boolean('auto_renew', true),
+            ),
         ]);
     }
 
@@ -385,6 +395,10 @@ class BillingController extends Controller
             // this very charge — refused, it leaves the list again.
             'saved_card_id' => ['nullable', 'integer'],
             'discard_card_on_failure' => ['sometimes', 'boolean'],
+            // A card only. False = no automatic renewal: this cycle is charged
+            // once on a saved card, and every later one is an invoice paid the
+            // same way. Absent = renews by itself, as a card always did.
+            'auto_renew' => ['sometimes', 'boolean'],
             'payer_email' => ['required', 'email'],
         ]);
 
@@ -410,6 +424,7 @@ class BillingController extends Controller
                     'checkout_token' => $validated['checkout_token'] ?? null,
                     'saved_card' => $savedCard,
                     'discard_card_on_failure' => (bool) ($validated['discard_card_on_failure'] ?? false),
+                    'auto_renew' => (bool) ($validated['auto_renew'] ?? true),
                     'payer_email' => $validated['payer_email'],
                 ],
             );
@@ -462,6 +477,35 @@ class BillingController extends Controller
         if ($request->boolean('refresh')) {
             $invoice = $this->billing->refreshInvoice($invoice);
         }
+
+        return response()->json(['data' => new InvoiceResource($invoice)]);
+    }
+
+    /**
+     * Pay a renewal invoice with a saved card and its security code — for a
+     * card subscription that does not renew by itself.
+     *
+     * A refused card answers 422 and leaves the invoice payable: the customer
+     * picks another card on the same one.
+     */
+    public function payInvoiceWithCard(Request $request, Invoice $invoice)
+    {
+        abort_if($invoice->tenant_id !== $request->user()->tenant_id, 403);
+
+        $validated = $request->validate([
+            'saved_card_id' => ['required', 'integer'],
+            'card_token' => ['required', 'string', 'max:128'],
+            'discard_card_on_failure' => ['sometimes', 'boolean'],
+        ]);
+
+        $card = app(SavedCardService::class)->find($this->tenant($request), (int) $validated['saved_card_id']);
+
+        $invoice = $this->billing->payInvoiceWithCard(
+            $invoice,
+            $card,
+            $validated['card_token'],
+            (bool) ($validated['discard_card_on_failure'] ?? false),
+        );
 
         return response()->json(['data' => new InvoiceResource($invoice)]);
     }

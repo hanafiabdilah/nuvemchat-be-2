@@ -48,6 +48,10 @@ class SubscriptionResource extends JsonResource
             'trial_ends_at' => $this->trial_ends_at,
             'grace_ends_at' => $this->grace_ends_at,
             'cancel_at_period_end' => $this->cancel_at_period_end,
+            // A card only: false = an invoice each cycle, paid by hand with a
+            // saved card. Always true for anything that is not a card, where
+            // the question does not apply.
+            'auto_renew' => $this->payment_method?->value !== 'card' || $this->auto_renew !== false,
             // The card that renews it — brand and last four digits, nothing
             // that could pay. Null when the gateway does not report one.
             'card' => $this->payment_method?->value === 'card' && $this->payment_instrument_id && filled($this->payment_card['last_four'] ?? null)

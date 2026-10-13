@@ -224,6 +224,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         Route::get('/subscription', [BillingController::class, 'subscription'])->middleware('permission:billing.view')->name('subscription');
         Route::get('/invoices', [BillingController::class, 'invoices'])->middleware('permission:billing.view')->name('invoices');
         Route::get('/invoices/{invoice}/status', [BillingController::class, 'invoiceStatus'])->middleware('permission:billing.view')->name('invoice-status');
+        Route::post('/invoices/{invoice}/pay-card', [BillingController::class, 'payInvoiceWithCard'])->middleware('permission:billing.manage')->name('invoice-pay-card');
         // The nota fiscal Pingly issued for a paid invoice (Brazil), streamed
         // through us because the file sits behind Pingly's Plugnotas key.
         Route::get('/invoices/{invoice}/nota-fiscal/{kind}', [\App\Http\Controllers\Api\Billing\FiscalInvoiceController::class, 'document'])

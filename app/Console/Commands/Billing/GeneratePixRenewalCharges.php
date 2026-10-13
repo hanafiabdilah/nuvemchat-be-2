@@ -25,7 +25,13 @@ class GeneratePixRenewalCharges extends Command
         $subscriptions = Subscription::query()
             // Every subscription paid by hand each cycle: Pix, or a hosted
             // checkout link (dLocal Go, direct billing outside Brazil).
-            ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
+            // …or a card the customer chose not to renew automatically, which
+            // gets an invoice to pay with a saved card and its security code.
+            ->where(fn ($query) => $query
+                ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
+                ->orWhere(fn ($card) => $card
+                    ->where('payment_method', PaymentMethod::Card->value)
+                    ->where('auto_renew', false)))
             ->whereIn('status', [SubscriptionStatus::Active->value, SubscriptionStatus::Trialing->value])
             ->where('cancel_at_period_end', false)
             ->whereNotNull('current_period_end')
@@ -38,7 +44,7 @@ class GeneratePixRenewalCharges extends Command
             // Skip if there's already an open pending pix invoice for this cycle.
             $hasOpen = $subscription->invoices()
                 ->where('status', InvoiceStatus::Pending->value)
-                ->whereIn('payment_method', [PaymentMethod::Pix->value, PaymentMethod::Checkout->value])
+                ->whereIn('payment_method', $subscription->perCycleMethods())
                 ->exists();
 
             if ($hasOpen) {

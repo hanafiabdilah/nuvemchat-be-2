@@ -48,6 +48,13 @@ class InvoiceResource extends JsonResource
                     'client_secret' => $this->meta['authentication']['client_secret'] ?? null,
                 ])
                 : null,
+            // A renewal of a card subscription that does not renew by itself:
+            // the customer pays it with a saved card and its security code.
+            // False while an earlier attempt is still with the bank.
+            'card_payable' => $this->payment_method?->value === 'card'
+                && $this->status?->value === 'pending'
+                && blank($this->payment_id)
+                && (bool) $this->subscription?->paysCardPerCycle(),
             'gateway' => $this->gateway ?? 'payment_service',
             // The nota fiscal Pingly issued for this invoice (Brazil only).
             // A status and a number — never Plugnotas' wording, which names
