@@ -48,6 +48,16 @@ class SubscriptionResource extends JsonResource
             'trial_ends_at' => $this->trial_ends_at,
             'grace_ends_at' => $this->grace_ends_at,
             'cancel_at_period_end' => $this->cancel_at_period_end,
+            // The card that renews it — brand and last four digits, nothing
+            // that could pay. Null when the gateway does not report one.
+            'card' => $this->payment_method?->value === 'card' && $this->payment_instrument_id && filled($this->payment_card['last_four'] ?? null)
+                ? [
+                    'brand' => $this->payment_card['brand'] ?? null,
+                    'last_four' => $this->payment_card['last_four'],
+                    'exp_month' => $this->payment_card['exp_month'] ?? null,
+                    'exp_year' => $this->payment_card['exp_year'] ?? null,
+                ]
+                : null,
             // A downgrade waiting for the end of the paid period.
             'scheduled_change' => $this->hasScheduledChange() ? [
                 'plan' => $this->scheduledPlan ? [

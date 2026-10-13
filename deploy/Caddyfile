@@ -155,7 +155,7 @@
 
         # Observed, not enforced. Promote to Content-Security-Policy once the
         # reports are quiet — see docs/security-headers.md.
-        Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://sdk.mercadopago.com https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' wss://ws.pingly.com.br https://ewr1.vultrobjects.com https://sdk.mercadopago.com https://connect.facebook.net; frame-src https://connect.facebook.net https://www.facebook.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+        Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' https://sdk.mercadopago.com https://js.stripe.com https://connect.facebook.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' wss://ws.pingly.com.br https://ewr1.vultrobjects.com https://sdk.mercadopago.com https://api.stripe.com https://connect.facebook.net; frame-src https://connect.facebook.net https://www.facebook.com https://js.stripe.com https://hooks.stripe.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
 
         # Nothing is served that needs to advertise what serves it.
         -Server

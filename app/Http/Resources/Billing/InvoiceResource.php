@@ -36,12 +36,17 @@ class InvoiceResource extends JsonResource
                 'url' => $this->status?->value === 'pending' ? $this->checkout_url : null,
                 'expires_at' => $this->checkout_expires_at,
             ] : null,
-            // A first card charge the issuer wants authenticated (3-D Secure):
-            // the page sends the customer here and the webhook settles it.
+            // A first card charge the issuer wants authenticated (3-D Secure).
+            // Either a page to send the customer to (dLocal Go) or a client
+            // secret the gateway's SDK finishes in place (Stripe); the webhook
+            // settles it both ways.
             'authentication' => $this->payment_method?->value === 'card'
                 && $this->status?->value === 'pending'
-                && $this->checkout_url
-                ? ['url' => $this->checkout_url]
+                && ($this->checkout_url || filled($this->meta['authentication']['client_secret'] ?? null))
+                ? array_filter([
+                    'url' => $this->checkout_url,
+                    'client_secret' => $this->meta['authentication']['client_secret'] ?? null,
+                ])
                 : null,
             'gateway' => $this->gateway ?? 'payment_service',
             // The nota fiscal Pingly issued for this invoice (Brazil only).

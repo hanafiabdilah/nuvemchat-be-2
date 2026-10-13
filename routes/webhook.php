@@ -68,6 +68,11 @@ Route::post('/webhook/billing/dlocalgo', [DirectBillingWebhookController::class,
     ->middleware('throttle:webhook-inbound')
     ->name('webhook.billing.dlocalgo');
 
+// Stripe: Brazilian card subscriptions (see BillingGateways::forCardSubscription).
+Route::post('/webhook/billing/stripe', [DirectBillingWebhookController::class, 'stripe'])
+    ->middleware('throttle:webhook-inbound')
+    ->name('webhook.billing.stripe');
+
 // Plugnotas: a platform nota fiscal (NFS-e for a paid invoice, Brazil) moved.
 // Authenticated by our token in a custom header; the nota is read back before
 // anything changes — see PlugnotasWebhookController.

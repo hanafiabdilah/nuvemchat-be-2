@@ -7,8 +7,11 @@ use App\Models\Setting;
 /**
  * Pingly's own gateway accounts, used when PAYMENT_METHOD=direct.
  *
- * Two accounts, split by market rather than by method: Mercado Pago takes every
- * Brazilian charge (card and Pix), dLocal Go takes every other country. Stored
+ * Split by market first: Mercado Pago takes Brazil, dLocal Go takes every other
+ * country. Brazil is then split once more, by what the charge is: a card
+ * subscription — the one thing that has to renew with nobody at a screen —
+ * goes to Stripe once its keys are filled in, and everything else (Pix, and
+ * card top-ups) stays at Mercado Pago. Stored
  * in `settings` like every platform credential and edited in Back Office →
  * Integrations → Payments, which shows these fields only while the env says
  * `direct` — the payment-service form is what shows otherwise.
@@ -46,7 +49,18 @@ class DirectBillingConfig
      */
     public const DLOCALGO_SMARTFIELDS_KEY = 'billing_direct.dlocalgo.smartfields_key';
 
+    /** `sk_live_…` / `sk_test_…` — the mode is the key's own; there is no sandbox switch. */
+    public const STRIPE_SECRET_KEY = 'billing_direct.stripe.secret_key';
+
+    /** `pk_…`. Public by design: it is what the browser tokenises the card with. */
+    public const STRIPE_PUBLISHABLE_KEY = 'billing_direct.stripe.publishable_key';
+
+    /** `whsec_…`, shown once when the endpoint is added in the Stripe dashboard. */
+    public const STRIPE_WEBHOOK_SECRET = 'billing_direct.stripe.webhook_secret';
+
     public const MP_BASE_URL = 'https://api.mercadopago.com';
+
+    public const STRIPE_BASE_URL = 'https://api.stripe.com';
 
     public const DLOCALGO_PRODUCTION_URL = 'https://api.dlocalgo.com';
 
@@ -69,6 +83,21 @@ class DirectBillingConfig
     public static function mpWebhookSecret(): ?string
     {
         return Setting::get(self::MP_WEBHOOK_SECRET) ?: null;
+    }
+
+    public static function stripeSecretKey(): ?string
+    {
+        return Setting::get(self::STRIPE_SECRET_KEY) ?: null;
+    }
+
+    public static function stripePublishableKey(): ?string
+    {
+        return Setting::get(self::STRIPE_PUBLISHABLE_KEY) ?: null;
+    }
+
+    public static function stripeWebhookSecret(): ?string
+    {
+        return Setting::get(self::STRIPE_WEBHOOK_SECRET) ?: null;
     }
 
     public static function dlocalGoApiKey(): ?string
@@ -106,6 +135,12 @@ class DirectBillingConfig
     public static function mpWebhookUrl(): string
     {
         return route('webhook.billing.mercadopago');
+    }
+
+    /** Read-only in the Back Office: pasted into Stripe → Developers → Webhooks. */
+    public static function stripeWebhookUrl(): string
+    {
+        return route('webhook.billing.stripe');
     }
 
     /** Sent on every dLocal Go payment; shown so an operator can recognise it. */

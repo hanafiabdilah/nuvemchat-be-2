@@ -224,6 +224,10 @@ class AdminSettingsController extends Controller
             'billing_direct.dlocalgo.secret_key' => ['nullable', 'string', 'max:512'],
             'billing_direct.dlocalgo.sandbox' => ['sometimes', 'boolean'],
             'billing_direct.dlocalgo.smartfields_key' => ['nullable', 'string', 'max:255'],
+            'billing_direct.stripe' => ['sometimes', 'array'],
+            'billing_direct.stripe.publishable_key' => ['nullable', 'string', 'max:255', 'starts_with:pk_'],
+            'billing_direct.stripe.secret_key' => ['nullable', 'string', 'max:512', 'starts_with:sk_,rk_'],
+            'billing_direct.stripe.webhook_secret' => ['nullable', 'string', 'max:255', 'starts_with:whsec_'],
 
             'instagram' => ['sometimes', 'array'],
             'instagram.client_id' => ['nullable', 'string', 'max:255'],
@@ -371,6 +375,22 @@ class AdminSettingsController extends Controller
                     Setting::set(DirectBillingConfig::DLOCALGO_SMARTFIELDS_KEY, trim((string) $go['smartfields_key']));
                 }
             }
+
+            $stripe = $validated['billing_direct']['stripe'] ?? null;
+
+            if (is_array($stripe)) {
+                // Public, and an empty value is meaningful: without it Brazilian
+                // card subscriptions go back to the Mercado Pago preapproval.
+                if (array_key_exists('publishable_key', $stripe)) {
+                    Setting::set(DirectBillingConfig::STRIPE_PUBLISHABLE_KEY, trim((string) $stripe['publishable_key']) ?: null);
+                }
+                if (! empty($stripe['secret_key'])) {
+                    Setting::set(DirectBillingConfig::STRIPE_SECRET_KEY, trim($stripe['secret_key']));
+                }
+                if (! empty($stripe['webhook_secret'])) {
+                    Setting::set(DirectBillingConfig::STRIPE_WEBHOOK_SECRET, trim($stripe['webhook_secret']));
+                }
+            }
         }
 
         if ($request->has('instagram')) {
@@ -493,6 +513,8 @@ class AdminSettingsController extends Controller
         $mpSecret = DirectBillingConfig::mpWebhookSecret();
         $goKey = DirectBillingConfig::dlocalGoApiKey();
         $goSecret = DirectBillingConfig::dlocalGoSecretKey();
+        $stripeKey = DirectBillingConfig::stripeSecretKey();
+        $stripeSecret = DirectBillingConfig::stripeWebhookSecret();
 
         return [
             'mercadopago' => [
@@ -511,6 +533,16 @@ class AdminSettingsController extends Controller
                 'sandbox' => DirectBillingConfig::dlocalGoSandbox(),
                 'smartfields_key' => DirectBillingConfig::dlocalGoSmartFieldsKey(),
                 'webhook_url' => DirectBillingConfig::dlocalGoWebhookUrl(),
+            ],
+            'stripe' => [
+                'publishable_key' => DirectBillingConfig::stripePublishableKey(),
+                'secret_key_set' => $stripeKey !== null,
+                'secret_key_preview' => $this->mask($stripeKey),
+                'webhook_secret_set' => $stripeSecret !== null,
+                'webhook_secret_preview' => $this->mask($stripeSecret),
+                'webhook_url' => DirectBillingConfig::stripeWebhookUrl(),
+                // Both keys stored = Brazilian card subscriptions go to Stripe.
+                'active' => $stripeKey !== null && DirectBillingConfig::stripePublishableKey() !== null,
             ],
         ];
     }

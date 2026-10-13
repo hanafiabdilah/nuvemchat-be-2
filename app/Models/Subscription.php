@@ -42,6 +42,8 @@ class Subscription extends Model
         'scheduled_change_at',
         'payment_instrument_id',
         'payment_customer_id',
+        // {brand, last_four, exp_month, exp_year} of the card that renews it.
+        'payment_card',
         'manual_granted_by',
         'manual_note',
     ];
@@ -64,6 +66,7 @@ class Subscription extends Model
         'scheduled_price_cents' => 'integer',
         'scheduled_billing_cycle' => BillingCycle::class,
         'scheduled_change_at' => 'datetime',
+        'payment_card' => 'array',
     ];
 
     public function tenant()

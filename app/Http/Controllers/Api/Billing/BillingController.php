@@ -456,6 +456,13 @@ class BillingController extends Controller
     {
         abort_if($invoice->tenant_id !== $request->user()->tenant_id, 403);
 
+        // `?refresh=1` after a 3-D Secure challenge: ask the gateway now rather
+        // than wait for its notification, so the plan is active by the time
+        // the customer looks up from their bank's prompt.
+        if ($request->boolean('refresh')) {
+            $invoice = $this->billing->refreshInvoice($invoice);
+        }
+
         return response()->json(['data' => new InvoiceResource($invoice)]);
     }
 

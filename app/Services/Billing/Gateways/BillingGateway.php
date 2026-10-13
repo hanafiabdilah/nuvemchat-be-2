@@ -24,7 +24,7 @@ use App\Models\Tenant;
  */
 interface BillingGateway
 {
-    /** payment_service | mercadopago | dlocalgo — stored on invoices and subscriptions. */
+    /** payment_service | mercadopago | dlocalgo | stripe — stored on invoices and subscriptions. */
     public function name(): string;
 
     public function isConfigured(): bool;

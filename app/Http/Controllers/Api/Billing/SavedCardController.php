@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api\Billing;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Billing\SavedCardResource;
 use App\Models\Tenant;
+use App\Services\Billing\Gateways\BillingGateways;
 use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
 use App\Services\Billing\SavedCardService;
 use Illuminate\Http\Request;
@@ -18,7 +19,10 @@ use Illuminate\Http\Request;
  */
 class SavedCardController extends Controller
 {
-    public function __construct(protected SavedCardService $cards) {}
+    public function __construct(
+        protected SavedCardService $cards,
+        protected BillingGateways $gateways,
+    ) {}
 
     public function index(Request $request)
     {
@@ -28,6 +32,11 @@ class SavedCardController extends Controller
         return response()->json([
             'data' => $available ? SavedCardResource::collection($this->cards->list($tenant)) : [],
             'available' => $available,
+            // False where a plan's card is kept at another gateway (Stripe, in
+            // Brazil): these cards then pay top-ups only, and the page says so
+            // rather than letting someone add a card here to pay a plan with.
+            'pays_plans' => $available
+                && $this->gateways->forCardSubscription($tenant)->name() === $this->gateways->forTenant($tenant)->name(),
             // What the card fields need to mint a token in the browser.
             'public_key' => $available ? DirectBillingConfig::mpPublicKey() : null,
             // Mercado Pago asks for the cardholder's CPF/CNPJ when a new card is

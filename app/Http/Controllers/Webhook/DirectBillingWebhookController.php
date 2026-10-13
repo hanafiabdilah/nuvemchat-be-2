@@ -9,6 +9,7 @@ use App\Services\Billing\Gateways\BillingGateways;
 use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
 use App\Services\Billing\Gateways\Direct\DLocalGoBillingGateway;
 use App\Services\Billing\Gateways\Direct\MercadoPagoBillingGateway;
+use App\Services\Billing\Gateways\Direct\StripeBillingGateway;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -35,6 +36,7 @@ class DirectBillingWebhookController extends Controller
         protected BillingService $billing,
         protected MercadoPagoBillingGateway $mercadoPago,
         protected DLocalGoBillingGateway $dlocalGo,
+        protected StripeBillingGateway $stripe,
     ) {}
 
     // --- Mercado Pago (Brazil) --------------------------------------------
@@ -221,6 +223,70 @@ class DirectBillingWebhookController extends Controller
         } catch (\Throwable $e) {
             Log::error('dLocal Go billing webhook processing failed', [
                 'payment_id' => $paymentId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return response()->json(['status' => 'ok'], 200);
+    }
+
+    // --- Stripe (Brazilian card subscriptions) -----------------------------
+
+    /**
+     * Stripe sends the whole object, and it is still treated as a pointer: the
+     * PaymentIntent is read back with our key, so what gets applied is what is
+     * true now, not what the body claimed.
+     *
+     * A charge-level event (refund, dispute) names its intent in
+     * `payment_intent`; an intent-level one *is* the intent.
+     */
+    public function stripe(Request $request)
+    {
+        $eventId = (string) $request->input('id', '');
+        $type = (string) $request->input('type', '');
+        $object = (array) $request->input('data.object', []);
+        $valid = $this->stripe->verifyWebhook($request);
+
+        $intentId = match (true) {
+            str_starts_with($type, 'payment_intent.') => (string) ($object['id'] ?? ''),
+            str_starts_with($type, 'charge.') => (string) ($object['payment_intent'] ?? ''),
+            default => '',
+        };
+
+        // Stripe retries with the same event id; updating keeps a redelivery
+        // from dying on the unique key, and reading the intent twice is a no-op.
+        $event = WebhookEvent::updateOrCreate(
+            ['dedupe_key' => 'stripe-billing:'.($eventId ?: Str::uuid())],
+            [
+                'provider' => 'stripe_billing',
+                'event_type' => $type,
+                'resource_id' => $intentId ?: null,
+                'signature_valid' => $valid !== false,
+                'payload' => $request->all(),
+            ],
+        );
+
+        if ($valid === false) {
+            Log::warning('Stripe billing webhook with invalid signature', [
+                'type' => $type,
+                'event_id' => $eventId,
+                'ip' => $request->ip(),
+            ]);
+
+            return response()->json(['status' => 'invalid-signature'], 200);
+        }
+
+        if ($intentId === '') {
+            return response()->json(['status' => 'ignored'], 200);
+        }
+
+        try {
+            $this->billing->applyPaymentUpdate($this->stripe->getPayment($intentId), BillingGateways::STRIPE);
+            $event->update(['processed_at' => now()]);
+        } catch (\Throwable $e) {
+            Log::error('Stripe billing webhook processing failed', [
+                'type' => $type,
+                'intent_id' => $intentId,
                 'error' => $e->getMessage(),
             ]);
         }

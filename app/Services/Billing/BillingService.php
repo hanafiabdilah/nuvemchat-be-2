@@ -152,12 +152,33 @@ class BillingService
     public function paymentMethodsFor(Tenant $tenant): array
     {
         $gateway = $this->gateways->forTenant($tenant);
+        $cards = $this->gateways->forCardSubscription($tenant);
         $currency = $tenant->currency();
 
+        if ($cards->name() === $gateway->name()) {
+            return Cache::remember(
+                "billing:payment-methods:{$gateway->name()}:{$currency}",
+                now()->addMinute(),
+                fn () => $gateway->paymentMethods($currency),
+            );
+        }
+
+        // Card subscriptions live on another gateway (Stripe, in Brazil): its
+        // card replaces this one's, and everything else — Pix, a hosted
+        // checkout — stays as the workspace's own gateway answered it. The
+        // checkout draws one list and never learns there were two companies.
         return Cache::remember(
-            "billing:payment-methods:{$gateway->name()}:{$currency}",
+            "billing:payment-methods:{$gateway->name()}+{$cards->name()}:{$currency}",
             now()->addMinute(),
-            fn () => $gateway->paymentMethods($currency),
+            function () use ($gateway, $cards, $currency) {
+                $card = collect($cards->paymentMethods($currency))->firstWhere('method', 'card');
+                $rest = array_values(array_filter(
+                    $gateway->paymentMethods($currency),
+                    fn ($method) => ($method['method'] ?? null) !== 'card',
+                ));
+
+                return $card ? [$card, ...$rest] : $rest;
+            },
         );
     }
 
@@ -231,10 +252,14 @@ class BillingService
         return $offered === null || in_array($method->value, $offered, true);
     }
 
-    /** The card-session answer of whichever gateway would bill this workspace. */
+    /**
+     * The card-session answer of whichever gateway would take this workspace's
+     * card subscription. Only the plan checkout asks: a top-up on a saved card
+     * reads its key from the saved-cards endpoint instead.
+     */
     public function cardSession(Tenant $tenant): array
     {
-        return $this->gateways->forTenant($tenant)->cardSession($tenant);
+        return $this->gateways->forCardSubscription($tenant)->cardSession($tenant);
     }
 
     /**
@@ -266,7 +291,7 @@ class BillingService
             ]);
         }
 
-        $gateway = $this->gateways->forTenant($tenant);
+        $gateway = $this->gateways->forCardSubscription($tenant);
 
         if (! $gateway instanceof OpensCardCheckouts) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -342,15 +367,21 @@ class BillingService
      * first time it is used, which produces a subscription that looks healthy
      * right up until its first renewal.
      *
-     * Direct billing in Brazil answers this with a Mercado Pago preapproval:
-     * the "instrument" is the preapproval, and Mercado Pago runs every cycle
-     * after this one itself (see applyRecurringCharge()).
+     * Direct billing in Brazil sends this to Stripe once its keys are set: the
+     * card is kept there and `billing:charge-renewals` charges it each cycle.
+     * Before that it is a Mercado Pago preapproval — the "instrument" is the
+     * preapproval, and Mercado Pago runs every cycle after this one itself
+     * (see applyRecurringCharge()).
+     *
+     * An issuer asking for 3-D Secure comes back `pending` with a client
+     * secret: the page finishes the authentication with the gateway's SDK and
+     * the notification (or refreshInvoice()) settles the invoice.
      */
     protected function subscribeWithCard(Tenant $tenant, Plan $plan, array $opts): Subscription
     {
         $this->assertBillable($tenant);
 
-        $gateway = $this->gateways->forTenant($tenant);
+        $gateway = $this->gateways->forCardSubscription($tenant);
 
         if ($gateway instanceof OpensCardCheckouts) {
             return $this->subscribeWithOpenedCard($tenant, $plan, $gateway, $opts);
@@ -360,6 +391,16 @@ class BillingService
         // CVV typed now, and the payer has to be the customer the card belongs to.
         /** @var SavedCard|null $card */
         $card = $opts['saved_card'] ?? null;
+
+        // A kept card lives at one gateway. Offered a Mercado Pago card while
+        // subscriptions go to Stripe, the token minted from it would be
+        // refused there as a card that does not exist.
+        if ($card && $card->gateway !== $gateway->name()) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'saved_card_id' => __('This saved card is no longer available.'),
+            ]);
+        }
+
         $payerEmail = $card?->customer_email ?: ($opts['payer_email'] ?? null);
         $quote = $opts['quote'] ?? null;
         $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name(), $quote, deferSwitch: true);
@@ -385,6 +426,7 @@ class BillingService
                 'recurring' => $plan->billing_cycle->mercadoPagoFrequency(),
                 'customer' => $this->customerPayload($tenant, $payerEmail),
                 'metadata' => ['tenant_id' => $tenant->id, 'subscription_id' => $subscription->id],
+                ...$this->knownCustomer($tenant, $gateway),
             ], $invoice->idempotency_key);
         } catch (\Throwable $e) {
             // The row exists before the call because its reference goes in the
@@ -421,7 +463,17 @@ class BillingService
             // Neither activates anything; `unknown` resolves by itself and its
             // webhook lands on this same invoice through order_reference.
             if (in_array($payment['status'] ?? null, ['unknown', 'pending'], true)) {
-                $invoice->update(['status' => InvoiceStatus::Pending]);
+                $secret = $payment['instructions']['client_secret'] ?? null;
+
+                $invoice->update(array_filter([
+                    'status' => InvoiceStatus::Pending,
+                    // What the page hands the gateway's SDK to run 3-D Secure.
+                    // Useless without the publishable key and only ever good
+                    // for confirming this one charge.
+                    'meta' => $secret === null ? null : array_merge($invoice->meta ?? [], [
+                        'authentication' => ['client_secret' => $secret],
+                    ]),
+                ], fn ($value) => $value !== null));
             } else {
                 $this->markInvoiceFailed($invoice, 'subscribe_card', payment: $payment);
                 $this->abandonDeferredSubscription($subscription);
@@ -431,6 +483,60 @@ class BillingService
         $this->fireUpdated($subscription);
 
         return $subscription->fresh();
+    }
+
+    /**
+     * The customer this workspace already has at a gateway that keeps one per
+     * payer (Stripe), so a second subscription reuses it instead of leaving a
+     * new customer behind every time a card is typed.
+     *
+     * Empty for every other gateway — and deliberately not sent to them: the
+     * payment service validates its payload strictly, and Mercado Pago's
+     * customers belong to its saved cards, not to subscriptions.
+     *
+     * @return array{customer_id?: string}
+     */
+    protected function knownCustomer(Tenant $tenant, BillingGateway $gateway): array
+    {
+        if ($gateway->name() !== BillingGateways::STRIPE) {
+            return [];
+        }
+
+        $customerId = Subscription::where('tenant_id', $tenant->id)
+            ->where('gateway', $gateway->name())
+            ->whereNotNull('payment_customer_id')
+            ->latest('id')
+            ->value('payment_customer_id');
+
+        return $customerId ? ['customer_id' => (string) $customerId] : [];
+    }
+
+    /**
+     * Ask the gateway where a pending charge stands and apply the answer.
+     *
+     * For the page that has just finished a 3-D Secure challenge: the
+     * notification will say the same thing, but the customer is looking at
+     * the screen now, and a plan that activates "in a moment" after they did
+     * everything asked of them reads as a payment that failed.
+     */
+    public function refreshInvoice(Invoice $invoice): Invoice
+    {
+        if ($invoice->status !== InvoiceStatus::Pending || blank($invoice->payment_id)) {
+            return $invoice;
+        }
+
+        try {
+            $gateway = $this->gateways->forInvoice($invoice);
+            $this->applyPaymentUpdate($gateway->getPayment($invoice->payment_id), $gateway->name());
+        } catch (\Throwable $e) {
+            // The notification is still on its way; this was only the fast path.
+            Log::warning('Could not refresh a pending invoice', [
+                'invoice_id' => $invoice->id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return $invoice->fresh();
     }
 
     /**
@@ -1123,11 +1229,17 @@ class BillingService
                 $invoice->payment_id = $paymentId;
             }
 
+            // A card charge that settles here went through 3-D Secure first:
+            // the response that created it had no card details to keep yet.
+            if ($status === 'paid' && $subscription && blank($subscription->payment_card) && filled($payment['card']['last_four'] ?? null)) {
+                $subscription->forceFill(['payment_card' => $payment['card']])->save();
+            }
+
             match (true) {
                 $status === 'paid' => $this->onInvoicePaid($subscription, $invoice),
                 $this->reversesAPayment($status) => $invoice->update(['status' => InvoiceStatus::Refunded]),
                 $status === 'expired' => $invoice->update(['status' => InvoiceStatus::Expired]),
-                in_array($status, ['declined', 'voided'], true) => $this->markInvoiceFailed($invoice, 'webhook', payment: $payment),
+                in_array($status, ['declined', 'voided'], true) => $this->onFirstCardChargeRefused($subscription, $invoice, $payment),
                 // created / pending / authorized — and `unknown`, which is the
                 // one worth naming: the gateway did not answer, so nobody knows
                 // whether the charge exists. It is not a failure and must never
@@ -2100,6 +2212,11 @@ class BillingService
         $subscription->forceFill(array_filter([
             'payment_instrument_id' => $instrumentId === null ? null : (string) $instrumentId,
             'payment_customer_id' => $customerId === null ? null : (string) $customerId,
+            // Brand and last four digits, where the gateway reports them: what
+            // lets the plan say which card renews it.
+            'payment_card' => $instrumentId !== null && filled($payment['card']['last_four'] ?? null)
+                ? $payment['card']
+                : null,
         ], fn ($value) => $value !== null))->save();
     }
 
@@ -2141,6 +2258,34 @@ class BillingService
         }
 
         $this->notifier->notify(NotificationType::SubscriptionPastDue, $subscription);
+    }
+
+    /**
+     * A charge refused after the fact — which for a card means the customer
+     * failed (or walked away from) 3-D Secure.
+     *
+     * The invoice fails either way. When it was the first charge of a
+     * subscription that never started, the subscription goes with it: the card
+     * was kept while it was being authenticated and must not be charged at the
+     * next renewal run, and a purchase waiting to replace a plan must stop
+     * showing as a pending change.
+     */
+    protected function onFirstCardChargeRefused(?Subscription $subscription, Invoice $invoice, array $payment): void
+    {
+        $this->markInvoiceFailed($invoice, 'webhook', payment: $payment);
+
+        $neverStarted = $subscription !== null
+            && $invoice->payment_method === PaymentMethod::Card
+            && $subscription->status === SubscriptionStatus::PastDue
+            && $subscription->current_period_end === null;
+
+        if (! $neverStarted) {
+            return;
+        }
+
+        $subscription->forceFill(['payment_instrument_id' => null, 'payment_card' => null])->save();
+        $this->abandonDeferredSubscription($subscription);
+        $this->fireUpdated($subscription);
     }
 
     protected function onInvoicePaid(Subscription $subscription, Invoice $invoice): void

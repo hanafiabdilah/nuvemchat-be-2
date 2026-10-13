@@ -250,7 +250,7 @@ class PlanChange
         // A card here is a standing authorisation for a fixed amount: its first
         // debit is that amount, so the credit cannot ride on it.
         $fixedFirstCharge = $method === PaymentMethod::Card
-            && $this->gateways->forTenant($current->tenant) instanceof HoldsRecurringAuthorisations;
+            && $this->gateways->forCardSubscription($current->tenant) instanceof HoldsRecurringAuthorisations;
 
         if ($fixedFirstCharge) {
             $discount = 0;

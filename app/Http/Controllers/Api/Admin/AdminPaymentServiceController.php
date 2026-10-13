@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
 use App\Services\Billing\Gateways\Direct\DLocalGoBillingGateway;
 use App\Services\Billing\Gateways\Direct\MercadoPagoBillingGateway;
+use App\Services\Billing\Gateways\Direct\StripeBillingGateway;
 use App\Services\Billing\PaymentService\PaymentServiceClient;
 use App\Services\Billing\PaymentService\PaymentServiceConfig;
 
@@ -65,12 +66,14 @@ class AdminPaymentServiceController extends Controller
      */
     public function testDirect(string $gateway)
     {
-        abort_unless(in_array($gateway, ['mercadopago', 'dlocalgo'], true), 404);
+        abort_unless(in_array($gateway, ['mercadopago', 'dlocalgo', 'stripe'], true), 404);
 
         try {
-            $account = $gateway === 'mercadopago'
-                ? app(MercadoPagoBillingGateway::class)->verifyCredentials()
-                : app(DLocalGoBillingGateway::class)->verifyCredentials();
+            $account = match ($gateway) {
+                'mercadopago' => app(MercadoPagoBillingGateway::class)->verifyCredentials(),
+                'stripe' => app(StripeBillingGateway::class)->verifyCredentials(),
+                default => app(DLocalGoBillingGateway::class)->verifyCredentials(),
+            };
         } catch (UpstreamServiceException $e) {
             // Raw, as above: the operator is the one fixing it.
             return response()->json([
@@ -78,6 +81,25 @@ class AdminPaymentServiceController extends Controller
                 'code' => $e->getErrorCode(),
                 'ref' => $e->reference,
             ], $e->httpStatus);
+        }
+
+        if ($gateway === 'stripe') {
+            return response()->json([
+                'data' => [
+                    'account' => $account['settings']['dashboard']['display_name']
+                        ?? $account['business_profile']['name']
+                        ?? $account['email']
+                        ?? ($account['id'] ?? null),
+                    'country' => $account['country'] ?? null,
+                    // False on an account still being reviewed: every charge
+                    // would be refused, and this is the only screen that says so.
+                    'charges_enabled' => (bool) ($account['charges_enabled'] ?? false),
+                    'methods' => ['card'],
+                    // Without the publishable key the browser cannot tokenise,
+                    // and card subscriptions stay at Mercado Pago.
+                    'card_auto_renew' => DirectBillingConfig::stripePublishableKey() !== null,
+                ],
+            ]);
         }
 
         return response()->json([
