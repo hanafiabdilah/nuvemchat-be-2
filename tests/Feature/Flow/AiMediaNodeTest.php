@@ -238,3 +238,24 @@ test('what the customer writes while the file is being made does not start a sec
 
     expect(AiMediaGeneration::count())->toBe($before);
 });
+
+test('a prompt up to the limit saves, one character more is refused', function () {
+    $node = fn (int $length) => [['type' => 'ai_media', 'data' => ['prompt' => str_repeat('a', $length)]]];
+
+    App\Services\Flow\FlowBlueprint::validateNodes($node(AiMediaNodes::MAX_PROMPT_LENGTH));
+
+    expect(AiMediaNodes::MAX_PROMPT_LENGTH)->toBeGreaterThan(10000)
+        ->and(fn () => App\Services\Flow\FlowBlueprint::validateNodes($node(AiMediaNodes::MAX_PROMPT_LENGTH + 1)))
+        ->toThrow(Illuminate\Validation\ValidationException::class);
+});
+
+test('a long prompt reaches the hub whole', function () {
+    $prompt = str_repeat('Uma figurinha colorida. ', 450); // 10,800 characters
+    [$conversation] = mediaFlow(['prompt' => $prompt]);
+    fakeMediaHub(mediaDone());
+
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    expect(mediaCreateRequest()['prompt'])->toBe($prompt)
+        ->and(mb_strlen(AiMediaGeneration::sole()->prompt))->toBeGreaterThan(10000);
+});

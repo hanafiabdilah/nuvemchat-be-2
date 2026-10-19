@@ -34,7 +34,7 @@ final class AiMediaNodes
 
     public const VIDEO_SIZES = ['720x1280', '1280x720'];
 
-    public const MAX_PROMPT_LENGTH = 4000;
+    public const MAX_PROMPT_LENGTH = 12000;
 
     public const MAX_REFERENCES = 3;
 
