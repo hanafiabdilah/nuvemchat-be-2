@@ -210,10 +210,16 @@ class StripeBillingGateway implements BillingGateway
     /**
      * The first cycle: charge the card typed now, and keep it.
      *
-     * `payment_method_types=[card]` rather than automatic methods, for one
-     * reason: it makes an issuer's 3-D Secure request come back as
-     * `requires_action` handled by Stripe.js on our own page, with no redirect
-     * and so no return URL to get wrong.
+     * Automatic payment methods with redirects turned off, for one reason: it
+     * makes an issuer's 3-D Secure request come back as `requires_action`
+     * handled by Stripe.js on our own page, with no redirect and so no return
+     * URL to get wrong. The card is chosen by the `payment_method` we pass, so
+     * nothing else enabled in the Dashboard is ever offered here.
+     *
+     * ⚠️ Not `payment_method_types=[card]`, which said the same thing until
+     * Stripe stopped accepting it: accounts opened in 2026 answer that
+     * parameter with a 400 ("payment methods are now managed from your
+     * Dashboard settings"), so every charge failed before reaching the card.
      */
     protected function chargeNewCard(array $payload, string $idempotencyKey): array
     {
@@ -257,7 +263,7 @@ class StripeBillingGateway implements BillingGateway
             'currency' => strtolower($currency),
             // Form-encoded: a PHP `true` would be sent as "1", which Stripe refuses.
             'confirm' => 'true',
-            'payment_method_types' => ['card'],
+            'automatic_payment_methods' => ['enabled' => 'true', 'allow_redirects' => 'never'],
             'description' => $payload['description'] ?? null,
             'metadata' => array_filter([
                 // What ties the PaymentIntent back to our invoice when a
@@ -477,6 +483,10 @@ class StripeBillingGateway implements BillingGateway
             // Ours: a wrong, revoked or restricted key is never the customer's to fix.
             in_array($response->status(), [401, 403], true) => 'payment_service_unconfigured',
             ($error['type'] ?? null) === 'card_error' => 'payment_declined',
+            // Stripe refusing the request we built, never the card: telling
+            // the customer to "check the amount and the card" sends them after
+            // something that was never the problem.
+            ($error['type'] ?? null) === 'invalid_request_error' => 'payment_request_invalid',
             $response->status() >= 400 && $response->status() < 500 => 'payment_refused',
             default => null,
         };

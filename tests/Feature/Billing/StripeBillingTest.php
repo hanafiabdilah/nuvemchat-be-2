@@ -174,6 +174,9 @@ it('charges the card at Stripe and keeps it for the cycles after this one', func
             && $body['customer'] === 'cus_1'
             && $body['payment_method'] === 'pm_1'
             && $body['confirm'] === 'true'
+            // Accounts opened in 2026 refuse `payment_method_types` outright.
+            && ! array_key_exists('payment_method_types', $body)
+            && $body['automatic_payment_methods'] === ['enabled' => 'true', 'allow_redirects' => 'never']
             && $body['setup_future_usage'] === 'off_session'
             && $body['metadata']['order_reference'] === $invoice->order_reference;
     });
@@ -238,6 +241,37 @@ it('reports a refused card as a decline and leaves the running plan alone', func
         ->and($invoice->meta['failure']['decline'])->toBe(['category' => 'temporary', 'code' => 'insufficient_funds'])
         ->and($subscription->fresh()->status)->toBe(SubscriptionStatus::Cancelled)
         ->and($subscription->fresh()->payment_instrument_id)->toBeNull()
+        ->and($tenant->fresh()->current_subscription_id)->toBe($comp->id);
+});
+
+it('never blames the customer when Stripe refuses the request we built', function () {
+    // The real answer a 2026 account gave to `payment_method_types`: a fault
+    // in our request, not in anything the customer typed.
+    Http::fake([
+        'api.stripe.com/v1/customers' => Http::response(['id' => 'cus_1']),
+        'api.stripe.com/v1/payment_intents' => Http::response(['error' => [
+            'type' => 'invalid_request_error',
+            'message' => 'The `payment_method_types` parameter is no longer supported.',
+        ]], 400),
+    ]);
+
+    $tenant = stripeWorkspace();
+    $comp = app(BillingService::class)->grantManual($tenant, stripePlan(), null, \App\Models\Admin::factory()->create(), 'comp');
+
+    try {
+        stripeSubscribe($tenant);
+        $this->fail('The refused request should have thrown.');
+    } catch (\App\Exceptions\UpstreamServiceException $e) {
+        expect($e->getErrorCode())->toBe('payment_unavailable')
+            ->and($e->getMessage())->not->toContain('Revise o valor')
+            ->and($e->getMessage())->not->toContain('payment_method_types');
+    }
+
+    $invoice = \App\Models\Invoice::where('tenant_id', $tenant->id)->latest('id')->first();
+
+    expect($invoice->status)->toBe(InvoiceStatus::Failed)
+        // The Back Office still reads Stripe's own sentence, which names the fix.
+        ->and($invoice->meta['failure']['message'])->toContain('payment_method_types')
         ->and($tenant->fresh()->current_subscription_id)->toBe($comp->id);
 });
 
@@ -342,6 +376,8 @@ it('renews the kept card from our own scheduler, off-session, exactly once per c
         && $request->data()['customer'] === 'cus_1'
         && $request->data()['payment_method'] === 'pm_1'
         && ! isset($request->data()['setup_future_usage'])
+        && ! isset($request->data()['payment_method_types'])
+        && $request->data()['automatic_payment_methods'] === ['enabled' => 'true', 'allow_redirects' => 'never']
         && $request->data()['metadata']['order_reference'] === "pingly-sub-{$subscription->id}-".$end->toDateString());
 
     expect($renewal->status)->toBe(InvoiceStatus::Paid)

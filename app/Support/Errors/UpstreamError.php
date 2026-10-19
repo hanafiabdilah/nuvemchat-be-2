@@ -695,6 +695,7 @@ final class UpstreamError
             // Ours: no API key, no gateway account, or a vault that is down.
             // Nothing the customer can check, so nothing that reads like it.
             $code === 'payment_service_unconfigured',
+            $code === 'payment_request_invalid',
             $code === 'no_usable_provider',
             $code === 'vault_unavailable',
             $code === 'provider_not_active' => [
