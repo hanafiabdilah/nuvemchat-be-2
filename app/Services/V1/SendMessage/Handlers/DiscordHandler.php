@@ -2,7 +2,9 @@
 
 namespace App\Services\V1\SendMessage\Handlers;
 
+use App\Enums\Connection\Channel;
 use App\Models\Connection;
+use App\Services\V1\SendMessage\OutgoingMessage;
 use App\Services\V1\SendMessage\SendMessageHandlerInterface;
 use Exception;
 use Illuminate\Support\Facades\Http;
@@ -14,10 +16,14 @@ class DiscordHandler implements SendMessageHandlerInterface
 
     public function handleSendMessage(Connection $connection, array $data): array
     {
-        validator($data, [
+        $outgoing = OutgoingMessage::fromData(Channel::Discord, $data, [
             'recipient_id' => 'required|string', // Discord user id
-            'message' => 'required|string',
-        ])->validate();
+        ]);
+
+        // Discord takes uploaded bytes only — there is no send-by-URL — so the
+        // file is fetched before anything is said to Discord: a media_url that
+        // cannot be downloaded is a 422 for the caller, not a half-sent message.
+        $file = $outgoing->isText() ? null : $outgoing->download();
 
         $headers = ['Authorization' => 'Bot ' . ($connection->credentials['token'] ?? '')];
 
@@ -34,11 +40,23 @@ class DiscordHandler implements SendMessageHandlerInterface
             }
 
             $channelId = $channelResponse->json()['id'];
+            $url = self::API_BASE . "/channels/{$channelId}/messages";
 
-            $response = Http::withHeaders($headers)
-                ->post(self::API_BASE . "/channels/{$channelId}/messages", [
-                    'content' => $data['message'],
-                ]);
+            if ($file === null) {
+                $response = Http::withHeaders($headers)->post($url, ['content' => $outgoing->text]);
+            } else {
+                // The caption rides along as `content`, on every kind of file.
+                $filename = $file->getClientOriginalName() ?: $outgoing->type;
+                $payloadJson = ['attachments' => [['id' => 0, 'filename' => $filename]]];
+
+                if ($outgoing->caption() !== null) {
+                    $payloadJson['content'] = $outgoing->caption();
+                }
+
+                $response = Http::withHeaders($headers)
+                    ->attach('files[0]', file_get_contents($file->getRealPath()), $filename)
+                    ->post($url, ['payload_json' => json_encode($payloadJson)]);
+            }
 
             $responseArray = $response->json();
 
@@ -55,6 +73,7 @@ class DiscordHandler implements SendMessageHandlerInterface
             Log::info('DiscordHandler: Message sent successfully', [
                 'connection_id' => $connection->id,
                 'recipient_id' => $data['recipient_id'],
+                'type' => $outgoing->type,
                 'message_id' => $responseArray['id'] ?? null,
             ]);
 
@@ -65,7 +84,12 @@ class DiscordHandler implements SendMessageHandlerInterface
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send Discord message: ' . $th->getMessage());
+            throw new Exception('Failed to send Discord message: ' . $th->getMessage(), 0, $th);
+        } finally {
+            // A temp file this request downloaded; nothing else will collect it.
+            if ($file !== null) {
+                @unlink($file->getRealPath());
+            }
         }
     }
 }

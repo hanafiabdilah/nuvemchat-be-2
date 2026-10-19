@@ -2,7 +2,9 @@
 
 namespace App\Services\V1\SendMessage\Handlers;
 
+use App\Enums\Connection\Channel;
 use App\Models\Connection;
+use App\Services\V1\SendMessage\OutgoingMessage;
 use App\Services\V1\SendMessage\SendMessageHandlerInterface;
 use Exception;
 use Illuminate\Support\Facades\Http;
@@ -14,28 +16,31 @@ class WhatsappApiwayHandler implements SendMessageHandlerInterface
     {
         return \App\Services\Connection\Proxy\ApiwayConfig::baseUrl();
     }
+
     public function handleSendMessage(Connection $connection, array $data): array
     {
-        validator($data, [
+        $outgoing = OutgoingMessage::fromData(Channel::WhatsappApiway, $data, [
             'phone' => 'required|string',
-            'message' => 'required|string',
-        ])->validate();
+        ]);
+
+        // One endpoint per kind: send-text, send-image, send-video, send-audio,
+        // send-document. Each media endpoint takes the URL in the field named
+        // after it, the same fast path the dashboard's handler uses.
+        $endpoint = $outgoing->isText() ? 'send-text' : 'send-' . $outgoing->type;
 
         try {
-            $payload = [
-                'phone' => $data['phone'],
-                'message' => $data['message'],
-            ];
+            $payload = ['phone' => $data['phone']] + $this->content($outgoing);
 
             $response = Http::withHeaders([
                 'Authorization' => 'Bearer ' . $connection->credentials['token'],
-            ])->post($this->base() . '/v1/message/send-text?instanceId=' . $connection->credentials['instance_id'], $payload);
+            ])->post($this->base() . '/v1/message/' . $endpoint . '?instanceId=' . $connection->credentials['instance_id'], $payload);
 
             if (!$response->successful()) {
                 Log::error('WhatsappApiwayHandler: Failed to send message', [
                     'response_status' => $response->status(),
                     'response_body' => $response->body(),
                     'connection_id' => $connection->id,
+                    'endpoint' => $endpoint,
                 ]);
 
                 throw new Exception('Failed to send WhatsApp message: ' . $response->body());
@@ -46,6 +51,7 @@ class WhatsappApiwayHandler implements SendMessageHandlerInterface
             Log::info('WhatsappApiwayHandler: Message sent successfully', [
                 'connection_id' => $connection->id,
                 'phone' => $data['phone'],
+                'type' => $outgoing->type,
                 'message_id' => $responseArray['data']['id'] ?? $responseArray['messageId'] ?? null,
                 'response' => $responseArray,
             ]);
@@ -57,7 +63,23 @@ class WhatsappApiwayHandler implements SendMessageHandlerInterface
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp message: ' . $th->getMessage());
+            throw new Exception('Failed to send WhatsApp message: ' . $th->getMessage(), 0, $th);
         }
+    }
+
+    private function content(OutgoingMessage $outgoing): array
+    {
+        if ($outgoing->isText()) {
+            return ['message' => $outgoing->text];
+        }
+
+        $fields = [$outgoing->type => $outgoing->url(), 'caption' => $outgoing->caption()];
+
+        if ($outgoing->type === 'document') {
+            $fields['fileName'] = $outgoing->filename();
+            $fields['extension'] = $outgoing->extension() ?: null;
+        }
+
+        return array_filter($fields, fn ($value) => $value !== null);
     }
 }

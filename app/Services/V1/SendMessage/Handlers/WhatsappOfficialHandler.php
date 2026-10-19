@@ -2,7 +2,9 @@
 
 namespace App\Services\V1\SendMessage\Handlers;
 
+use App\Enums\Connection\Channel;
 use App\Models\Connection;
+use App\Services\V1\SendMessage\OutgoingMessage;
 use App\Services\V1\SendMessage\SendMessageHandlerInterface;
 use Exception;
 use Illuminate\Support\Facades\Http;
@@ -12,10 +14,9 @@ class WhatsappOfficialHandler implements SendMessageHandlerInterface
 {
     public function handleSendMessage(Connection $connection, array $data): array
     {
-        validator($data, [
+        $outgoing = OutgoingMessage::fromData(Channel::WhatsappOfficial, $data, [
             'to' => 'required|string',
-            'message' => 'required|string',
-        ])->validate();
+        ]);
 
         try {
             $response = Http::withToken($connection->credentials['access_token'])
@@ -23,11 +24,7 @@ class WhatsappOfficialHandler implements SendMessageHandlerInterface
                     'messaging_product' => 'whatsapp',
                     'recipient_type' => 'individual',
                     'to' => $data['to'],
-                    'type' => 'text',
-                    'text' => [
-                        'body' => $data['message'],
-                    ],
-                ]);
+                ] + $this->content($outgoing));
 
             if(!$response->successful()) {
                 Log::error('WhatsappOfficialHandler: Failed to send message', [
@@ -44,6 +41,7 @@ class WhatsappOfficialHandler implements SendMessageHandlerInterface
             Log::info('WhatsappOfficialHandler: Message sent successfully', [
                 'connection_id' => $connection->id,
                 'to' => $data['to'],
+                'type' => $outgoing->type,
                 'message_id' => $responseArray['messages'][0]['id'] ?? null,
             ]);
 
@@ -54,7 +52,37 @@ class WhatsappOfficialHandler implements SendMessageHandlerInterface
                 'connection_id' => $connection->id,
             ]);
 
-            throw new Exception('Failed to send WhatsApp message: ' . $th->getMessage());
+            throw new Exception('Failed to send WhatsApp message: ' . $th->getMessage(), 0, $th);
         }
+    }
+
+    /**
+     * The Cloud API names the object after its type — `text`, `image`… — and
+     * fetches a `link` itself, so nothing is downloaded here.
+     */
+    private function content(OutgoingMessage $outgoing): array
+    {
+        if ($outgoing->isText()) {
+            return ['type' => 'text', 'text' => ['body' => $outgoing->text]];
+        }
+
+        $media = ['link' => $outgoing->url()];
+
+        if ($outgoing->caption() !== null) {
+            $media['caption'] = $outgoing->caption();
+        }
+
+        if ($outgoing->type === 'document') {
+            $media['filename'] = $outgoing->filename();
+        }
+
+        // What makes WhatsApp draw a voice note rather than a file attachment.
+        // Meta ignores it for anything but Ogg/Opus (same rule as the
+        // dashboard's WhatsappOfficialHandler::voiceNoteFields()).
+        if ($outgoing->type === 'audio' && in_array($outgoing->extension(), ['ogg', 'opus'], true)) {
+            $media['voice'] = true;
+        }
+
+        return ['type' => $outgoing->type, $outgoing->type => $media];
     }
 }

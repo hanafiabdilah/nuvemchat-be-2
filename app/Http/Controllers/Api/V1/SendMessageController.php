@@ -16,12 +16,14 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
- * POST /api/v1/send-message — send a text through one of the workspace's
- * connections.
+ * POST /api/v1/send-message — send a text, or an image, video, audio or
+ * document by URL, through one of the workspace's connections.
  *
  * Authenticated by the workspace's API key (V1\ApiKeyAuth); the connection is
- * named in the body as `connection_id`, its public id. The rest of the body is
- * channel-specific and validated by that channel's handler.
+ * named in the body as `connection_id`, its public id. The recipient field is
+ * channel-specific; `type`, `message`, `media_url` and `filename` mean the same
+ * everywhere and are read by OutgoingMessage, which also knows which kinds
+ * each channel can send.
  */
 class SendMessageController extends Controller
 {
