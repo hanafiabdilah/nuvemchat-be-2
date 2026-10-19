@@ -71,6 +71,7 @@ final class FlowTexts
         'ai_media' => [
             'wait_message' => 4096,
             'caption' => 1024,
+            'images.*.caption' => 1024,
         ],
         'receipt' => [
             'message' => ReceiptNodes::MAX_MESSAGE_LENGTH,

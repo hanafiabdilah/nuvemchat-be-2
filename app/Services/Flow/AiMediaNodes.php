@@ -11,8 +11,14 @@ namespace App\Services\Flow;
  * the business uploaded. What comes back is stored as the workspace's file and
  * its address left in `{{ai_media_url}}`, so a later step can send it again.
  *
- * ⚠️ Dark until the AI Hub ships generation (config ai.media.enabled). The
- * contract it is built against is PINGLY-MEDIA-GENERATION-20261005.md.
+ * An image node can ask for several pictures at once — one instruction each,
+ * everything else shared — and they are all made at the same time rather than
+ * one after the other. That is the whole reason for the list: five chained
+ * nodes took five generations end to end, one node with five instructions
+ * takes as long as the slowest.
+ *
+ * Behind config ai.media.enabled. The contract with the AI Hub is
+ * PINGLY-MEDIA-GENERATION-20261005.md.
  *
  * Mirrored in the builder by lib/aiMediaNodes.ts — the two must agree.
  */
@@ -38,6 +44,9 @@ final class AiMediaNodes
 
     public const MAX_REFERENCES = 3;
 
+    /** Pictures one node may ask for at once. Each is a paid generation. */
+    public const MAX_IMAGES = 10;
+
     /** Why a generation did not produce a file. Codes, translated in the dashboard. */
     public const REASONS = [
         'disabled', 'not_configured', 'no_reference', 'credit_exhausted', 'content_policy',
@@ -53,6 +62,7 @@ final class AiMediaNodes
             'provider_credential_id' => null,
             'model' => '',
             'prompt' => '',
+            'images' => [],
             'use_customer_image' => false,
             'reference_urls' => [],
             'image' => ['size' => 'auto', 'quality' => 'auto'],
@@ -84,7 +94,41 @@ final class AiMediaNodes
     /** @param  array<string, mixed>  $data */
     public static function isConfigured(array $data): bool
     {
-        return self::credentialId($data) !== null && trim((string) ($data['prompt'] ?? '')) !== '';
+        return self::credentialId($data) !== null && self::items($data) !== [];
+    }
+
+    /**
+     * What one run of the node makes: one entry per file, in the author's
+     * order, each with its own instruction and caption.
+     *
+     * Only an image node reads `images`. An audio or video node — and an image
+     * node written before the list existed — is one entry made of its
+     * `prompt` and `caption`.
+     *
+     * A row with an empty instruction is dropped, not sent: it is a row the
+     * author has not finished, and asking the hub for nothing still pays for
+     * a file.
+     *
+     * @param  array<string, mixed>  $data
+     * @return list<array{prompt: string, caption: string}>
+     */
+    public static function items(array $data): array
+    {
+        $rows = self::type($data) === 'image' && is_array($data['images'] ?? null) && $data['images'] !== []
+            ? $data['images']
+            : [['prompt' => $data['prompt'] ?? '', 'caption' => $data['caption'] ?? '']];
+
+        $items = [];
+
+        foreach ($rows as $row) {
+            $prompt = is_array($row) ? (string) ($row['prompt'] ?? '') : '';
+
+            if (trim($prompt) !== '') {
+                $items[] = ['prompt' => $prompt, 'caption' => (string) ($row['caption'] ?? '')];
+            }
+        }
+
+        return array_slice($items, 0, self::MAX_IMAGES);
     }
 
     /** Pictures only help an image or a video; speech has nothing to look at. */
@@ -151,5 +195,28 @@ final class AiMediaNodes
     public static function stateKey(int $nodeId): string
     {
         return "_ai_media_{$nodeId}";
+    }
+
+    /**
+     * What a parked node is waiting on: its generations in the author's order,
+     * how many of them have been delivered, and which files could not be sent.
+     *
+     * A node parked before several images existed holds a bare generation id.
+     *
+     * @return array{ids: list<int>, next: int, send_failed: list<int>}
+     */
+    public static function parked(mixed $value): array
+    {
+        if (is_numeric($value)) {
+            return ['ids' => [(int) $value], 'next' => 0, 'send_failed' => []];
+        }
+
+        $value = is_array($value) ? $value : [];
+
+        return [
+            'ids' => array_values(array_map('intval', (array) ($value['ids'] ?? []))),
+            'next' => max(0, (int) ($value['next'] ?? 0)),
+            'send_failed' => array_values(array_map('intval', (array) ($value['send_failed'] ?? []))),
+        ];
     }
 }

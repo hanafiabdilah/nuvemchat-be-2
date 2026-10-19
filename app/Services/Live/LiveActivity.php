@@ -238,6 +238,22 @@ final class LiveActivity
     }
 
     /**
+     * An AI media node is making its files: what kind, and how many of them
+     * are done. Kept up for as long as the kind is allowed to take — a video
+     * runs for minutes, past the default for a reply being written.
+     */
+    public static function aiMediaGenerating(Conversation $conversation, FlowNode $node, string $type, int $done, int $total): void
+    {
+        $deadline = (int) config("ai.media.deadline_seconds.{$type}", 180);
+
+        self::emit($conversation, self::AI_THINKING, $node, [
+            'media' => $type,
+            'done' => $done,
+            'total' => $total,
+        ], max(self::TTL[self::AI_THINKING], $deadline + 30));
+    }
+
+    /**
      * The agent is using a tool mid-run — looking up the catalog, charging a
      * cart. Still the thinking phase (the run is not over), with the tool's
      * name so the panel can say what it is doing. Never the arguments: they

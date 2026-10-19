@@ -54,8 +54,6 @@ use App\Models\Order;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Observers\ConversationObserver;
-use App\Services\Message\Apiway\ButtonReply;
-use App\Services\Message\InteractiveDelivery;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
 use App\Services\AiAgentHub\AiConversationContext;
@@ -82,6 +80,8 @@ use App\Services\Lead\LeadSettings;
 use App\Services\Lead\TemperatureScorer;
 use App\Services\Live\LiveActivity;
 use App\Services\Media\MediaStorage;
+use App\Services\Message\Apiway\ButtonReply;
+use App\Services\Message\InteractiveDelivery;
 use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
 use App\Services\Sales\SalesLedger;
@@ -5962,6 +5962,12 @@ class FlowExecutor
      * Only the asking happens here. Generation takes seconds for a picture and
      * minutes for a video, so the node parks and GenerateFlowMedia carries it:
      * start, look again, and when the file is home, send it and move on.
+     *
+     * An image node with several instructions asks for all of them at once,
+     * each carried by its own chain of GenerateFlowMedia steps. Every row is
+     * written, and the node parked on all of them, before the first step is
+     * dispatched: on a sync queue that step runs inside this call, and it has
+     * to find the others already there.
      */
     protected function executeAiMediaNode(FlowState $flowState, FlowNode $node): void
     {
@@ -5985,7 +5991,15 @@ class FlowExecutor
                 'reason' => $reason,
             ]);
 
-            $this->leaveAiMediaNode($flowState, $node, null, $reason);
+            $total = max(1, count(AiMediaNodes::items($data)));
+
+            $this->finishAiMediaNode($flowState, $node, [
+                'type' => AiMediaNodes::type($data),
+                'urls' => [],
+                'failed' => $total,
+                'total' => $total,
+                'reason' => $reason,
+            ]);
 
             return;
         }
@@ -5993,36 +6007,46 @@ class FlowExecutor
         $this->sendReceiptText($flowState, (string) ($data['wait_message'] ?? ''));
 
         $type = AiMediaNodes::type($data);
+        $request = [
+            'options' => AiMediaNodes::options($data, $conversation->connection->channel->voiceReplyFormat()),
+            'reference_urls' => array_map(
+                fn (string $url) => $this->interpolateVariables($url, $flowState),
+                AiMediaNodes::referenceUrls($data),
+            ),
+            'use_customer_image' => AiMediaNodes::usesCustomerImage($data),
+        ];
 
-        $generation = AiMediaGeneration::create([
-            'tenant_id' => $tenantId,
-            'conversation_id' => $conversation->id,
-            'flow_state_id' => $flowState->id,
-            'flow_node_id' => $node->id,
-            'ai_hub_provider_credential_id' => $credential->id,
-            'external_id' => 'pingly-mg-'.Str::lower((string) Str::ulid()),
-            'type' => $type,
-            'status' => AiMediaGeneration::STATUS_PENDING,
-            'provider' => $credential->provider,
-            'model' => trim((string) ($data['model'] ?? '')) ?: null,
-            'prompt' => Str::limit($this->interpolateVariables((string) $data['prompt'], $flowState), AiMediaNodes::MAX_PROMPT_LENGTH, ''),
-            'request' => [
-                'options' => AiMediaNodes::options($data, $conversation->connection->channel->voiceReplyFormat()),
-                'reference_urls' => array_map(
-                    fn (string $url) => $this->interpolateVariables($url, $flowState),
-                    AiMediaNodes::referenceUrls($data),
-                ),
-                'use_customer_image' => AiMediaNodes::usesCustomerImage($data),
-            ],
-        ]);
+        $ids = [];
+
+        foreach (AiMediaNodes::items($data) as $position => $item) {
+            $ids[] = AiMediaGeneration::create([
+                'tenant_id' => $tenantId,
+                'conversation_id' => $conversation->id,
+                'flow_state_id' => $flowState->id,
+                'flow_node_id' => $node->id,
+                'ai_hub_provider_credential_id' => $credential->id,
+                'external_id' => 'pingly-mg-'.Str::lower((string) Str::ulid()),
+                'type' => $type,
+                'status' => AiMediaGeneration::STATUS_PENDING,
+                'provider' => $credential->provider,
+                'model' => trim((string) ($data['model'] ?? '')) ?: null,
+                'prompt' => Str::limit($this->interpolateVariables($item['prompt'], $flowState), AiMediaNodes::MAX_PROMPT_LENGTH, ''),
+                // The caption travels with its file, so an edit to the node
+                // while the pictures are being made cannot pair one picture
+                // with another's words.
+                'request' => $request + ['caption' => $item['caption'], 'position' => $position],
+            ])->id;
+        }
 
         $stateData = $flowState->state_data ?? [];
-        $stateData[AiMediaNodes::stateKey($node->id)] = $generation->id;
+        $stateData[AiMediaNodes::stateKey($node->id)] = ['ids' => $ids, 'next' => 0, 'send_failed' => []];
         $flowState->update(['state_data' => $stateData]);
 
-        LiveActivity::aiThinking($conversation, $node);
+        LiveActivity::aiMediaGenerating($conversation, $node, $type, 0, count($ids));
 
-        GenerateFlowMedia::dispatch($generation->id);
+        foreach ($ids as $id) {
+            GenerateFlowMedia::dispatch($id);
+        }
     }
 
     /**
@@ -6032,7 +6056,7 @@ class FlowExecutor
     {
         $generation = AiMediaGeneration::find($generationId);
 
-        if (! $generation || $generation->isTerminal()) {
+        if (! $generation) {
             return;
         }
 
@@ -6045,8 +6069,16 @@ class FlowExecutor
             || $node->type !== NodeType::AiMedia
             || $flowState->status !== FlowStateStatus::Running
             || $flowState->current_node_id !== $node->id
-            || (int) (($flowState->state_data ?? [])[AiMediaNodes::stateKey($node->id)] ?? 0) !== $generation->id
+            || ! in_array($generation->id, AiMediaNodes::parked(($flowState->state_data ?? [])[AiMediaNodes::stateKey($node->id)] ?? null)['ids'], true)
             || ! $this->stillWithTheFlow($flowState->conversation)) {
+            return;
+        }
+
+        // Already finished — this step is a retry of the delivery, queued when
+        // another of the node's files held the lock.
+        if ($generation->isTerminal()) {
+            $this->deliverAiMedia($flowState, $node, $generation->id);
+
             return;
         }
 
@@ -6089,8 +6121,7 @@ class FlowExecutor
             return;
         }
 
-        $generation->refresh();
-        $this->leaveAiMediaNode($flowState->fresh(), $node, $generation, $generation->error_code);
+        $this->deliverAiMedia($flowState, $node, $generation->id);
     }
 
     /**
@@ -6136,60 +6167,217 @@ class FlowExecutor
     }
 
     /**
-     * Stop waiting: send the file when there is one, and take a branch.
+     * Send what is ready, in the author's order, and leave once every file is
+     * accounted for.
+     *
+     * Each of the node's files is carried by its own job chain, and any of
+     * them may finish first. A file is sent only once every file before it has
+     * finished (sent or failed), so the customer receives them in the order the
+     * author wrote them — and whichever chain finishes last leaves the node.
+     * The lock is what makes "last" mean one chain: two files finishing in the
+     * same second would otherwise both read "everything is done" and take the
+     * branch twice.
+     *
+     * A chain that cannot take the lock looks again shortly instead of waiting
+     * on it: the holder may already have read this file as unfinished, and a
+     * worker blocked on a lock is a worker not polling anyone else's file.
      */
-    protected function leaveAiMediaNode(FlowState $flowState, FlowNode $node, ?AiMediaGeneration $generation, ?string $reason): void
+    protected function deliverAiMedia(FlowState $flowState, FlowNode $node, int $generationId): void
+    {
+        $lock = Cache::lock("ai-media:{$flowState->id}:{$node->id}", 120);
+
+        if (! $lock->get()) {
+            GenerateFlowMedia::dispatch($generationId)->delay(now()->addSeconds(3));
+
+            return;
+        }
+
+        $outcome = null;
+
+        try {
+            $flowState = $flowState->fresh();
+            $key = AiMediaNodes::stateKey($node->id);
+            $stateData = $flowState?->state_data ?? [];
+
+            if (! $flowState
+                || $flowState->status !== FlowStateStatus::Running
+                || $flowState->current_node_id !== $node->id
+                || ! array_key_exists($key, $stateData)) {
+                return;
+            }
+
+            $data = $node->data ?? [];
+            $parked = AiMediaNodes::parked($stateData[$key]);
+            $generations = AiMediaGeneration::whereIn('id', $parked['ids'])->get()->keyBy('id');
+            $next = $parked['next'];
+            $sendFailed = $parked['send_failed'];
+            $total = count($parked['ids']);
+
+            while ($next < $total) {
+                $generation = $generations->get($parked['ids'][$next]);
+
+                if ($generation && ! $generation->isTerminal()) {
+                    break;
+                }
+
+                if ($generation?->status === AiMediaGeneration::STATUS_COMPLETED && $generation->path
+                    && AiMediaNodes::sendsToCustomer($data)
+                    && ! $this->sendAiMediaFile($flowState, $node, $generation)) {
+                    $sendFailed[] = $generation->id;
+                }
+
+                $next++;
+            }
+
+            if ($next < $total) {
+                $stateData[$key] = ['ids' => $parked['ids'], 'next' => $next, 'send_failed' => $sendFailed];
+                $flowState->update(['state_data' => $stateData]);
+
+                LiveActivity::aiMediaGenerating(
+                    $flowState->conversation,
+                    $node,
+                    AiMediaNodes::type($data),
+                    $generations->filter(fn (AiMediaGeneration $g) => $g->isTerminal())->count(),
+                    $total,
+                );
+
+                return;
+            }
+
+            // Every file is accounted for. Unparked while the lock is held, so
+            // no other chain can reach this point after it.
+            unset($stateData[$key]);
+            $flowState->update(['state_data' => $stateData]);
+
+            $outcome = $this->aiMediaOutcome($data, $parked['ids'], $generations, $sendFailed);
+        } finally {
+            $lock->release();
+        }
+
+        if ($outcome !== null) {
+            $this->finishAiMediaNode($flowState, $node, $outcome);
+        }
+    }
+
+    /**
+     * Send one generated file to the customer, with the caption written for it.
+     */
+    protected function sendAiMediaFile(FlowState $flowState, FlowNode $node, AiMediaGeneration $generation): bool
     {
         $data = $node->data ?? [];
-        $conversation = $flowState->conversation;
-        $url = $generation?->status === AiMediaGeneration::STATUS_COMPLETED && $generation->path
-            ? MediaStorage::publishedUrl($generation->path)
-            : null;
+        $request = $generation->request ?? [];
 
-        if ($url !== null && AiMediaNodes::sendsToCustomer($data)) {
-            try {
-                $message = $this->sendByMessageType($conversation, [
-                    'message_type' => $generation->type,
-                    'attachment_url' => $url,
-                    'body' => (string) ($data['caption'] ?? ''),
-                    'view_once' => (bool) ($data['view_once'] ?? false),
-                ], $flowState);
+        try {
+            $message = $this->sendByMessageType($flowState->conversation, [
+                'message_type' => $generation->type,
+                'attachment_url' => MediaStorage::publishedUrl($generation->path),
+                // A generation from before captions travelled with it falls
+                // back to the node's own.
+                'body' => (string) ($request['caption'] ?? $data['caption'] ?? ''),
+                'view_once' => (bool) ($data['view_once'] ?? false),
+            ], $flowState);
 
-                if ($message) {
-                    broadcast(new MessageReceived($message));
-                } else {
-                    $reason = 'send_failed';
-                }
-            } catch (\Throwable $th) {
-                Log::error('FlowExecutor: Failed to send generated media', [
-                    'node_id' => $node->id,
-                    'ai_media_generation_id' => $generation->id,
-                    'error' => $th->getMessage(),
-                ]);
+            if ($message) {
+                broadcast(new MessageReceived($message));
 
-                $reason = 'send_failed';
+                return true;
+            }
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Failed to send generated media', [
+                'node_id' => $node->id,
+                'ai_media_generation_id' => $generation->id,
+                'error' => $th->getMessage(),
+            ]);
+        }
+
+        return false;
+    }
+
+    /**
+     * What the node made, once every file is accounted for: the files that
+     * reached their destination, and why the rest did not.
+     *
+     * @param  array<string, mixed>  $data
+     * @param  list<int>  $ids
+     * @param  \Illuminate\Support\Collection<int, AiMediaGeneration>  $generations
+     * @param  list<int>  $sendFailed
+     * @return array{type: string, urls: list<string>, failed: int, total: int, reason: ?string}
+     */
+    protected function aiMediaOutcome(array $data, array $ids, $generations, array $sendFailed): array
+    {
+        $urls = [];
+        $reasons = [];
+
+        foreach ($ids as $id) {
+            $generation = $generations->get($id);
+            $made = $generation?->status === AiMediaGeneration::STATUS_COMPLETED && $generation->path;
+
+            if ($made && ! in_array($id, $sendFailed, true)) {
+                $urls[] = MediaStorage::publishedUrl($generation->path);
+            } else {
+                $reasons[] = $made ? 'send_failed' : ($generation?->error_code ?: 'provider_error');
             }
         }
 
-        $generated = $url !== null && $reason === null;
+        return [
+            'type' => (string) ($generations->first()?->type ?? AiMediaNodes::type($data)),
+            'urls' => $urls,
+            'failed' => count($reasons),
+            'total' => count($ids),
+            'reason' => $reasons[0] ?? null,
+        ];
+    }
+
+    /**
+     * Write what the node made into the flow's variables and take a branch.
+     *
+     * GENERATED only when every file made it. When some did, they have
+     * already been sent, and the flow still leaves through FAILED: the author's
+     * failure path is where a person picks up what is missing.
+     *
+     * @param  array{type: string, urls: list<string>, failed: int, total: int, reason: ?string}  $outcome
+     */
+    protected function finishAiMediaNode(FlowState $flowState, FlowNode $node, array $outcome): void
+    {
+        $conversation = $flowState->conversation;
+        $generated = $outcome['failed'] === 0 && $outcome['urls'] !== [];
 
         $stateData = $flowState->fresh()->state_data ?? [];
         unset($stateData[AiMediaNodes::stateKey($node->id)]);
-        $stateData['ai_media_url'] = (string) $url;
-        $stateData['ai_media_type'] = (string) ($generation?->type ?? AiMediaNodes::type($data));
+        $stateData['ai_media_url'] = (string) ($outcome['urls'][0] ?? '');
+        $stateData['ai_media_urls'] = implode("\n", $outcome['urls']);
+        $stateData['ai_media_count'] = count($outcome['urls']);
+        $stateData['ai_media_failed_count'] = $outcome['failed'];
+        $stateData['ai_media_type'] = $outcome['type'];
         $stateData['ai_media_status'] = $generated ? 'generated' : 'failed';
-        $stateData['ai_media_error'] = $generated ? '' : (string) $reason;
+        $stateData['ai_media_error'] = $generated ? '' : (string) $outcome['reason'];
         $flowState->update(['state_data' => $stateData]);
 
         LiveActivity::idle($conversation);
 
         if (! $generated) {
-            SystemMessage::info(
-                $conversation,
-                'AI media was not generated'.($reason ? " ({$reason})." : '.'),
-                'flow_ai_media_failed',
-                ['media_reason' => (string) $reason, 'media_type' => $stateData['ai_media_type']],
-            );
+            $reason = (string) $outcome['reason'];
+
+            if ($outcome['total'] > 1) {
+                SystemMessage::info(
+                    $conversation,
+                    "{$outcome['failed']} of {$outcome['total']} AI images were not generated ({$reason}).",
+                    'flow_ai_media_failed_some',
+                    [
+                        'media_reason' => $reason,
+                        'media_type' => $outcome['type'],
+                        'failed' => $outcome['failed'],
+                        'total' => $outcome['total'],
+                    ],
+                );
+            } else {
+                SystemMessage::info(
+                    $conversation,
+                    'AI media was not generated'.($reason !== '' ? " ({$reason})." : '.'),
+                    'flow_ai_media_failed',
+                    ['media_reason' => $reason, 'media_type' => $outcome['type']],
+                );
+            }
         }
 
         $edge = $node->outgoingEdges()

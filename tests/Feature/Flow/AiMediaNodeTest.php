@@ -77,7 +77,13 @@ function fakeMediaHub(array ...$answers): void
     Http::fake([
         'graph.facebook.com/*' => fn () => Http::response(['messages' => [['id' => 'wamid.OUT'.uniqid()]], 'id' => 'media-1']),
         'api-ia.ipbr.pro/files/*' => Http::response('generated-bytes', 200, ['Content-Type' => 'image/png']),
-        'api-ia.ipbr.pro/*' => function () use (&$queue) {
+        // Http::fake runs every matching callback, so the file download would
+        // otherwise use up the next generation's answer.
+        'api-ia.ipbr.pro/*' => function (HubRequest $request) use (&$queue) {
+            if (str_contains($request->url(), '/files/')) {
+                return null;
+            }
+
             return Http::response(array_merge(['id' => 'gen_1', 'provider' => 'OPENAI', 'model' => 'gpt-image-1'], array_shift($queue) ?? ['status' => 'RUNNING']));
         },
     ]);
@@ -258,4 +264,138 @@ test('a long prompt reaches the hub whole', function () {
 
     expect(mediaCreateRequest()['prompt'])->toBe($prompt)
         ->and(mb_strlen(AiMediaGeneration::sole()->prompt))->toBeGreaterThan(10000);
+});
+
+/** Three pictures, each with its own instruction and caption. */
+function threeImages(): array
+{
+    return ['images' => [
+        ['prompt' => 'Figurinha um', 'caption' => 'Um'],
+        ['prompt' => 'Figurinha dois', 'caption' => 'Dois'],
+        ['prompt' => 'Figurinha três', 'caption' => 'Três'],
+    ]];
+}
+
+/** @return list<array<string, mixed>> */
+function mediaCreateRequests(): array
+{
+    return collect(Http::recorded())
+        ->map(fn (array $pair) => $pair[0])
+        ->filter(fn (HubRequest $request) => $request->method() === 'POST' && str_ends_with($request->url(), '/media-generations'))
+        ->map(fn (HubRequest $request) => $request->data())
+        ->values()
+        ->all();
+}
+
+test('several images are all asked for, then sent in order with their own captions', function () {
+    [$conversation] = mediaFlow(threeImages());
+    fakeMediaHub(mediaDone(), mediaDone(), mediaDone());
+
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    $state = FlowState::where('conversation_id', $conversation->id)->first()->state_data;
+
+    expect(collect(mediaCreateRequests())->pluck('prompt')->all())->toBe(['Figurinha um', 'Figurinha dois', 'Figurinha três'])
+        ->and(AiMediaGeneration::pluck('status')->unique()->all())->toBe(['completed'])
+        ->and(mediaSent($conversation))->toBe(['text:Criando sua figurinha…', 'image:Um', 'image:Dois', 'image:Três', 'text:Gostou?'])
+        ->and($state['ai_media_status'])->toBe('generated')
+        ->and($state['ai_media_count'])->toBe(3)
+        ->and($state['ai_media_failed_count'])->toBe(0)
+        ->and(explode("\n", $state['ai_media_urls']))->toHaveCount(3)
+        ->and($state['ai_media_url'])->toBe(explode("\n", $state['ai_media_urls'])[0])
+        ->and($state)->not->toHaveKey(AiMediaNodes::stateKey(FlowNode::where('type', NodeType::AiMedia)->value('id')));
+});
+
+test('every image is started before any of them is waited on', function () {
+    Illuminate\Support\Facades\Queue::fake();
+    [$conversation, $node] = mediaFlow(threeImages());
+
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    $ids = AiMediaGeneration::orderBy('id')->pluck('id')->all();
+
+    expect($ids)->toHaveCount(3)
+        ->and(FlowState::where('conversation_id', $conversation->id)->first()->state_data[AiMediaNodes::stateKey($node->id)]['ids'])->toBe($ids);
+
+    Illuminate\Support\Facades\Queue::assertPushed(App\Jobs\GenerateFlowMedia::class, 3);
+});
+
+test('an image that finishes early waits for the ones before it, so the order holds', function () {
+    Illuminate\Support\Facades\Queue::fake();
+    [$conversation] = mediaFlow(threeImages());
+    AiAgentFixtures::openWithWelcome($conversation);
+    [$first, $second, $third] = AiMediaGeneration::orderBy('id')->pluck('id')->all();
+    fakeMediaHub(mediaDone(), mediaDone(), mediaDone());
+
+    $images = fn () => array_values(array_filter(mediaSent($conversation), fn (string $sent) => str_starts_with($sent, 'image:')));
+
+    (new App\Services\Flow\FlowExecutor)->runAiMedia($third);
+    (new App\Services\Flow\FlowExecutor)->runAiMedia($second);
+
+    expect($images())->toBe([])
+        ->and(AiMediaGeneration::whereIn('id', [$second, $third])->pluck('status')->unique()->all())->toBe(['completed']);
+
+    (new App\Services\Flow\FlowExecutor)->runAiMedia($first);
+
+    expect($images())->toBe(['image:Um', 'image:Dois', 'image:Três'])
+        ->and(FlowState::where('conversation_id', $conversation->id)->first()->state_data['ai_media_status'])->toBe('generated');
+});
+
+test('when some images fail, the ones that worked are sent and the flow takes failed', function () {
+    [$conversation] = mediaFlow(threeImages());
+    fakeMediaHub(
+        mediaDone(),
+        ['status' => 'FAILED', 'error' => ['code' => 'content_policy', 'message' => 'Rejected by the safety system.']],
+        mediaDone(),
+    );
+
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    $state = FlowState::where('conversation_id', $conversation->id)->first()->state_data;
+    $note = $conversation->messages()->where('meta->info->code', 'flow_ai_media_failed_some')->sole();
+
+    expect(mediaSent($conversation))->toBe(['text:Criando sua figurinha…', 'image:Um', 'image:Três', 'text:Vou chamar alguém.'])
+        ->and($state['ai_media_status'])->toBe('failed')
+        ->and($state['ai_media_error'])->toBe('content_policy')
+        ->and($state['ai_media_count'])->toBe(2)
+        ->and($state['ai_media_failed_count'])->toBe(1)
+        ->and($note->meta['info']['params'])->toMatchArray(['failed' => 1, 'total' => 3, 'media_reason' => 'content_policy']);
+});
+
+test('rows without an instruction are skipped, and only an image node reads the list', function () {
+    expect(AiMediaNodes::items(['images' => [['prompt' => ' '], ['prompt' => 'Uma'], ['caption' => 'sem instrução']]]))
+        ->toBe([['prompt' => 'Uma', 'caption' => '']])
+        ->and(AiMediaNodes::items(['media_type' => 'audio', 'prompt' => 'Olá', 'images' => [['prompt' => 'Uma'], ['prompt' => 'Duas']]]))
+        ->toBe([['prompt' => 'Olá', 'caption' => '']])
+        ->and(AiMediaNodes::items(['prompt' => 'Antiga', 'caption' => 'Legenda']))
+        ->toBe([['prompt' => 'Antiga', 'caption' => 'Legenda']]);
+});
+
+test('a node may ask for up to ten images', function () {
+    $node = fn (int $count) => [['type' => 'ai_media', 'data' => [
+        'images' => array_fill(0, $count, ['prompt' => 'Figurinha']),
+    ]]];
+
+    App\Services\Flow\FlowBlueprint::validateNodes($node(AiMediaNodes::MAX_IMAGES));
+
+    expect(AiMediaNodes::MAX_IMAGES)->toBe(10)
+        ->and(fn () => App\Services\Flow\FlowBlueprint::validateNodes($node(AiMediaNodes::MAX_IMAGES + 1)))
+        ->toThrow(Illuminate\Validation\ValidationException::class);
+});
+
+test('a node parked on a single generation before the list existed still finishes', function () {
+    Illuminate\Support\Facades\Queue::fake();
+    [$conversation, $node] = mediaFlow();
+    AiAgentFixtures::openWithWelcome($conversation);
+    $generation = AiMediaGeneration::sole();
+
+    // The shape a node parked before this change holds: a bare id.
+    $flowState = FlowState::where('conversation_id', $conversation->id)->first();
+    $flowState->update(['state_data' => array_merge($flowState->state_data, [AiMediaNodes::stateKey($node->id) => $generation->id])]);
+    fakeMediaHub(mediaDone());
+
+    (new App\Services\Flow\FlowExecutor)->runAiMedia($generation->id);
+
+    expect(mediaSent($conversation))->toContain('image:Aqui está!')
+        ->and($flowState->fresh()->state_data['ai_media_status'])->toBe('generated');
 });
