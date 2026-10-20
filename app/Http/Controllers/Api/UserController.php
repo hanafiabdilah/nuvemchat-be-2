@@ -56,6 +56,11 @@ class UserController extends Controller
                     'due_date' => $renewal->period_start?->toIso8601String(),
                     'overdue' => $renewal->period_start !== null && $renewal->period_start->isPast(),
                 ] : null,
+                // A card plan whose renewal the bank refused (or that waits on
+                // the cardholder): the same Billing badge, for a cycle that
+                // has no invoice to pay by hand — it is paid with a new card.
+                'card_payment_due' => $tenant->currentSubscription !== null
+                    && app(BillingService::class)->renewalPaymentDue($tenant->currentSubscription) !== null,
             ];
 
             // Whether the first-run guide still stands between this workspace

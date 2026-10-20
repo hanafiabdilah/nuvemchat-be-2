@@ -238,7 +238,9 @@ it('reports a refused card as a decline and leaves the running plan alone', func
     $invoice = $subscription->invoices()->first();
 
     expect($invoice->status)->toBe(InvoiceStatus::Failed)
-        ->and($invoice->meta['failure']['decline'])->toBe(['category' => 'temporary', 'code' => 'insufficient_funds'])
+        ->and($invoice->meta['failure']['decline'])->toBe(['category' => 'temporary', 'code' => 'insufficient_funds', 'advice' => null])
+        // What the checkout reads to say *why*, in the reader's language.
+        ->and((new \App\Http\Resources\Billing\InvoiceResource($invoice))->resolve()['decline_reason'])->toBe('insufficient_funds')
         ->and($subscription->fresh()->status)->toBe(SubscriptionStatus::Cancelled)
         ->and($subscription->fresh()->payment_instrument_id)->toBeNull()
         ->and($tenant->fresh()->current_subscription_id)->toBe($comp->id);

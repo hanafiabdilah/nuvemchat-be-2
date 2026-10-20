@@ -5,6 +5,7 @@ namespace App\Http\Resources\Billing;
 use App\Models\Connection;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Gallery\GalleryStorage;
@@ -19,6 +20,21 @@ class SubscriptionResource extends JsonResource
     public function withUsage(bool $value = true): static
     {
         $this->withUsage = $value;
+
+        return $this;
+    }
+
+    /**
+     * Whether to attach `renewal_card`: the form to change the card behind a
+     * plan we renew ourselves, and the cycle it owes if a renewal was refused.
+     * Opt-in — it reads invoices, and only the workspace's own Billing page
+     * needs it.
+     */
+    protected bool $withRenewalCard = false;
+
+    public function withRenewalCard(bool $value = true): static
+    {
+        $this->withRenewalCard = $value;
 
         return $this;
     }
@@ -43,6 +59,12 @@ class SubscriptionResource extends JsonResource
             'quotas' => $entitlements['quotas'],
             'features' => $entitlements['features'],
             $this->mergeWhen($this->withUsage, fn () => ['usage' => $this->currentUsage()]),
+            // Null where the card cannot be changed from the dashboard (not a
+            // card, paid by hand each cycle, or kept by a gateway we cannot
+            // reach from here). The session is publishable-key only.
+            $this->mergeWhen($this->withRenewalCard, fn () => [
+                'renewal_card' => app(BillingService::class)->renewalCardState($this->resource),
+            ]),
             'current_period_start' => $this->current_period_start,
             'current_period_end' => $this->current_period_end,
             'trial_ends_at' => $this->trial_ends_at,

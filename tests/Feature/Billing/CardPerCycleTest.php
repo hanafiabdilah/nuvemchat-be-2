@@ -251,7 +251,10 @@ it('keeps the invoice payable after a refused card, so another one can be tried 
     $pay = fn () => $this->actingAs($tenant->user, 'sanctum')
         ->postJson("/api/billing/invoices/{$renewal->id}/pay-card", ['saved_card_id' => $card->id, 'card_token' => 'tok']);
 
-    $pay()->assertStatus(422)->assertJsonPath('code', 'card_declined');
+    $pay()->assertStatus(422)
+        ->assertJsonPath('code', 'card_declined')
+        // Why, not just that: the page says "no funds", not "check the card".
+        ->assertJsonPath('decline_reason', 'insufficient_funds');
 
     expect($renewal->fresh()->status)->toBe(InvoiceStatus::Pending)
         ->and($renewal->fresh()->payment_id)->toBeNull()

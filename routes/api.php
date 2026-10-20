@@ -222,6 +222,13 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         Route::put('/profile', [BillingController::class, 'updateBillingProfile'])->middleware('permission:billing.manage')->name('profile-update');
         Route::put('/address', [BillingController::class, 'updateBillingAddress'])->middleware('permission:billing.manage')->name('address-update');
         Route::get('/subscription', [BillingController::class, 'subscription'])->middleware('permission:billing.view')->name('subscription');
+        // The card behind a plan we renew ourselves: change it, and pay the
+        // cycle a refused renewal left owing. Throttled — each call reaches
+        // the issuer, and a page retrying in a loop would look like card testing.
+        Route::post('/subscription/card', [BillingController::class, 'updateRenewalCard'])
+            ->middleware(['permission:billing.manage', 'throttle:10,1'])->name('subscription.card');
+        Route::post('/subscription/card/confirm', [BillingController::class, 'confirmRenewalCard'])
+            ->middleware(['permission:billing.manage', 'throttle:20,1'])->name('subscription.card.confirm');
         Route::get('/invoices', [BillingController::class, 'invoices'])->middleware('permission:billing.view')->name('invoices');
         Route::get('/invoices/{invoice}/status', [BillingController::class, 'invoiceStatus'])->middleware('permission:billing.view')->name('invoice-status');
         Route::post('/invoices/{invoice}/pay-card', [BillingController::class, 'payInvoiceWithCard'])->middleware('permission:billing.manage')->name('invoice-pay-card');

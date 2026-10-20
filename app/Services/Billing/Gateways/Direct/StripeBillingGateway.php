@@ -5,6 +5,7 @@ namespace App\Services\Billing\Gateways\Direct;
 use App\Models\Tenant;
 use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
+use App\Services\Billing\Gateways\KeepsRenewalCards;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use App\Support\Money;
@@ -46,7 +47,7 @@ use Illuminate\Support\Facades\Http;
  * direct gateways: the account is ours, so "check your Stripe key" is never
  * something to say to a customer.
  */
-class StripeBillingGateway implements BillingGateway
+class StripeBillingGateway implements BillingGateway, KeepsRenewalCards
 {
     /** How a kept card is stored in `subscriptions.payment_instrument_id`. */
     public const INSTRUMENT_PREFIX = 'stripe_pm:';
@@ -392,21 +393,142 @@ class StripeBillingGateway implements BillingGateway
         ]);
     }
 
-    /** @return array{category: string, code: ?string} */
+    /**
+     * `category` is what a renewal acts on (see RenewalRetry):
+     *
+     *  - `permanent` — the card is gone (lost, stolen, closed, expired) or the
+     *    issuer said `do_not_try_again`. The card is dropped.
+     *  - `action_required` — the issuer wants the cardholder: 3-D Secure
+     *    (`authentication_required`), or `confirm_card_data`. Retrying with
+     *    nobody at the screen gets the same answer, so the Billing page asks.
+     *  - `temporary` — anything else, notably no funds today.
+     *
+     * `advice` is the issuer's own advice code when it sends one. It overrides
+     * our guess because it is the bank telling us, and ignoring a
+     * `do_not_try_again` is what the card networks fine merchants for.
+     *
+     * @return array{category: string, code: ?string, advice: ?string}
+     */
     protected function declineOf(array $error): array
     {
         // `decline_code` is the issuer's reason; `code` is Stripe's own
         // (`expired_card`, `authentication_required`, or just `card_declined`).
         $code = $error['decline_code'] ?? $error['code'] ?? null;
+        $advice = $error['advice_code'] ?? null;
 
         return [
             'category' => match (true) {
-                $code === null => 'unknown',
+                $advice === 'do_not_try_again',
                 in_array($code, self::PERMANENT_DECLINES, true),
                 in_array($error['code'] ?? null, self::PERMANENT_DECLINES, true) => 'permanent',
+                $advice === 'confirm_card_data',
+                ($error['code'] ?? null) === 'authentication_required',
+                $code === 'authentication_required' => 'action_required',
+                $code === null => 'unknown',
                 default => 'temporary',
             },
             'code' => $code,
+            'advice' => $advice,
+        ];
+    }
+
+    // --- Replacing the card behind a plan ------------------------------------
+
+    /**
+     * Keep a new card for later renewals without charging it: a SetupIntent
+     * with `usage=off_session`, confirmed now.
+     *
+     * The issuer still gets a word in — a SetupIntent can be refused, or come
+     * back asking for 3-D Secure — so this is checked the way a first charge
+     * is, just without the money. A card that was never confirmed for
+     * off-session use is the one that fails at the next renewal.
+     */
+    public function keepCard(array $payload, string $idempotencyKey): array
+    {
+        $customerId = filled($payload['customer_id'] ?? null)
+            ? (string) $payload['customer_id']
+            : $this->createCustomer($payload['customer'] ?? [], $idempotencyKey);
+
+        $response = $this->http('setup-'.$idempotencyKey)->post('/v1/setup_intents', array_filter([
+            'customer' => $customerId,
+            'payment_method' => (string) ($payload['card_token'] ?? ''),
+            'confirm' => 'true',
+            'usage' => 'off_session',
+            // Same reason as charge(): the card is the payment_method passed,
+            // and redirects off keeps 3-D Secure on our own page.
+            'automatic_payment_methods' => ['enabled' => 'true', 'allow_redirects' => 'never'],
+            'metadata' => array_filter([
+                'tenant_id' => $payload['metadata']['tenant_id'] ?? null,
+                'subscription_id' => $payload['metadata']['subscription_id'] ?? null,
+            ], fn ($value) => $value !== null),
+            'expand' => ['payment_method'],
+        ], fn ($value) => $value !== null && $value !== []));
+
+        // Refused by the issuer: the SetupIntent exists and says why.
+        if ($response->status() === 402) {
+            $error = $response->json('error') ?? [];
+            $intent = is_array($error['setup_intent'] ?? null) ? $error['setup_intent'] : [];
+
+            return array_merge($this->normalizeSetup($intent + ['customer' => $customerId]), [
+                'status' => 'declined',
+                'client_secret' => null,
+                'instrument' => null,
+                'decline' => $this->declineOf($error),
+            ]);
+        }
+
+        return $this->normalizeSetup($this->decode($response));
+    }
+
+    public function readKeptCard(string $id): array
+    {
+        $response = $this->http()->get('/v1/setup_intents/'.rawurlencode($id), ['expand' => ['payment_method']]);
+
+        if ($response->status() === 404) {
+            return ['id' => $id, 'status' => 'unknown', 'client_secret' => null, 'instrument' => null, 'customer' => null, 'card' => null, 'decline' => null];
+        }
+
+        return $this->normalizeSetup($this->decode($response));
+    }
+
+    public function cancelPayment(string $id): void
+    {
+        $this->http('cancel-'.$id)->post('/v1/payment_intents/'.rawurlencode($id).'/cancel');
+    }
+
+    /** A SetupIntent in KeepsRenewalCards' vocabulary. */
+    public function normalizeSetup(array $intent): array
+    {
+        $status = (string) ($intent['status'] ?? '');
+        $error = $intent['last_setup_error'] ?? null;
+        $customerId = is_array($intent['customer'] ?? null) ? ($intent['customer']['id'] ?? null) : ($intent['customer'] ?? null);
+        $method = $intent['payment_method'] ?? null;
+        $methodId = is_array($method) ? ($method['id'] ?? null) : $method;
+        $card = is_array($method) ? ($method['card'] ?? null) : null;
+
+        $normalized = match ($status) {
+            'succeeded' => 'ready',
+            'requires_action', 'processing', 'requires_confirmation' => 'pending',
+            'canceled' => 'declined',
+            'requires_payment_method' => $error ? 'declined' : 'unknown',
+            default => 'unknown',
+        };
+
+        return [
+            'id' => isset($intent['id']) ? (string) $intent['id'] : null,
+            'status' => $normalized,
+            'client_secret' => $status === 'requires_action' ? ($intent['client_secret'] ?? null) : null,
+            'instrument' => $normalized === 'ready' && $customerId && $methodId
+                ? ['id' => self::INSTRUMENT_PREFIX.$customerId.':'.$methodId]
+                : null,
+            'customer' => $customerId ? ['id' => (string) $customerId] : null,
+            'card' => is_array($card) ? array_filter([
+                'brand' => $card['brand'] ?? null,
+                'last_four' => $card['last4'] ?? null,
+                'exp_month' => isset($card['exp_month']) ? (int) $card['exp_month'] : null,
+                'exp_year' => isset($card['exp_year']) ? (int) $card['exp_year'] : null,
+            ], fn ($value) => $value !== null) : null,
+            'decline' => $normalized === 'declined' ? $this->declineOf($error ?? ['code' => $status === 'canceled' ? 'canceled' : null]) : null,
         ];
     }
 

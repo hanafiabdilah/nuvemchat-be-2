@@ -264,7 +264,7 @@ class BillingController extends Controller
         $pendingInvoice = $pending?->invoices()->where('status', InvoiceStatus::Pending->value)->latest('id')->first();
 
         return response()->json([
-            'data' => $subscription ? (new SubscriptionResource($subscription))->withUsage() : null,
+            'data' => $subscription ? (new SubscriptionResource($subscription))->withUsage()->withRenewalCard() : null,
             // An upgrade started and not yet paid. The plan above keeps working
             // until it is; this is what lets the page offer to pay or drop it.
             'pending_change' => $pending ? [
@@ -508,6 +508,55 @@ class BillingController extends Controller
         );
 
         return response()->json(['data' => new InvoiceResource($invoice)]);
+    }
+
+    /**
+     * Put a new card behind the plan — and pay the cycle it owes with it, when
+     * a renewal was refused. One button on the Billing page: "use this card".
+     *
+     * Answers what the page has to do next: nothing (`paid`, `saved`), finish
+     * 3-D Secure with the client secret and read back (`requires_action`), or
+     * wait (`processing`). A refused card is 422 `card_declined` with
+     * `decline_reason`, and the card that was there stays.
+     */
+    public function updateRenewalCard(Request $request)
+    {
+        $validated = $request->validate([
+            // A Stripe PaymentMethod made in the browser; never card data.
+            'card_token' => ['required', 'string', 'max:128'],
+        ]);
+
+        $tenant = $this->tenant($request);
+        $result = $this->billing->updateRenewalCard($tenant, $validated['card_token'], $request->user()->email);
+
+        return response()->json($this->renewalCardResponse($tenant, $result));
+    }
+
+    /** After the page finished 3-D Secure on a card being kept (nothing owed). */
+    public function confirmRenewalCard(Request $request)
+    {
+        $validated = $request->validate([
+            'setup_id' => ['required', 'string', 'max:128'],
+        ]);
+
+        $tenant = $this->tenant($request);
+        $result = $this->billing->confirmRenewalCard($tenant, $validated['setup_id']);
+
+        return response()->json($this->renewalCardResponse($tenant, $result));
+    }
+
+    /** @param  array<string, mixed>  $result */
+    protected function renewalCardResponse(Tenant $tenant, array $result): array
+    {
+        $subscription = $tenant->fresh()->currentSubscription?->loadMissing('plan');
+
+        return [
+            'status' => $result['status'],
+            'client_secret' => $result['client_secret'] ?? null,
+            'setup_id' => $result['setup_id'] ?? null,
+            'invoice' => isset($result['invoice']) ? new InvoiceResource($result['invoice']) : null,
+            'data' => $subscription ? (new SubscriptionResource($subscription))->withRenewalCard() : null,
+        ];
     }
 
     public function cancel(Request $request)

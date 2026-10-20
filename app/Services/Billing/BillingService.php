@@ -8,6 +8,7 @@ use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Enums\Notification\NotificationType;
 use App\Events\SubscriptionUpdated;
+use App\Exceptions\Billing\CardDeclinedException;
 use App\Exceptions\Billing\MissingBillingIdentityException;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
 use App\Exceptions\UpstreamServiceException;
@@ -24,6 +25,7 @@ use App\Services\Billing\Gateways\BillingGateway;
 use App\Services\Billing\Gateways\BillingGateways;
 use App\Services\Billing\Gateways\Direct\DirectBillingConfig;
 use App\Services\Billing\Gateways\HoldsRecurringAuthorisations;
+use App\Services\Billing\Gateways\KeepsRenewalCards;
 use App\Services\Billing\Gateways\OpensCardCheckouts;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditService;
@@ -702,7 +704,7 @@ class BillingService
 
         $rememberFailure(null, $payment);
 
-        throw new UserFacingException('O cartão foi recusado. Tente outro cartão.', 422, 'card_declined');
+        throw CardDeclinedException::from($payment['decline'] ?? null);
     }
 
     /**
@@ -786,6 +788,412 @@ class BillingService
         }
 
         return $invoice->fresh();
+    }
+
+    // --- The card behind a plan that renews itself ------------------------------
+
+    /**
+     * What the Billing page needs to offer "change card" and "pay now" for a
+     * card plan we renew ourselves, or null where neither applies.
+     *
+     * Only a gateway that can keep a card on our page (KeepsRenewalCards —
+     * Stripe) gets the form; a card held by a Mercado Pago preapproval, or by
+     * the payment service, is out of reach from here.
+     *
+     * @return array{session: array<string, mixed>, payment_due: array<string, mixed>|null}|null
+     */
+    public function renewalCardState(Subscription $subscription): ?array
+    {
+        $gateway = $this->renewalCardGateway($subscription);
+
+        if ($gateway === null) {
+            return null;
+        }
+
+        return [
+            'session' => $gateway->cardSession($subscription->tenant),
+            'payment_due' => $this->renewalPaymentDue($subscription),
+        ];
+    }
+
+    /**
+     * The cycle a card plan has not managed to pay, as the Billing page shows
+     * it — or null when nothing is owed yet.
+     *
+     * Owed means: the renewal was refused (and is not paid since), the plan
+     * has lapsed, or the bank is waiting for the cardholder to confirm a
+     * charge started on this page. A renewal simply not attempted yet is not
+     * owed — it is the scheduler's, and it may well go through.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function renewalPaymentDue(Subscription $subscription): ?array
+    {
+        if ($this->renewalCardGateway($subscription) === null) {
+            return null;
+        }
+
+        $due = $this->outstandingRenewal($subscription);
+
+        if ($due === null) {
+            return null;
+        }
+
+        // The refusal that explains it: this cycle's own, or — once the plan
+        // has lapsed and the cycle starts over each day — the latest renewal
+        // this subscription had refused.
+        $last = $due['invoice']?->status === InvoiceStatus::Failed ? $due['invoice'] : $subscription->invoices()
+            ->where('status', InvoiceStatus::Failed->value)
+            ->whereNotNull('meta->renewal_attempts')
+            ->latest('id')
+            ->first();
+        $decline = $last?->meta['failure']['decline'] ?? null;
+
+        return [
+            'amount_cents' => (int) $due['terms']['price_cents'],
+            'currency' => $subscription->currency ?: ($subscription->plan?->currency ?? 'BRL'),
+            'period_start' => $due['period_start']->toIso8601String(),
+            'overdue' => $subscription->current_period_end->isPast(),
+            // Null when nobody refused anything (our side failed, or the plan
+            // simply ran out): "your bank declined" would not be true.
+            'reason' => $decline !== null ? CardDecline::reason($decline) : null,
+            'awaiting_confirmation' => $due['invoice']?->status === InvoiceStatus::Pending,
+            // When the scheduler tries the kept card again, if it will.
+            'next_attempt_at' => $due['invoice'] && $subscription->payment_instrument_id
+                ? RenewalRetry::nextAttemptAt($due['invoice'])?->toIso8601String()
+                : null,
+        ];
+    }
+
+    /**
+     * Put a new card behind the workspace's plan — and, when a cycle is owed,
+     * pay it with that card now.
+     *
+     * Either way it is one action from the customer's side: "use this card".
+     * Owed, the card is charged on-session for the cycle (on that cycle's own
+     * invoice) and kept for later ones; not owed, it is only kept, confirmed
+     * with the issuer for off-session use but not charged.
+     *
+     * ⚠️ The new card becomes the plan's card only once the bank has said yes
+     * — a charge paid, or a card confirmed. A refused card never replaces one
+     * that works.
+     *
+     * @return array{status: 'paid'|'saved'|'requires_action'|'processing', client_secret?: ?string, setup_id?: ?string, invoice?: ?Invoice}
+     */
+    public function updateRenewalCard(Tenant $tenant, string $cardToken, ?string $payerEmail = null): array
+    {
+        $subscription = $tenant->currentSubscription;
+        $gateway = $subscription ? $this->renewalCardGateway($subscription) : null;
+
+        if ($gateway === null) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'card_token' => __('This plan is not paid by a card that can be changed here.'),
+            ]);
+        }
+
+        $this->assertBillable($tenant);
+
+        $lock = Cache::lock($this->renewalLockKey($subscription), 120);
+
+        if (! $lock->get()) {
+            throw new UserFacingException(
+                'Estamos cobrando esta renovação neste momento. Aguarde um minuto e confira o seu plano antes de tentar de novo.',
+                409,
+                'renewal_in_progress',
+            );
+        }
+
+        try {
+            $subscription->refresh();
+            $due = $this->outstandingRenewal($subscription);
+
+            return $due !== null
+                ? $this->payRenewalWithNewCard($subscription, $gateway, $due, $cardToken, $payerEmail)
+                : $this->keepRenewalCard($subscription, $gateway, $cardToken, $payerEmail);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Read back a card the bank wanted the cardholder to confirm (3-D Secure),
+     * after the page finished that confirmation.
+     *
+     * @return array{status: 'saved'|'processing'}
+     */
+    public function confirmRenewalCard(Tenant $tenant, string $setupId): array
+    {
+        $key = $this->renewalCardKey($tenant, $setupId);
+        $subscriptionId = Cache::get($key);
+        $subscription = $tenant->currentSubscription;
+
+        // Only the confirmation this workspace started, for the plan it still has.
+        if ($subscriptionId === null || $subscription === null || (int) $subscriptionId !== (int) $subscription->id) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'setup_id' => __('This card confirmation has expired. Add the card again.'),
+            ]);
+        }
+
+        $gateway = $this->renewalCardGateway($subscription);
+
+        if ($gateway === null) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'card_token' => __('This plan is not paid by a card that can be changed here.'),
+            ]);
+        }
+
+        $result = $gateway->readKeptCard($setupId);
+        $status = $result['status'] ?? null;
+
+        if ($status === 'ready') {
+            $this->rememberInstrument($subscription, $result);
+            Cache::forget($key);
+            $this->fireUpdated($subscription);
+
+            return ['status' => 'saved'];
+        }
+
+        if ($status === 'declined') {
+            Cache::forget($key);
+
+            throw CardDeclinedException::from($result['decline'] ?? null);
+        }
+
+        // Still with the bank: the page asks again in a moment.
+        return ['status' => 'processing'];
+    }
+
+    /** The gateway that can swap this plan's card on our page, or null. */
+    protected function renewalCardGateway(Subscription $subscription): (BillingGateway&KeepsRenewalCards)|null
+    {
+        if ($subscription->payment_method !== PaymentMethod::Card
+            || $subscription->paysCardPerCycle()
+            || $subscription->current_period_end === null
+            || ! in_array($subscription->status, [
+                SubscriptionStatus::Active,
+                SubscriptionStatus::Trialing,
+                SubscriptionStatus::PastDue,
+                SubscriptionStatus::Grace,
+            ], true)) {
+            return null;
+        }
+
+        $gateway = $this->gateways->forSubscription($subscription);
+
+        return $gateway instanceof KeepsRenewalCards && $gateway->isConfigured() ? $gateway : null;
+    }
+
+    /**
+     * The cycle owed by a card plan, with the invoice it already has — or null
+     * when nothing is owed (see renewalPaymentDue()).
+     *
+     * @return array{period_start: CarbonInterface, reference: string, terms: array<string, mixed>, invoice: ?Invoice}|null
+     */
+    protected function outstandingRenewal(Subscription $subscription): ?array
+    {
+        $periodStart = $this->renewalPeriodStart($subscription);
+        $reference = $this->orderReference($subscription, $periodStart);
+        $invoice = Invoice::whereIn('order_reference', [
+            $reference,
+            $this->legacyOrderReference($subscription, $periodStart),
+        ])->first();
+
+        $status = $invoice?->status;
+
+        if (in_array($status, [InvoiceStatus::Paid, InvoiceStatus::Refunded], true)) {
+            return null;
+        }
+
+        $waitingOnCardholder = $status === InvoiceStatus::Pending
+            && filled($invoice->meta['authentication']['client_secret'] ?? null);
+
+        // In flight with nobody involved (the scheduler's charge, or a gateway
+        // that has not answered): paying again now could pay the cycle twice.
+        if ($status === InvoiceStatus::Pending && ! $waitingOnCardholder) {
+            return null;
+        }
+
+        $lapsed = $subscription->current_period_end->isPast()
+            || in_array($subscription->status, [SubscriptionStatus::PastDue, SubscriptionStatus::Grace], true);
+
+        if (! $lapsed && $status !== InvoiceStatus::Failed && ! $waitingOnCardholder) {
+            return null;
+        }
+
+        return [
+            'period_start' => $periodStart,
+            'reference' => $reference,
+            'terms' => PlanChange::termsFor($subscription, $periodStart),
+            'invoice' => $invoice,
+        ];
+    }
+
+    /**
+     * Pay the owed cycle with the card typed now, and keep that card.
+     *
+     * On the cycle's own invoice when it has one (reopened, so the cycle still
+     * has a single invoice), or a new one under the cycle's reference.
+     *
+     * @param  array{period_start: CarbonInterface, reference: string, terms: array<string, mixed>, invoice: ?Invoice}  $due
+     * @return array<string, mixed>
+     */
+    protected function payRenewalWithNewCard(Subscription $subscription, BillingGateway&KeepsRenewalCards $gateway, array $due, string $cardToken, ?string $payerEmail): array
+    {
+        $invoice = $due['invoice'];
+
+        // An earlier attempt on this page the bank is still holding (3-D Secure
+        // never finished). Read it first — it may have been confirmed after
+        // all — and stop it before another card is tried, so the two can never
+        // both be paid.
+        if ($invoice?->status === InvoiceStatus::Pending && $invoice->payment_id) {
+            $earlier = $gateway->getPayment($invoice->payment_id);
+
+            if (($earlier['status'] ?? null) === 'paid') {
+                $this->applyPaymentUpdate($earlier, $gateway->name());
+
+                return ['status' => 'paid', 'invoice' => $invoice->fresh()];
+            }
+
+            try {
+                $gateway->cancelPayment($invoice->payment_id);
+            } catch (\Throwable $e) {
+                Log::warning('Could not cancel an unconfirmed card charge before trying another card', [
+                    'invoice_id' => $invoice->id,
+                    'payment_id' => $invoice->payment_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        $periodEnd = $due['terms']['cycle']->advance(Carbon::instance($due['period_start']));
+
+        $invoice = $invoice
+            ? $this->reopenRenewal($invoice, (int) $due['terms']['price_cents'], ['card_update' => true])
+            : Invoice::create([
+                'tenant_id' => $subscription->tenant_id,
+                'subscription_id' => $subscription->id,
+                'status' => InvoiceStatus::Pending,
+                'payment_method' => PaymentMethod::Card,
+                'gateway' => $gateway->name(),
+                'amount_cents' => (int) $due['terms']['price_cents'],
+                'currency' => $subscription->currency ?: ($subscription->plan?->currency ?? 'BRL'),
+                'period_start' => $due['period_start'],
+                'period_end' => $periodEnd,
+                'order_reference' => $due['reference'],
+                'idempotency_key' => (string) Str::uuid(),
+                'meta' => ['renewal_attempts' => 1, 'card_update' => true],
+            ]);
+
+        try {
+            $response = $gateway->createPayment([
+                'order_reference' => RenewalRetry::gatewayReference($invoice->order_reference, RenewalRetry::attempts($invoice)),
+                'amount' => $invoice->amount_cents,
+                'currency' => $invoice->currency,
+                'payment_method' => 'card',
+                'card_token' => $cardToken,
+                'installments' => 1,
+                'initiator' => 'customer',
+                'store_instrument' => true,
+                'description' => 'Renovação '.($due['terms']['plan']?->name ?? $subscription->plan?->name),
+                'customer' => $this->customerPayload($subscription->tenant, $payerEmail),
+                'metadata' => ['tenant_id' => $subscription->tenant_id, 'subscription_id' => $subscription->id],
+                // The customer the plan's card already lives under, so the new
+                // card joins it instead of opening a second one.
+                ...($subscription->payment_customer_id
+                    ? ['customer_id' => (string) $subscription->payment_customer_id]
+                    : $this->knownCustomer($subscription->tenant, $gateway)),
+            ], $invoice->idempotency_key);
+        } catch (\Throwable $e) {
+            $this->markInvoiceFailed($invoice, 'card_update', $e);
+
+            throw $e;
+        }
+
+        $payment = $response['data'] ?? [];
+        $status = $payment['status'] ?? null;
+
+        $invoice->update(['payment_id' => isset($payment['id']) ? (string) $payment['id'] : null]);
+
+        if ($status === 'paid') {
+            $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]);
+            $this->rememberInstrument($subscription, $payment);
+            $this->activate($subscription->fresh(), $invoice->period_end ?? $periodEnd);
+            $this->fireUpdated($subscription);
+
+            return ['status' => 'paid', 'invoice' => $invoice->fresh()];
+        }
+
+        if (in_array($status, ['pending', 'unknown'], true)) {
+            $secret = $payment['instructions']['client_secret'] ?? null;
+
+            if ($secret !== null) {
+                $invoice->update(['meta' => array_merge($invoice->meta ?? [], [
+                    'authentication' => ['client_secret' => $secret],
+                ])]);
+            }
+
+            return [
+                'status' => $secret !== null ? 'requires_action' : 'processing',
+                'client_secret' => $secret,
+                'invoice' => $invoice->fresh(),
+            ];
+        }
+
+        $this->markInvoiceFailed($invoice, 'card_update', payment: $payment);
+        $this->fireUpdated($subscription);
+
+        throw CardDeclinedException::from($payment['decline'] ?? null);
+    }
+
+    /**
+     * Nothing owed: keep the card for the cycles ahead, without charging it.
+     *
+     * @return array<string, mixed>
+     */
+    protected function keepRenewalCard(Subscription $subscription, BillingGateway&KeepsRenewalCards $gateway, string $cardToken, ?string $payerEmail): array
+    {
+        $result = $gateway->keepCard([
+            'card_token' => $cardToken,
+            'customer_id' => $subscription->payment_customer_id,
+            'customer' => $this->customerPayload($subscription->tenant, $payerEmail),
+            'metadata' => ['tenant_id' => $subscription->tenant_id, 'subscription_id' => $subscription->id],
+        ], (string) Str::uuid());
+
+        $status = $result['status'] ?? null;
+
+        if ($status === 'ready') {
+            $this->rememberInstrument($subscription, $result);
+            $this->fireUpdated($subscription);
+
+            return ['status' => 'saved'];
+        }
+
+        if ($status === 'pending' && filled($result['id'] ?? null)) {
+            // Read back by confirmRenewalCard() once the page has finished
+            // what the bank asked for. Scoped to the workspace and the plan.
+            Cache::put($this->renewalCardKey($subscription->tenant, (string) $result['id']), $subscription->id, now()->addHour());
+
+            return [
+                'status' => filled($result['client_secret'] ?? null) ? 'requires_action' : 'processing',
+                'client_secret' => $result['client_secret'] ?? null,
+                'setup_id' => (string) $result['id'],
+            ];
+        }
+
+        if ($status === 'declined') {
+            throw CardDeclinedException::from($result['decline'] ?? null);
+        }
+
+        throw new UserFacingException(
+            'O banco não confirmou o cartão agora. Tente de novo em alguns minutos.',
+            502,
+            'card_not_confirmed',
+        );
+    }
+
+    protected function renewalCardKey(Tenant $tenant, string $setupId): string
+    {
+        return "billing:renewal-card:{$tenant->id}:".sha1($setupId);
     }
 
     /**
@@ -1336,10 +1744,15 @@ class BillingService
      * it here is the substantive change in this migration: nothing outside this
      * codebase renews a subscription any more.
      *
-     * The order reference carries the period, so the exactly-once guarantee is
-     * the payment service's unique constraint rather than a check of ours — a
-     * double-firing scheduler, two racing workers, and an operator pressing
-     * retry all converge on the same payment.
+     * One cycle, one invoice: its order reference carries the period and is
+     * unique. A refused attempt is retried on **that same invoice**, at most
+     * once a day and only while the issuer has not said to stop (RenewalRetry)
+     * — never by issuing a second invoice for the cycle.
+     *
+     * ⚠️ Under a lock per subscription, shared with updateRenewalCard(): the
+     * hourly scheduler and a customer paying the same cycle with a new card
+     * must never both reach the gateway. Whoever comes second finds the cycle
+     * already handled — or the lock held, and leaves it for the next pass.
      *
      * @return Invoice|null null when there was nothing to charge.
      */
@@ -1362,49 +1775,76 @@ class BillingService
             return null;
         }
 
-        $periodStart = $subscription->current_period_end && $subscription->current_period_end->isFuture()
-            ? $subscription->current_period_end->copy()
-            : now();
+        $lock = Cache::lock($this->renewalLockKey($subscription), 120);
+
+        if (! $lock->get()) {
+            return null;
+        }
+
+        try {
+            // Read again under the lock: a customer may have just replaced the
+            // card, or paid the cycle, between the scheduler's query and here.
+            $subscription->refresh();
+
+            if (! $subscription->payment_instrument_id) {
+                return null;
+            }
+
+            return $this->chargeRenewalLocked($subscription, $gateway);
+        } finally {
+            $lock->release();
+        }
+    }
+
+    protected function chargeRenewalLocked(Subscription $subscription, BillingGateway $gateway): ?Invoice
+    {
+        $periodStart = $this->renewalPeriodStart($subscription);
         $terms = PlanChange::termsFor($subscription, $periodStart);
         $periodEnd = $terms['cycle']->advance(Carbon::instance($periodStart));
         $reference = $this->orderReference($subscription, $periodStart);
 
-        // Cheap local guard so a re-run does not even make the call. The
-        // service's constraint is what actually guarantees it.
-        //
         // Both shapes, because a cycle already invoiced under the colon form
         // must still read as billed — see legacyOrderReference().
-        $alreadyBilled = Invoice::whereIn('order_reference', [
+        $existing = Invoice::whereIn('order_reference', [
             $reference,
             $this->legacyOrderReference($subscription, $periodStart),
-        ])->exists();
+        ])->first();
 
-        if ($alreadyBilled) {
-            return null;
+        if ($existing) {
+            // Paid, still in flight, or refused in a way only a person can
+            // change: this cycle is handled. Otherwise it is a refusal worth
+            // one more try, today — on this invoice, not a new one.
+            if (! RenewalRetry::due($existing)) {
+                return null;
+            }
+
+            $invoice = $this->reopenRenewal($existing, $terms['price_cents']);
+        } else {
+            $invoice = Invoice::create([
+                'tenant_id' => $subscription->tenant_id,
+                'subscription_id' => $subscription->id,
+                'status' => InvoiceStatus::Pending,
+                'payment_method' => PaymentMethod::Card,
+                'gateway' => $gateway->name(),
+                'amount_cents' => $terms['price_cents'],
+                // ⚠️ The snapshot, never the live plan. Reading the currency off
+                // the plan while the amount comes from the subscription meant a
+                // plan edited from one currency to another silently re-denominated
+                // every subscription already on it: same integer, different money,
+                // on the next renewal.
+                'currency' => $subscription->currency ?: ($subscription->plan?->currency ?? 'BRL'),
+                'period_start' => $periodStart,
+                'period_end' => $periodEnd,
+                'order_reference' => $reference,
+                'idempotency_key' => (string) Str::uuid(),
+                // What marks it as a renewal the scheduler may try again.
+                'meta' => ['renewal_attempts' => 1],
+            ]);
         }
-
-        $invoice = Invoice::create([
-            'tenant_id' => $subscription->tenant_id,
-            'subscription_id' => $subscription->id,
-            'status' => InvoiceStatus::Pending,
-            'payment_method' => PaymentMethod::Card,
-            'gateway' => $gateway->name(),
-            'amount_cents' => $terms['price_cents'],
-            // ⚠️ The snapshot, never the live plan. Reading the currency off
-            // the plan while the amount comes from the subscription meant a
-            // plan edited from one currency to another silently re-denominated
-            // every subscription already on it: same integer, different money,
-            // on the next renewal.
-            'currency' => $subscription->currency ?: ($subscription->plan?->currency ?? 'BRL'),
-            'period_start' => $periodStart,
-            'period_end' => $periodEnd,
-            'order_reference' => $reference,
-            'idempotency_key' => (string) Str::uuid(),
-        ]);
 
         try {
             $response = $gateway->createPayment([
-                'order_reference' => $reference,
+                'order_reference' => RenewalRetry::gatewayReference($invoice->order_reference, RenewalRetry::attempts($invoice)),
                 'amount' => $invoice->amount_cents,
                 'currency' => $invoice->currency,
                 'payment_method' => 'card',
@@ -1420,13 +1860,15 @@ class BillingService
 
             Log::warning('Card renewal charge failed', [
                 'subscription_id' => $subscription->id,
-                'order_reference' => $reference,
+                'order_reference' => $invoice->order_reference,
+                'attempt' => RenewalRetry::attempts($invoice),
                 'error' => $e->getMessage(),
             ]);
 
             // Not rethrown: the caller is a scheduler walking a list, and one
-            // dead card must not stop the rest of the run. The subscription
-            // lapses through billing:process-overdue like any unpaid cycle.
+            // dead card must not stop the rest of the run. Tried again
+            // tomorrow; past that the subscription lapses through
+            // billing:process-overdue like any unpaid cycle.
             return $invoice->fresh();
         }
 
@@ -1436,7 +1878,7 @@ class BillingService
 
         if (($payment['status'] ?? null) === 'paid') {
             $invoice->update(['status' => InvoiceStatus::Paid, 'paid_at' => now()]);
-            $this->activate($subscription, $periodEnd);
+            $this->activate($subscription, $invoice->period_end ?? $periodEnd);
             $this->fireUpdated($subscription);
 
             return $invoice->fresh();
@@ -1445,6 +1887,61 @@ class BillingService
         $this->handleRenewalDecline($subscription, $invoice, $payment);
 
         return $invoice->fresh();
+    }
+
+    /**
+     * Where the cycle being collected starts: when the paid one ends, or now
+     * for a plan that has already lapsed (its next cycle is a fresh one).
+     */
+    protected function renewalPeriodStart(Subscription $subscription): CarbonInterface
+    {
+        return $subscription->current_period_end && $subscription->current_period_end->isFuture()
+            ? $subscription->current_period_end->copy()
+            : now();
+    }
+
+    /** One renewal at a time per subscription — the scheduler's and the customer's alike. */
+    protected function renewalLockKey(Subscription $subscription): string
+    {
+        return "billing:renewal:{$subscription->id}";
+    }
+
+    /**
+     * Put a refused renewal back in play for another attempt.
+     *
+     * The same row, so the cycle keeps one invoice. A fresh idempotency key,
+     * because the gateway replays the answer to a key it has seen — and that
+     * answer was a refusal. The refusal itself moves to `meta.failures`: the
+     * Back Office still sees every attempt, and `meta.failure` only ever
+     * describes the latest one.
+     *
+     * @param  array<string, mixed>  $meta  Merged in after the bookkeeping.
+     */
+    protected function reopenRenewal(Invoice $invoice, int $amountCents, array $meta = []): Invoice
+    {
+        $current = $invoice->meta ?? [];
+        $failures = $current['failures'] ?? [];
+
+        if (isset($current['failure'])) {
+            $failures[] = $current['failure'];
+        }
+
+        unset($current['failure'], $current['authentication']);
+
+        $invoice->forceFill([
+            'status' => InvoiceStatus::Pending,
+            'payment_id' => null,
+            // The cycle's price as it stands now: a downgrade scheduled after
+            // the first attempt prices this cycle too.
+            'amount_cents' => $amountCents,
+            'idempotency_key' => (string) Str::uuid(),
+            'meta' => array_merge($current, [
+                'renewal_attempts' => RenewalRetry::attempts($invoice) + 1,
+                'failures' => array_slice($failures, -10),
+            ], $meta),
+        ])->save();
+
+        return $invoice;
     }
 
     /**
@@ -1494,6 +1991,22 @@ class BillingService
                 return;
             }
 
+            $refusal = in_array($status, ['declined', 'voided', 'expired'], true);
+
+            // The refusal of an *earlier* attempt, arriving late: a renewal is
+            // retried on the same invoice, and the attempt in flight now has a
+            // payment of its own. Failing the invoice here would fail that one.
+            if ($refusal && $paymentId && $invoice->payment_id && $invoice->payment_id !== $paymentId) {
+                return;
+            }
+
+            // Already failed, and told so again — the notification of a refusal
+            // the request that made the charge has already recorded. Writing it
+            // a second time would replace the stage the retry rules read.
+            if ($refusal && $invoice->status === InvoiceStatus::Failed) {
+                return;
+            }
+
             // A renewal the customer pays by hand with a card: a refused
             // attempt is not the end of the invoice — they try another card on
             // the same one. Only a payment (or its reversal) moves it.
@@ -1506,6 +2019,14 @@ class BillingService
 
             if ($paymentId && ! $invoice->payment_id) {
                 $invoice->payment_id = $paymentId;
+            }
+
+            // A cycle paid with a new card on the Billing page, finished after
+            // 3-D Secure: that card is the plan's card from now on. Kept here,
+            // not when the attempt started — a card the bank never confirmed
+            // must not replace one that works.
+            if ($status === 'paid' && $subscription && ($invoice->meta['card_update'] ?? false) && filled($payment['instrument']['id'] ?? null)) {
+                $this->rememberInstrument($subscription, $payment);
             }
 
             // A card charge that settles here went through 3-D Secure first:
@@ -2507,8 +3028,12 @@ class BillingService
      * tomorrow, and retrying it raises the failure ratio the card networks
      * judge every other transaction by. So the instrument is dropped and the
      * customer asked for another. A `temporary` one (no funds, limit reached)
-     * is left alone; the next scheduler pass reuses the same order reference,
-     * so trying again cannot double-charge.
+     * is left alone and tried again tomorrow on this same invoice
+     * (RenewalRetry), so trying again cannot double-charge.
+     *
+     * The owner is told on the first refusal of a cycle and when we stop
+     * trying — not on every daily retry in between, which would be the same
+     * message four times about one problem.
      */
     protected function handleRenewalDecline(Subscription $subscription, Invoice $invoice, array $payment): void
     {
@@ -2524,10 +3049,14 @@ class BillingService
         $this->markInvoiceFailed($invoice, 'card_renewal', payment: $payment);
 
         $category = $payment['decline']['category'] ?? 'unknown';
+        $attempt = RenewalRetry::attempts($invoice);
+        $retrying = RenewalRetry::nextAttemptAt($invoice->fresh()) !== null;
 
         Log::warning('Card renewal declined', [
             'subscription_id' => $subscription->id,
             'order_reference' => $invoice->order_reference,
+            'attempt' => $attempt,
+            'retrying' => $retrying,
             'category' => $category,
             'code' => $payment['decline']['code'] ?? null,
         ]);
@@ -2536,7 +3065,12 @@ class BillingService
             $subscription->update(['payment_instrument_id' => null]);
         }
 
-        $this->notifier->notify(NotificationType::SubscriptionPastDue, $subscription);
+        // The Billing page shows the refusal and the new-card form either way.
+        $this->fireUpdated($subscription);
+
+        if ($attempt === 1 || ! $retrying) {
+            $this->notifier->notify(NotificationType::SubscriptionPastDue, $subscription);
+        }
     }
 
     /**
@@ -2829,7 +3363,16 @@ class BillingService
 
         $reference = $payment['order_reference'] ?? null;
 
-        return $reference ? Invoice::where('order_reference', $reference)->first() : null;
+        if (! $reference) {
+            return null;
+        }
+
+        // A retried renewal is sent as `{cycle reference}-r{n}`; the cycle
+        // still has one invoice, under its own reference.
+        $cycle = RenewalRetry::cycleReference((string) $reference);
+
+        return Invoice::where('order_reference', $reference)->first()
+            ?? ($cycle ? Invoice::where('order_reference', $cycle)->first() : null);
     }
 
     protected function paymentIdOf(array $payment): ?string

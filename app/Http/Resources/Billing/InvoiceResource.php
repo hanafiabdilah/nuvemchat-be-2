@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources\Billing;
 
+use App\Services\Billing\CardDecline;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -55,6 +56,15 @@ class InvoiceResource extends JsonResource
                 && $this->status?->value === 'pending'
                 && blank($this->payment_id)
                 && (bool) $this->subscription?->paysCardPerCycle(),
+            // Why the card was refused, in our own vocabulary (CardDecline) —
+            // the page says it in the reader's language. Null when no issuer
+            // refused anything (our side failed), so "your bank declined" is
+            // never said untruly. The gateway's own code stays server-side.
+            'decline_reason' => $this->payment_method?->value === 'card'
+                && $this->status?->value === 'failed'
+                && is_array($this->meta['failure']['decline'] ?? null)
+                ? CardDecline::reason($this->meta['failure']['decline'])
+                : null,
             'gateway' => $this->gateway ?? 'payment_service',
             // The nota fiscal Pingly issued for this invoice (Brazil only).
             // A status and a number — never Plugnotas' wording, which names

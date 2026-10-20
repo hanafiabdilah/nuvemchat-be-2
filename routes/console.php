@@ -123,10 +123,11 @@ Schedule::command('billing:pix-generate --days-before=3')
 
 // ⚠️ Card renewal. This is the whole clock: the payment service holds a stored
 // card and charges it when asked, and nothing else asks. If this stops running,
-// no card subscription renews and every one of them lapses quietly. Hourly
-// rather than daily so a temporary decline (no funds this morning) has several
-// attempts inside the days-before window — the order reference carries the
-// period, so repeating cannot double-charge.
+// no card subscription renews and every one of them lapses quietly. Hourly so a
+// charge is picked up within the hour it falls due; a *refused* one is retried
+// at most once a day, on the same invoice (RenewalRetry), so a temporary decline
+// (no funds this morning) gets four tries before the period ends without ever
+// being charged twice or hammered every hour.
 Schedule::command('billing:charge-renewals --days-before=3')
     ->hourly()
     ->onFailure(fn () => logger()->error('Card renewal charge run failed'));
