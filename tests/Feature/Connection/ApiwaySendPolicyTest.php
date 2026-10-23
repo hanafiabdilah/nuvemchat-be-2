@@ -351,3 +351,86 @@ function policyQueuedMessage(Connection $connection, string $queueId): Message
 
     return $message->fresh();
 }
+
+test('a level is applied as its values, and the panel names the level the number is on', function () {
+    $connection = policyConnection();
+    $owner = policyOwner($connection);
+    $policy = corePolicy();
+    fakeCore($policy);
+
+    $data = $this->actingAs($owner, 'sanctum')
+        ->putJson("/api/connections/{$connection->id}/apiway/send-policy", ['preset' => 'moderate'])
+        ->assertOk()
+        ->json('data');
+
+    Http::assertSent(fn (HttpRequest $request) => $request->method() === 'PUT' && $request->data() === [
+        'daily_cap' => 1500,
+        'msgs_per_min' => 20,
+        'min_delay_ms' => 2000,
+        'max_delay_ms' => 4000,
+        'auto_throttle_enabled' => true,
+    ]);
+
+    expect($data['preset'])->toBe('moderate')
+        ->and(array_column($data['presets'], 'key'))->toBe(['default', 'moderate', 'high', 'very_high', 'unlimited']);
+});
+
+test('the no-limits level still never sends a daily cap of 0', function () {
+    $connection = policyConnection();
+    $policy = corePolicy();
+    fakeCore($policy);
+
+    $this->actingAs(policyOwner($connection), 'sanctum')
+        ->putJson("/api/connections/{$connection->id}/apiway/send-policy", ['preset' => 'unlimited'])
+        ->assertOk()
+        ->assertJsonPath('data.preset', 'unlimited')
+        ->assertJsonPath('data.policy.daily_cap', 999999);
+
+    Http::assertSent(fn (HttpRequest $request) => $request->method() === 'PUT'
+        && $request->data()['daily_cap'] === 999999
+        && $request->data()['auto_throttle_enabled'] === false
+        && ! array_key_exists('queue_enabled', $request->data()));
+});
+
+test('a level overrides fields sent alongside it, and an unknown level is refused', function () {
+    $connection = policyConnection();
+    $owner = policyOwner($connection);
+    $policy = corePolicy();
+    fakeCore($policy);
+
+    $this->actingAs($owner, 'sanctum')
+        ->putJson("/api/connections/{$connection->id}/apiway/send-policy", ['preset' => 'high', 'daily_cap' => 50])
+        ->assertOk()
+        ->assertJsonPath('data.policy.daily_cap', 3000);
+
+    $this->actingAs($owner, 'sanctum')
+        ->putJson("/api/connections/{$connection->id}/apiway/send-policy", ['preset' => 'insane'])
+        ->assertStatus(422)->assertJsonValidationErrors('preset');
+});
+
+test('a hand-tuned policy is on no level', function () {
+    $connection = policyConnection();
+    $policy = corePolicy(['daily_cap' => 1000]);
+    fakeCore($policy);
+
+    $this->actingAs(policyOwner($connection), 'sanctum')
+        ->getJson("/api/connections/{$connection->id}/apiway/send-policy")
+        ->assertOk()
+        ->assertJsonPath('data.preset', null);
+});
+
+test('the levels can be listed before any instance exists', function () {
+    $connection = policyConnection();
+    Http::fake();
+
+    $data = $this->actingAs(policyOwner($connection), 'sanctum')
+        ->getJson('/api/connections/apiway/send-policy/presets')
+        ->assertOk()
+        ->json('data');
+
+    expect(array_column($data['presets'], 'key'))->toBe(['default', 'moderate', 'high', 'very_high', 'unlimited'])
+        ->and($data['presets'][0]['daily_cap'])->toBe(800)
+        ->and($data['unlimited_daily_cap'])->toBe(999999);
+
+    Http::assertNothingSent();
+});

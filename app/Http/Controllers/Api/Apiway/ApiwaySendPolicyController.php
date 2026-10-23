@@ -8,6 +8,7 @@ use App\Services\Connection\Apiway\ApiwaySendPolicy;
 use App\Services\Message\ApiwaySendQueue;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 /**
  * The API Way anti-ban policy of one connection's number (ApiwaySendPolicy):
@@ -29,6 +30,8 @@ class ApiwaySendPolicyController extends Controller
         $connection = $this->connection($id);
 
         $validated = $request->validate([
+            // One of the levels, instead of the fields below; see PRESETS.
+            'preset' => ['sometimes', 'string', Rule::in(array_keys(ApiwaySendPolicy::PRESETS))],
             // Never 0 — see ApiwaySendPolicy::UNLIMITED_DAILY_CAP.
             'daily_cap' => ['sometimes', 'integer', 'min:1', 'max:'.ApiwaySendPolicy::UNLIMITED_DAILY_CAP],
             'daily_cap_unlimited' => ['sometimes', 'boolean'],
@@ -46,8 +49,29 @@ class ApiwaySendPolicyController extends Controller
             }
         }
 
+        // A level replaces the individual fields rather than mixing with them:
+        // half a level is a hand-tuned policy wearing a level's name.
+        if (isset($validated['preset'])) {
+            $validated = ApiwaySendPolicy::presetChanges($validated['preset'])
+                + array_intersect_key($validated, ['queue_enabled' => true]);
+        }
+
         return response()->json([
             'data' => $this->policy->update($connection, $validated, $request->user()),
+        ]);
+    }
+
+    /**
+     * The levels on their own, for the connection wizard: it offers them
+     * before an instance exists to read a policy from.
+     */
+    public function presets(): JsonResponse
+    {
+        return response()->json([
+            'data' => [
+                'presets' => ApiwaySendPolicy::presets(),
+                'unlimited_daily_cap' => ApiwaySendPolicy::UNLIMITED_DAILY_CAP,
+            ],
         ]);
     }
 

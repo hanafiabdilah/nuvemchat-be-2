@@ -75,6 +75,108 @@ final class ApiwaySendPolicy
         'auto_throttle_enabled' => true,
     ];
 
+    /**
+     * Five steps from the core's default to as far as Pingly goes, so the
+     * owner picks a level instead of tuning four numbers. Ordered, most
+     * protective first.
+     *
+     * The gap is set to match the pace (60 ÷ messages a minute, as a range
+     * around it): a gap wider than that would quietly cap the pace below what
+     * the level promises. Every level but the last keeps the automatic
+     * slow-down at high risk — the one protection that reacts to how the
+     * number is actually being received, rather than to a count.
+     */
+    public const PRESETS = [
+        'default' => self::DEFAULTS,
+        'moderate' => [
+            'msgs_per_min' => 20,
+            'min_delay_ms' => 2000,
+            'max_delay_ms' => 4000,
+            'daily_cap' => 1500,
+            'auto_throttle_enabled' => true,
+        ],
+        'high' => [
+            'msgs_per_min' => 30,
+            'min_delay_ms' => 1500,
+            'max_delay_ms' => 2500,
+            'daily_cap' => 3000,
+            'auto_throttle_enabled' => true,
+        ],
+        'very_high' => [
+            'msgs_per_min' => 45,
+            'min_delay_ms' => 1000,
+            'max_delay_ms' => 1500,
+            'daily_cap' => 6000,
+            'auto_throttle_enabled' => true,
+        ],
+        'unlimited' => [
+            'msgs_per_min' => self::MAX_MSGS_PER_MIN,
+            'min_delay_ms' => self::MIN_DELAY_MS,
+            'max_delay_ms' => self::MIN_DELAY_MS,
+            'daily_cap' => self::UNLIMITED_DAILY_CAP,
+            'auto_throttle_enabled' => false,
+        ],
+    ];
+
+    /**
+     * The levels as a list, for the screens that draw them.
+     *
+     * @return list<array<string, int|bool|string>>
+     */
+    public static function presets(): array
+    {
+        return array_map(
+            fn (string $key) => ['key' => $key] + self::PRESETS[$key],
+            array_keys(self::PRESETS),
+        );
+    }
+
+    /**
+     * The changes one level stands for, in the shape update() takes. "No
+     * daily limit" goes through the same flag as the form's checkbox, so it
+     * is spelled one way on the wire whichever screen asked for it.
+     *
+     * @return array<string, int|bool>
+     */
+    public static function presetChanges(string $key): array
+    {
+        $values = self::PRESETS[$key];
+
+        if ($values['daily_cap'] >= self::UNLIMITED_DAILY_CAP) {
+            unset($values['daily_cap']);
+            $values['daily_cap_unlimited'] = true;
+        }
+
+        return $values;
+    }
+
+    /** The level a policy is exactly at, or null for a hand-tuned one. */
+    public static function presetOf(array $policy): ?string
+    {
+        foreach (self::PRESETS as $key => $values) {
+            $matches = true;
+
+            foreach ($values as $field => $value) {
+                $current = $policy[$field] ?? null;
+
+                // Any cap past "unlimited" reads as unlimited.
+                if ($field === 'daily_cap' && $value >= self::UNLIMITED_DAILY_CAP) {
+                    $matches = $matches && is_int($current) && $current >= self::UNLIMITED_DAILY_CAP;
+
+                    continue;
+                }
+
+                $matches = $matches && $current === $value;
+            }
+
+            if ($matches) {
+                return $key;
+            }
+        }
+
+        return null;
+    }
+
     /** The policy fields Pingly reads and writes; the core may return more. */
     private const FIELDS = [
         'queue_enabled',
@@ -99,9 +201,11 @@ final class ApiwaySendPolicy
     public function show(Connection $channelConnection): array
     {
         $raw = $this->readPolicy($channelConnection);
+        $policy = $this->policyFrom($raw);
 
         return [
-            'policy' => $this->policyFrom($raw),
+            'policy' => $policy,
+            'preset' => self::presetOf($policy),
             'effective_msgs_per_min' => $this->intOrNull($raw['effective_msgs_per_min'] ?? null),
             'risk' => [
                 'level' => is_string($raw['risk_level'] ?? null) ? $raw['risk_level'] : null,
@@ -115,6 +219,7 @@ final class ApiwaySendPolicy
                 'max_delay_ms' => self::MAX_DELAY_MS,
             ],
             'defaults' => self::DEFAULTS,
+            'presets' => self::presets(),
             'today' => $this->today($channelConnection),
             'queue' => $this->queueSummary($channelConnection),
         ];

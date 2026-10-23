@@ -647,6 +647,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
     // and the queue it builds up. Reading is open to whoever sees the
     // connection; changing the policy or emptying the queue is connection
     // management.
+    Route::get('/connections/apiway/send-policy/presets', [ApiwaySendPolicyController::class, 'presets']);
     Route::get('/connections/{id}/apiway/send-policy', [ApiwaySendPolicyController::class, 'show'])->middleware('throttle:60,1');
     Route::put('/connections/{id}/apiway/send-policy', [ApiwaySendPolicyController::class, 'update'])->middleware(['permission:connections.update', 'throttle:20,1']);
     Route::delete('/connections/{id}/apiway/send-queue', [ApiwaySendPolicyController::class, 'clearQueue'])->middleware(['permission:connections.update', 'throttle:10,1']);
