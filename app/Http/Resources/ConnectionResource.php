@@ -70,6 +70,10 @@ class ConnectionResource extends JsonResource
                 'tolerance_minutes' => (int) $this->return_to_last_agent_minutes,
                 'require_online' => $this->requiresOnlineAgentToReturn(),
             ],
+            // Button-id prefixes owned by another system on this number: their
+            // taps are kept in the history but run no flow and open no queue
+            // thread (ExternalAutomationReply).
+            'ignored_button_prefixes' => $this->ignoredButtonPrefixes(),
             'flow' => new FlowResource($this->flow),
             // 'webhook_url' => route('webhook.chat', $this->id),
             'created_at' => $this->created_at,

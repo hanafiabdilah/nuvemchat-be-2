@@ -10,6 +10,7 @@ use App\Models\Message;
 use App\Services\Media\MediaRetention;
 use App\Services\Message\VCard;
 use App\Services\Message\ViewOnce;
+use App\Services\Webhook\ExternalAutomationReply;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Str;
@@ -253,6 +254,13 @@ class MessageResource extends JsonResource
             $meta = array_merge($meta ?? [], ['view_once' => true]);
         }
 
+        // A tap on a button another system sent (ExternalAutomationReply).
+        // Only the fact travels — the dashboard stays quiet about it and says
+        // on the bubble who handled it; the prefix and id are for the log.
+        if (ExternalAutomationReply::is($this->meta)) {
+            $meta = array_merge($meta ?? [], ['external_automation' => true]);
+        }
+
         return $meta;
     }
 
@@ -363,7 +371,30 @@ class MessageResource extends JsonResource
         // Outbound: the sent payload is stored under meta.interactive.
         $outbound = $this->meta['interactive'] ?? null;
         // Inbound: the customer's reply lives in the raw webhook entry.
-        $inboundReply = $this->meta['changes'][0]['value']['messages'][0]['interactive'] ?? null;
+        $inbound = $this->meta['changes'][0]['value']['messages'][0] ?? [];
+        $inboundReply = $inbound['interactive'] ?? null;
+
+        // A template's quick-reply button arrives as `type: button`, not as
+        // an interactive reply. Drawn in the interactive shape so the bubble
+        // shows a tap, like a reply button does.
+        if ($inboundReply === null && ($inbound['type'] ?? null) === 'button' && is_array($inbound['button'] ?? null)) {
+            $inboundReply = [
+                'type' => 'button_reply',
+                'button_reply' => [
+                    'id' => $inbound['button']['payload'] ?? null,
+                    'title' => $inbound['button']['text'] ?? $inbound['button']['payload'] ?? null,
+                ],
+            ];
+        }
+
+        // A WhatsApp Flows screen sent back: the answers in response_json are
+        // whatever the form asked, and the bubble only needs the label.
+        if (($inboundReply['type'] ?? null) === 'nfm_reply') {
+            $inboundReply = [
+                'type' => 'nfm_reply',
+                'nfm_reply' => array_intersect_key((array) ($inboundReply['nfm_reply'] ?? []), array_flip(['name', 'body'])),
+            ];
+        }
 
         $interactive = $outbound ?? $inboundReply;
 

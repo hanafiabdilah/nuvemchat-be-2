@@ -1352,6 +1352,7 @@ class FlowExecutor
     {
         $meta = Message::where('conversation_id', $conversation->id)
             ->where('sender_type', SenderType::Incoming)
+            ->exceptExternalAutomation()
             ->latest('id')
             ->value('meta');
 
@@ -3370,6 +3371,7 @@ class FlowExecutor
             ->where('id', '>', $watermark)
             ->where('sender_type', SenderType::Incoming)
             ->where('message_type', '!=', MessageType::Info)
+            ->exceptExternalAutomation()
             ->orderBy('id')
             ->pluck('body')
             ->map(fn ($body) => trim((string) $body))
@@ -4586,7 +4588,9 @@ class FlowExecutor
     {
         $query = Message::where('conversation_id', $flowState->conversation_id)
             ->where('sender_type', SenderType::Incoming)
-            ->whereNull('unsend_at');
+            ->whereNull('unsend_at')
+            // Taps on another system's buttons were answered by that system.
+            ->exceptExternalAutomation();
 
         if ($lastProcessedId === null) {
             // No watermark at all: the defensive path — answer the newest
@@ -6511,6 +6515,7 @@ class FlowExecutor
             ->where('id', '>', (int) ($waiting['watermark'] ?? 0))
             ->where('sender_type', SenderType::Incoming)
             ->where('message_type', '!=', MessageType::Info)
+            ->exceptExternalAutomation()
             ->orderByDesc('id')
             ->first();
 

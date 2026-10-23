@@ -95,6 +95,9 @@ final class FlowRunner
 
         $said = $conversation->messages()
             ->where('message_type', '!=', MessageType::Info)
+            // A tap on another system's button is not the customer opening
+            // this thread; the message they type next still is.
+            ->exceptExternalAutomation()
             ->selectRaw('sender_type, COUNT(*) as total')
             ->groupBy('sender_type')
             ->pluck('total', 'sender_type');
@@ -121,6 +124,7 @@ final class FlowRunner
         $askedAt = $conversation->messages()
             ->where('message_type', '!=', MessageType::Info)
             ->where('sender_type', SenderType::Incoming)
+            ->exceptExternalAutomation()
             ->toBase()
             ->value('sent_at');
 

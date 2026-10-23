@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status;
 use App\Enums\Connection\SyncStatus;
+use App\Services\Webhook\ExternalAutomationReply;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Str;
 
@@ -34,6 +35,7 @@ class Connection extends Model
         'return_to_last_agent',
         'return_to_last_agent_minutes',
         'return_to_last_agent_require_online',
+        'ignored_button_prefixes',
         'service_hours',
         'ai_suggest_agent_id',
     ];
@@ -57,6 +59,7 @@ class Connection extends Model
         'return_to_last_agent' => 'boolean',
         'return_to_last_agent_minutes' => 'integer',
         'return_to_last_agent_require_online' => 'boolean',
+        'ignored_button_prefixes' => 'array',
     ];
 
     /**
@@ -103,6 +106,18 @@ class Connection extends Model
     public function requiresOnlineAgentToReturn(): bool
     {
         return (bool) ($this->return_to_last_agent_require_online ?? true);
+    }
+
+    /**
+     * Button-id prefixes that belong to another system sending on this number
+     * (ExternalAutomationReply). Empty — the default — means every tap is the
+     * connection's own and runs its flow, as it always did.
+     *
+     * @return list<string>
+     */
+    public function ignoredButtonPrefixes(): array
+    {
+        return ExternalAutomationReply::normalizePrefixes($this->ignored_button_prefixes);
     }
 
     /**

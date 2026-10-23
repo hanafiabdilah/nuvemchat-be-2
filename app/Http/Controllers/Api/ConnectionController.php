@@ -26,6 +26,7 @@ use App\Services\Connection\TikTok\TikTokAuthClient;
 use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
 use App\Services\Connection\WhatsApp\WhatsappNumberMigrationService;
 use App\Services\Email\EmailInboxSynchronizer;
+use App\Services\Webhook\ExternalAutomationReply;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -178,6 +179,7 @@ class ConnectionController extends Controller
             'return_to_last_agent' => $connection->return_to_last_agent,
             'return_to_last_agent_minutes' => $connection->return_to_last_agent_minutes,
             'return_to_last_agent_require_online' => $connection->requiresOnlineAgentToReturn(),
+            'ignored_button_prefixes' => $connection->ignoredButtonPrefixes() ?: null,
             'service_hours' => $connection->service_hours,
             'ai_suggest_agent_id' => $connection->ai_suggest_agent_id,
         ]);
@@ -525,6 +527,14 @@ class ConnectionController extends Controller
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
 
+        // Trimmed before validation so " rnw: " and a trailing blank row from
+        // the form are judged as what will be stored.
+        if (is_array($request->input('ignored_button_prefixes'))) {
+            $request->merge([
+                'ignored_button_prefixes' => ExternalAutomationReply::normalizePrefixes($request->input('ignored_button_prefixes')),
+            ]);
+        }
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:100'],
             'color' => ['nullable', 'hex_color', 'max:7'],
@@ -548,7 +558,26 @@ class ConnectionController extends Controller
             'return_to_last_agent_minutes' => ['sometimes', 'integer', 'min:1', 'max:1440'],
             // Off = the thread goes back to its agent even when they are away.
             'return_to_last_agent_require_online' => ['sometimes', 'boolean'],
+            // Taps on buttons another system sent on this number (see
+            // ExternalAutomationReply). Only the Cloud API handler reads it, so
+            // anywhere else it would be a setting that silently does nothing.
+            'ignored_button_prefixes' => [
+                'sometimes',
+                'nullable',
+                'array',
+                'max:'.ExternalAutomationReply::MAX_PREFIXES,
+                Rule::prohibitedIf($connection->channel !== Channel::WhatsappOfficial),
+            ],
+            'ignored_button_prefixes.*' => [
+                'string',
+                'min:'.ExternalAutomationReply::MIN_PREFIX_LENGTH,
+                'max:'.ExternalAutomationReply::MAX_PREFIX_LENGTH,
+            ],
         ]);
+
+        if (array_key_exists('ignored_button_prefixes', $validated)) {
+            $validated['ignored_button_prefixes'] = $validated['ignored_button_prefixes'] ?: null;
+        }
 
         $connection->update($validated);
 

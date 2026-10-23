@@ -60,6 +60,14 @@ class ConversationObserver
      */
     public function created(Conversation $conversation): void
     {
+        // A thread born closed holds a record, not an opening: today that is
+        // a tap on another system's button (ExternalAutomationReply), filed
+        // without anyone being asked to answer it. A card in "Novo contato"
+        // would be the queue entry those buttons must not create.
+        if ($conversation->status === Status::Resolved) {
+            return;
+        }
+
         EnsureLeadForConversation::dispatch($conversation->id);
     }
 

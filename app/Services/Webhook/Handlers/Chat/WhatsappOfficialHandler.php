@@ -23,6 +23,7 @@ use App\Services\Media\MediaStorage;
 use App\Services\Message\VCard;
 use App\Services\Webhook\Contracts\ChatHandlerInterface;
 use App\Services\Webhook\Contracts\DownloadsInboundMedia;
+use App\Services\Webhook\ExternalAutomationReply;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Carbon\Carbon;
@@ -69,9 +70,7 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             // When a customer taps a reply button / list row / carousel button,
             // store the chosen title as the body so agents (and the flow engine)
             // read the choice.
-            MessageType::Interactive => InteractiveNodes::replyFromWebhook(
-                $messages['interactive'] ?? null
-            )['title'] ?? null,
+            MessageType::Interactive => $this->interactiveReplyBody($messages),
             // A shared contact card has no text of its own, but everything that
             // reads a message as words — the conversation-list preview, a flow
             // waiting on a reply, a copied thread, search — has only `body` to
@@ -79,6 +78,37 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             MessageType::Contact => $this->contactNames($messages['contacts'] ?? []),
             default => null,
         };
+    }
+
+    /**
+     * What the customer chose, in the words of the button they tapped.
+     *
+     * Three shapes reach this: an interactive message's reply button or list
+     * row (`interactive.*_reply.title`), a template's quick-reply button
+     * (`type: button`, the text under `button.text` — before this it was
+     * stored as Unsupported with no body at all), and a WhatsApp Flows screen
+     * sent back (`nfm_reply`), which has no title and carries Meta's own short
+     * label in `body`.
+     *
+     * @param  array<string, mixed>  $message
+     */
+    private function interactiveReplyBody(array $message): ?string
+    {
+        if (($message['type'] ?? null) === 'button') {
+            $text = $message['button']['text'] ?? $message['button']['payload'] ?? null;
+
+            return is_string($text) && $text !== '' ? $text : null;
+        }
+
+        $interactive = is_array($message['interactive'] ?? null) ? $message['interactive'] : null;
+
+        if (($interactive['type'] ?? null) === 'nfm_reply') {
+            $body = $interactive['nfm_reply']['body'] ?? null;
+
+            return is_string($body) && $body !== '' ? $body : null;
+        }
+
+        return InteractiveNodes::replyFromWebhook($interactive)['title'] ?? null;
     }
 
     /** "Hanafi" for one shared card, "Hanafi, Jane Roe" for several. */
@@ -102,6 +132,10 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
             'audio' => MessageType::Audio,
             'voice' => MessageType::Audio,
             'interactive' => MessageType::Interactive,
+            // A template's quick-reply button. Interactive rather than Text on
+            // purpose: OptOutDetector reads every inbound Text, and a button
+            // labelled "Cancelar" is not a customer asking to leave campaigns.
+            'button' => MessageType::Interactive,
             'sticker' => MessageType::Sticker,
             'location' => MessageType::Unsupported,
             'contacts' => MessageType::Contact,
@@ -227,7 +261,15 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
         $isNewConversation = false;
         $conversationForWelcome = null;
 
-        $message = DB::transaction(function () use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, $isOutgoing, &$isNewConversation, &$conversationForWelcome) {
+        // A tap on a button another system sent on this number (see
+        // ExternalAutomationReply). Decided once, up here, because it changes
+        // which thread the message lands in as well as whether the flow hears it.
+        $automation = $isOutgoing ? null : ExternalAutomationReply::match(
+            $connection,
+            $payload['changes'][0]['value']['messages'][0] ?? [],
+        );
+
+        $message = DB::transaction(function () use ($connection, $payload, $conversationId, $messageId, $messageType, $contactExternalId, $contactName, $contactUsername, $isOutgoing, $automation, &$isNewConversation, &$conversationForWelcome) {
             $contact = Contact::createFromExternalData($connection, $contactExternalId, $contactName, $contactUsername);
 
             // Save profile photo for new contacts
@@ -240,6 +282,12 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                 ->where('connection_id', $connection->id)
                 ->whereIn('status', [Status::Active, Status::Pending, Status::AiHandling])
                 ->first();
+
+            // Another system's button never reopens anything or queues anything:
+            // it is filed in the contact's latest thread, as that thread is.
+            if ($automation !== null) {
+                $conversation ??= $this->threadForExternalReply($connection, $contact, (string) $conversationId);
+            }
 
             // A contact back within the connection's tolerance, while the agent who
             // served them is online, continues that thread instead of a new one.
@@ -293,7 +341,13 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                 'replied_message_id' => $repliedMessageId,
                 'sent_at' => $this->getMessageSentAt($payload),
                 'delivery_at' => $this->getMessageSentAt($payload),
-                'meta' => $payload,
+                'meta' => $automation !== null
+                    ? $payload + [ExternalAutomationReply::META_KEY => $automation]
+                    : $payload,
+                // Read on arrival: the other system is the one answering it, so
+                // there is nothing here for an agent to open — no unread badge,
+                // and no read receipt sent on that system's behalf.
+                ...($automation !== null ? ['read_at' => now()] : []),
             ]);
         });
 
@@ -316,6 +370,21 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
 
             // Only process flow for incoming messages (from user, not from bot)
             if ($message->sender_type !== SenderType::Incoming) {
+                return;
+            }
+
+            // Answered by the system that sent the button: no flow, no AI, no
+            // return-to-agent routing. The customer's next typed message is
+            // theirs again and takes the normal path.
+            if ($automation !== null) {
+                Log::info('WhatsappOfficialHandler: Reply to another system\'s button, flow skipped', [
+                    'connection_id' => $connection->id,
+                    'conversation_id' => $message->conversation_id,
+                    'message_id' => $message->id,
+                    'prefix' => $automation['prefix'],
+                    'kind' => $automation['kind'],
+                ]);
+
                 return;
             }
 
@@ -348,6 +417,33 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                 }
             }
         }
+    }
+
+    /**
+     * The thread a tap on another system's button lands in when the contact
+     * has no open one: their latest conversation on this number, left exactly
+     * as it is.
+     *
+     * Reopening it would put the customer in the queue — the one thing those
+     * buttons must not do — and a fresh row per tap would scatter one renewal
+     * (three or four taps) across as many closed threads. Only a contact who
+     * has never written gets a new thread, and it is born resolved.
+     */
+    private function threadForExternalReply(Connection $connection, Contact $contact, string $externalId): Conversation
+    {
+        return Conversation::query()
+            ->where('connection_id', $connection->id)
+            ->where('contact_id', $contact->id)
+            ->where('external_id', $externalId)
+            ->latest('id')
+            ->first()
+            ?? Conversation::create([
+                'contact_id' => $contact->id,
+                'connection_id' => $connection->id,
+                'external_id' => $externalId,
+                'status' => Status::Resolved,
+                'resolved_at' => now(),
+            ]);
     }
 
     /**

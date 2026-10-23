@@ -6,7 +6,9 @@ use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Services\Broadcast\OptOutDetector;
+use App\Services\Webhook\ExternalAutomationReply;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 class Message extends Model
@@ -65,6 +67,20 @@ class Message extends Model
             // plain inbound text returns on the first comparison.
             OptOutDetector::noteInboundMessage($message);
         });
+    }
+
+    /**
+     * Leave out taps on another system's buttons (ExternalAutomationReply).
+     * For anything that reads the customer's messages as input to this
+     * conversation — the AI turn, a Wait for reply, the opening-message check —
+     * those were answers to somebody else.
+     *
+     * Presence of the key, not its value: a JSON boolean compares differently
+     * on MySQL and SQLite, a missing path is NULL on both.
+     */
+    public function scopeExceptExternalAutomation(Builder $query): Builder
+    {
+        return $query->whereNull('meta->'.ExternalAutomationReply::META_KEY);
     }
 
     public function conversation()

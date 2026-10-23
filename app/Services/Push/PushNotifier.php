@@ -12,6 +12,7 @@ use App\Models\DeviceToken;
 use App\Models\Message;
 use App\Models\User;
 use App\Services\Contact\ContactIdentity;
+use App\Services\Webhook\ExternalAutomationReply;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -82,6 +83,12 @@ class PushNotifier
     public static function messageReceived(Message $message): void
     {
         if ($message->sender_type !== SenderType::Incoming || $message->message_type === MessageType::Info) {
+            return;
+        }
+
+        // A tap on another system's button: that system is answering it, so
+        // nobody's phone should ring for it (ExternalAutomationReply).
+        if (ExternalAutomationReply::is($message->meta)) {
             return;
         }
 

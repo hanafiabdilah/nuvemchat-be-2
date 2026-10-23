@@ -100,6 +100,10 @@ class AiConversationContext
             ->whereNotIn('id', $input->pluck('id')->all())
             ->whereNull('unsend_at')
             ->where('message_type', '!=', MessageType::Info)
+            // A tap on another system's button, answered by that system: the
+            // agent never sees the reply, so the tap alone would read as a
+            // question nobody took up.
+            ->exceptExternalAutomation()
             ->where(fn ($query) => $query->where('sender_type', SenderType::Outgoing)
                 ->orWhere('id', '<=', $lastInputId))
             ->with('sentByUser:id,name')
