@@ -64,6 +64,22 @@ final class ApiwaySendQueue
     /** A scheduled time closer than this is checked on the next pass anyway. */
     private const NEAR_SECONDS = 90;
 
+    /**
+     * A message held for later is still looked at this often, not only at
+     * its scheduled time: the core can send, move or drop it before then — a
+     * policy changed in another panel did exactly that, and the dashboard
+     * kept promising 21:00 for messages that no longer existed.
+     */
+    private const RECHECK_MINUTES = 15;
+
+    /**
+     * How long a message may be missing from both the queue and the send log
+     * before it counts as dropped. The core writes its log entry when it
+     * accepts the send, so this is only a margin against reading the two in
+     * the middle of that.
+     */
+    private const VANISHED_AFTER_MINUTES = 10;
+
     /** Send-log pages read per connection per pass (the core allows 200 rows a page). */
     private const MAX_PAGES = 40;
 
@@ -158,9 +174,14 @@ final class ApiwaySendQueue
         }
 
         $credentials = $channelConnection->credentials ?? [];
-        $entries = filled($credentials['token'] ?? null) && filled($credentials['instance_id'] ?? null)
+        $log = filled($credentials['token'] ?? null) && filled($credentials['instance_id'] ?? null)
             ? $this->readSendLog($channelConnection, $rows)
             : null;
+        $entries = $log['entries'] ?? null;
+
+        // Only asked for when something is missing from the log, and only
+        // trusted when the log was read to its end — see vanished().
+        $stillQueued = null;
 
         foreach ($rows as $row) {
             $message = $row->message;
@@ -174,6 +195,17 @@ final class ApiwaySendQueue
             $entry = $entries[$row->queue_id] ?? null;
 
             if ($entry === null) {
+                if (($log['complete'] ?? false) && $row->created_at->lt(now()->subMinutes(self::VANISHED_AFTER_MINUTES))) {
+                    $stillQueued ??= $this->queuedIds($channelConnection);
+
+                    if ($stillQueued !== null && ! in_array($row->queue_id, $stillQueued, true)) {
+                        $this->vanished($row, $message);
+                        $stats['settled']++;
+
+                        continue;
+                    }
+                }
+
                 if ($row->created_at->lt(now()->subHours(self::GIVE_UP_AFTER_HOURS))) {
                     $this->settle($row, $message, self::UNCONFIRMED, null, null);
                     $stats['settled']++;
@@ -218,15 +250,65 @@ final class ApiwaySendQueue
     }
 
     /**
+     * A message the core no longer has anywhere: not waiting in its queue,
+     * and not in its send log, which records every send — queued or direct,
+     * sent or failed. Seen in production when an admin switched a number's
+     * queue off: everything still held at that moment vanished from both,
+     * unsent. "Removed before it was sent" is what the core's own records say
+     * happened, so that is what the bubble says.
+     */
+    private function vanished(ApiwayQueuedSend $row, Message $message): void
+    {
+        Log::warning('ApiwaySendQueue: a held message is gone from the core without being sent', [
+            'message_id' => $message->id,
+            'queue_id' => $row->queue_id,
+            'connection_id' => $row->connection_id,
+        ]);
+
+        $this->settle($row, $message, self::FAILED, null, 'discarded');
+    }
+
+    /**
+     * Ids the core still holds in its queue for this number. Null when the
+     * queue could not be read — and then nothing is called dropped.
+     *
+     * @return list<string>|null
+     */
+    private function queuedIds(Connection $channelConnection): ?array
+    {
+        try {
+            $response = Http::withToken($channelConnection->credentials['token'])
+                ->timeout(20)
+                ->get(ApiwayConfig::baseUrl() . '/v1/instance/quere', [
+                    'instanceId' => $channelConnection->credentials['instance_id'],
+                ]);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        $data = $response->successful() ? $response->json('data') : null;
+
+        if (! is_array($data)) {
+            return null;
+        }
+
+        return array_values(array_filter(
+            array_map(fn ($entry) => is_array($entry) ? ($entry['id'] ?? null) : null, $data),
+            'is_string',
+        ));
+    }
+
+    /**
      * Send-log entries for these rows, keyed by queue id. Null when the core
      * could not be read — the rows simply wait for the next pass.
      *
      * The log is filtered by creation time and newest first, so the window is
      * the span the held messages were created in, paged until every one of
-     * them has turned up.
+     * them has turned up. `complete` says the whole span was read: only then
+     * does a missing entry mean something.
      *
      * @param  Collection<int, ApiwayQueuedSend>  $rows
-     * @return array<string, array<string, mixed>>|null
+     * @return array{entries: array<string, array<string, mixed>>, complete: bool}|null
      */
     private function readSendLog(Connection $channelConnection, Collection $rows): ?array
     {
@@ -281,7 +363,7 @@ final class ApiwaySendQueue
             $pages++;
         } while (filled($cursor) && count($found) < $wanted->count() && $pages < self::MAX_PAGES);
 
-        return $found;
+        return ['entries' => $found, 'complete' => blank($cursor)];
     }
 
     /** True when the message is settled and its row gone. */
@@ -312,7 +394,7 @@ final class ApiwaySendQueue
         }
 
         // Still `queued` or `sending`: record when the core means to send it,
-        // and leave it alone until then.
+        // and look again by then — or sooner, see RECHECK_MINUTES.
         $scheduledAt = $this->timestamp($entry['scheduled_at'] ?? null);
         $state = $message->meta[self::META_KEY] ?? self::initialState($row->queue_id);
 
@@ -323,7 +405,9 @@ final class ApiwaySendQueue
         $at = $scheduledAt !== null ? Carbon::parse($scheduledAt) : null;
 
         $row->update([
-            'check_after' => $at !== null && $at->gt(now()->addSeconds(self::NEAR_SECONDS)) ? $at : null,
+            'check_after' => $at !== null && $at->gt(now()->addSeconds(self::NEAR_SECONDS))
+                ? $at->min(now()->addMinutes(self::RECHECK_MINUTES))
+                : null,
         ]);
 
         return false;
