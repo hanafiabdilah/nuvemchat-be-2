@@ -37,6 +37,7 @@ class Heartbeat
         'billing:charge-renewals' => ['Card renewal charge', 7200, 'The only thing that renews a card subscription. Nothing else charges the stored card, so every card plan lapses silently without it.'],
         'apiway:renew' => ['API Way renewal', 7200, 'ProxyBR gives no grace period — a missed renewal is a permanent revoke.'],
         'apiway:sync' => ['API Way sync', 7200, 'Expires and releases instances whose subscription ended.'],
+        'apiway:sync-send-queue' => ['API Way send queue', 300, 'Follows WhatsApp messages API Way held in its anti-ban queue. Without it they read "in queue" forever, even after they went out or failed.'],
         'numbers:renew' => ['Virtual number renewal', 90000, 'Charges rented numbers and cancels unpaid ones before API Way bills us again.'],
         'numbers:sync' => ['Virtual number sync', 7200, 'Refreshes renewal dates and finds numbers we pay for that nobody owns.'],
         'emails:fetch' => ['Email inbox sync', 900, 'IMAP polling. Without it, e-mail conversations stop arriving.'],

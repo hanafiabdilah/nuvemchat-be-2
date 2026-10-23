@@ -13,6 +13,7 @@ use App\Models\Contact;
 use App\Models\Message;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Lead\LeadIntakeService;
+use App\Services\Message\ApiwaySendQueue;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -97,6 +98,12 @@ final class SentMessageRecorder
         }
 
         if ($message) {
+            // Before the broadcast, so the bubble arrives already saying it
+            // is waiting in API Way's queue rather than looking sent.
+            if ($connection->channel === Channel::WhatsappApiway) {
+                ApiwaySendQueue::track($message, $connection);
+            }
+
             self::quietly(fn () => broadcast(new MessageReceived($message)));
             self::quietly(fn () => broadcast(new ConversationUpdated($message->conversation->load('contact'))));
         }

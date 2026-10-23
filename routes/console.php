@@ -169,6 +169,15 @@ Schedule::command('apiway:sync')
     ->hourlyAt(20)
     ->onFailure(fn () => logger()->error('API Way sync failed'));
 
+// Messages the API Way core held in its anti-ban queue (a 202 instead of a
+// WhatsApp id): read its send log and tell the thread whether they went out.
+// Capped at 5 minutes like the other per-minute passes, so a run killed
+// mid-flight does not hold the lock for a day.
+Schedule::command('apiway:sync-send-queue')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('API Way send queue sync failed'));
+
 // --- Virtual numbers (API Way) -------------------------------------------
 
 // Charge the coming month of every rented number to the tenant's balance —

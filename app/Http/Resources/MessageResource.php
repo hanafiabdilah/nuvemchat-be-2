@@ -8,6 +8,7 @@ use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Message;
 use App\Services\Media\MediaRetention;
+use App\Services\Message\ApiwaySendQueue;
 use App\Services\Message\VCard;
 use App\Services\Message\ViewOnce;
 use App\Services\Webhook\ExternalAutomationReply;
@@ -261,7 +262,38 @@ class MessageResource extends JsonResource
             $meta = array_merge($meta ?? [], ['external_automation' => true]);
         }
 
+        // Held in API Way's anti-ban queue (ApiwaySendQueue): whether it has
+        // actually gone out, and when it is due to. Named for what it is, not
+        // for the provider — the bubble only needs to say the truth about it.
+        $sendQueue = $this->getSendQueueMeta();
+
+        if ($sendQueue !== null) {
+            $meta = array_merge($meta ?? [], $sendQueue);
+        }
+
         return $meta;
+    }
+
+    /**
+     * The queue state with times as unix seconds, like every other time this
+     * resource sends. The core's own error sentence stays on the server.
+     */
+    private function getSendQueueMeta(): ?array
+    {
+        $state = $this->meta[ApiwaySendQueue::META_KEY] ?? null;
+
+        if (! is_array($state) || ! is_string($state['status'] ?? null)) {
+            return null;
+        }
+
+        $unix = fn ($value) => is_string($value) && $value !== '' ? (strtotime($value) ?: null) : null;
+
+        return ['send_queue' => [
+            'status' => $state['status'],
+            'scheduled_at' => $unix($state['scheduled_at'] ?? null),
+            'sent_at' => $unix($state['sent_at'] ?? null),
+            'error_code' => $state['error_code'] ?? null,
+        ]];
     }
 
     /**

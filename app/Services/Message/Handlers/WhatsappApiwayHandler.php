@@ -12,6 +12,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
+use App\Services\Message\ApiwaySendQueue;
 use App\Services\Message\AudioNormalizer;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsTypingIndicator;
@@ -99,6 +100,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             'sent_at' => $this->getMessageSentAt($responseArray),
             'meta' => array_merge($responseArray, $extraMeta),
         ]);
+        ApiwaySendQueue::track($message, $connection);
 
         $message->update(['attachment' => $url]);
 
@@ -245,6 +247,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
+            ApiwaySendQueue::track($message, $connection);
 
             return $message;
         } catch (\Throwable $th) {
@@ -326,7 +329,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'action' => ['buttons' => array_map(fn ($button) => ['type' => 'reply', 'reply' => $button], $buttons)],
             ], fn ($value) => $value !== null);
 
-            return $conversation->messages()->create([
+            $message = $conversation->messages()->create([
                 'external_id' => $this->getMessageId($responseArray),
                 'sender_type' => SenderType::Outgoing,
                 'message_type' => MessageType::Interactive,
@@ -334,6 +337,9 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => array_merge($responseArray, ['interactive' => $interactive]),
             ]);
+            ApiwaySendQueue::track($message, $connection);
+
+            return $message;
         } catch (\Throwable $th) {
             Log::error('WhatsappApiwayHandler: Failed to send buttons', [
                 'error' => $th->getMessage(),
@@ -425,6 +431,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
+            ApiwaySendQueue::track($message, $connection);
 
             // Store the original image content (not base64)
             $mediaPath = MediaFilename::path('media', (string) $message->id, $data['image']->getClientOriginalName(), $data['image']->getClientOriginalExtension());
@@ -564,6 +571,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
+            ApiwaySendQueue::track($message, $connection);
 
             // Store the converted audio content
             $mediaPath = MediaFilename::path('media', (string) $message->id, $data['audio']->getClientOriginalName(), $extension);
@@ -673,6 +681,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => $responseArray,
             ]);
+            ApiwaySendQueue::track($message, $connection);
 
             // Store the original video content permanently
             $mediaPath = MediaFilename::path('media', (string) $message->id, $data['video']->getClientOriginalName(), $data['video']->getClientOriginalExtension());
@@ -802,6 +811,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
                 'sent_at' => $this->getMessageSentAt($responseArray),
                 'meta' => array_merge($responseArray, ['filename' => $filename]),
             ]);
+            ApiwaySendQueue::track($message, $connection);
 
             // Store the original document content permanently
             $mediaPath = MediaFilename::path('media', (string) $message->id, $filename, $data['document']->getClientOriginalExtension());
