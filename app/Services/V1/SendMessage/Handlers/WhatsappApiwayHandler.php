@@ -4,8 +4,10 @@ namespace App\Services\V1\SendMessage\Handlers;
 
 use App\Enums\Connection\Channel;
 use App\Models\Connection;
+use App\Services\Message\Handlers\WhatsappApiwayHandler as PanelHandler;
 use App\Services\V1\SendMessage\OutgoingMessage;
 use App\Services\V1\SendMessage\SendMessageHandlerInterface;
+use App\Services\V1\SendMessage\SentMessageRecorder;
 use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -46,15 +48,21 @@ class WhatsappApiwayHandler implements SendMessageHandlerInterface
                 throw new Exception('Failed to send WhatsApp message: ' . $response->body());
             }
 
-            $responseArray = $response->json();
+            $responseArray = $response->json() ?? [];
+
+            // The core keeps moving the id around its envelope; the panel's
+            // handler already knows every place it has been seen.
+            $messageId = (new PanelHandler())->getMessageId($responseArray);
 
             Log::info('WhatsappApiwayHandler: Message sent successfully', [
                 'connection_id' => $connection->id,
                 'phone' => $data['phone'],
                 'type' => $outgoing->type,
-                'message_id' => $responseArray['data']['id'] ?? $responseArray['messageId'] ?? null,
+                'message_id' => $messageId,
                 'response' => $responseArray,
             ]);
+
+            SentMessageRecorder::whatsapp($connection, $data['phone'], $outgoing, $messageId, $responseArray);
 
             return $responseArray;
         } catch (\Throwable $th) {

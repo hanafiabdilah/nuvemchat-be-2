@@ -9,6 +9,7 @@ use App\Jobs\RunFlowTurn;
 use App\Models\Conversation;
 use App\Models\FlowState;
 use App\Services\Conversation\LastAgentRouter;
+use App\Services\V1\SendMessage\SentMessageRecorder;
 
 /**
  * The one place that decides *where* a flow turn runs.
@@ -80,7 +81,8 @@ final class FlowRunner
      * retry is still on its way — so the phone's echo opens the thread and the
      * customer's message lands second. They still spoke first, and it is still
      * the opening message. A thread the business started stays as it was: the
-     * bot does not walk into a conversation somebody else began.
+     * bot does not walk into a conversation somebody else began — unless all
+     * that was said came through the public API, where nobody is in it.
      */
     private static function opensThread(Conversation $conversation): bool
     {
@@ -101,7 +103,18 @@ final class FlowRunner
             return false;
         }
 
-        if ((int) ($said[SenderType::Outgoing->value] ?? 0) === 0) {
+        $replies = $conversation->messages()
+            ->where('message_type', '!=', MessageType::Info)
+            ->where('sender_type', SenderType::Outgoing)
+            // What another system sent through the public API is not anybody
+            // answering them. Before those messages were recorded, the
+            // customer's reply to one opened a thread of its own and got the
+            // flow; filing the message in the thread must not take that away.
+            ->where(fn ($q) => $q
+                ->whereNull('meta->'.SentMessageRecorder::META_KEY)
+                ->orWhere('meta->'.SentMessageRecorder::META_KEY, '!=', SentMessageRecorder::VIA_API));
+
+        if (! (clone $replies)->exists()) {
             return true;
         }
 
@@ -117,9 +130,7 @@ final class FlowRunner
 
         // Every reply has to be the connected phone's own (nothing sent from
         // the panel, a flow or the AI) and strictly later than the customer.
-        return ! $conversation->messages()
-            ->where('message_type', '!=', MessageType::Info)
-            ->where('sender_type', SenderType::Outgoing)
+        return ! $replies
             ->where(fn ($q) => $q
                 ->whereNotNull('sent_by_user_id')
                 ->orWhereNotNull('sent_by_flow_id')

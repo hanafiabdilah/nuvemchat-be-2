@@ -6,6 +6,7 @@ use App\Enums\Connection\Channel;
 use App\Models\Connection;
 use App\Services\V1\SendMessage\OutgoingMessage;
 use App\Services\V1\SendMessage\SendMessageHandlerInterface;
+use App\Services\V1\SendMessage\SentMessageRecorder;
 use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -36,14 +37,25 @@ class WhatsappOfficialHandler implements SendMessageHandlerInterface
                 throw new Exception('Failed to send WhatsApp message: ' . $response->body());
             }
 
-            $responseArray = $response->json();
+            $responseArray = $response->json() ?? [];
+            $messageId = $responseArray['messages'][0]['id'] ?? null;
 
             Log::info('WhatsappOfficialHandler: Message sent successfully', [
                 'connection_id' => $connection->id,
                 'to' => $data['to'],
                 'type' => $outgoing->type,
-                'message_id' => $responseArray['messages'][0]['id'] ?? null,
+                'message_id' => $messageId,
             ]);
+
+            // Filed under the number Meta resolved `to` into — the spelling its
+            // webhook uses when they answer — not the one the caller typed.
+            SentMessageRecorder::whatsapp(
+                $connection,
+                (string) ($responseArray['contacts'][0]['wa_id'] ?? $data['to']),
+                $outgoing,
+                $messageId,
+                $responseArray,
+            );
 
             return $responseArray;
         } catch (\Throwable $th) {
