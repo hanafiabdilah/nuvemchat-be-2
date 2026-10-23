@@ -53,6 +53,7 @@ use App\Http\Controllers\Api\AiSuggestController;
 use App\Http\Controllers\Api\ApiKeyController;
 use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
 use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
+use App\Http\Controllers\Api\Apiway\ApiwaySendPolicyController;
 use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Billing\BillingController;
@@ -642,6 +643,13 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
     // connections.connect — it is the same act as linking one in the first
     // place, only against a connection that already has one.
     Route::post('/connections/{id}/apiway/instance', [ConnectionController::class, 'switchApiwayInstance'])->middleware('permission:connections.connect');
+    // The number's anti-ban send policy on the API Way core (daily cap, pace)
+    // and the queue it builds up. Reading is open to whoever sees the
+    // connection; changing the policy or emptying the queue is connection
+    // management.
+    Route::get('/connections/{id}/apiway/send-policy', [ApiwaySendPolicyController::class, 'show'])->middleware('throttle:60,1');
+    Route::put('/connections/{id}/apiway/send-policy', [ApiwaySendPolicyController::class, 'update'])->middleware(['permission:connections.update', 'throttle:20,1']);
+    Route::delete('/connections/{id}/apiway/send-queue', [ApiwaySendPolicyController::class, 'clearQueue'])->middleware(['permission:connections.update', 'throttle:10,1']);
     // Reuses the check-status permission on purpose: both are "poke this
     // connection", and a new permission would not be granted to existing roles.
     Route::post('/connections/{id}/sync', [ConnectionController::class, 'syncInbox'])->middleware('permission:connections.check-status');

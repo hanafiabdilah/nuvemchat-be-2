@@ -195,6 +195,29 @@ final class ApiwaySendQueue
     }
 
     /**
+     * Settle messages someone removed from the core's queue (the "clear the
+     * queue" action). The caller has already let the send log settle the ones
+     * that went out first, so whatever is left here never reached anybody.
+     *
+     * @param  Collection<int, ApiwayQueuedSend>  $rows
+     */
+    public function markRemoved(Collection $rows): int
+    {
+        $count = 0;
+
+        foreach ($rows as $row) {
+            if ($row->message) {
+                $this->settle($row, $row->message, self::FAILED, null, 'canceled');
+                $count++;
+            } else {
+                $row->delete();
+            }
+        }
+
+        return $count;
+    }
+
+    /**
      * Send-log entries for these rows, keyed by queue id. Null when the core
      * could not be read — the rows simply wait for the next pass.
      *
