@@ -1153,6 +1153,7 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         // Billing — subscriptions + manual (comp) assignment
         Route::middleware('permission:bo.subscriptions.manage')->group(function () {
             Route::get('/subscriptions', [AdminSubscriptionController::class, 'index']);
+            Route::get('/subscriptions/meta', [AdminSubscriptionController::class, 'meta']);
             Route::get('/apiway/subscriptions', [AdminApiwayController::class, 'subscriptions']);
             Route::get('/apiway/subscriptions/summary', [AdminApiwayController::class, 'summary']);
             // Books a manual refund against a purchase that was

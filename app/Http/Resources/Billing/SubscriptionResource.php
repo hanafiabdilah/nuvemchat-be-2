@@ -97,6 +97,7 @@ class SubscriptionResource extends JsonResource
             'plan' => new PlanResource($this->whenLoaded('plan')),
             'tenant' => $this->whenLoaded('tenant', fn () => [
                 'id' => $this->tenant->id,
+                'market_code' => $this->tenant->market_code,
                 'user' => $this->tenant->relationLoaded('user') && $this->tenant->user ? [
                     'name' => $this->tenant->user->name,
                     'email' => $this->tenant->user->email,
