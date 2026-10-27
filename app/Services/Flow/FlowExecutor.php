@@ -86,12 +86,9 @@ use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
 use App\Services\Sales\SalesLedger;
 use App\Support\Errors\TransportFailure;
-use App\Support\OutboundHttp;
-use App\Support\PublicUrl;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -1852,156 +1849,43 @@ class FlowExecutor
      */
     protected function executeHttpNode(FlowState $flowState, FlowNode $node): void
     {
-        $data = $node->data ?? [];
-        $stateData = $flowState->state_data ?? [];
-
-        $method = strtoupper($data['method'] ?? 'GET');
-        $url = trim($this->interpolateVariables((string) ($data['url'] ?? ''), $flowState));
-
-        if ($url === '') {
-            Log::warning('FlowExecutor: HTTP node has no URL, taking error branch', [
-                'node_id' => $node->id,
-            ]);
-            $this->moveToNextNodeByBranch($flowState, $node, 'error');
-
-            return;
-        }
-
-        // ⚠️ Where the request may go, checked before it is made. This node
-        // reaches out on behalf of whoever wrote the flow, and the URL can be
-        // assembled from {{variables}} filled by the customer's own messages —
-        // so without this it was read access to the platform's own network
-        // (cloud metadata, the database, Reverb, the queue) with the response
-        // mapped into a variable and sent straight back to the customer.
-        //
-        // Taking the `error` branch rather than throwing: a flow that hits a
-        // refusal has to keep running, and `error` is the branch its author
-        // already drew for "this call did not work".
-        if (! PublicUrl::isFetchable($url)) {
-            Log::warning('FlowExecutor: HTTP node refused a non-public address', [
-                'node_id' => $node->id,
-                'flow_id' => $node->flow_id,
-                // Host only. A flow author's query string carries their tokens
-                // and their customer's identifiers.
-                'host' => parse_url($url, PHP_URL_HOST),
-            ]);
-
-            $this->moveToNextNodeByBranch($flowState, $node, 'error');
-
-            return;
-        }
-
-        try {
-            // Build interpolated headers from the list of { key, value } rows.
-            $headers = [];
-            foreach ((array) ($data['headers'] ?? []) as $header) {
-                $key = trim((string) ($header['key'] ?? ''));
-                if ($key === '') {
-                    continue;
-                }
-                $headers[$key] = $this->interpolateVariables((string) ($header['value'] ?? ''), $flowState);
-            }
-
-            // ⚠️ Clamped at RUNTIME, not only at save. FlowBlueprint validates
-            // 1–120, but rows written before that rule existed carry whatever
-            // was in them, and this number is how long a worker — a PHP-FPM
-            // one while flows still run inline — is held by an endpoint that
-            // never answers.
-            $timeout = (int) ($data['timeout'] ?? 15);
-            if ($timeout <= 0) {
-                $timeout = 15;
-            }
-            $timeout = min($timeout, (int) config('flow.http_max_timeout', 120));
-
-            // The URL was checked above; the redirect guard is what keeps that
-            // check meaningful, since a public host may answer 302 with a
-            // private one and the client would follow it.
-            $request = OutboundHttp::guard(
-                OutboundHttp::pinHost(
-                    Http::withHeaders($headers)
-                        ->timeout($timeout)
-                        ->connectTimeout(min($timeout, 10)),
-                    $url,
-                ),
-            );
-
-            // Prepare the body for write verbs. If it parses as JSON we send it
-            // as a JSON payload; otherwise it goes out as a raw string.
-            $jsonBody = null;
-
-            if (in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
-                $rawBody = $this->interpolateVariables((string) ($data['body'] ?? ''), $flowState);
-
-                if (trim($rawBody) !== '') {
-                    $decoded = json_decode($rawBody, true);
-
-                    if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-                        $jsonBody = $decoded;
-                    } else {
-                        $request = $request->withBody($rawBody, $headers['Content-Type'] ?? 'text/plain');
-                    }
-                }
-            }
-
+        // The request itself — the address check, the redirect guard, the
+        // timeout clamp and the response mapping — lives in HttpRequestNodes,
+        // shared with the builder's test panel so a test makes exactly the
+        // call a customer's flow would. It never throws.
+        $result = HttpRequestNodes::perform(
+            $node->data ?? [],
+            fn (string $template) => $this->interpolateVariables($template, $flowState),
             // Announced before the call, not after: a third-party endpoint that
             // hangs for its full timeout is precisely the pause this is here to
             // explain, and by the time the response lands there is nothing left
             // to wait for.
-            LiveActivity::flowHttp($flowState->conversation, $node, $method, $url);
+            fn (string $method, string $url) => LiveActivity::flowHttp($flowState->conversation, $node, $method, $url),
+            ['node_id' => $node->id, 'flow_id' => $node->flow_id],
+        );
 
-            $response = match ($method) {
-                'POST' => $jsonBody !== null ? $request->post($url, $jsonBody) : $request->post($url),
-                'PUT' => $jsonBody !== null ? $request->put($url, $jsonBody) : $request->put($url),
-                'PATCH' => $jsonBody !== null ? $request->patch($url, $jsonBody) : $request->patch($url),
-                'DELETE' => $jsonBody !== null ? $request->delete($url, $jsonBody) : $request->delete($url),
-                default => $request->get($url),
-            };
+        try {
+            // Only an answered call maps anything. Re-read state in case a
+            // mapping key overlaps with something set earlier in this run.
+            if ($result['status'] !== null) {
+                $stateData = $flowState->fresh()->state_data ?? ($flowState->state_data ?? []);
 
-            // Re-read state in case a mapping key overlaps with something set
-            // earlier in this run, then store mapped response fields.
-            $stateData = $flowState->fresh()->state_data ?? $stateData;
-
-            $json = null;
-            try {
-                $json = $response->json();
-            } catch (\Throwable $e) {
-                $json = null; // response wasn't JSON — only http_status/raw_body usable
-            }
-
-            foreach ((array) ($data['response_mappings'] ?? []) as $mapping) {
-                $variable = trim((string) ($mapping['variable'] ?? ''));
-                if ($variable === '') {
-                    continue;
+                foreach ($result['mapped'] as $variable => $value) {
+                    $stateData[$variable] = $value;
                 }
 
-                $path = trim((string) ($mapping['path'] ?? ''));
-
-                $value = match ($path) {
-                    'http_status' => $response->status(),
-                    'raw_body', '' => $response->body(),
-                    default => is_array($json) ? data_get($json, $path) : null,
-                };
-
-                // Flatten arrays/objects so single-depth Condition lookups still work.
-                if (is_array($value)) {
-                    $value = json_encode($value);
-                }
-
-                $stateData[$variable] = $value;
+                $flowState->update(['state_data' => $stateData]);
             }
-
-            $flowState->update(['state_data' => $stateData]);
-
-            $branch = $response->successful() ? 'success' : 'error';
 
             Log::info('FlowExecutor: HTTP node executed', [
                 'node_id' => $node->id,
-                'method' => $method,
-                'status' => $response->status(),
-                'branch' => $branch,
+                'method' => $result['method'],
+                'status' => $result['status'],
+                'branch' => $result['branch'],
+                'error' => $result['error'],
             ]);
 
-            $this->moveToNextNodeByBranch($flowState, $node, $branch);
+            $this->moveToNextNodeByBranch($flowState, $node, $result['branch']);
         } catch (\Throwable $th) {
             Log::error('FlowExecutor: Error executing HTTP node, taking error branch', [
                 'node_id' => $node->id,

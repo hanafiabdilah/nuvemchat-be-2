@@ -69,6 +69,7 @@ use App\Http\Controllers\Api\ConversationNoteController;
 use App\Http\Controllers\Api\Credits\CreditController;
 use App\Http\Controllers\Api\FlowAssistantController;
 use App\Http\Controllers\Api\FlowController;
+use App\Http\Controllers\Api\FlowTestController;
 use App\Http\Controllers\Api\Gallery\GalleryAssetController;
 use App\Http\Controllers\Api\Gallery\GalleryStorageController;
 use App\Http\Controllers\Api\GroupController;
@@ -722,6 +723,19 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // flow named in the URL is only read, and what gets written is new.
         Route::post('/flows/{id}/translate', [FlowAssistantController::class, 'translate'])
             ->middleware(['feature:flow_assistant', 'permission:flows.create', 'throttle:6,1']);
+
+        // The builder's test panel. The test itself runs in the browser and
+        // touches nothing; these are only the steps it cannot pretend — an AI
+        // turn and an HTTP call, both real — plus what it starts from. Running
+        // either spends something (tokens, a request to somebody's system), so
+        // they need `flows.update`, like any other way of acting on a flow.
+        Route::get('/flows/{id}/test/settings', [FlowTestController::class, 'settings'])->middleware('permission:flows.view');
+        Route::post('/flows/{id}/test/ai/opening', [FlowTestController::class, 'opening'])
+            ->middleware(['feature:ai_agent_hub', 'permission:flows.update', 'throttle:60,1']);
+        Route::post('/flows/{id}/test/ai/turn', [FlowTestController::class, 'aiTurn'])
+            ->middleware(['feature:ai_agent_hub', 'permission:flows.update', 'throttle:30,1']);
+        Route::post('/flows/{id}/test/http', [FlowTestController::class, 'http'])
+            ->middleware(['permission:flows.update', 'throttle:30,1']);
 
         Route::get('/flows/{id}/export', [FlowController::class, 'export'])->middleware('permission:flows.view');
         Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');

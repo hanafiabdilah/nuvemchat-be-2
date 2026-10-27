@@ -113,10 +113,7 @@ class AiConversationContext
 
         $covered = max($seenUpTo, $lastInputId, (int) $messages->max('id'));
 
-        $lines = [];
-        $budget = self::CHAR_BUDGET;
-        $truncated = $messages->count() >= self::MESSAGE_LIMIT;
-        $informative = false;
+        $entries = [];
 
         foreach ($messages as $message) {
             // Written by the hub, so already in its history.
@@ -149,6 +146,57 @@ class AiConversationContext
 
             [$speaker, $counts] = self::speaker($message);
 
+            $entries[] = [$speaker, $body, $counts];
+        }
+
+        return [self::assemble($entries, $messages->count() >= self::MESSAGE_LIMIT), $covered];
+    }
+
+    /**
+     * The same block, from a transcript nobody stored: the flow builder's test
+     * panel, whose conversation lives in the browser.
+     *
+     * Each line is `['speaker' => customer|automated|welcome, 'text' => …]`,
+     * oldest first. Built through the same assembly as a real thread — the
+     * labels, the budget and the "is there anything here worth sending" rule —
+     * so what the agent reads in a test is what it reads in production.
+     *
+     * @param  array<int, array{speaker: string, text: string}>  $transcript
+     */
+    public static function fromTranscript(array $transcript): ?string
+    {
+        $entries = [];
+
+        foreach (array_reverse(array_slice($transcript, -self::MESSAGE_LIMIT)) as $line) {
+            $body = trim((string) ($line['text'] ?? ''));
+
+            if ($body === '') {
+                continue;
+            }
+
+            $entries[] = match ($line['speaker'] ?? null) {
+                'customer' => ['Customer', $body, false],
+                'welcome' => [self::WELCOME_SPEAKER, $body, false],
+                default => ['Automated message', $body, true],
+            };
+        }
+
+        return self::assemble($entries, count($transcript) > self::MESSAGE_LIMIT);
+    }
+
+    /**
+     * Lines (newest first, as `[speaker, body, informative]`) into the block
+     * the agent reads, or null when nothing in them is news to it.
+     *
+     * @param  array<int, array{0: string, 1: string, 2: bool}>  $entries
+     */
+    protected static function assemble(array $entries, bool $truncated): ?string
+    {
+        $lines = [];
+        $budget = self::CHAR_BUDGET;
+        $informative = false;
+
+        foreach ($entries as [$speaker, $body, $counts]) {
             if ($speaker === self::WELCOME_SPEAKER) {
                 $body = self::WELCOME_PLACEHOLDER;
             }
@@ -170,7 +218,7 @@ class AiConversationContext
         }
 
         if (! $informative) {
-            return [null, $covered];
+            return null;
         }
 
         $lines = array_reverse($lines);
@@ -181,13 +229,11 @@ class AiConversationContext
 
         $transcript = implode("\n", $lines);
 
-        $block = <<<CONTEXT
+        return <<<CONTEXT
 [Conversation so far — messages exchanged with this customer that you have not seen yet, oldest first. Lines marked "Automated message" were sent to the customer by this business's automated flow before you joined: treat what they say as already told to the customer, never contradict them without reason, and never ask for something the customer already answered.]
 {$transcript}
 [End of conversation so far]
 CONTEXT;
-
-        return [$block, $covered];
     }
 
     /** The turn's text with the transcript ahead of it, when there is one. */

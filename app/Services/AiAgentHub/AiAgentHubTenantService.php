@@ -1222,6 +1222,83 @@ class AiAgentHubTenantService
     }
 
     /**
+     * One turn of the flow builder's test panel: an AI node's agent answering
+     * a conversation that exists only in the author's browser.
+     *
+     * A real run on a real provider — the same gates and bookkeeping as the
+     * vocabulary bench (prepaid balance, an `ai_hub_runs` row with no
+     * conversation, the wallet debit on a rented key), because a test that ran
+     * AI for free would be the one path nobody could see or bill.
+     *
+     * `$conversationKey` is the test session's own hub conversation, chosen by
+     * the caller and kept for the whole session, so the agent remembers the
+     * test's earlier turns the way it remembers a real thread's — and never
+     * anything of a real thread.
+     *
+     * Deliberately text only: no tools (they act on a stored conversation that
+     * a test does not have), no voice, no attachments — and so no text-only
+     * retry either.
+     */
+    public function runFlowTest(
+        AiHubAgent $agent,
+        string $conversationKey,
+        string $userMessage,
+        int $flowId,
+        string $contactName
+    ): AiHubRun {
+        $tenant = $agent->aiHubTenant;
+
+        $this->assertCanSpendCredit($agent);
+
+        $payload = [
+            'agentExternalId' => $agent->external_id,
+            'responseMode' => 'sync',
+            'conversation' => [
+                'externalId' => $conversationKey,
+                // No channel behind a test. 'whatsapp' is the value every
+                // working run in this deployment already sends, and the hub
+                // rejects a whole run over one unrecognised field — see the
+                // same note in runAudioTest().
+                'channel' => 'whatsapp',
+                'contactExternalId' => $conversationKey,
+                'contactName' => $contactName,
+            ],
+            'message' => [
+                'role' => 'USER',
+                'content' => $userMessage,
+            ],
+            'metadata' => ['purpose' => 'flow_test'],
+        ];
+
+        $context = [
+            'ai_hub_tenant_id' => $tenant?->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'purpose' => 'flow_test',
+            'flow_id' => $flowId,
+        ];
+
+        $data = $this->postRun($tenant, $payload, $context);
+
+        if (self::runFailed($data)) {
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                self::runError($data),
+                upstreamCode: 'run_failed',
+                context: $context,
+            );
+        }
+
+        $run = $this->persistRun($agent, null, $userMessage, $data, null, null, [
+            'purpose' => 'flow_test',
+            'flow_id' => $flowId,
+        ]);
+
+        $this->chargeRentedRun($agent, $run);
+
+        return $run;
+    }
+
+    /**
      * Bill a completed run to the prepaid wallet, when it ran on a key the
      * platform rents out.
      *
