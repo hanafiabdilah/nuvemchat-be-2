@@ -74,7 +74,7 @@ test('forgot uses the admin-overridden template', function () {
     $this->postJson('/api/auth/password/forgot', ['email' => $user->email])->assertOk();
 
     Bus::assertDispatchedAfterResponse(SendWhatsappMessageJob::class, function ($job) use ($user) {
-        return $job->message === "Oi Ana, codigo " . resetCode($user) . " vale 10 min.";
+        return $job->message === "Oi Ana, codigo " . resetCode($user) . " vale 5 min.";
     });
 });
 

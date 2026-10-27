@@ -83,11 +83,13 @@ it('stops guessing at a Back Office password after five tries', function () {
 it('stops guessing at a dashboard password too', function () {
     $user = tenantOwner();
 
-    foreach (range(1, 5) as $attempt) {
+    foreach (range(1, 4) as $attempt) {
         $this->postJson('/api/auth/login', ['email' => $user->email, 'password' => 'wrong'])
             ->assertStatus(401);
     }
 
+    // On the dashboard the fifth wrong password is the one that blocks, and
+    // it says so itself rather than leaving it to the sixth.
     $this->postJson('/api/auth/login', ['email' => $user->email, 'password' => 'wrong'])
         ->assertStatus(429);
 });

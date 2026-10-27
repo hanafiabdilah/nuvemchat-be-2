@@ -108,6 +108,13 @@ return [
 
     'locale' => env('APP_LOCALE', 'en'),
 
+    /*
+    | Where a customer is sent when the platform blocks them for a while (too
+    | many wrong sign-in passwords, too many wrong verification codes). The
+    | public contact address on pingly.com.br.
+    */
+    'support_email' => env('SUPPORT_EMAIL', 'contato@pingly.com.br'),
+
     'fallback_locale' => env('APP_FALLBACK_LOCALE', 'en'),
 
     'faker_locale' => env('APP_FAKER_LOCALE', 'en_US'),

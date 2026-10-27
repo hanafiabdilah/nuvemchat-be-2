@@ -1,0 +1,10 @@
+# Disposable e-mail domains of our own, on top of disposable-email-domains.txt
+# (which is a verbatim upstream copy and gets replaced on refresh). One domain
+# per line; a listed domain also covers its subdomains.
+#
+# Temp-mail services the upstream list does not carry, checked Oct 2026.
+tempmail.com
+tempmail.net
+tempmail.dev
+temp-mail.io
+burnermail.io

@@ -2,7 +2,9 @@
 
 namespace App\Services\Auth;
 
+use App\Exceptions\Auth\AuthRefusedException;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Str;
@@ -31,7 +33,10 @@ use Illuminate\Validation\ValidationException;
  *   - **per address** — is somebody spraying one password across many accounts?
  *     The first counter never sees that: each account is only tried once.
  *
- * Both decay over the same window rather than needing an unlock, because an
+ * Reaching either limit blocks that counter for 30 minutes, counted from the
+ * failure that reached it (not from the first one — a counter that simply
+ * decayed let somebody who spread five tries over 25 minutes back in after
+ * five). The block lifts by itself rather than needing an unlock, because an
  * account a customer cannot get back into is its own outage, and support
  * unlocking accounts by hand is how lockout policies get switched off.
  */
@@ -43,8 +48,11 @@ final class LoginThrottle
     /** Failures from one address, across every account, before the same. */
     private const ADDRESS_ATTEMPTS = 30;
 
-    /** How long either counter takes to forget, in seconds. */
-    private const DECAY = 900;
+    /** How long a failure counts toward the limit, in seconds. */
+    private const DECAY = 1800;
+
+    /** How long a counter that reached its limit stays blocked, in seconds. */
+    public const BLOCK_SECONDS = 1800;
 
     public function __construct(
         private readonly string $surface,
@@ -63,23 +71,20 @@ final class LoginThrottle
     }
 
     /**
-     * Refuse early when either counter is spent.
+     * Refuse while either counter is blocked.
      *
-     * Thrown as a validation error on `email` so every client already renders
-     * it — the two sign-in screens and the API both understand 422 without
-     * anything being added to them.
+     * Shaped as a validation error on `email` so every client already renders
+     * it, with `code: login_blocked`, how long is left, and — on the dashboard —
+     * who to contact, so the screen can say all three in the reader's language.
      */
     public function assertNotLocked(Request $request, string $email): void
     {
-        foreach ([
-            [$this->accountKey($request, $email), self::ACCOUNT_ATTEMPTS],
-            [$this->addressKey($request), self::ADDRESS_ATTEMPTS],
-        ] as [$key, $attempts]) {
-            if (! RateLimiter::tooManyAttempts($key, $attempts)) {
+        foreach ([$this->accountKey($request, $email), $this->addressKey($request)] as $key) {
+            $seconds = (int) Cache::get($this->blockKey($key), 0) - now()->timestamp;
+
+            if ($seconds <= 0) {
                 continue;
             }
-
-            $seconds = RateLimiter::availableIn($key);
 
             Log::warning('Sign-in blocked by throttle', [
                 'surface' => $this->surface,
@@ -88,19 +93,35 @@ final class LoginThrottle
                 'retry_after' => $seconds,
             ]);
 
-            throw ValidationException::withMessages([
-                'email' => __('Too many sign-in attempts. Try again in :seconds seconds.', [
-                    'seconds' => $seconds,
-                ]),
-            ])->status(429);
+            throw AuthRefusedException::blocked(
+                'Too many failed sign-in attempts. For your security, sign-in is blocked for 30 minutes. Try again later or contact our support team.',
+                'login_blocked',
+                'email',
+                $seconds,
+                // The Back Office's own operators are the support team.
+                withSupport: $this->surface === 'tenant',
+            );
         }
     }
 
-    /** Record a failed attempt against both counters. */
+    /**
+     * Record a failed attempt against both counters, blocking whichever just
+     * reached its limit. Call assertNotLocked() afterwards to refuse the very
+     * attempt that did it.
+     */
     public function recordFailure(Request $request, string $email): void
     {
-        RateLimiter::hit($this->accountKey($request, $email), self::DECAY);
-        RateLimiter::hit($this->addressKey($request), self::DECAY);
+        foreach ([
+            [$this->accountKey($request, $email), self::ACCOUNT_ATTEMPTS],
+            [$this->addressKey($request), self::ADDRESS_ATTEMPTS],
+        ] as [$key, $limit]) {
+            RateLimiter::hit($key, self::DECAY);
+
+            if (RateLimiter::attempts($key) >= $limit) {
+                Cache::put($this->blockKey($key), now()->addSeconds(self::BLOCK_SECONDS)->timestamp, self::BLOCK_SECONDS);
+                RateLimiter::clear($key);
+            }
+        }
 
         // The e-mail is masked because this line is written for whoever is
         // watching for an attack, and they do not need the address to see one.
@@ -110,6 +131,16 @@ final class LoginThrottle
             'ip' => $request->ip(),
             'user_agent' => Str::limit((string) $request->userAgent(), 200, ''),
         ]);
+    }
+
+    /**
+     * Wrong passwords left before this account is blocked from this address.
+     * Keyed the same way the block is, so it tells an attacker nothing they
+     * did not already spend themselves.
+     */
+    public function attemptsLeft(Request $request, string $email): int
+    {
+        return max(0, self::ACCOUNT_ATTEMPTS - RateLimiter::attempts($this->accountKey($request, $email)));
     }
 
     /** Forget the account counter after a real sign-in. */
@@ -134,6 +165,11 @@ final class LoginThrottle
     private function addressKey(Request $request): string
     {
         return 'login-ip:'.$this->surface.':'.$request->ip();
+    }
+
+    private function blockKey(string $counter): string
+    {
+        return $counter.':blocked-until';
     }
 
     /** `ma••••••@example.com` — enough to recognise, not enough to harvest. */

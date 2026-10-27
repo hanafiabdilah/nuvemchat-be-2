@@ -24,12 +24,23 @@ class OtpService
     public const PURPOSE_PASSWORD_RESET = 'password_reset';
 
     private const CODE_LENGTH = 6;
-    private const TTL_MINUTES = 10;
-    private const RESEND_COOLDOWN_SECONDS = 60;
-    private const MAX_ATTEMPTS = 5;
 
+    /**
+     * Five minutes: a code sent to a phone is typed within seconds, and every
+     * minute it stays valid is a minute somebody who saw the screen can use it.
+     */
+    private const TTL_MINUTES = 5;
+
+    private const RESEND_COOLDOWN_SECONDS = 60;
+
+    /**
+     * How many wrong codes are allowed — per code, and before verification is
+     * blocked — lives in OtpGuard, shared with the password recovery steps for
+     * addresses that have no account.
+     */
     public function __construct(
         protected NotificationService $notifications,
+        protected OtpGuard $guard,
     ) {}
 
     /**
@@ -76,6 +87,11 @@ class OtpService
     public function request(User $user, string $purpose = self::PURPOSE_WHATSAPP): Otp
     {
         $number = self::normalizeNumber((string) $user->whatsapp_number);
+        $identity = OtpGuard::identityFor($user, $purpose);
+
+        // A blocked verification cannot be restarted by asking for a new code:
+        // that is the very thing the block is there to stop.
+        $this->guard->assertNotBlocked($purpose, $identity);
 
         if ($number === '') {
             throw ValidationException::withMessages([
@@ -106,6 +122,8 @@ class OtpService
             'attempts' => 0,
             'expires_at' => now()->addMinutes(self::TTL_MINUTES),
         ]);
+
+        $this->guard->codeIssued($purpose, $identity);
 
         $this->dispatch($otp, $user);
 
@@ -154,13 +172,24 @@ class OtpService
         return max(0, self::RESEND_COOLDOWN_SECONDS - $elapsed);
     }
 
+    /** Seconds left on a verification block, 0 when there is none. */
+    public function blockedFor(User $user, string $purpose = self::PURPOSE_WHATSAPP): int
+    {
+        return $this->guard->blockedFor($purpose, OtpGuard::identityFor($user, $purpose));
+    }
+
     /**
      * The newest pending OTP for this user+purpose, once the submitted code has been
-     * checked against it. Throws a ValidationException (keyed 'code') otherwise, and
-     * burns an attempt on a wrong code so guessing is bounded.
+     * checked against it. Throws an AuthRefusedException (keyed 'code') otherwise:
+     * a wrong code burns an attempt, the third spends the code, and the second
+     * spent code blocks verification for an hour (OtpGuard).
      */
     private function pendingOtp(User $user, string $code, string $purpose): Otp
     {
+        $identity = OtpGuard::identityFor($user, $purpose);
+
+        $this->guard->assertNotBlocked($purpose, $identity);
+
         $otp = Otp::where('user_id', $user->id)
             ->where('purpose', $purpose)
             ->whereNull('verified_at')
@@ -168,21 +197,22 @@ class OtpService
             ->first();
 
         if (! $otp) {
-            throw ValidationException::withMessages(['code' => 'No pending verification. Request a new code.']);
+            throw OtpGuard::missingException();
         }
 
         if ($otp->isExpired()) {
-            throw ValidationException::withMessages(['code' => 'This code has expired. Request a new one.']);
+            throw OtpGuard::expiredException();
         }
 
-        if ($otp->attempts >= self::MAX_ATTEMPTS) {
-            throw ValidationException::withMessages(['code' => 'Too many attempts. Request a new code.']);
-        }
+        $this->guard->assertCodeNotSpent($purpose, $identity);
 
         if (! hash_equals($otp->code, trim($code))) {
+            // Kept on the row as well, so the Back Office's OTP list shows it.
             $otp->increment('attempts');
-            throw ValidationException::withMessages(['code' => 'Incorrect code. Please try again.']);
+            $this->guard->fail($purpose, $identity);
         }
+
+        $this->guard->succeeded($purpose, $identity);
 
         return $otp;
     }

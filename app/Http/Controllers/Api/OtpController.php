@@ -25,6 +25,10 @@ class OtpController extends Controller
             'whatsapp_number' => $this->mask($user->whatsapp_number),
             'verified' => $user->whatsapp_verified_at !== null,
             'cooldown' => $this->otpService->cooldownRemaining($user),
+            // So the screen opens already showing a block, rather than letting
+            // somebody type a code only to be told they cannot.
+            'blocked_for' => $this->otpService->blockedFor($user),
+            'support_email' => config('app.support_email') ?: null,
         ]);
     }
 

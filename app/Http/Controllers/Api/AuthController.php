@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Rules\NotDisposableEmail;
 use App\Services\Auth\LoginThrottle;
 use App\Services\Auth\SingleSession;
 use App\Services\Auth\TwoFactor;
@@ -36,7 +37,9 @@ class AuthController extends Controller
     {
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:255'],
-            'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+            // Before `unique`, so a throwaway address is told the real reason
+            // even when somebody already registered it.
+            'email' => ['required', 'email', 'max:255', new NotDisposableEmail, 'unique:users,email'],
             'password' => ['required', 'string', Password::defaults(), 'confirmed'],
             // WhatsApp number in E.164 (client formats it); we store bare digits.
             'whatsapp_number' => ['required', 'string', 'max:32'],
@@ -122,8 +125,15 @@ class AuthController extends Controller
         if (! Auth::attempt($request->only('email', 'password'))) {
             $throttle->recordFailure($request, $email);
 
+            // The fifth wrong password is the one that blocks: it is told so
+            // now, not on the sixth try.
+            $throttle->assertNotLocked($request, $email);
+
             return response()->json([
                 'message' => 'Invalid login credentials',
+                'code' => 'login_failed',
+                // So the screen can warn before the last tries, not after.
+                'attempts_left' => $throttle->attemptsLeft($request, $email),
             ], 401);
         }
 
@@ -193,6 +203,7 @@ class AuthController extends Controller
         }
 
         $throttle->recordFailure($request, $ticket);
+        $throttle->assertNotLocked($request, $ticket);
 
         throw ValidationException::withMessages([
             'code' => __('That code is not right. Check your authenticator and try again.'),

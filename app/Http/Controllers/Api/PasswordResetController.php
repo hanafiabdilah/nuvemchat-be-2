@@ -3,9 +3,11 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\Notification\NotificationType;
+use App\Exceptions\Auth\AuthRefusedException;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Services\Notification\NotificationService;
+use App\Services\Otp\OtpGuard;
 use App\Services\Otp\OtpService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -24,6 +26,9 @@ use Illuminate\Validation\ValidationException;
  *
  * All three answer with the same generic shape whether or not the email exists — this
  * endpoint is unauthenticated, so it must not become an account-enumeration oracle.
+ * That includes the wrong-code limits (three per code, then a one-hour block after the
+ * second spent code): they are counted per address typed, and an address that gets no
+ * code is walked through the same sequence by OtpGuard's phantom* methods.
  * Rate limiting lives on the route (see routes/api.php).
  */
 class PasswordResetController extends Controller
@@ -31,6 +36,7 @@ class PasswordResetController extends Controller
     public function __construct(
         protected OtpService $otpService,
         protected NotificationService $notifications,
+        protected OtpGuard $guard,
     ) {}
 
     /** Step 1 — issue a reset code to the account's WhatsApp number. */
@@ -40,6 +46,14 @@ class PasswordResetController extends Controller
             'email' => ['required', 'email', 'max:255'],
         ]);
 
+        // Blocked addresses are told so, account or not — the block is earned
+        // the same way on both (see the class docblock), so it says nothing
+        // about whether the address is registered.
+        $this->guard->assertNotBlocked(
+            OtpService::PURPOSE_PASSWORD_RESET,
+            OtpGuard::identityForEmail($validated['email']),
+        );
+
         $user = User::where('email', $validated['email'])->first();
 
         if ($user && $user->whatsapp_number) {
@@ -48,18 +62,27 @@ class PasswordResetController extends Controller
             } catch (ValidationException) {
                 // Almost always the resend cooldown. Swallowed on purpose: a 422 here
                 // would tell an anonymous caller that the address is registered.
+            } catch (AuthRefusedException $refused) {
+                throw $refused;
             } catch (\Throwable $th) {
                 Log::warning('PasswordResetController: failed to dispatch reset OTP', [
                     'user_id' => $user->id,
                     'error' => $th->getMessage(),
                 ]);
             }
-        } elseif ($user) {
-            // Recovery runs over WhatsApp only, so a legacy account with no number on file
-            // has no self-service path. The response stays generic; support needs the trail.
-            Log::notice('PasswordResetController: reset requested for an account with no WhatsApp number', [
-                'user_id' => $user->id,
-            ]);
+        } else {
+            if ($user) {
+                // Recovery runs over WhatsApp only, so a legacy account with no number on file
+                // has no self-service path. The response stays generic; support needs the trail.
+                Log::notice('PasswordResetController: reset requested for an account with no WhatsApp number', [
+                    'user_id' => $user->id,
+                ]);
+            }
+
+            $this->guard->phantomIssued(
+                OtpService::PURPOSE_PASSWORD_RESET,
+                OtpGuard::identityForEmail($validated['email']),
+            );
         }
 
         // ⚠️ Byte-for-byte the same answer whether or not the address is
@@ -128,15 +151,16 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Resolve the account, presenting a missing one as a bad code rather than as a
-     * missing account (same reason forgot() stays generic).
+     * Resolve the account. An address that got no code — no account, or one
+     * with no WhatsApp number — is refused exactly as a real code would be,
+     * wrong-code limits included (same reason forgot() stays generic).
      */
     private function userOrFail(string $email): User
     {
         $user = User::where('email', $email)->first();
 
-        if (! $user) {
-            throw ValidationException::withMessages(['code' => 'Incorrect code. Please try again.']);
+        if (! $user || ! $user->whatsapp_number) {
+            $this->guard->phantomCheck(OtpService::PURPOSE_PASSWORD_RESET, OtpGuard::identityForEmail($email));
         }
 
         return $user;
