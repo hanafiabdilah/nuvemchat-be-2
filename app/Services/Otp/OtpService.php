@@ -5,6 +5,8 @@ namespace App\Services\Otp;
 use App\Enums\Notification\NotificationType;
 use App\Models\Otp;
 use App\Models\User;
+use App\Models\WhatsappMessageLog;
+use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationService;
 use Illuminate\Validation\ValidationException;
 
@@ -93,7 +95,11 @@ class OtpService
         // that is the very thing the block is there to stop.
         $this->guard->assertNotBlocked($purpose, $identity);
 
-        if ($number === '') {
+        // Verifying a number needs a number. A password reset does not: the
+        // code is still issued and stored — the Back Office's OTP list is how
+        // support reads it out to a customer whose account predates the
+        // WhatsApp requirement — only its delivery is skipped (dispatch()).
+        if ($number === '' && $purpose !== self::PURPOSE_PASSWORD_RESET) {
             throw ValidationException::withMessages([
                 'whatsapp_number' => 'No WhatsApp number on file to verify.',
             ]);
@@ -245,6 +251,23 @@ class OtpService
      */
     private function dispatch(Otp $otp, User $user): void
     {
+        if ($otp->whatsapp_number === '') {
+            // Nowhere to send it. Written to the WhatsApp log anyway, so that
+            // page says why a code in the OTP list never reached anybody. The
+            // body is left out: with no recipient it is just the code again.
+            WhatsappMessageLog::record(
+                NotificationConfig::provider(),
+                '',
+                self::notificationTypeFor($otp->purpose)->logType(),
+                null,
+                WhatsappMessageLog::STATUS_FAILED,
+                'no WhatsApp number on file',
+                $user->id,
+            );
+
+            return;
+        }
+
         $this->notifications->send(self::notificationTypeFor($otp->purpose), $otp->whatsapp_number, [
             'name' => $user->name,
             'code' => $otp->code,

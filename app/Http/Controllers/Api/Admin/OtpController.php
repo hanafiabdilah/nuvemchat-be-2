@@ -16,12 +16,19 @@ class OtpController extends Controller
     {
         $perPage = (int) $request->query('per_page', 25);
         $statusFilter = $request->query('status'); // pending | verified | expired
-        $search = $request->query('search');       // number contains
+        $search = $request->query('search');       // number, or the user's e-mail / name, contains
         $purpose = $request->query('purpose');     // whatsapp_verification | password_reset
 
         $otps = Otp::query()
             ->with('user:id,name,email')
-            ->when($search, fn ($q) => $q->where('whatsapp_number', 'like', "%{$search}%"))
+            // By the user as well as the number: a password-reset code for an
+            // account with no WhatsApp number has no number to search by, and
+            // finding it is exactly what support opens this page for.
+            ->when($search, fn ($q) => $q->where(fn ($q) => $q
+                ->where('whatsapp_number', 'like', "%{$search}%")
+                ->orWhereHas('user', fn ($u) => $u
+                    ->where('email', 'like', "%{$search}%")
+                    ->orWhere('name', 'like', "%{$search}%"))))
             ->when($purpose, fn ($q) => $q->where('purpose', $purpose))
             ->when($statusFilter === 'verified', fn ($q) => $q->whereNotNull('verified_at'))
             ->when($statusFilter === 'pending', fn ($q) => $q->whereNull('verified_at')->where('expires_at', '>', now()))

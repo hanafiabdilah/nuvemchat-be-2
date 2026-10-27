@@ -150,10 +150,9 @@ final class OtpGuard
     // ── An address with no account behind it ─────────────────────────────────
 
     /**
-     * Recovery asked for an address that gets no code (no account, or one
-     * without a WhatsApp number). Recorded as if a code had gone out — on the
-     * same resend cooldown — so the next steps answer exactly as they would
-     * for an account.
+     * Recovery asked for an address with no account behind it. Recorded as if a
+     * code had gone out — on the same resend cooldown — so the next steps
+     * answer exactly as they would for an account.
      */
     public function phantomIssued(string $purpose, string $identity): void
     {

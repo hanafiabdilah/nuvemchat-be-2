@@ -2,15 +2,19 @@
 
 use App\Enums\Notification\NotificationType;
 use App\Jobs\SendWhatsappMessageJob;
+use App\Models\Admin;
 use App\Models\Otp;
 use App\Models\Setting;
 use App\Models\Tenant;
 use App\Models\User;
+use App\Models\WhatsappMessageLog;
 use App\Services\Notification\NotificationConfig;
 use App\Services\Otp\OtpService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Hash;
+use Spatie\Permission\Models\Permission;
+use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
@@ -257,4 +261,62 @@ test('forgot answers a registered and an unknown address identically', function 
     // a real account, a flat 60 otherwise — which was a second way to ask the
     // same question.
     expect($known->json())->toBe($unknown->json());
+});
+
+// --- Accounts with no WhatsApp number ---------------------------------------
+
+test('an account with no WhatsApp number still gets a reset code, kept for support', function () {
+    $user = resetUser(['whatsapp_number' => null]);
+
+    $this->postJson('/api/auth/password/forgot', ['email' => $user->email])->assertOk();
+
+    // Stored, so the Back Office's OTP list shows it…
+    $otp = Otp::where('user_id', $user->id)->where('purpose', OtpService::PURPOSE_PASSWORD_RESET)->sole();
+    expect($otp->whatsapp_number)->toBe('');
+
+    // …not sent, because there is nowhere to send it — and the WhatsApp log
+    // says so instead of staying silent.
+    Bus::assertNotDispatchedAfterResponse(SendWhatsappMessageJob::class);
+    $log = WhatsappMessageLog::sole();
+    expect($log->status)->toBe(WhatsappMessageLog::STATUS_FAILED)
+        ->and($log->error)->toBe('no WhatsApp number on file')
+        ->and($log->body)->toBeNull()
+        ->and($log->user_id)->toBe($user->id);
+
+    // Read out by support, it works like any other code.
+    $this->postJson('/api/auth/password/reset', [
+        'email' => $user->email,
+        'code' => $otp->code,
+        'password' => 'brand-new-password',
+        'password_confirmation' => 'brand-new-password',
+    ])->assertOk();
+
+    expect(Hash::check('brand-new-password', $user->fresh()->password))->toBeTrue();
+});
+
+test('signup verification still needs a number', function () {
+    $user = resetUser(['whatsapp_number' => null, 'whatsapp_verified_at' => null]);
+
+    $this->actingAs($user)->postJson('/api/auth/otp/send')
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('whatsapp_number');
+
+    expect(Otp::count())->toBe(0);
+});
+
+test('the Back Office finds a code by the account e-mail, not only by number', function () {
+    $user = resetUser(['whatsapp_number' => null, 'email' => 'semnumero@example.com']);
+    $this->postJson('/api/auth/password/forgot', ['email' => $user->email])->assertOk();
+
+    $role = Role::findOrCreate('super-admin', 'web');
+    $role->forceFill(['is_platform' => true])->save();
+    $role->givePermissionTo(Permission::findOrCreate('bo.settings.manage', 'web'));
+    $admin = Admin::factory()->create();
+    $admin->assignRole($role);
+
+    $this->actingAs($admin->fresh())->getJson('/api/admin/otps?search=semnumero')
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.user.email', 'semnumero@example.com')
+        ->assertJsonPath('data.0.whatsapp_number', '');
 });

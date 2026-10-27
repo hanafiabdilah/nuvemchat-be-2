@@ -56,7 +56,16 @@ class PasswordResetController extends Controller
 
         $user = User::where('email', $validated['email'])->first();
 
-        if ($user && $user->whatsapp_number) {
+        if ($user) {
+            // An account with no WhatsApp number still gets a code: it is
+            // stored and listed in the Back Office, where support can read it
+            // out — only the delivery is skipped (OtpService::dispatch()).
+            if (! $user->whatsapp_number) {
+                Log::notice('PasswordResetController: reset requested for an account with no WhatsApp number', [
+                    'user_id' => $user->id,
+                ]);
+            }
+
             try {
                 $this->otpService->request($user, OtpService::PURPOSE_PASSWORD_RESET);
             } catch (ValidationException) {
@@ -71,14 +80,6 @@ class PasswordResetController extends Controller
                 ]);
             }
         } else {
-            if ($user) {
-                // Recovery runs over WhatsApp only, so a legacy account with no number on file
-                // has no self-service path. The response stays generic; support needs the trail.
-                Log::notice('PasswordResetController: reset requested for an account with no WhatsApp number', [
-                    'user_id' => $user->id,
-                ]);
-            }
-
             $this->guard->phantomIssued(
                 OtpService::PURPOSE_PASSWORD_RESET,
                 OtpGuard::identityForEmail($validated['email']),
@@ -151,15 +152,15 @@ class PasswordResetController extends Controller
     }
 
     /**
-     * Resolve the account. An address that got no code — no account, or one
-     * with no WhatsApp number — is refused exactly as a real code would be,
-     * wrong-code limits included (same reason forgot() stays generic).
+     * Resolve the account. An address with no account is refused exactly as a
+     * real code would be, wrong-code limits included (same reason forgot()
+     * stays generic).
      */
     private function userOrFail(string $email): User
     {
         $user = User::where('email', $email)->first();
 
-        if (! $user || ! $user->whatsapp_number) {
+        if (! $user) {
             $this->guard->phantomCheck(OtpService::PURPOSE_PASSWORD_RESET, OtpGuard::identityForEmail($email));
         }
 
