@@ -5,7 +5,9 @@ namespace App\Services\Billing;
 use App\Enums\Apiway\ApiwaySubscriptionStatus;
 use App\Enums\Billing\Feature;
 use App\Enums\Billing\Quota;
+use App\Enums\Connection\Channel;
 use App\Models\ApiwayInstance;
+use App\Models\Connection;
 use App\Models\Tenant;
 use App\Models\TrainedAgentHire;
 use Illuminate\Support\Facades\Cache;
@@ -62,6 +64,33 @@ class SubscriptionGate
 
         // No limit configured = unlimited.
         return $limit === null || $currentCount < $limit;
+    }
+
+    /**
+     * Connections the tenant holds of one kind — WhatsApp or the rest.
+     *
+     * Every connection row counts, connected or not: a number that is
+     * disconnected still holds its place (its flow, its threads) and can be
+     * reconnected without asking the plan again.
+     */
+    public function connectionsUsed(Tenant $tenant, Quota $quota): int
+    {
+        return Connection::query()
+            ->where('tenant_id', $tenant->id)
+            ->whereIn('channel', Channel::valuesCountingAgainst($quota))
+            ->count();
+    }
+
+    /**
+     * Whether the tenant may add one more connection on this channel, measured
+     * against the limit of its own kind only — a full WhatsApp allowance never
+     * stops an Instagram account, nor the other way round.
+     */
+    public function canAddConnection(Tenant $tenant, Channel $channel): bool
+    {
+        $quota = $channel->connectionQuota();
+
+        return $this->canConsume($tenant, $quota->value, $this->connectionsUsed($tenant, $quota));
     }
 
     /**
@@ -135,9 +164,15 @@ class SubscriptionGate
                     }
 
                     // No usable plan, but owned instances: synthesize just
-                    // enough to run them. Chat & friends stay off.
+                    // enough to run them — one WhatsApp connection per
+                    // instance. Chat & friends stay off, and so does every
+                    // other channel: 0, not absent, because an absent cap reads
+                    // as unlimited.
                     return [
-                        'quotas' => ['max_connections' => $instances],
+                        'quotas' => [
+                            Quota::MaxWhatsappConnections->value => $instances,
+                            Quota::MaxOtherConnections->value => 0,
+                        ],
                         'features' => [Feature::WhatsappApi->value => true],
                     ];
                 }

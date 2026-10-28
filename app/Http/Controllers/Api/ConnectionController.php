@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Billing\Quota;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Connection\SyncStatus;
@@ -27,6 +28,7 @@ use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
 use App\Services\Connection\WhatsApp\WhatsappNumberMigrationService;
 use App\Services\Email\EmailInboxSynchronizer;
 use App\Services\Webhook\ExternalAutomationReply;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -160,12 +162,8 @@ class ConnectionController extends Controller
         $connection = $this->accessibleConnection($id);
         $tenant = $request->user()->tenant;
 
-        if (! app(SubscriptionGate::class)->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
-            return response()->json([
-                'message' => 'You have reached the maximum number of connections for your plan.',
-                'code' => 'quota_exceeded',
-                'quota' => 'max_connections',
-            ], 422);
+        if (! app(SubscriptionGate::class)->canAddConnection($tenant, $connection->channel)) {
+            return $this->connectionQuotaReached($connection->channel);
         }
 
         $copy = $tenant->connections()->create([
@@ -224,6 +222,26 @@ class ConnectionController extends Controller
         return $connection;
     }
 
+    /**
+     * The plan's limit for this kind of connection is full.
+     *
+     * `quota` names the limit that was hit, so the dashboard can say which —
+     * "you are at your WhatsApp limit" is a different conversation from "you
+     * are out of room for Instagram".
+     */
+    private function connectionQuotaReached(Channel $channel): JsonResponse
+    {
+        $quota = $channel->connectionQuota();
+
+        return response()->json([
+            'message' => $quota === Quota::MaxWhatsappConnections
+                ? 'You have reached the maximum number of WhatsApp connections for your plan.'
+                : 'You have reached the maximum number of non-WhatsApp connections for your plan.',
+            'code' => 'quota_exceeded',
+            'quota' => $quota->value,
+        ], 422);
+    }
+
     public function store(Request $request)
     {
         $validated = $request->validate([
@@ -245,7 +263,7 @@ class ConnectionController extends Controller
         ]);
 
         $tenant = $request->user()->tenant;
-        $gate = app(SubscriptionGate::class);
+        $channel = Channel::from($validated['channel']);
 
         // ⚠️ API Way channels are deliberately NOT gated on the `whatsapp_api`
         // plan feature. An instance is bought, not granted: the feature turns
@@ -254,12 +272,8 @@ class ConnectionController extends Controller
         // real gate is further along and unchanged — linking is scoped to
         // instances this tenant actually owns, so a connection made without one
         // simply has nothing to attach to.
-        if (! $gate->canConsume($tenant, 'max_connections', $tenant->connections()->count())) {
-            return response()->json([
-                'message' => 'You have reached the maximum number of connections for your plan.',
-                'code' => 'quota_exceeded',
-                'quota' => 'max_connections',
-            ], 422);
+        if (! app(SubscriptionGate::class)->canAddConnection($tenant, $channel)) {
+            return $this->connectionQuotaReached($channel);
         }
 
         $connection = $tenant->connections()->create($validated);

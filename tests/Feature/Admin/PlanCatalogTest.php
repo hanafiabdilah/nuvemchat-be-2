@@ -29,7 +29,7 @@ function planPayload(array $overrides = []): array
         'price_cents' => 19900,
         'billing_cycle' => 'monthly',
         'features' => ['chat' => true, 'flow' => true, 'crm' => true],
-        'quotas' => ['max_connections' => 5, 'max_agents' => 10],
+        'quotas' => ['max_whatsapp_connections' => 2, 'max_other_connections' => 5, 'max_agents' => 10],
     ], $overrides);
 }
 
@@ -76,7 +76,7 @@ test('an unknown feature key is rejected instead of being stored forever', funct
 test('an unknown quota key is rejected', function () {
     $this->actingAs(planAdmin(), 'sanctum')
         ->postJson('/api/admin/plans', planPayload([
-            'quotas' => ['max_connections' => 5, 'max_proxies' => 3],
+            'quotas' => ['max_whatsapp_connections' => 5, 'max_proxies' => 3],
         ]))
         ->assertStatus(422)
         ->assertJsonValidationErrors('quotas');
@@ -85,12 +85,12 @@ test('an unknown quota key is rejected', function () {
 test('a blank quota means unlimited rather than zero', function () {
     $this->actingAs(planAdmin(), 'sanctum')
         ->postJson('/api/admin/plans', planPayload([
-            'quotas' => ['max_connections' => null, 'max_agents' => 10],
+            'quotas' => ['max_whatsapp_connections' => null, 'max_agents' => 10],
         ]))
         ->assertCreated();
 
     $plan = Plan::firstWhere('name', 'Business');
 
-    expect($plan->quotas['max_connections'])->toBeNull();
+    expect($plan->quotas['max_whatsapp_connections'])->toBeNull();
     expect($plan->quotas['max_agents'])->toBe(10);
 });

@@ -64,7 +64,7 @@ function pcPlan(string $name, int $cents, BillingCycle $cycle = BillingCycle::Mo
         'trial_days' => 0,
         'is_active' => true,
         'is_public' => true,
-        'quotas' => ['max_connections' => $cents / 1000],
+        'quotas' => ['max_whatsapp_connections' => $cents / 1000],
     ]);
 }
 

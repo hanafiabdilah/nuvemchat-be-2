@@ -48,7 +48,7 @@ function assignPlan(): Plan
         'price_cents' => 9900,
         'billing_cycle' => 'monthly',
         'features' => ['chat' => true],
-        'quotas' => ['max_connections' => 5],
+        'quotas' => ['max_whatsapp_connections' => 5, 'max_other_connections' => 5],
     ]);
 }
 

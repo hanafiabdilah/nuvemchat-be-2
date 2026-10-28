@@ -12,7 +12,18 @@ namespace App\Enums\Billing;
  */
 enum Quota: string
 {
-    case MaxConnections = 'max_connections';
+    /**
+     * Connections are capped in two kinds, never as one total: WhatsApp
+     * (Official — Coexistence and migrated numbers included — and API Way) and
+     * everything else. WhatsApp is the channel customers buy the product for,
+     * so a plan sells it apart from Instagram, e-mail or the website chat.
+     * Which kind a channel is decides `Channel::connectionQuota()`.
+     *
+     * Both replaced `max_connections` (migration 2026_10_28_000100, which gave
+     * every stored plan, snapshot and override both limits at the old value).
+     */
+    case MaxWhatsappConnections = 'max_whatsapp_connections';
+    case MaxOtherConnections = 'max_other_connections';
     case MaxAgents = 'max_agents';
     case IncludedInstances = 'included_instances';
     case IncludedTrainedAgents = 'included_trained_agents';
@@ -38,7 +49,8 @@ enum Quota: string
     public function label(): string
     {
         return match ($this) {
-            self::MaxConnections => 'Connections',
+            self::MaxWhatsappConnections => 'WhatsApp connections',
+            self::MaxOtherConnections => 'Other connections',
             self::MaxAgents => 'Agents',
             self::IncludedInstances => 'Included API Way instances',
             self::IncludedTrainedAgents => 'Included trained agents',
@@ -49,7 +61,8 @@ enum Quota: string
     public function description(): string
     {
         return match ($this) {
-            self::MaxConnections => 'Channels the workspace may connect at once.',
+            self::MaxWhatsappConnections => 'WhatsApp numbers the workspace may connect at once, WhatsApp Official and API Way together.',
+            self::MaxOtherConnections => 'Every other channel the workspace may connect at once: Instagram, Messenger, Telegram, TikTok, Discord, e-mail and the website chat.',
             self::MaxAgents => 'User seats in the workspace.',
             self::IncludedInstances => 'API Way instances provisioned free with the plan.',
             self::IncludedTrainedAgents => 'Pre-trained catalog agents the plan may hire at no extra cost.',
@@ -61,7 +74,8 @@ enum Quota: string
     public function enforcedAt(): string
     {
         return match ($this) {
-            self::MaxConnections => 'On connecting a new channel.',
+            self::MaxWhatsappConnections => 'On creating or duplicating a WhatsApp connection.',
+            self::MaxOtherConnections => 'On creating or duplicating any other connection.',
             self::MaxAgents => 'On inviting a new agent.',
             self::IncludedInstances => 'On provisioning; extra instances are billed per unit.',
             self::IncludedTrainedAgents => 'On hiring from the catalog; past the limit the agent is a one-off purchase.',

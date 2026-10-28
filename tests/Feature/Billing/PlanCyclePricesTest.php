@@ -80,7 +80,7 @@ function cycPlan(string $name = 'One', int $monthly = 10000, ?int $yearly = 1080
         'trial_days' => 0,
         'is_active' => true,
         'is_public' => true,
-        'quotas' => ['max_connections' => 3],
+        'quotas' => ['max_whatsapp_connections' => 3],
     ]);
 
     $prices = [['market_code' => 'BR', 'billing_cycle' => 'monthly', 'amount_cents' => $monthly]];
@@ -98,7 +98,7 @@ test('the editor saves a monthly and a yearly price on the same plan', function 
     $res = $this->actingAs(cycAdmin(), 'sanctum')->postJson('/api/admin/plans', [
         'name' => 'One',
         'features' => ['chat' => true],
-        'quotas' => ['max_connections' => 3],
+        'quotas' => ['max_whatsapp_connections' => 3],
         'prices' => [
             ['market_code' => 'BR', 'billing_cycle' => 'yearly', 'amount_cents' => 108000, 'card_enabled' => true, 'pix_enabled' => true],
             ['market_code' => 'BR', 'billing_cycle' => 'monthly', 'amount_cents' => 10000, 'card_enabled' => true, 'pix_enabled' => true],

@@ -24,7 +24,10 @@ class ApiwayPlanSeeder extends Seeder
                 'currency' => 'BRL',
                 'billing_cycle' => 'monthly',
                 'trial_days' => 0,
-                'quotas' => ['included_instances' => 1, 'max_connections' => 1],
+                // One WhatsApp number and nothing else: the plan has no inbox, so
+                // a slot for Instagram or e-mail would sell a connection with
+                // nowhere to read it. 0, not absent — absent reads as unlimited.
+                'quotas' => ['included_instances' => 1, 'max_whatsapp_connections' => 1, 'max_other_connections' => 0],
                 'features' => ['whatsapp_api' => true],
                 'is_active' => true,
                 'is_public' => true,

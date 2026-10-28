@@ -109,7 +109,9 @@ test('a tenant with no plan but a live instance gets implicit whatsapp_api acces
     expect($gate->usable($tenant))->toBeTrue()
         ->and($gate->feature($tenant, 'whatsapp_api'))->toBeTrue()
         ->and($gate->feature($tenant, 'chat'))->toBeFalse()
-        ->and($gate->quota($tenant, 'max_connections'))->toBe(1);
+        ->and($gate->quota($tenant, 'max_whatsapp_connections'))->toBe(1)
+        // Not absent: an absent cap reads as unlimited.
+        ->and($gate->quota($tenant, 'max_other_connections'))->toBe(0);
 });
 
 test('a plan without whatsapp_api can still create an API Way connection', function () {
@@ -136,6 +138,31 @@ test('a plan without whatsapp_api can still create an API Way connection', funct
 
     expect(Connection::where('tenant_id', $tenant->id)->where('channel', Channel::WhatsappApiway->value)->exists())
         ->toBeTrue();
+});
+
+test('a tenant with only instances may connect its numbers and no other channel', function () {
+    // No plan: the synthesized entitlement holds one WhatsApp connection per
+    // live instance and nothing else — there is no inbox to read the rest in.
+    $tenant = lifecycleTenant();
+    lifecycleInstance(lifecycleSubscription($tenant));
+
+    $user = $tenant->user()->first();
+    $user->forceFill(['whatsapp_verified_at' => now()])->save();
+    Permission::findOrCreate('connections.create', 'web');
+    $user->givePermissionTo('connections.create');
+
+    Sanctum::actingAs($user);
+
+    test()->postJson('/api/connections', ['channel' => Channel::WhatsappApiway->value, 'name' => 'API Way'])
+        ->assertCreated();
+
+    test()->postJson('/api/connections', ['channel' => Channel::WhatsappApiway->value, 'name' => 'API Way 2'])
+        ->assertStatus(422)
+        ->assertJson(['code' => 'quota_exceeded', 'quota' => 'max_whatsapp_connections']);
+
+    test()->postJson('/api/connections', ['channel' => Channel::Instagram->value, 'name' => 'Instagram'])
+        ->assertStatus(422)
+        ->assertJson(['code' => 'quota_exceeded', 'quota' => 'max_other_connections']);
 });
 
 test('a tenant with neither plan nor instances stays locked out', function () {

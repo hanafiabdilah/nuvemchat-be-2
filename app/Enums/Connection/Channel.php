@@ -2,6 +2,7 @@
 
 namespace App\Enums\Connection;
 
+use App\Enums\Billing\Quota;
 use App\Enums\Broadcast\AddressType;
 
 enum Channel: string
@@ -17,6 +18,45 @@ enum Channel: string
     case TikTok = 'tiktok';
     case Messenger = 'messenger';
     case Discord = 'discord';
+
+    /**
+     * Whether this is a WhatsApp number — Cloud API (including Coexistence and
+     * numbers migrated in from another provider) or an API Way instance.
+     *
+     * Plans sell WhatsApp connections apart from every other channel: they are
+     * the channel customers buy the product for. Mirrored in the dashboard by
+     * `isWhatsappChannel()` in lib/channelCapabilities.ts.
+     */
+    public function isWhatsapp(): bool
+    {
+        return in_array($this, [self::WhatsappOfficial, self::WhatsappApiway], true);
+    }
+
+    /**
+     * The plan limit a connection on this channel counts against.
+     *
+     * Two limits, never one total: a channel added to this enum later lands on
+     * the non-WhatsApp limit unless it is put on the WhatsApp list above on
+     * purpose.
+     */
+    public function connectionQuota(): Quota
+    {
+        return $this->isWhatsapp() ? Quota::MaxWhatsappConnections : Quota::MaxOtherConnections;
+    }
+
+    /**
+     * Every channel that counts against a connection limit, as stored values —
+     * for counting a workspace's connections of one kind in a query.
+     *
+     * @return list<string>
+     */
+    public static function valuesCountingAgainst(Quota $quota): array
+    {
+        return array_values(array_map(
+            fn (self $channel) => $channel->value,
+            array_filter(self::cases(), fn (self $channel) => $channel->connectionQuota() === $quota),
+        ));
+    }
 
     /**
      * Whether an agent may open a conversation here, i.e. send the very first

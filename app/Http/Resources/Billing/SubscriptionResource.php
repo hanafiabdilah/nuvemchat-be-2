@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources\Billing;
 
+use App\Enums\Billing\Quota;
 use App\Models\Connection;
 use App\Models\Tenant;
 use App\Models\User;
@@ -121,7 +122,14 @@ class SubscriptionResource extends JsonResource
      */
     public static function usageFor(?Tenant $tenant): array
     {
+        $gate = app(SubscriptionGate::class);
+
         return [
+            // One meter per connection limit, named after its quota without the
+            // `max_` — the Back Office reads them by that rule. `connections`
+            // stays as the total for any client still reading it.
+            'whatsapp_connections' => $tenant ? $gate->connectionsUsed($tenant, Quota::MaxWhatsappConnections) : 0,
+            'other_connections' => $tenant ? $gate->connectionsUsed($tenant, Quota::MaxOtherConnections) : 0,
             'connections' => $tenant ? Connection::where('tenant_id', $tenant->id)->count() : 0,
             'agents' => $tenant ? User::where('tenant_id', $tenant->id)->count() : 0,
             // Every quota a plan can carry has a meter here, read from the same
@@ -129,7 +137,7 @@ class SubscriptionResource extends JsonResource
             // limits leaves the customer to discover the other three by
             // hitting them.
             'included_instances' => $tenant ? app(ApiwayService::class)->usageSummary($tenant)['included_used'] : 0,
-            'included_trained_agents' => $tenant ? app(SubscriptionGate::class)->trainedAgentsUsed($tenant) : 0,
+            'included_trained_agents' => $tenant ? $gate->trainedAgentsUsed($tenant) : 0,
             // Bytes, against the plan's gigabytes **plus** any rented ones: the
             // limit a customer actually runs into is the sum.
             'gallery_bytes' => $tenant ? app(GalleryStorage::class)->usedBytes($tenant) : 0,

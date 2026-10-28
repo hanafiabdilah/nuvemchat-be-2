@@ -26,7 +26,7 @@ it('reports a meter for every quota a plan can carry', function () {
         'currency' => 'BRL',
         'billing_cycle' => BillingCycle::Monthly,
         'is_active' => true,
-        'quotas' => ['max_connections' => 3, 'included_instances' => 2, 'included_trained_agents' => 1, 'gallery_storage_gb' => 5],
+        'quotas' => ['max_whatsapp_connections' => 2, 'max_other_connections' => 3, 'included_instances' => 2, 'included_trained_agents' => 1, 'gallery_storage_gb' => 5],
     ]);
 
     $admin = Admin::query()->create(['name' => 'Op', 'email' => 'op-'.uniqid().'@example.test', 'password' => bcrypt('secret-pass')]);
@@ -35,7 +35,7 @@ it('reports a meter for every quota a plan can carry', function () {
     $usage = (new SubscriptionResource($subscription->fresh()))->withUsage()->resolve(request())['usage'];
 
     expect($usage)->toHaveKeys([
-        'connections', 'agents', 'included_instances', 'included_trained_agents', 'gallery_bytes', 'gallery_limit_bytes',
+        'whatsapp_connections', 'other_connections', 'connections', 'agents', 'included_instances', 'included_trained_agents', 'gallery_bytes', 'gallery_limit_bytes',
     ])
         ->and($usage['agents'])->toBe(1)
         ->and($usage['included_instances'])->toBe(0)

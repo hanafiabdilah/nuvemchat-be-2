@@ -37,7 +37,7 @@ function tenantOnStarterPlan(): Tenant
         'price_cents' => 4900,
         'billing_cycle' => 'monthly',
         'features' => ['chat' => true, 'crm' => false],
-        'quotas' => ['max_connections' => 1],
+        'quotas' => ['max_whatsapp_connections' => 1, 'max_other_connections' => 1],
     ]);
 
     $subscription = Subscription::create([
@@ -115,11 +115,13 @@ test('an override raises a quota', function () {
 
     $this->actingAs(entitlementAdmin(), 'sanctum')
         ->putJson("/api/admin/customers/{$tenant->id}/entitlements", [
-            'quotas' => ['max_connections' => 10],
+            'quotas' => ['max_whatsapp_connections' => 10],
         ])
         ->assertOk();
 
-    expect(app(SubscriptionGate::class)->quota($tenant->fresh(), 'max_connections'))->toBe(10);
+    expect(app(SubscriptionGate::class)->quota($tenant->fresh(), 'max_whatsapp_connections'))->toBe(10)
+        // Only the limit named was raised; the other keeps the plan's value.
+        ->and(app(SubscriptionGate::class)->quota($tenant->fresh(), 'max_other_connections'))->toBe(1);
 });
 
 test('an override never grants platform access on its own', function () {
