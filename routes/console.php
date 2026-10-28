@@ -230,6 +230,14 @@ Schedule::command('instagram:publish-scheduled')
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('Instagram scheduled publish failed'));
 
+// Re-dispatch YouTube uploads whose worker died. Nothing is fired on a timer
+// here: a scheduled video is uploaded straight away with `publishAt`, and
+// YouTube makes it public itself.
+Schedule::command('youtube:revive-uploads')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('YouTube upload revival failed'));
+
 // --- Leads ---------------------------------------------------------------
 
 // Recompute every open lead's temperature.

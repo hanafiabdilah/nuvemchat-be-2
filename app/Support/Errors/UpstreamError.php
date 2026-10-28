@@ -169,6 +169,8 @@ final class UpstreamError
         'api.elevenlabs.io',
         'api.openai.com',
         'business-api.tiktok.com',
+        'googleapis.com',
+        'accounts.google.com',
         'api.openpix.com.br',
         'api.woovi-sandbox.com',
         'api.mercadopago.com',
@@ -220,6 +222,7 @@ final class UpstreamError
             UpstreamProvider::Telegram => self::telegram($needle, $code),
             UpstreamProvider::Discord => self::discord($needle, $code),
             UpstreamProvider::TikTok => self::tiktok($needle, $code),
+            UpstreamProvider::Youtube => self::youtube($needle, $code),
             UpstreamProvider::PaymentService => self::paymentService($needle, $code),
             UpstreamProvider::Email => self::email($needle, $code),
             UpstreamProvider::OpenPix => self::openPix($needle, $code),
@@ -262,6 +265,7 @@ final class UpstreamError
                 UpstreamProvider::OpenPix, UpstreamProvider::MercadoPago, UpstreamProvider::Asaas, UpstreamProvider::Stripe => 'A cobrança não foi aceita pelo provedor de pagamento. Revise o valor e a configuração da integração.',
                 UpstreamProvider::Spedy => 'A nota fiscal não foi aceita pelo emissor. Revise os dados do cliente, o valor e a configuração fiscal da integração.',
                 UpstreamProvider::MetaPixel, UpstreamProvider::GoogleAnalytics => 'O evento não foi aceito. Revise a configuração da integração e do nó de Pixel.',
+                UpstreamProvider::Youtube => 'O YouTube não aceitou esta operação. Revise os dados do vídeo e tente novamente.',
                 default => 'Não foi possível concluir esta operação. Revise os dados e tente novamente.',
             };
         }
@@ -278,6 +282,7 @@ final class UpstreamError
             UpstreamProvider::ApiwayPartner => 'A contratação de instâncias está indisponível no momento. Tente novamente em instantes.',
             UpstreamProvider::ApiwayCore => 'Não foi possível falar com a instância do WhatsApp. Verifique se ela está ativa e tente novamente.',
             UpstreamProvider::ApiwayNumbers => 'A contratação de números está indisponível no momento. Tente novamente em instantes.',
+            UpstreamProvider::Youtube => 'Não foi possível falar com o YouTube agora. Tente novamente em instantes.',
             UpstreamProvider::PaymentService => 'Não foi possível processar o pagamento agora. Tente novamente em instantes.',
             UpstreamProvider::Email => 'Não foi possível falar com o servidor de e-mail. Verifique a conexão e tente novamente.',
             default => 'Não foi possível concluir a ação no canal agora. Tente novamente em instantes.',
@@ -671,6 +676,88 @@ final class UpstreamError
                 'channel_reauth_required',
                 'A conexão com o TikTok expirou. Reconecte a conta na tela de Conexões.',
                 422,
+            ],
+            default => null,
+        };
+    }
+
+    /**
+     * Google answers with a stable `reason` (errors[0].reason, or the OAuth
+     * `error`), so this branches on that, with the prose as a fallback.
+     *
+     * The quota cases are worded as ours, because they are: every workspace's
+     * calls are billed to the platform's one Google project.
+     *
+     * @return array{0: string, 1: string, 2?: int}|null
+     */
+    private static function youtube(string $m, string $code): ?array
+    {
+        return match (true) {
+            $code === 'quotaexceeded',
+            $code === 'dailylimitexceeded' => [
+                'youtube_quota_exceeded',
+                'O limite diário de uso do YouTube nesta plataforma acabou. Ele é renovado à meia-noite (horário do Pacífico) — tente novamente depois disso.',
+                429,
+            ],
+            $code === 'uploadlimitexceeded',
+            str_contains($m, 'upload limit') => [
+                'youtube_upload_limit',
+                'Este canal atingiu o limite de envios do YouTube por hoje. Tente novamente amanhã.',
+                429,
+            ],
+            $code === 'ratelimitexceeded',
+            $code === 'userratelimitexceeded' => [
+                'channel_rate_limited',
+                'O YouTube limitou as requisições por agora. Aguarde alguns minutos e tente de novo.',
+                429,
+            ],
+            $code === 'youtubesignuprequired',
+            $code === 'channelnotfound' => [
+                'youtube_channel_missing',
+                'Esta conta Google não tem um canal do YouTube. Crie o canal no YouTube e conecte novamente.',
+                422,
+            ],
+            $code === 'commentsdisabled' => [
+                'youtube_comments_disabled',
+                'Os comentários estão desativados neste vídeo.',
+                422,
+            ],
+            $code === 'videonotfound',
+            $code === 'commentnotfound',
+            $code === 'notfound' => [
+                'youtube_not_found',
+                'Este item não existe mais no YouTube. Atualize a página.',
+                422,
+            ],
+            $code === 'invalidpublishat' => [
+                'youtube_invalid_schedule',
+                'O YouTube não aceitou a data de agendamento. Escolha um horário no futuro.',
+                422,
+            ],
+            $code === 'invalidtitle',
+            $code === 'invaliddescription',
+            $code === 'invalidtags',
+            $code === 'invalidcategoryid',
+            $code === 'invalidvideometadata' => [
+                'youtube_invalid_metadata',
+                'O YouTube recusou o título, a descrição, as tags ou a categoria do vídeo. Revise esses campos.',
+                422,
+            ],
+            $code === 'forbidden',
+            $code === 'insufficientpermissions',
+            $code === 'operationnotsupported' => [
+                'youtube_forbidden',
+                'O YouTube não permite esta ação para este canal ou item.',
+                422,
+            ],
+            // The platform's own Google client is refused (wrong secret, the
+            // client deleted in the console): ours to fix, never the customer's.
+            $code === 'invalid_client',
+            $code === 'unauthorized_client',
+            $code === 'not_configured' => [
+                'youtube_not_configured',
+                'A conexão com o YouTube não está funcionando nesta plataforma no momento. Fale com o suporte.',
+                503,
             ],
             default => null,
         };

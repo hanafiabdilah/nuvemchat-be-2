@@ -127,6 +127,17 @@ class RoleAndPermissionSeeder extends Seeder
             'instagram-posts.delete',
             'instagram-comments.manage',
 
+            // YouTube publishing. Unlike Instagram, `delete` reaches a video
+            // that is already live — the YouTube API removes it for good.
+            // Connecting a channel is its own permission: it hands the
+            // workspace a Google grant, which is not the trust posting needs.
+            'youtube-accounts.manage',
+            'youtube-posts.view',
+            'youtube-posts.create',
+            'youtube-posts.publish',
+            'youtube-posts.delete',
+            'youtube-comments.manage',
+
             // Virtual numbers rented from API Way. `view` reads the codes that
             // arrive (an OTP is a credential); `manage` spends the prepaid
             // balance and cancels a rental somebody may still be waiting on.

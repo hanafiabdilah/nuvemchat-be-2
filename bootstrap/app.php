@@ -153,6 +153,32 @@ return Application::configure(basePath: dirname(__DIR__))
             );
         });
 
+        // Google's refusals for the YouTube pages. Same shape as Instagram's:
+        // a grant Google stopped honouring (revoked, password changed, a
+        // test-mode app's 7-day refresh token) keeps its own code — it is the
+        // one failure the page can offer a remedy for, connecting again —
+        // and everything else is translated like any upstream.
+        $exceptions->render(function (\App\Exceptions\YoutubeApiException $e, \Illuminate\Http\Request $request) {
+            if (! $request->expectsJson()) {
+                return null;
+            }
+
+            if ($e->needsReconnect()) {
+                return response()->json([
+                    'message' => 'O YouTube não aceita mais o acesso deste canal. Conecte o canal novamente.',
+                    'code' => 'youtube_reconnect_required',
+                ], 422);
+            }
+
+            return \App\Support\Errors\UpstreamError::response(
+                \App\Support\Errors\UpstreamProvider::Youtube,
+                $e->getMessage(),
+                upstreamCode: $e->reason(),
+                status: $e->httpStatus(),
+                context: ['route' => $request->path()],
+            );
+        });
+
         // A session ended by a later sign-in (App\Services\Auth\SingleSession).
         // The token is gone, so on its own this is an ordinary "Unauthenticated"
         // — and the dashboard would drop the person on the login screen without

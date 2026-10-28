@@ -77,6 +77,9 @@ use App\Http\Controllers\Api\ImpersonationController;
 use App\Http\Controllers\Api\Instagram\InstagramAccountController;
 use App\Http\Controllers\Api\Instagram\InstagramCommentController;
 use App\Http\Controllers\Api\Instagram\InstagramPostController;
+use App\Http\Controllers\Api\Youtube\YoutubeAccountController;
+use App\Http\Controllers\Api\Youtube\YoutubeCommentController;
+use App\Http\Controllers\Api\Youtube\YoutubePostController;
 use App\Http\Controllers\Api\IntegrationController;
 use App\Http\Controllers\Api\LeadController;
 use App\Http\Controllers\Api\LeadPipelineController;
@@ -619,6 +622,46 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
                 Route::patch('/accounts/{connection}/media/{media}/comments', [InstagramCommentController::class, 'setCommentsEnabled']);
             });
         });
+
+        // YouTube publishing. Same two id spaces as Instagram, kept apart the
+        // same way: `/youtube/posts/{post}` is one of our rows (a draft or an
+        // upload on its way), `/youtube/accounts/{account}/videos/{videoId}` is
+        // a video that lives on YouTube. Unlike Instagram, a live video can be
+        // edited and deleted — the API offers both.
+        //
+        // A channel is connected from the YouTube page itself (no Connection
+        // row), which is why connecting has a permission of its own.
+        Route::prefix('youtube')->group(function () {
+            Route::get('/accounts', [YoutubeAccountController::class, 'index'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');
+            Route::get('/oauth-url', [YoutubeAccountController::class, 'authorizeUrl'])->middleware('permission:youtube-accounts.manage');
+            Route::get('/accounts/{account}', [YoutubeAccountController::class, 'show'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');
+            Route::delete('/accounts/{account}', [YoutubeAccountController::class, 'destroy'])->middleware('permission:youtube-accounts.manage');
+
+            Route::get('/accounts/{account}/posts', [YoutubePostController::class, 'index'])->middleware('permission:youtube-posts.view');
+            Route::post('/accounts/{account}/posts', [YoutubePostController::class, 'store'])->middleware('permission:youtube-posts.create');
+            Route::post('/accounts/{account}/uploads', [YoutubePostController::class, 'upload'])->middleware('permission:youtube-posts.create');
+            Route::post('/accounts/{account}/uploads/chunks', [YoutubePostController::class, 'uploadChunk'])->middleware(['permission:youtube-posts.create', 'throttle:600,1']);
+            Route::get('/accounts/{account}/categories', [YoutubePostController::class, 'categories'])->middleware('permission:youtube-posts.view');
+
+            // Live videos. Editing changes what the channel's audience sees, so
+            // it is `publish`, not `create`; deleting removes it for good.
+            Route::patch('/accounts/{account}/videos/{video}', [YoutubePostController::class, 'updateVideo'])->middleware('permission:youtube-posts.publish');
+            Route::delete('/accounts/{account}/videos/{video}', [YoutubePostController::class, 'destroyVideo'])->middleware('permission:youtube-posts.delete');
+
+            Route::get('/posts/{post}', [YoutubePostController::class, 'show'])->middleware('permission:youtube-posts.view');
+            Route::put('/posts/{post}', [YoutubePostController::class, 'update'])->middleware('permission:youtube-posts.create');
+            Route::delete('/posts/{post}', [YoutubePostController::class, 'destroy'])->middleware('permission:youtube-posts.delete');
+            Route::post('/posts/{post}/publish', [YoutubePostController::class, 'publish'])->middleware('permission:youtube-posts.publish');
+
+            Route::get('/accounts/{account}/videos/{video}/comments', [YoutubeCommentController::class, 'index'])->middleware('permission:youtube-posts.view');
+            Route::middleware('permission:youtube-comments.manage')->group(function () {
+                Route::get('/accounts/{account}/comments', [YoutubeCommentController::class, 'inbox']);
+                Route::get('/accounts/{account}/comments/{comment}/replies', [YoutubeCommentController::class, 'replies']);
+                Route::post('/accounts/{account}/comments/{comment}/replies', [YoutubeCommentController::class, 'reply']);
+                Route::patch('/accounts/{account}/comments/{comment}', [YoutubeCommentController::class, 'moderate']);
+                Route::delete('/accounts/{account}/comments/{comment}', [YoutubeCommentController::class, 'destroy']);
+            });
+        });
     });
 
     Route::get('/connections', [ConnectionController::class, 'index']);
@@ -1025,6 +1068,8 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::delete('/firebase', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'destroy']);
             Route::post('/firebase/test', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'test']);
             Route::get('/billing-gateways/{gateway}/test', [AdminPaymentServiceController::class, 'testDirect']);
+            // The Google OAuth client YouTube channels connect through.
+            Route::get('/youtube/test', [\App\Http\Controllers\Api\Admin\AdminYoutubeController::class, 'test']);
 
             // The flow builder's AI assistant. Not part of the bulk settings
             // save: storing the key provisions a credential and an agent at the

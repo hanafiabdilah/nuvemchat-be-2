@@ -37,6 +37,9 @@ enum UpstreamProvider: string
 
     case TikTok = 'tiktok';
 
+    /** Google: the YouTube Data API and its OAuth endpoints. */
+    case Youtube = 'youtube';
+
     /**
      * The group's own payment service, which owns every gateway account.
      *
@@ -112,6 +115,7 @@ enum UpstreamProvider: string
             self::Telegram => 'o Telegram',
             self::Discord => 'o Discord',
             self::TikTok => 'o TikTok',
+            self::Youtube => 'o YouTube',
             self::PaymentService => 'o processamento de pagamentos',
             self::Email => 'o servidor de e-mail',
             self::OpenPix => 'a OpenPix',

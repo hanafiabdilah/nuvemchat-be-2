@@ -18,6 +18,7 @@ use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationProviderFactory;
 use App\Services\VirtualNumbers\ApiwayNumbersConfig;
 use App\Services\VirtualNumbers\NumberPricing;
+use App\Services\Youtube\YoutubeConfig;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -39,6 +40,7 @@ class AdminSettingsController extends Controller
         $fbSecret = FacebookConfig::appSecret();
         $fbVerify = FacebookConfig::webhookVerifyToken();
         $ttSecret = TikTokConfig::appSecret();
+        $ytSecret = YoutubeConfig::clientSecret();
         $aiToken = AiAgentHubConfig::tenantToken();
         $notifPinglyKey = NotificationConfig::pinglyApiKey();
         $notifProxyToken = NotificationConfig::proxybrToken();
@@ -122,6 +124,17 @@ class AdminSettingsController extends Controller
                     'redirect_uri' => TikTokConfig::redirectUri(),
                     'app_secret_set' => ! empty($ttSecret),
                     'app_secret_preview' => $this->mask($ttSecret),
+                ],
+                // The platform's Google OAuth client, through which every
+                // workspace connects its YouTube channels. The redirect URI is
+                // ours and read-only: it has to be pasted into the Google Cloud
+                // console exactly, so the screen hands it over to copy.
+                'youtube' => [
+                    'client_id' => YoutubeConfig::clientId(),
+                    'client_secret_set' => ! empty($ytSecret),
+                    'client_secret_preview' => $this->mask($ytSecret),
+                    'redirect_uri' => YoutubeConfig::redirectUri(),
+                    'configured' => YoutubeConfig::isConfigured(),
                 ],
                 'ai_agent_hub' => [
                     'base_url' => AiAgentHubConfig::baseUrl(),
@@ -246,6 +259,10 @@ class AdminSettingsController extends Controller
             'tiktok.app_id' => ['nullable', 'string', 'max:255'],
             'tiktok.redirect_uri' => ['nullable', 'url', 'max:255'],
             'tiktok.app_secret' => ['nullable', 'string', 'max:512'],
+
+            'youtube' => ['sometimes', 'array'],
+            'youtube.client_id' => ['nullable', 'string', 'max:255'],
+            'youtube.client_secret' => ['nullable', 'string', 'max:512'],
 
             'ai_agent_hub' => ['sometimes', 'array'],
             'ai_agent_hub.base_url' => ['nullable', 'url', 'max:255'],
@@ -436,6 +453,19 @@ class AdminSettingsController extends Controller
             // Secret: only replaced when a new value is supplied.
             if (! empty($tt['app_secret'])) {
                 Setting::set(TikTokConfig::KEY_APP_SECRET, $tt['app_secret']);
+            }
+        }
+
+        if ($request->has('youtube')) {
+            $yt = $validated['youtube'];
+
+            // Public value: stored as-is (trimmed — a client id pasted with a
+            // trailing space is refused by Google as a different client).
+            Setting::set(YoutubeConfig::KEY_CLIENT_ID, isset($yt['client_id']) ? trim($yt['client_id']) : null);
+
+            // Secret: only replaced when a new value is supplied.
+            if (! empty($yt['client_secret'])) {
+                Setting::set(YoutubeConfig::KEY_CLIENT_SECRET, trim($yt['client_secret']));
             }
         }
 

@@ -5,6 +5,7 @@ use App\Http\Controllers\FlowInvoiceDocumentController;
 use App\Http\Controllers\FlowPaymentDoneController;
 use App\Http\Controllers\FlowPaymentQrController;
 use App\Http\Controllers\GalleryFileController;
+use App\Http\Controllers\YoutubeOAuthController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 use Laravel\Fortify\Features;
@@ -48,6 +49,11 @@ Route::middleware('platform.only')->group(function () {
     // TikTok OAuth (Business Messaging)
     Route::get('/oauth/tiktok/callback', [ConnectionController::class, 'tiktokCallback'])
         ->name('oauth.tiktok.callback');
+
+    // YouTube (Google OAuth). Connected from the YouTube page, not from a
+    // Connection — see YoutubeOAuthController.
+    Route::get('/oauth/youtube/callback', [YoutubeOAuthController::class, 'callback'])
+        ->name('oauth.youtube.callback');
 
     // Facebook OAuth (for WhatsApp & Messenger)
     Route::match(['get', 'post'], '/oauth/facebook/callback', [ConnectionController::class, 'facebookCallback'])
