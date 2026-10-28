@@ -99,3 +99,114 @@ test("a missing scope is reported as something the user can fix", function () {
         ->assertStatus(422)
         ->assertJsonPath('code', 'instagram_permission_required');
 });
+
+// ------------------------------------------------------------------ Comments section
+
+test("the comments section lists every post's comments in one call, newest first", function () {
+    Http::fake(fn () => Http::response([
+        'data' => [
+            [
+                'id' => 'post-new',
+                'media_type' => 'IMAGE',
+                'media_url' => 'https://cdn.example.com/new.jpg',
+                'caption' => 'Novidade',
+                'comments_count' => 2,
+                'comments' => ['data' => [
+                    ['id' => 'c-1', 'text' => 'Quanto custa?', 'username' => 'cliente', 'timestamp' => '2026-10-27T10:00:00+0000'],
+                    [
+                        'id' => 'c-2',
+                        'text' => 'Tem em azul?',
+                        'username' => 'outra',
+                        'timestamp' => '2026-10-28T09:00:00+0000',
+                        // The account's own answer — matched on the username,
+                        // in whatever case Instagram spells it.
+                        'replies' => ['data' => [
+                            ['id' => 'r-1', 'text' => 'Tem sim!', 'username' => 'Loja.Oficial', 'timestamp' => '2026-10-28T09:05:00+0000'],
+                        ]],
+                    ],
+                ]],
+            ],
+            // Nobody commented: nothing to moderate, so not listed.
+            ['id' => 'post-quiet', 'media_type' => 'IMAGE', 'media_url' => 'https://cdn.example.com/q.jpg'],
+            [
+                'id' => 'post-video',
+                'media_type' => 'VIDEO',
+                'thumbnail_url' => 'https://cdn.example.com/cover.jpg',
+                'comments' => ['data' => [
+                    ['id' => 'c-3', 'text' => 'Lindo', 'username' => 'fã', 'timestamp' => '2026-10-28T12:00:00+0000', 'hidden' => true],
+                ]],
+            ],
+        ],
+        'paging' => ['cursors' => ['after' => 'OLDER'], 'next' => 'https://graph.instagram.com/next'],
+    ]));
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $response = $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$connection->id}/comments")
+        ->assertOk()
+        ->assertJsonPath('data.0.id', 'c-3')
+        ->assertJsonPath('data.0.hidden', true)
+        ->assertJsonPath('data.1.id', 'c-2')
+        ->assertJsonPath('data.1.replied', true)
+        ->assertJsonPath('data.1.replies.0.from_account', true)
+        ->assertJsonPath('data.2.id', 'c-1')
+        ->assertJsonPath('data.2.replied', false)
+        ->assertJsonPath('data.2.media_id', 'post-new')
+        ->assertJsonPath('next_cursor', 'OLDER')
+        ->assertJsonPath('has_more', true);
+
+    expect(collect($response->json('posts'))->pluck('id')->all())->toBe(['post-new', 'post-video']);
+    expect($response->json('posts.1.thumbnail'))->toBe('https://cdn.example.com/cover.jpg');
+    expect($response->json('posts.0'))->not->toHaveKey('comments');
+
+    // One Graph call, comments riding on the media call.
+    Http::assertSentCount(1);
+    Http::assertSent(fn ($request) => str_contains($request->url(), '/media')
+        && str_contains($request->data()['fields'] ?? urldecode($request->url()), 'comments.limit(50)'));
+});
+
+test('the comments section pages back through older posts', function () {
+    Http::fake(fn () => Http::response(['data' => []]));
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$connection->id}/comments?after=OLDER")
+        ->assertOk()
+        ->assertJsonPath('has_more', false);
+
+    Http::assertSent(fn ($request) => str_contains(urldecode($request->url()), 'after=OLDER'));
+});
+
+test('the comments section is for moderators, apart from posting', function () {
+    Http::fake(fn () => Http::response(['data' => []]));
+
+    // Posts but no moderation: the grid, never the comments section.
+    $publisher = InstagramFixtures::user(['instagram-posts.view', 'instagram-posts.create']);
+    $connection = InstagramFixtures::connection($publisher);
+
+    $this->actingAs($publisher)
+        ->getJson("/api/instagram/accounts/{$connection->id}/comments")
+        ->assertForbidden();
+
+    // Moderation but no posts: the account and its comments, never the grid.
+    $moderator = InstagramFixtures::user(['instagram-comments.manage']);
+    $own = InstagramFixtures::connection($moderator);
+
+    $this->actingAs($moderator)->getJson('/api/instagram/accounts')->assertOk();
+    $this->actingAs($moderator)->getJson("/api/instagram/accounts/{$own->id}/comments")->assertOk();
+    $this->actingAs($moderator)->getJson("/api/instagram/accounts/{$own->id}/posts")->assertForbidden();
+});
+
+test("the comments section never reads an account the user was not given", function () {
+    $user = InstagramFixtures::user();
+    $other = InstagramFixtures::user();
+    $theirs = InstagramFixtures::connection($other);
+
+    $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$theirs->id}/comments")
+        ->assertNotFound();
+});

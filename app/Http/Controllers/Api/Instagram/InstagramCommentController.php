@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Instagram;
 
 use App\Http\Controllers\Api\Instagram\Concerns\ResolvesInstagramConnection;
 use App\Http\Controllers\Controller;
+use App\Services\Instagram\InstagramCommentInbox;
 use App\Services\Instagram\InstagramGraphClientFactory;
 use Illuminate\Http\Request;
 
@@ -24,7 +25,23 @@ class InstagramCommentController extends Controller
 
     public function __construct(
         private readonly InstagramGraphClientFactory $clients,
+        private readonly InstagramCommentInbox $inbox,
     ) {}
+
+    /**
+     * The account's Comments section: every comment on its latest posts, in
+     * one list, newest first. `after` pages back through older posts.
+     */
+    public function inbox(Request $request, string $connectionId)
+    {
+        $connection = $this->instagramConnection($request, $connectionId);
+
+        $data = $request->validate([
+            'after' => ['nullable', 'string', 'max:512'],
+        ]);
+
+        return response()->json($this->inbox->read($connection, $data['after'] ?? null));
+    }
 
     public function index(Request $request, string $connectionId, string $mediaId)
     {

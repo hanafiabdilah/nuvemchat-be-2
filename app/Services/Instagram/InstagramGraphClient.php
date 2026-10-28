@@ -163,6 +163,24 @@ class InstagramGraphClient
 
     // --------------------------------------------------------------- comments
 
+    /**
+     * A page of the account's posts, each carrying its latest comments — the
+     * account's Comments section, in one call.
+     *
+     * Field expansion, not a comments call per post: a page of 25 posts would
+     * otherwise be 26 round trips, on every refresh. The nested edge is capped
+     * per post (`comments.limit(n)`); a post with more than that says so
+     * through its `comments_count`.
+     */
+    public function mediaWithComments(int $limit = 25, int $commentsPerPost = 50, ?string $after = null): array
+    {
+        return $this->get($this->accountId() . '/media', array_filter([
+            'fields' => self::MEDIA_FIELDS . ',comments.limit(' . $commentsPerPost . '){' . self::COMMENT_FIELDS . '}',
+            'limit' => $limit,
+            'after' => $after,
+        ]));
+    }
+
     public function comments(string $mediaId, int $limit = 50, ?string $after = null): array
     {
         return $this->get($mediaId . '/comments', array_filter([

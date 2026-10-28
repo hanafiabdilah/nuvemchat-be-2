@@ -588,9 +588,13 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // post that already lives on Instagram. Everything about a live post
         // needs the connection, because the account's token is what authorises
         // the call.
+        //
+        // Posting and comment moderation are separate jobs with separate
+        // permissions: the account list and the account itself open to either,
+        // so someone who only moderates comments still reaches the account.
         Route::prefix('instagram')->group(function () {
-            Route::get('/accounts', [InstagramAccountController::class, 'index'])->middleware('permission:instagram-posts.view');
-            Route::get('/accounts/{connection}', [InstagramAccountController::class, 'show'])->middleware('permission:instagram-posts.view');
+            Route::get('/accounts', [InstagramAccountController::class, 'index'])->middleware('permission:instagram-posts.view|instagram-comments.manage');
+            Route::get('/accounts/{connection}', [InstagramAccountController::class, 'show'])->middleware('permission:instagram-posts.view|instagram-comments.manage');
 
             Route::get('/accounts/{connection}/posts', [InstagramPostController::class, 'index'])->middleware('permission:instagram-posts.view');
             Route::post('/accounts/{connection}/posts', [InstagramPostController::class, 'store'])->middleware('permission:instagram-posts.create');
@@ -607,6 +611,8 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             // posts; every write needs the moderation permission.
             Route::get('/accounts/{connection}/media/{media}/comments', [InstagramCommentController::class, 'index'])->middleware('permission:instagram-posts.view');
             Route::middleware('permission:instagram-comments.manage')->group(function () {
+                // The account's Comments section: its latest comments in one list.
+                Route::get('/accounts/{connection}/comments', [InstagramCommentController::class, 'inbox']);
                 Route::post('/accounts/{connection}/comments/{comment}/replies', [InstagramCommentController::class, 'reply']);
                 Route::patch('/accounts/{connection}/comments/{comment}', [InstagramCommentController::class, 'update']);
                 Route::delete('/accounts/{connection}/comments/{comment}', [InstagramCommentController::class, 'destroy']);
