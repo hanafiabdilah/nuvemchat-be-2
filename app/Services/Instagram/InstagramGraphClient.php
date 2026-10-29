@@ -31,7 +31,13 @@ class InstagramGraphClient
     /** Fields the grid needs for a tile, and the modal for its header. */
     public const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,permalink,thumbnail_url,timestamp,username,like_count,comments_count,is_comment_enabled,children{id,media_type,media_url,thumbnail_url}';
 
-    public const COMMENT_FIELDS = 'id,text,timestamp,username,like_count,hidden,replies{id,text,timestamp,username,like_count,hidden}';
+    /**
+     * `from` is where the author actually is. The top-level `username` is
+     * still accepted but no longer filled in (production, Oct 2026: 0 of 5
+     * comments carried it, 5 of 5 carried `from.username`), so it stays only
+     * for older answers — {@see withAuthors()} folds one into the other.
+     */
+    public const COMMENT_FIELDS = 'id,text,timestamp,username,from,like_count,hidden,replies{id,text,timestamp,username,from,like_count,hidden}';
 
     public function __construct(
         private readonly Connection $connection,
@@ -174,20 +180,55 @@ class InstagramGraphClient
      */
     public function mediaWithComments(int $limit = 25, int $commentsPerPost = 50, ?string $after = null): array
     {
-        return $this->get($this->accountId() . '/media', array_filter([
+        $page = $this->get($this->accountId() . '/media', array_filter([
             'fields' => self::MEDIA_FIELDS . ',comments.limit(' . $commentsPerPost . '){' . self::COMMENT_FIELDS . '}',
             'limit' => $limit,
             'after' => $after,
         ]));
+
+        foreach ($page['data'] ?? [] as $i => $media) {
+            if (isset($media['comments']['data'])) {
+                $page['data'][$i]['comments']['data'] = self::withAuthors($media['comments']['data']);
+            }
+        }
+
+        return $page;
     }
 
     public function comments(string $mediaId, int $limit = 50, ?string $after = null): array
     {
-        return $this->get($mediaId . '/comments', array_filter([
+        $page = $this->get($mediaId . '/comments', array_filter([
             'fields' => self::COMMENT_FIELDS,
             'limit' => $limit,
             'after' => $after,
         ]));
+
+        $page['data'] = self::withAuthors($page['data'] ?? []);
+
+        return $page;
+    }
+
+    /**
+     * Every comment and reply with `username` filled from `from.username`
+     * when Instagram left the top-level field out — so each reader (the inbox,
+     * the post modal, "did the account answer?") keeps reading one key.
+     *
+     * @param  list<array<string, mixed>>  $comments
+     * @return list<array<string, mixed>>
+     */
+    public static function withAuthors(array $comments): array
+    {
+        return array_map(function (array $comment) {
+            if (empty($comment['username']) && ! empty($comment['from']['username'])) {
+                $comment['username'] = $comment['from']['username'];
+            }
+
+            if (isset($comment['replies']['data'])) {
+                $comment['replies']['data'] = self::withAuthors($comment['replies']['data']);
+            }
+
+            return $comment;
+        }, $comments);
     }
 
     public function replyToComment(string $commentId, string $message): array

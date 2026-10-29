@@ -120,8 +120,8 @@ class InstagramCommentInbox
      * whether the account already answered it.
      *
      * "Answered" is a reply written by the account itself — the one fact a
-     * moderator scans for. Matched on the username, which is what the Graph API
-     * returns for a reply (there is no author id on this edge).
+     * moderator scans for. Matched on the username, which the client fills
+     * from `from.username` when Instagram leaves the top-level field out.
      *
      * @param  array<string, mixed>  $row
      * @return array<string, mixed>

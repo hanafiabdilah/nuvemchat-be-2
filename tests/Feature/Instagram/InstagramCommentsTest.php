@@ -167,6 +167,54 @@ test("the comments section lists every post's comments in one call, newest first
         && str_contains($request->data()['fields'] ?? urldecode($request->url()), 'comments.limit(50)'));
 });
 
+test('the author comes from `from` when Instagram leaves `username` out', function () {
+    // What production answers since Oct 2026: no top-level username at all.
+    Http::fake(fn () => Http::response([
+        'data' => [[
+            'id' => 'post-1',
+            'media_type' => 'IMAGE',
+            'media_url' => 'https://cdn.example.com/p.jpg',
+            'comments' => ['data' => [[
+                'id' => 'c-1',
+                'text' => 'Tem em azul?',
+                'from' => ['id' => '111', 'username' => 'cliente'],
+                'timestamp' => '2026-10-28T09:00:00+0000',
+                'replies' => ['data' => [
+                    ['id' => 'r-1', 'text' => 'Tem sim!', 'from' => ['id' => '222', 'username' => 'loja.oficial'], 'timestamp' => '2026-10-28T09:05:00+0000'],
+                ]],
+            ]]],
+        ]],
+    ]));
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$connection->id}/comments")
+        ->assertOk()
+        ->assertJsonPath('data.0.username', 'cliente')
+        ->assertJsonPath('data.0.replies.0.username', 'loja.oficial')
+        // Without the name, the account's own answer reads as someone else's.
+        ->assertJsonPath('data.0.replies.0.from_account', true)
+        ->assertJsonPath('data.0.replied', true);
+
+    Http::assertSent(fn ($request) => str_contains(urldecode($request->url()), ',from,'));
+});
+
+test("a post's comments carry the author from `from` too", function () {
+    Http::fake(fn () => Http::response([
+        'data' => [['id' => '1789', 'text' => 'Quanto custa?', 'from' => ['id' => '111', 'username' => 'cliente']]],
+    ]));
+
+    $user = InstagramFixtures::user();
+    $connection = InstagramFixtures::connection($user);
+
+    $this->actingAs($user)
+        ->getJson("/api/instagram/accounts/{$connection->id}/media/17999/comments")
+        ->assertOk()
+        ->assertJsonPath('data.0.username', 'cliente');
+});
+
 test('the comments section pages back through older posts', function () {
     Http::fake(fn () => Http::response(['data' => []]));
 
