@@ -32,6 +32,9 @@ class GalleryAssetResource extends JsonResource
             // which the next purge will remove.
             'url' => $this->publicUrl(),
             'origin' => $this->origin->value,
+            // Null = the top level. The dashboard has the folder list and
+            // builds the path itself.
+            'folder_id' => $this->folder_id,
             'counts_toward_quota' => $this->origin->countsTowardQuota(),
             // When a temporary (`message`) file disappears, so the tile can say
             // so and offer "Salvar na galeria" before it happens.

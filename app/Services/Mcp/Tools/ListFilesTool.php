@@ -7,6 +7,7 @@ use App\Enums\Gallery\AssetType;
 use App\Models\GalleryAsset;
 use App\Models\McpConnection;
 use App\Models\User;
+use App\Services\Gallery\GalleryFolderService;
 use App\Services\Mcp\Media\McpMediaUploads;
 use App\Services\Mcp\Scopes;
 
@@ -23,6 +24,7 @@ class ListFilesTool extends Tool
 {
     public function __construct(
         private readonly McpMediaUploads $media,
+        private readonly GalleryFolderService $folders,
     ) {}
 
     public function name(): string
@@ -39,7 +41,8 @@ class ListFilesTool extends Tool
     {
         return 'List the files people uploaded to this workspace\'s media gallery in Pingly (images, videos, audio, '
             .'documents), newest first, with the permanent URL of each. When the person refers to a file they already '
-            .'have ("our catalogue", "the logo"), look here before uploading anything. Use a file\'s "url" as a flow '
+            .'have ("our catalogue", "the logo"), look here before uploading anything. "folder" is where the person filed '
+            .'it in the gallery ("Catálogos / 2026"), null at the top level. Use a file\'s "url" as a flow '
             .'message\'s attachment_url (or a carousel card\'s header_url), with message_type equal to the file\'s "type".';
     }
 
@@ -92,9 +95,17 @@ class ListFilesTool extends Tool
             ->orderByDesc('id')
             ->paginate($limit, ['*'], 'page', $page);
 
+        // One query for every path, rather than walking the tree per file.
+        $paths = $this->folders->paths($user->tenant_id);
+
         return ToolResult::data(
             [
-                'files' => collect($assets->items())->map(fn (GalleryAsset $a) => $this->media->describe($a))->values()->all(),
+                'files' => collect($assets->items())
+                    ->map(fn (GalleryAsset $a) => $this->media->describe($a) + [
+                        'folder' => $a->folder_id !== null ? ($paths[$a->folder_id] ?? null) : null,
+                    ])
+                    ->values()
+                    ->all(),
                 'page' => $assets->currentPage(),
                 'has_more' => $assets->hasMorePages(),
                 'total' => $assets->total(),

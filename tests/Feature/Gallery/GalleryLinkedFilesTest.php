@@ -12,6 +12,7 @@ use App\Models\Conversation;
 use App\Models\Flow;
 use App\Models\FlowNode;
 use App\Models\GalleryAsset;
+use App\Models\GalleryFolder;
 use App\Models\Message;
 use App\Models\Tenant;
 use App\Services\Gallery\GalleryStorage;
@@ -287,4 +288,20 @@ it('backfills existing uploads, classifying them by where they are used', functi
     // Idempotent.
     $this->artisan('gallery:index-uploads')->assertSuccessful();
     expect(GalleryAsset::count())->toBe(2);
+});
+
+it('keeps a temporary attachment in the folder it was filed in', function () {
+    $tenant = GalleryFixtures::tenant(planGb: 1);
+    $message = linkedAttachment(linkedConversation($tenant), ['sent_by_user_id' => $tenant->user->id]);
+    $linked = GalleryAsset::where('message_id', $message->id)->first();
+    $folder = GalleryFolder::create(['tenant_id' => $tenant->id, 'name' => 'Enviados']);
+    $linked->update(['folder_id' => $folder->id]);
+
+    Sanctum::actingAs($tenant->user);
+
+    // The tile turns from temporary to kept where it is, rather than jumping
+    // back to the top level.
+    $this->postJson("/api/gallery/{$linked->id}/keep")
+        ->assertCreated()
+        ->assertJsonPath('data.folder_id', $folder->id);
 });

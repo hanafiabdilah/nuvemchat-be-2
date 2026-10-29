@@ -283,6 +283,11 @@ class Tenant extends Model
         return $this->hasMany(GalleryAsset::class);
     }
 
+    public function galleryFolders()
+    {
+        return $this->hasMany(GalleryFolder::class);
+    }
+
     /** The extra gallery storage this workspace rents, if any. */
     public function galleryStorageRental()
     {

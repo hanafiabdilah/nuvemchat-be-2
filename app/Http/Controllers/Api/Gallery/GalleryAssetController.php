@@ -8,6 +8,8 @@ use App\Exceptions\Gallery\GalleryQuotaExceededException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Gallery\GalleryAssetResource;
 use App\Models\GalleryAsset;
+use App\Models\GalleryFolder;
+use App\Services\Gallery\GalleryFolderService;
 use App\Services\Gallery\GalleryService;
 use App\Services\Gallery\GalleryStorage;
 use App\Services\Media\UploadPolicy;
@@ -27,6 +29,7 @@ class GalleryAssetController extends Controller
     public function __construct(
         private readonly GalleryService $gallery,
         private readonly GalleryStorage $storage,
+        private readonly GalleryFolderService $folders,
     ) {}
 
     /**
@@ -49,6 +52,10 @@ class GalleryAssetController extends Controller
             // a campaign, a flow node, a product. Leaves out attachments, whose
             // URL dies with the message's media.
             'permanent' => ['nullable', 'boolean'],
+            // `root` = files at the top level, a number = files directly in
+            // that folder. Absent = every file wherever it is filed, which is
+            // what search and the older callers (pickers, MCP) mean.
+            'folder' => ['nullable', 'string', 'regex:/^(root|\d+)$/'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
@@ -62,6 +69,9 @@ class GalleryAssetController extends Controller
                 default => $q->where('origin', $origin),
             })
             ->when($request->boolean('permanent'), fn ($q) => $q->permanent())
+            ->when($validated['folder'] ?? null, fn ($q, $folder) => $folder === 'root'
+                ? $q->whereNull('folder_id')
+                : $q->where('folder_id', (int) $folder))
             ->with(['uploader:id,name', 'message.conversation'])
             ->orderByDesc('id')
             ->paginate($validated['per_page'] ?? 40);
@@ -112,6 +122,8 @@ class GalleryAssetController extends Controller
         $request->validate([
             'file' => UploadPolicy::rules($maxKb),
             'name' => ['nullable', 'string', 'max:250'],
+            // The folder the person is looking at when they drop the file.
+            'folder_id' => ['nullable', 'integer', $this->ownFolder($request)],
         ], [
             'file.mimes' => UploadPolicy::message(),
         ]);
@@ -119,7 +131,13 @@ class GalleryAssetController extends Controller
         $tenant = $request->user()->tenant;
 
         try {
-            $asset = $this->gallery->store($tenant, $file, $request->user(), $request->input('name'));
+            $asset = $this->gallery->store(
+                $tenant,
+                $file,
+                $request->user(),
+                $request->input('name'),
+                $request->filled('folder_id') ? (int) $request->input('folder_id') : null,
+            );
         } catch (GalleryQuotaExceededException $e) {
             return $this->quotaExceeded($e);
         }
@@ -169,6 +187,35 @@ class GalleryAssetController extends Controller
         ], 201);
     }
 
+    /**
+     * File assets into a folder (`folder_id` null = the top level).
+     *
+     * Several at once because organising a library that grew before folders
+     * existed is a sorting job, and a request per tile would make it one.
+     * Nothing about the files changes but the column: same bytes, same URL,
+     * so every message already sent with them keeps working.
+     */
+    public function move(Request $request)
+    {
+        $validated = $request->validate([
+            'asset_ids' => ['required', 'array', 'min:1', 'max:200'],
+            'asset_ids.*' => ['integer'],
+            'folder_id' => ['present', 'nullable', 'integer', $this->ownFolder($request)],
+        ]);
+
+        $folder = $validated['folder_id'] !== null
+            ? GalleryFolder::forTenant($request->user()->tenant_id)->findOrFail((int) $validated['folder_id'])
+            : null;
+
+        $moved = $this->folders->moveAssets(
+            $request->user()->tenant,
+            array_map('intval', $validated['asset_ids']),
+            $folder,
+        );
+
+        return response()->json(['moved' => $moved, 'folder_id' => $folder?->id]);
+    }
+
     /** Rename. The public URL is untouched — see GalleryService::rename(). */
     public function update(Request $request, int $id)
     {
@@ -216,6 +263,11 @@ class GalleryAssetController extends Controller
             'required_bytes' => $e->requestedBytes,
             'shortfall_bytes' => $e->shortfallBytes(),
         ], 422);
+    }
+
+    private function ownFolder(Request $request)
+    {
+        return Rule::exists('gallery_folders', 'id')->where('tenant_id', $request->user()->tenant_id);
     }
 
     private function find(Request $request, int $id): GalleryAsset

@@ -43,10 +43,14 @@ class GalleryService
      * Store an uploaded file in the tenant's library.
      *
      * @param  string|null  $name  display name; falls back to the client filename
+     * @param  int|null  $folderId  where to file it; the caller has already checked
+     *                              it is this workspace's. Ignored when the bytes
+     *                              are already in the library: that file stays
+     *                              where somebody filed it.
      *
      * @throws GalleryQuotaExceededException when the library has no room for it
      */
-    public function store(Tenant $tenant, UploadedFile $file, ?User $uploader = null, ?string $name = null): GalleryAsset
+    public function store(Tenant $tenant, UploadedFile $file, ?User $uploader = null, ?string $name = null, ?int $folderId = null): GalleryAsset
     {
         $size = (int) $file->getSize();
         $checksum = hash_file('sha256', $file->getRealPath());
@@ -115,6 +119,7 @@ class GalleryService
             $asset = GalleryAsset::create([
                 'tenant_id' => $tenant->id,
                 'origin' => AssetOrigin::Gallery,
+                'folder_id' => $folderId,
                 'uuid' => $uuid,
                 'public_filename' => $this->publicFilename($original, $extension),
                 'uploaded_by_user_id' => $uploader?->id,
@@ -169,7 +174,9 @@ class GalleryService
 
             $file = new UploadedFile($tmp, $asset->public_filename, $asset->mime_type, null, true);
 
-            return $this->store($asset->tenant, $file, $by, $asset->name);
+            // Kept where it was filed: the tile changes from temporary to kept
+            // in the same folder, rather than jumping to the top level.
+            return $this->store($asset->tenant, $file, $by, $asset->name, $asset->folder_id);
         } finally {
             @unlink($tmp);
         }

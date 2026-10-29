@@ -22,6 +22,7 @@ class GalleryAsset extends Model
     protected $fillable = [
         'tenant_id',
         'origin',
+        'folder_id',
         'message_id',
         'uuid',
         'public_filename',
@@ -43,6 +44,7 @@ class GalleryAsset extends Model
 
     protected $casts = [
         'origin' => AssetOrigin::class,
+        'folder_id' => 'integer',
         'type' => AssetType::class,
         'size_bytes' => 'integer',
         'last_used_at' => 'datetime',
@@ -65,6 +67,12 @@ class GalleryAsset extends Model
     public function uploader()
     {
         return $this->belongsTo(User::class, 'uploaded_by_user_id');
+    }
+
+    /** Where the file is filed in the library. Null = the top level. */
+    public function folder()
+    {
+        return $this->belongsTo(GalleryFolder::class, 'folder_id');
     }
 
     /** The message a `message` row was read off. */

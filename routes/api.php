@@ -71,6 +71,7 @@ use App\Http\Controllers\Api\FlowAssistantController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\FlowTestController;
 use App\Http\Controllers\Api\Gallery\GalleryAssetController;
+use App\Http\Controllers\Api\Gallery\GalleryFolderController;
 use App\Http\Controllers\Api\Gallery\GalleryStorageController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\ImpersonationController;
@@ -314,6 +315,14 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         Route::post('/storage/quote', [GalleryStorageController::class, 'quote'])->middleware('permission:gallery.view')->name('storage-quote');
         Route::put('/storage', [GalleryStorageController::class, 'update'])->middleware('permission:gallery.manage')->name('storage-update');
         Route::delete('/storage', [GalleryStorageController::class, 'destroy'])->middleware('permission:gallery.manage')->name('storage-cancel');
+
+        // Folders organise; they never move bytes or change a URL. Deleting
+        // one moves what it held up a level — see GalleryFolderService.
+        Route::get('/folders', [GalleryFolderController::class, 'index'])->middleware('permission:gallery.view')->name('folders.index');
+        Route::post('/folders', [GalleryFolderController::class, 'store'])->middleware('permission:gallery.manage')->name('folders.store');
+        Route::put('/folders/{id}', [GalleryFolderController::class, 'update'])->whereNumber('id')->middleware('permission:gallery.manage')->name('folders.update');
+        Route::delete('/folders/{id}', [GalleryFolderController::class, 'destroy'])->whereNumber('id')->middleware('permission:gallery.manage')->name('folders.destroy');
+        Route::post('/move', [GalleryAssetController::class, 'move'])->middleware('permission:gallery.manage')->name('move');
 
         Route::get('/', [GalleryAssetController::class, 'index'])->middleware('permission:gallery.view')->name('index');
         Route::post('/', [GalleryAssetController::class, 'store'])->middleware('permission:gallery.manage')->name('store');
