@@ -544,22 +544,28 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // Broadcast campaigns. Sending is a separate permission from creating:
         // drafting a blast and actually firing it at thousands of customers are
         // very different levels of trust.
-        Route::get('/broadcasts', [BroadcastController::class, 'index'])->middleware('permission:broadcasts.view');
-        Route::post('/broadcasts', [BroadcastController::class, 'store'])->middleware('permission:broadcasts.create');
-        // One message into the active threads selected in the inbox (optionally
-        // resolving each). It creates a campaign and starts it in one click, so
-        // it needs both halves of the create/send split `store` + `start` do.
-        Route::post('/broadcasts/conversations', [BroadcastController::class, 'storeForConversations'])
-            ->middleware(['permission:broadcasts.create', 'permission:broadcasts.send']);
-        Route::get('/broadcasts/{id}', [BroadcastController::class, 'show'])->middleware('permission:broadcasts.view');
-        Route::get('/broadcasts/{id}/recipients', [BroadcastController::class, 'recipients'])->middleware('permission:broadcasts.view');
-        Route::put('/broadcasts/{id}', [BroadcastController::class, 'update'])->middleware('permission:broadcasts.create');
-        Route::delete('/broadcasts/{id}', [BroadcastController::class, 'destroy'])->middleware('permission:broadcasts.delete');
-        Route::post('/broadcasts/{id}/start', [BroadcastController::class, 'start'])->middleware('permission:broadcasts.send');
-        Route::post('/broadcasts/{id}/pause', [BroadcastController::class, 'pause'])->middleware('permission:broadcasts.send');
-        Route::post('/broadcasts/{id}/resume', [BroadcastController::class, 'resume'])->middleware('permission:broadcasts.send');
-        Route::post('/broadcasts/{id}/cancel', [BroadcastController::class, 'cancel'])->middleware('permission:broadcasts.send');
-        Route::post('/broadcasts/{id}/retry-failed', [BroadcastController::class, 'retryFailed'])->middleware('permission:broadcasts.send');
+        //
+        // Their own plan feature on top of `chat`, so mass sending can be sold
+        // separately from the inbox — the send-to-selection route included,
+        // since it is the same engine reached from the inbox.
+        Route::middleware('feature:'.Feature::Campaigns->value)->group(function () {
+            Route::get('/broadcasts', [BroadcastController::class, 'index'])->middleware('permission:broadcasts.view');
+            Route::post('/broadcasts', [BroadcastController::class, 'store'])->middleware('permission:broadcasts.create');
+            // One message into the active threads selected in the inbox (optionally
+            // resolving each). It creates a campaign and starts it in one click, so
+            // it needs both halves of the create/send split `store` + `start` do.
+            Route::post('/broadcasts/conversations', [BroadcastController::class, 'storeForConversations'])
+                ->middleware(['permission:broadcasts.create', 'permission:broadcasts.send']);
+            Route::get('/broadcasts/{id}', [BroadcastController::class, 'show'])->middleware('permission:broadcasts.view');
+            Route::get('/broadcasts/{id}/recipients', [BroadcastController::class, 'recipients'])->middleware('permission:broadcasts.view');
+            Route::put('/broadcasts/{id}', [BroadcastController::class, 'update'])->middleware('permission:broadcasts.create');
+            Route::delete('/broadcasts/{id}', [BroadcastController::class, 'destroy'])->middleware('permission:broadcasts.delete');
+            Route::post('/broadcasts/{id}/start', [BroadcastController::class, 'start'])->middleware('permission:broadcasts.send');
+            Route::post('/broadcasts/{id}/pause', [BroadcastController::class, 'pause'])->middleware('permission:broadcasts.send');
+            Route::post('/broadcasts/{id}/resume', [BroadcastController::class, 'resume'])->middleware('permission:broadcasts.send');
+            Route::post('/broadcasts/{id}/cancel', [BroadcastController::class, 'cancel'])->middleware('permission:broadcasts.send');
+            Route::post('/broadcasts/{id}/retry-failed', [BroadcastController::class, 'retryFailed'])->middleware('permission:broadcasts.send');
+        });
 
         // Sales funnel — gated by the `crm` plan feature. A workspace can run a
         // busy support inbox and never sell anything from it, so this is its own
@@ -607,7 +613,10 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // Posting and comment moderation are separate jobs with separate
         // permissions: the account list and the account itself open to either,
         // so someone who only moderates comments still reaches the account.
-        Route::prefix('instagram')->group(function () {
+        //
+        // Each network is its own plan feature on top of `chat`
+        // (Feature::splitFromChat()), so a plan can sell them one by one.
+        Route::prefix('instagram')->middleware('feature:'.Feature::InstagramManagement->value)->group(function () {
             Route::get('/accounts', [InstagramAccountController::class, 'index'])->middleware('permission:instagram-posts.view|instagram-comments.manage');
             Route::get('/accounts/{connection}', [InstagramAccountController::class, 'show'])->middleware('permission:instagram-posts.view|instagram-comments.manage');
 
@@ -637,7 +646,9 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
 
         // Read and starred marks on comments, shared by the Instagram, YouTube
         // and TikTok Comments sections (none of the platforms has either).
-        // The moderation permission of each platform is checked inside.
+        // The moderation permission and the plan feature of each platform are
+        // checked inside — the platform is a route parameter, so a middleware
+        // cannot name the feature.
         Route::patch('/social/{platform}/accounts/{account}/comments/{comment}/marks', [CommentMarkController::class, 'update'])
             ->whereIn('platform', \App\Services\Social\CommentMarks::PLATFORMS);
         Route::post('/social/{platform}/accounts/{account}/comments/marks', [CommentMarkController::class, 'markRead'])
@@ -647,7 +658,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // as Instagram's: `/tiktok/posts/{post}` is one of our rows,
         // `/tiktok/accounts/{connection}/videos/{video}` a live post. Live
         // posts are read only; the Accounts API neither edits nor deletes them.
-        Route::prefix('tiktok')->group(function () {
+        Route::prefix('tiktok')->middleware('feature:'.Feature::TiktokManagement->value)->group(function () {
             Route::get('/accounts', [TikTokAccountController::class, 'index'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
             Route::get('/accounts/{connection}', [TikTokAccountController::class, 'show'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
 
@@ -681,7 +692,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         //
         // A channel is connected from the YouTube page itself (no Connection
         // row), which is why connecting has a permission of its own.
-        Route::prefix('youtube')->group(function () {
+        Route::prefix('youtube')->middleware('feature:'.Feature::YoutubeManagement->value)->group(function () {
             Route::get('/accounts', [YoutubeAccountController::class, 'index'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');
             Route::get('/oauth-url', [YoutubeAccountController::class, 'authorizeUrl'])->middleware('permission:youtube-accounts.manage');
             Route::get('/accounts/{account}', [YoutubeAccountController::class, 'show'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');

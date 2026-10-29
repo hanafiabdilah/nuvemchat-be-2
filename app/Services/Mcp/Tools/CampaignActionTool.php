@@ -59,9 +59,10 @@ abstract class CampaignActionTool extends Tool
         return 'broadcasts.send';
     }
 
+    /** Campaigns are a plan feature of their own; the connection already needed `mcp`. */
     public function feature(): Feature
     {
-        return Feature::Mcp;
+        return Feature::Campaigns;
     }
 
     public function annotations(): array

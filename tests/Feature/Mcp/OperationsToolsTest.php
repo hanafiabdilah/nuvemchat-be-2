@@ -103,6 +103,16 @@ it('hides lead tools when the plan has no CRM, whatever the scope says', functio
     expect(opsNames($this, $token))->not->toContain('list_leads');
 });
 
+it('hides campaign tools when the plan has no campaigns, whatever the scope says', function () {
+    // Campaigns were split out of `chat` into a plan feature of their own; MCP
+    // must not stay a side door to them.
+    $user = opsUser(['broadcasts.view', 'broadcasts.send'], ['mcp' => true, 'chat' => true, 'crm' => true]);
+    config(['services.billing.enforce' => true]);
+    [, $token] = McpFixtures::connect($user, [Scopes::CAMPAIGNS_WRITE]);
+
+    expect(opsNames($this, $token))->not->toContain('list_campaigns')->not->toContain('pause_campaign');
+});
+
 it('never offers a tool that creates or starts a campaign, or deletes a lead', function () {
     $user = opsUser(['broadcasts.view', 'broadcasts.create', 'broadcasts.send', 'broadcasts.delete', 'leads.view', 'leads.create', 'leads.update', 'leads.delete']);
     [, $token] = McpFixtures::connect($user, Scopes::all());

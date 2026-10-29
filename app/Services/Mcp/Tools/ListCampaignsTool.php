@@ -56,9 +56,10 @@ class ListCampaignsTool extends Tool
         return 'broadcasts.view';
     }
 
+    /** Campaigns are a plan feature of their own; the connection already needed `mcp`. */
     public function feature(): Feature
     {
-        return Feature::Mcp;
+        return Feature::Campaigns;
     }
 
     public function run(array $arguments, McpConnection $connection, User $user): ToolResult

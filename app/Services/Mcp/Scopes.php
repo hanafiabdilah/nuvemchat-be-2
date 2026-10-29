@@ -159,9 +159,9 @@ final class Scopes
             self::FLOWS_READ, self::FLOWS_WRITE => Feature::Flow,
             self::STATISTICS_READ, self::LIVE_READ => Feature::Statistics,
             self::LEADS_READ, self::LEADS_WRITE => Feature::Crm,
-            // Neither the gallery (its gate is the storage meter) nor campaigns
-            // (theirs is the create/send permission split) is a plan feature,
-            // so MCP itself is the only feature in front of them.
+            self::CAMPAIGNS_READ, self::CAMPAIGNS_WRITE => Feature::Campaigns,
+            // The gallery is not a plan feature (its gate is the storage
+            // meter), so MCP itself is the only feature in front of it.
             default => Feature::Mcp,
         };
     }

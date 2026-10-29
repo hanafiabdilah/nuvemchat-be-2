@@ -30,13 +30,11 @@ enum Feature: string
     case Flow = 'flow';
 
     /**
-     * The AI that writes flows in the builder. Separate from `flow` because it
-     * costs the platform money on every turn — it runs on the platform's own
-     * OpenAI key, not the workspace's — and separate from `ai_agent_hub`
-     * because that one gates agents the workspace configures and pays for. A
-     * plan can sell the builder without selling the assistant, and giving the
-     * assistant to a plan that has no `flow` would open a panel onto a page
-     * that plan cannot reach.
+     * The AI that writes flows in the builder. Separate from `flow` so a plan
+     * can sell the builder without the assistant; it runs on the workspace's
+     * own provider key or one it rents (billed to the balance), chosen in the
+     * builder. Giving it to a plan that has no `flow` would open a panel onto a
+     * page that plan cannot reach.
      */
     case FlowAssistant = 'flow_assistant';
 
@@ -67,6 +65,41 @@ enum Feature: string
      */
     case Catalog = 'catalog';
 
+    /**
+     * Publishing to, and moderating comments on, the workspace's Instagram,
+     * TikTok and YouTube accounts. One key per network, so a plan can sell
+     * each one on its own — and taken out of `chat`, which used to open all
+     * three along with the inbox.
+     *
+     * Add-ons of `chat`, not replacements for it: their routes still sit inside
+     * the inbox's group, and the Instagram and TikTok accounts are inbox
+     * connections. A plan with one of these and no `chat` reaches nothing.
+     */
+    case InstagramManagement = 'instagram_management';
+    case TiktokManagement = 'tiktok_management';
+    case YoutubeManagement = 'youtube_management';
+
+    /**
+     * Broadcast campaigns, and sending one message to threads picked in the
+     * inbox (which runs on the same engine). Taken out of `chat` so mass
+     * sending can be sold on its own. Meta templates deliberately stay under
+     * `chat`: WhatsApp Official cannot answer outside the 24-hour window
+     * without one, so they are part of running the inbox at all.
+     */
+    case Campaigns = 'campaigns';
+
+    /**
+     * The add-ons that used to come with `chat` and were split out of it. A
+     * plan that has `chat` keeps all of them unless someone turns one off —
+     * the migration that introduced them granted them that way.
+     *
+     * @return list<self>
+     */
+    public static function splitFromChat(): array
+    {
+        return [self::InstagramManagement, self::TiktokManagement, self::YoutubeManagement, self::Campaigns];
+    }
+
     /** @return list<string> */
     public static function values(): array
     {
@@ -85,6 +118,10 @@ enum Feature: string
             self::Statistics => 'Statistics',
             self::Mcp => 'MCP (Claude / Codex)',
             self::Catalog => 'Product catalog & AI sales',
+            self::InstagramManagement => 'Instagram management',
+            self::TiktokManagement => 'TikTok management',
+            self::YoutubeManagement => 'YouTube management',
+            self::Campaigns => 'Campaigns',
         };
     }
 
@@ -95,11 +132,15 @@ enum Feature: string
             self::WhatsappApi => 'Marks an API Way workspace. Granted automatically by owning instances — it does NOT gate buying them, which is open to every tenant.',
             self::Crm => 'Lead board, pipelines and stages.',
             self::Flow => 'The visual automation builder.',
-            self::FlowAssistant => 'Builds and edits flows from a description, in the builder. Runs on the platform\'s own OpenAI key, so every turn costs the platform — it never touches the workspace\'s balance. Needs `flow` to be of any use.',
+            self::FlowAssistant => 'Builds and edits flows from a description, in the builder. Runs on the workspace\'s own AI key or one it rents from the platform (charged to its balance), chosen in the builder. Needs `flow` to be of any use.',
             self::AiAgentHub => 'AI agents, handoff and reply suggestions.',
             self::Statistics => 'The tenant analytics pages.',
             self::Mcp => 'Lets people connect Claude, Codex or another MCP client to this workspace and work through it. Costs the platform nothing per use — the model tokens are billed to the customer\'s own AI subscription. Today it reaches the flow builder; each tool still needs the feature and the permission its own surface requires.',
             self::Catalog => 'Products, stock and orders, plus the "AI agent with actions" flow node that looks up the catalog, builds a cart and charges a Pix by itself. The node also needs `flow`.',
+            self::InstagramManagement => 'Publish and schedule posts on the workspace\'s Instagram accounts and moderate their comments. Needs `chat`.',
+            self::TiktokManagement => 'Publish and schedule videos on the workspace\'s TikTok accounts and moderate their comments. Needs `chat`.',
+            self::YoutubeManagement => 'Connect YouTube channels, upload and schedule videos, and moderate their comments. Needs `chat`.',
+            self::Campaigns => 'Broadcast campaigns, and sending one message to conversations picked in the inbox. Needs `chat`.',
         };
     }
 }

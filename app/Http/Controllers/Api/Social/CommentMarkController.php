@@ -2,11 +2,14 @@
 
 namespace App\Http\Controllers\Api\Social;
 
+use App\Enums\Billing\Feature;
 use App\Enums\Connection\Channel;
 use App\Http\Controllers\Controller;
 use App\Models\Connection;
 use App\Models\YoutubeAccount;
+use App\Services\Billing\SubscriptionGate;
 use App\Services\Social\CommentMarks;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
@@ -17,7 +20,10 @@ use Symfony\Component\HttpKernel\Exception\HttpException;
  */
 class CommentMarkController extends Controller
 {
-    public function __construct(private readonly CommentMarks $marks) {}
+    public function __construct(
+        private readonly CommentMarks $marks,
+        private readonly SubscriptionGate $gate,
+    ) {}
 
     public function update(Request $request, string $platform, string $accountId, string $commentId)
     {
@@ -56,6 +62,36 @@ class CommentMarkController extends Controller
         ]);
     }
 
+    /**
+     * The network's plan feature, refused the way `feature:` refuses it.
+     *
+     * Checked here because these routes serve all three networks and name the
+     * one in a parameter — the middleware on each network's own route group
+     * does not reach them.
+     */
+    private function assertFeature($tenant, string $platform): void
+    {
+        if (! config('services.billing.enforce') || $tenant === null) {
+            return;
+        }
+
+        $feature = match ($platform) {
+            'instagram' => Feature::InstagramManagement,
+            'tiktok' => Feature::TiktokManagement,
+            'youtube' => Feature::YoutubeManagement,
+        };
+
+        if ($this->gate->feature($tenant, $feature->value)) {
+            return;
+        }
+
+        throw new HttpResponseException(response()->json([
+            'message' => "This feature ({$feature->value}) is not included in your current plan.",
+            'code' => 'feature_not_in_plan',
+            'feature' => $feature->value,
+        ], 403));
+    }
+
     /** The account's id, once the caller is proven to moderate it. */
     private function account(Request $request, string $platform, string $accountId): int
     {
@@ -68,6 +104,8 @@ class CommentMarkController extends Controller
         if (! $user->can("{$platform}-comments.manage")) {
             throw new HttpException(403, 'You may not moderate these comments.');
         }
+
+        $this->assertFeature($user->tenant, $platform);
 
         if ($platform === 'youtube') {
             $account = YoutubeAccount::where('tenant_id', $user->tenant_id)->find($accountId);

@@ -70,6 +70,7 @@ trait Workspace
         $all = [
             'chat' => true, 'whatsapp_api' => true, 'crm' => true, 'flow' => true,
             'flow_assistant' => true, 'ai_agent_hub' => true, 'statistics' => true, 'catalog' => true, 'mcp' => true,
+            'instagram_management' => true, 'tiktok_management' => true, 'youtube_management' => true, 'campaigns' => true,
         ];
 
         Plan::where('slug', 'business')->first()?->forceFill([

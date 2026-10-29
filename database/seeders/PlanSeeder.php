@@ -23,7 +23,7 @@ class PlanSeeder extends Seeder
             'billing_cycle' => 'monthly',
             'trial_days' => 7,
             'quotas' => ['max_whatsapp_connections' => 1, 'max_other_connections' => 1, 'max_agents' => 2],
-            'features' => ['chat' => true, 'flow' => false, 'ai_agent_hub' => false, 'statistics' => true, 'crm' => false],
+            'features' => ['chat' => true, 'flow' => false, 'ai_agent_hub' => false, 'statistics' => true, 'crm' => false, 'instagram_management' => true, 'tiktok_management' => true, 'youtube_management' => true, 'campaigns' => true],
             'sort_order' => 1,
         ],
         [
@@ -34,7 +34,7 @@ class PlanSeeder extends Seeder
             'billing_cycle' => 'monthly',
             'trial_days' => 7,
             'quotas' => ['max_whatsapp_connections' => 5, 'max_other_connections' => 5, 'max_agents' => 10],
-            'features' => ['chat' => true, 'flow' => true, 'ai_agent_hub' => false, 'statistics' => true, 'crm' => true],
+            'features' => ['chat' => true, 'flow' => true, 'ai_agent_hub' => false, 'statistics' => true, 'crm' => true, 'instagram_management' => true, 'tiktok_management' => true, 'youtube_management' => true, 'campaigns' => true],
             'sort_order' => 2,
         ],
         [
@@ -45,7 +45,7 @@ class PlanSeeder extends Seeder
             'billing_cycle' => 'monthly',
             'trial_days' => 0,
             'quotas' => ['max_whatsapp_connections' => 20, 'max_other_connections' => 20, 'max_agents' => 50],
-            'features' => ['chat' => true, 'whatsapp_api' => true, 'flow' => true, 'ai_agent_hub' => true, 'statistics' => true, 'crm' => true],
+            'features' => ['chat' => true, 'whatsapp_api' => true, 'flow' => true, 'ai_agent_hub' => true, 'statistics' => true, 'crm' => true, 'instagram_management' => true, 'tiktok_management' => true, 'youtube_management' => true, 'campaigns' => true],
             'sort_order' => 3,
         ],
     ];
