@@ -169,6 +169,7 @@ final class UpstreamError
         'api.elevenlabs.io',
         'api.openai.com',
         'business-api.tiktok.com',
+        'tiktokcdn.com',
         'googleapis.com',
         'accounts.google.com',
         'api.openpix.com.br',
@@ -665,6 +666,73 @@ final class UpstreamError
     private static function tiktok(string $m, string $code): ?array
     {
         return match (true) {
+            // Posting (Accounts API). Codes are TikTok's publish failure
+            // reasons, and the first one is ours: the media host is not yet
+            // proven to TikTok, which is a platform setting, never the
+            // customer's file.
+            $code === 'url_unverified' => [
+                'tiktok_url_unverified',
+                'A publicação no TikTok ainda não está liberada nesta plataforma. Fale com o suporte.',
+                503,
+            ],
+            $code === 'spam_risk_too_many_posts' => [
+                'tiktok_daily_limit',
+                'Esta conta atingiu o limite de publicações pela integração nas últimas 24 horas (até 15 vídeos por dia). Tente mais tarde ou publique pelo app do TikTok.',
+                429,
+            ],
+            $code === 'spam_risk_user_banned_from_posting' => [
+                'tiktok_posting_blocked',
+                'O TikTok bloqueou novas publicações desta conta.',
+                422,
+            ],
+            $code === 'spam_risk_text' => [
+                'tiktok_caption_refused',
+                'O TikTok recusou a legenda por considerá-la arriscada ou spam. Revise o texto e tente de novo.',
+                422,
+            ],
+            $code === 'spam_risk' => [
+                'tiktok_spam_risk',
+                'O TikTok considerou esta publicação arriscada e a recusou. Evite publicar várias vezes seguidas.',
+                422,
+            ],
+            $code === 'duration_check_failed' => [
+                'tiktok_duration',
+                'A duração do vídeo não foi aceita pelo TikTok. Use um vídeo com pelo menos 3 segundos e dentro do limite da conta.',
+                422,
+            ],
+            $code === 'frame_rate_check_failed' => [
+                'tiktok_frame_rate',
+                'O vídeo precisa ter entre 23 e 60 quadros por segundo.',
+                422,
+            ],
+            $code === 'picture_size_check_failed' => [
+                'tiktok_resolution',
+                'O arquivo é pequeno demais: o TikTok exige pelo menos 360 pixels de largura e de altura.',
+                422,
+            ],
+            $code === 'file_format_check_failed' => [
+                'tiktok_file_format',
+                'O TikTok não aceitou o formato do arquivo. Use vídeo MP4, MOV ou WEBM, ou fotos JPG.',
+                422,
+            ],
+            $code === 'video_pull_failed',
+            $code === 'photo_pull_failed',
+            $code === 'internal' => [
+                'tiktok_publish_retry',
+                'O TikTok não conseguiu buscar o arquivo desta vez. Tente publicar novamente.',
+                502,
+            ],
+            $code === 'auth_removed' => [
+                'channel_reauth_required',
+                'A conta do TikTok removeu o acesso durante a publicação. Reconecte a conta na tela de Conexões.',
+                422,
+            ],
+            $code === '40100',
+            $code === '40133' => [
+                'channel_rate_limited',
+                'O TikTok limitou as requisições por agora. Aguarde um minuto e tente de novo.',
+                429,
+            ],
             str_contains($m, 'window'),
             str_contains($m, 'janela') => [
                 'messaging_window_closed',

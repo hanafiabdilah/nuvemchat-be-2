@@ -230,6 +230,13 @@ Schedule::command('instagram:publish-scheduled')
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('Instagram scheduled publish failed'));
 
+// TikTok posts: fire the due schedules (TikTok has no scheduler on this API)
+// and revive publish chains whose worker died.
+Schedule::command('tiktok:publish-scheduled')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('TikTok scheduled publish failed'));
+
 // Re-dispatch YouTube uploads whose worker died. Nothing is fired on a timer
 // here: a scheduled video is uploaded straight away with `publishAt`, and
 // YouTube makes it public itself.

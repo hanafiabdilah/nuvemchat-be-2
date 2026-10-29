@@ -138,6 +138,15 @@ class RoleAndPermissionSeeder extends Seeder
             'youtube-posts.delete',
             'youtube-comments.manage',
 
+            // TikTok publishing, on the TikTok inbox connections. `delete`
+            // covers our own drafts and schedules only — the Accounts API has
+            // no endpoint for removing a live post.
+            'tiktok-posts.view',
+            'tiktok-posts.create',
+            'tiktok-posts.publish',
+            'tiktok-posts.delete',
+            'tiktok-comments.manage',
+
             // Virtual numbers rented from API Way. `view` reads the codes that
             // arrive (an OTP is a credential); `manage` spends the prepaid
             // balance and cancels a rental somebody may still be waiting on.

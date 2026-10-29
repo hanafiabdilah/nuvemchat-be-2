@@ -153,6 +153,31 @@ return Application::configure(basePath: dirname(__DIR__))
             );
         });
 
+        // TikTok's Accounts API (posts and comments). The permission case keeps
+        // its own code: an account connected for the inbox before posting
+        // existed has a token without the permissions, and reconnecting is
+        // the one fix the page can offer.
+        $exceptions->render(function (\App\Exceptions\TikTokApiException $e, \Illuminate\Http\Request $request) {
+            if (! $request->expectsJson()) {
+                return null;
+            }
+
+            if ($e->needsReconnect()) {
+                return response()->json([
+                    'message' => 'A conta do TikTok conectada não tem as permissões de publicações e comentários. Reconecte a conta na tela de Conexões.',
+                    'code' => 'tiktok_permission_required',
+                ], 422);
+            }
+
+            return \App\Support\Errors\UpstreamError::response(
+                \App\Support\Errors\UpstreamProvider::TikTok,
+                $e->getMessage(),
+                upstreamCode: $e->tiktokCode(),
+                status: $e->httpStatus(),
+                context: ['route' => $request->path()],
+            );
+        });
+
         // Google's refusals for the YouTube pages. Same shape as Instagram's:
         // a grant Google stopped honouring (revoked, password changed, a
         // test-mode app's 7-day refresh token) keeps its own code — it is the

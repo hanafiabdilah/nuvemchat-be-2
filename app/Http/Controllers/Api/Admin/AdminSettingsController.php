@@ -122,6 +122,10 @@ class AdminSettingsController extends Controller
                 'tiktok' => [
                     'app_id' => TikTokConfig::appId(),
                     'redirect_uri' => TikTokConfig::redirectUri(),
+                    // Whether Connect also asks for the post & comment
+                    // permissions — on only once TikTok has granted them to the
+                    // app, or the consent screen breaks for the inbox too.
+                    'posts_enabled' => TikTokConfig::postsEnabled(),
                     'app_secret_set' => ! empty($ttSecret),
                     'app_secret_preview' => $this->mask($ttSecret),
                 ],
@@ -259,6 +263,7 @@ class AdminSettingsController extends Controller
             'tiktok.app_id' => ['nullable', 'string', 'max:255'],
             'tiktok.redirect_uri' => ['nullable', 'url', 'max:255'],
             'tiktok.app_secret' => ['nullable', 'string', 'max:512'],
+            'tiktok.posts_enabled' => ['sometimes', 'boolean'],
 
             'youtube' => ['sometimes', 'array'],
             'youtube.client_id' => ['nullable', 'string', 'max:255'],
@@ -453,6 +458,10 @@ class AdminSettingsController extends Controller
             // Secret: only replaced when a new value is supplied.
             if (! empty($tt['app_secret'])) {
                 Setting::set(TikTokConfig::KEY_APP_SECRET, $tt['app_secret']);
+            }
+
+            if (array_key_exists('posts_enabled', $tt)) {
+                Setting::set(TikTokConfig::KEY_POSTS_ENABLED, $tt['posts_enabled'] ? '1' : null);
             }
         }
 

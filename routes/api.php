@@ -77,6 +77,9 @@ use App\Http\Controllers\Api\ImpersonationController;
 use App\Http\Controllers\Api\Instagram\InstagramAccountController;
 use App\Http\Controllers\Api\Instagram\InstagramCommentController;
 use App\Http\Controllers\Api\Instagram\InstagramPostController;
+use App\Http\Controllers\Api\TikTok\TikTokAccountController;
+use App\Http\Controllers\Api\TikTok\TikTokCommentController;
+use App\Http\Controllers\Api\TikTok\TikTokPostController;
 use App\Http\Controllers\Api\Youtube\YoutubeAccountController;
 use App\Http\Controllers\Api\Youtube\YoutubeCommentController;
 use App\Http\Controllers\Api\Youtube\YoutubePostController;
@@ -623,6 +626,34 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             });
         });
 
+        // TikTok publishing, on the TikTok inbox connections — the same shape
+        // as Instagram's: `/tiktok/posts/{post}` is one of our rows,
+        // `/tiktok/accounts/{connection}/videos/{video}` a live post. Live
+        // posts are read only; the Accounts API neither edits nor deletes them.
+        Route::prefix('tiktok')->group(function () {
+            Route::get('/accounts', [TikTokAccountController::class, 'index'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
+            Route::get('/accounts/{connection}', [TikTokAccountController::class, 'show'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
+
+            Route::get('/accounts/{connection}/posts', [TikTokPostController::class, 'index'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
+            Route::post('/accounts/{connection}/posts', [TikTokPostController::class, 'store'])->middleware('permission:tiktok-posts.create');
+            Route::post('/accounts/{connection}/uploads', [TikTokPostController::class, 'upload'])->middleware('permission:tiktok-posts.create');
+            Route::post('/accounts/{connection}/uploads/chunks', [TikTokPostController::class, 'uploadChunk'])->middleware(['permission:tiktok-posts.create', 'throttle:600,1']);
+
+            Route::get('/posts/{post}', [TikTokPostController::class, 'show'])->middleware('permission:tiktok-posts.view');
+            Route::put('/posts/{post}', [TikTokPostController::class, 'update'])->middleware('permission:tiktok-posts.create');
+            Route::delete('/posts/{post}', [TikTokPostController::class, 'destroy'])->middleware('permission:tiktok-posts.delete');
+            Route::post('/posts/{post}/publish', [TikTokPostController::class, 'publish'])->middleware('permission:tiktok-posts.publish');
+
+            Route::get('/accounts/{connection}/videos/{video}/comments', [TikTokCommentController::class, 'index'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
+            Route::middleware('permission:tiktok-comments.manage')->group(function () {
+                Route::get('/accounts/{connection}/videos/{video}/comments/{comment}/replies', [TikTokCommentController::class, 'replies']);
+                Route::post('/accounts/{connection}/videos/{video}/comments', [TikTokCommentController::class, 'store']);
+                Route::post('/accounts/{connection}/videos/{video}/comments/{comment}/replies', [TikTokCommentController::class, 'reply']);
+                Route::patch('/accounts/{connection}/videos/{video}/comments/{comment}', [TikTokCommentController::class, 'update']);
+                Route::delete('/accounts/{connection}/comments/{comment}', [TikTokCommentController::class, 'destroy']);
+            });
+        });
+
         // YouTube publishing. Same two id spaces as Instagram, kept apart the
         // same way: `/youtube/posts/{post}` is one of our rows (a draft or an
         // upload on its way), `/youtube/accounts/{account}/videos/{videoId}` is
@@ -1068,6 +1099,9 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::delete('/firebase', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'destroy']);
             Route::post('/firebase/test', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'test']);
             Route::get('/billing-gateways/{gateway}/test', [AdminPaymentServiceController::class, 'testDirect']);
+            // TikTok publishing: prove to TikTok the media address is ours.
+            Route::get('/tiktok/url-property', [\App\Http\Controllers\Api\Admin\AdminTikTokController::class, 'urlProperty']);
+            Route::post('/tiktok/url-property/verify', [\App\Http\Controllers\Api\Admin\AdminTikTokController::class, 'verifyUrlProperty']);
             // The Google OAuth client YouTube channels connect through.
             Route::get('/youtube/test', [\App\Http\Controllers\Api\Admin\AdminYoutubeController::class, 'test']);
 

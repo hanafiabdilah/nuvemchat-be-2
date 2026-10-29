@@ -25,6 +25,19 @@ class TikTokAuthClient
         'message.list.manage',
     ];
 
+    /**
+     * Posting and comment moderation (the Accounts API). Requested only when
+     * the Back Office says the app holds them (TikTokConfig::postsEnabled) and
+     * never required at callback: an account without them still runs its
+     * inbox, and the Posts page asks it to reconnect.
+     */
+    public const POST_SCOPES = [
+        'video.list',
+        'video.publish',
+        'comment.list',
+        'comment.list.manage',
+    ];
+
     public const API_BASE = TikTokConfig::BASE_URL . '/open_api/v1.3';
 
     public static function authorizeUrl(string $state): string
@@ -33,11 +46,19 @@ class TikTokAuthClient
             'response_type' => 'code',
             'client_key' => TikTokConfig::appId(),
             'redirect_uri' => TikTokConfig::redirectUri(),
-            'scope' => implode(',', self::REQUIRED_SCOPES),
+            'scope' => implode(',', self::requestedScopes()),
             'state' => $state,
         ]);
 
         return 'https://www.tiktok.com/v2/auth/authorize?' . $query;
+    }
+
+    /** @return list<string> */
+    public static function requestedScopes(): array
+    {
+        return TikTokConfig::postsEnabled()
+            ? array_values(array_unique([...self::REQUIRED_SCOPES, ...self::POST_SCOPES]))
+            : self::REQUIRED_SCOPES;
     }
 
     /**

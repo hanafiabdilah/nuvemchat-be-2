@@ -11,11 +11,11 @@ uses(RefreshDatabase::class);
 
 beforeEach(function () {
     Storage::fake('local');
-    File::deleteDirectory(storage_path('app/youtube-chunks'));
+    File::deleteDirectory(storage_path('app/upload-chunks'));
 });
 
 afterEach(function () {
-    File::deleteDirectory(storage_path('app/youtube-chunks'));
+    File::deleteDirectory(storage_path('app/upload-chunks'));
 });
 
 /**

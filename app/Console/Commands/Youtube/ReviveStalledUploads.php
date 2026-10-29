@@ -5,7 +5,7 @@ namespace App\Console\Commands\Youtube;
 use App\Enums\Youtube\PostStatus;
 use App\Jobs\PublishYoutubePost;
 use App\Models\YoutubePost;
-use App\Services\Youtube\YoutubeChunkedUpload;
+use App\Services\Media\ChunkedUpload;
 use App\Services\Youtube\YoutubeUploader;
 use Illuminate\Console\Command;
 
@@ -52,8 +52,8 @@ class ReviveStalledUploads extends Command
                 $this->info("Revived stalled YouTube upload #{$post->id}");
             });
 
-        // Videos the browser started sending and never finished.
-        if ($swept = YoutubeChunkedUpload::sweepStale()) {
+        // Files the browser started sending and never finished (YouTube and TikTok).
+        if ($swept = ChunkedUpload::sweepStale()) {
             $this->info("Removed {$swept} abandoned YouTube upload piece(s)");
         }
 
