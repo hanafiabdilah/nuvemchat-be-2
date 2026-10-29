@@ -4,8 +4,10 @@ namespace App\Http\Controllers\Webhook;
 
 use App\Enums\Connection\Channel;
 use App\Http\Controllers\Controller;
+use App\Jobs\RunCommentDmAutomation;
 use App\Models\Connection;
 use App\Services\Connection\Meta\InstagramConfig;
+use App\Services\Instagram\CommentDm\CommentDmAutomations;
 use App\Services\Webhook\ChatService;
 use App\Services\Webhook\MetaSignatureVerifier;
 use Illuminate\Http\Request;
@@ -75,7 +77,18 @@ class InstagramController extends Controller
                 continue;
             }
 
-            $this->chatService->handle($connection, $entry);
+            // Comments arrive as `changes`, messages as `messaging` — separate
+            // entries, never both.
+            foreach ($entry['changes'] ?? [] as $change) {
+                if (($change['field'] ?? null) === 'comments'
+                    && CommentDmAutomations::shouldConsider($connection, $change['value'] ?? [])) {
+                    RunCommentDmAutomation::dispatch($connection->id, $change['value']);
+                }
+            }
+
+            if (isset($entry['messaging'])) {
+                $this->chatService->handle($connection, $entry);
+            }
         }
 
         return response()->json([

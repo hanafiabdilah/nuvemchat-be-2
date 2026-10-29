@@ -1299,6 +1299,114 @@ class AiAgentHubTenantService
     }
 
     /**
+     * A draft reply to a public comment on Instagram, TikTok or YouTube — a
+     * run with no conversation behind it, whose answer only ever lands in a
+     * textarea someone reviews before posting.
+     *
+     * Same gates and bookkeeping as every other run (prepaid balance, an
+     * `ai_hub_runs` row, the wallet debit on a rented key). A fresh hub
+     * conversation each time, so one commenter's words never become the
+     * agent's memory of another's.
+     *
+     * The post's picture is the one optional part: whether the agent's model
+     * can look at images is decided hub-side, and a draft written without the
+     * picture is still a draft — so a refused image is retried once without it,
+     * the way a customer's screenshot is in runAgent().
+     *
+     * @param  array<int, array<string, mixed>>  $attachments
+     */
+    public function runCommentDraft(
+        AiHubAgent $agent,
+        string $userMessage,
+        string $platform,
+        string $commenter,
+        array $attachments = []
+    ): AiHubRun {
+        $tenant = $agent->aiHubTenant;
+
+        $this->assertCanSpendCredit($agent);
+
+        $externalId = 'comment-draft-'.bin2hex(random_bytes(8));
+        $metadata = array_filter([
+            'purpose' => 'comment_draft',
+            'platform' => $platform,
+            'imageAttachments' => count($attachments) ?: null,
+        ]);
+
+        $payload = [
+            'agentExternalId' => $agent->external_id,
+            'responseMode' => 'sync',
+            'conversation' => [
+                'externalId' => $externalId,
+                // No chat channel behind a comment. 'whatsapp' is the value
+                // every working run in this deployment already sends, and the
+                // hub rejects a whole run over one unrecognised field — see
+                // the same note in runAudioTest().
+                'channel' => 'whatsapp',
+                'contactExternalId' => $externalId,
+                'contactName' => $commenter,
+            ],
+            'message' => array_filter([
+                'role' => 'USER',
+                'content' => $userMessage,
+                'attachments' => $attachments ?: null,
+            ], fn ($value) => $value !== null),
+            'metadata' => $metadata,
+        ];
+
+        $context = [
+            'ai_hub_tenant_id' => $tenant?->id,
+            'hub_agent_id' => $agent->hub_agent_id,
+            'purpose' => 'comment_draft',
+            'platform' => $platform,
+        ];
+
+        $withoutPicture = function () use (&$payload, &$metadata): void {
+            unset($payload['message']['attachments'], $metadata['imageAttachments']);
+            $payload['metadata'] = $metadata;
+        };
+
+        try {
+            $data = $this->postRun($tenant, $payload, $context);
+        } catch (\Throwable $th) {
+            if ($attachments === []) {
+                throw $th;
+            }
+
+            Log::warning('AiAgentHubTenantService: comment draft with the post picture failed, retrying text-only', array_merge($context, [
+                'error' => $th->getMessage(),
+            ]));
+
+            $withoutPicture();
+            $data = $this->postRun($tenant, $payload, $context);
+        }
+
+        if (self::runFailed($data) && $attachments !== [] && isset($payload['message']['attachments'])) {
+            Log::warning('AiAgentHubTenantService: the hub failed a comment draft, retrying text-only', array_merge($context, [
+                'error' => self::runError($data),
+            ]));
+
+            $withoutPicture();
+            $data = $this->postRun($tenant, $payload, $context);
+        }
+
+        if (self::runFailed($data)) {
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                self::runError($data),
+                upstreamCode: 'run_failed',
+                context: $context,
+            );
+        }
+
+        $run = $this->persistRun($agent, null, $userMessage, $data, null, null, $metadata);
+
+        $this->chargeRentedRun($agent, $run);
+
+        return $run;
+    }
+
+    /**
      * Bill a completed run to the prepaid wallet, when it ran on a key the
      * platform rents out.
      *

@@ -39,6 +39,15 @@ class InstagramGraphClient
      */
     public const COMMENT_FIELDS = 'id,text,timestamp,username,from,like_count,hidden,replies{id,text,timestamp,username,from,like_count,hidden}';
 
+    /**
+     * The webhook fields an account is subscribed to. A subscription call
+     * replaces the whole list, so every caller sends all of it.
+     */
+    public const WEBHOOK_FIELDS = ['messages', 'message_reactions', 'comments'];
+
+    /** The inbox alone — the fallback when Meta refuses `comments`. */
+    public const INBOX_WEBHOOK_FIELDS = ['messages', 'message_reactions'];
+
     public function __construct(
         private readonly Connection $connection,
     ) {}
@@ -251,6 +260,35 @@ class InstagramGraphClient
     public function deleteComment(string $commentId): array
     {
         return $this->request('delete', $commentId, []);
+    }
+
+    /**
+     * The private message Instagram lets an account send to whoever wrote a
+     * comment — one per comment, within seven days of it. The person sees it
+     * as a direct message tied to their comment, and the thread only goes on
+     * once they answer.
+     *
+     * @return array{recipient_id?: string, message_id?: string}
+     */
+    public function sendPrivateReply(string $commentId, string $text): array
+    {
+        $response = Http::timeout(30)
+            ->withToken($this->token())
+            ->asJson()
+            ->post(self::BASE_URL . '/' . self::GRAPH_VERSION . '/me/messages', [
+                'recipient' => ['comment_id' => $commentId],
+                'message' => ['text' => $text],
+            ]);
+
+        return $this->unwrap($response);
+    }
+
+    /** Subscribe the account to the app's webhooks, comments included. */
+    public function subscribeWebhooks(): array
+    {
+        return $this->post($this->accountId() . '/subscribed_apps', [
+            'subscribed_fields' => implode(',', self::WEBHOOK_FIELDS),
+        ]);
     }
 
     /** The one property of a live post Meta lets us change. */

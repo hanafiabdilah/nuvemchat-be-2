@@ -24,6 +24,7 @@ class YoutubeAccount extends Model
     protected $fillable = [
         'tenant_id',
         'connected_by',
+        'ai_suggest_agent_id',
         'channel_id',
         'title',
         'handle',
@@ -51,6 +52,15 @@ class YoutubeAccount extends Model
     public function connector(): BelongsTo
     {
         return $this->belongsTo(User::class, 'connected_by');
+    }
+
+    /**
+     * The agent that drafts replies to this channel's comments — what
+     * `connections.ai_suggest_agent_id` is for an Instagram or TikTok account.
+     */
+    public function aiSuggestAgent(): BelongsTo
+    {
+        return $this->belongsTo(AiHubAgent::class, 'ai_suggest_agent_id');
     }
 
     public function posts(): HasMany

@@ -75,8 +75,10 @@ use App\Http\Controllers\Api\Gallery\GalleryStorageController;
 use App\Http\Controllers\Api\GroupController;
 use App\Http\Controllers\Api\ImpersonationController;
 use App\Http\Controllers\Api\Instagram\InstagramAccountController;
+use App\Http\Controllers\Api\Instagram\InstagramCommentAutomationController;
 use App\Http\Controllers\Api\Instagram\InstagramCommentController;
 use App\Http\Controllers\Api\Instagram\InstagramPostController;
+use App\Http\Controllers\Api\Social\CommentAiDraftController;
 use App\Http\Controllers\Api\Social\CommentMarkController;
 use App\Http\Controllers\Api\TikTok\TikTokAccountController;
 use App\Http\Controllers\Api\TikTok\TikTokCommentController;
@@ -641,6 +643,12 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
                 Route::patch('/accounts/{connection}/comments/{comment}', [InstagramCommentController::class, 'update']);
                 Route::delete('/accounts/{connection}/comments/{comment}', [InstagramCommentController::class, 'destroy']);
                 Route::patch('/accounts/{connection}/media/{media}/comments', [InstagramCommentController::class, 'setCommentsEnabled']);
+
+                // "Comentário → Direct": rules that answer a comment with a DM.
+                Route::get('/accounts/{connection}/comment-automations', [InstagramCommentAutomationController::class, 'index']);
+                Route::post('/accounts/{connection}/comment-automations', [InstagramCommentAutomationController::class, 'store']);
+                Route::put('/accounts/{connection}/comment-automations/{automation}', [InstagramCommentAutomationController::class, 'update']);
+                Route::delete('/accounts/{connection}/comment-automations/{automation}', [InstagramCommentAutomationController::class, 'destroy']);
             });
         });
 
@@ -653,6 +661,18 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             ->whereIn('platform', \App\Services\Social\CommentMarks::PLATFORMS);
         Route::post('/social/{platform}/accounts/{account}/comments/marks', [CommentMarkController::class, 'markRead'])
             ->whereIn('platform', \App\Services\Social\CommentMarks::PLATFORMS);
+
+        // "Responder com IA" on a comment: a draft for the reply box, never a
+        // post. Same checks inside as the marks above.
+        Route::middleware('feature:'.Feature::AiAgentHub->value)->group(function () {
+            Route::post('/social/{platform}/accounts/{account}/comments/{comment}/ai-draft', [CommentAiDraftController::class, 'draft'])
+                ->whereIn('platform', \App\Services\Social\CommentMarks::PLATFORMS)
+                ->middleware('throttle:20,1');
+            Route::get('/social/{platform}/accounts/{account}/ai-agent', [CommentAiDraftController::class, 'agent'])
+                ->whereIn('platform', \App\Services\Social\CommentMarks::PLATFORMS);
+            Route::put('/social/{platform}/accounts/{account}/ai-agent', [CommentAiDraftController::class, 'linkAgent'])
+                ->whereIn('platform', \App\Services\Social\CommentMarks::PLATFORMS);
+        });
 
         // TikTok publishing, on the TikTok inbox connections — the same shape
         // as Instagram's: `/tiktok/posts/{post}` is one of our rows,

@@ -7,6 +7,7 @@ use App\Enums\Connection\Status;
 use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
+use App\Services\Instagram\InstagramGraphClient;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Exception;
@@ -141,10 +142,21 @@ class InstagramChannel implements ChannelInterface
 
             // Subscribe to Instagram webhooks
             // POST /{instagram-account-id}/subscribed_apps
-            $response = Http::post("https://graph.instagram.com/v25.0/{$instagramAccountId}/subscribed_apps", [
-                'subscribed_fields' => 'messages,message_reactions',
-                'access_token' => $accessToken,
-            ]);
+            //
+            // `comments` feeds "Comentário → Direct". It is asked for first and
+            // dropped if Meta refuses it: a subscription call sets the whole
+            // field list, and losing the inbox over the newer extra would be
+            // the wrong trade.
+            foreach ([InstagramGraphClient::WEBHOOK_FIELDS, InstagramGraphClient::INBOX_WEBHOOK_FIELDS] as $fields) {
+                $response = Http::post("https://graph.instagram.com/v25.0/{$instagramAccountId}/subscribed_apps", [
+                    'subscribed_fields' => implode(',', $fields),
+                    'access_token' => $accessToken,
+                ]);
+
+                if ($response->successful()) {
+                    break;
+                }
+            }
 
             if ($response->successful()) {
                 Log::info('Successfully subscribed to Instagram webhooks', [

@@ -9,6 +9,7 @@ use App\Jobs\RunFlowTurn;
 use App\Models\Conversation;
 use App\Models\FlowState;
 use App\Services\Conversation\LastAgentRouter;
+use App\Services\Instagram\CommentDm\CommentDmAutomations;
 use App\Services\V1\SendMessage\SentMessageRecorder;
 
 /**
@@ -113,9 +114,12 @@ final class FlowRunner
             // answering them. Before those messages were recorded, the
             // customer's reply to one opened a thread of its own and got the
             // flow; filing the message in the thread must not take that away.
+            // The same for the private reply to an Instagram comment
+            // ("Comentário → Direct"): it invites the person in, it does not
+            // answer them.
             ->where(fn ($q) => $q
                 ->whereNull('meta->'.SentMessageRecorder::META_KEY)
-                ->orWhere('meta->'.SentMessageRecorder::META_KEY, '!=', SentMessageRecorder::VIA_API));
+                ->orWhereNotIn('meta->'.SentMessageRecorder::META_KEY, [SentMessageRecorder::VIA_API, CommentDmAutomations::VIA]));
 
         if (! (clone $replies)->exists()) {
             return true;
