@@ -5,8 +5,12 @@ use App\Enums\Gallery\AssetType;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Enums\Flow\NodeType;
+use App\Models\AiHubProviderCredential;
+use App\Models\CreditTransaction;
+use App\Models\CreditWallet;
 use App\Models\Flow;
 use App\Models\FlowAssistantMessage;
+use App\Models\FlowAssistantSetting;
 use App\Models\GalleryAsset;
 use App\Models\Plan;
 use App\Models\Setting;
@@ -15,6 +19,8 @@ use App\Models\Tag;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\AiAgentHub\AiAgentHubConfig;
+use App\Services\AiAgentHub\AiAgentHubService;
+use App\Services\AiTokens\AiTokenRentalService;
 use App\Services\Flow\FlowBlueprint;
 use App\Services\FlowAssistant\FlowAssistantConfig;
 use App\Services\FlowAssistant\FlowAssistantService;
@@ -22,13 +28,14 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Spatie\Permission\Models\Permission;
 use Spatie\Permission\Models\Role;
+use Symfony\Component\HttpKernel\Exception\HttpException;
+use Tests\Support\CreditFixtures;
 
 uses(RefreshDatabase::class);
 
 /**
- * A workspace whose plan includes the assistant, with the platform side
- * provisioned. Both halves are needed: the plan feature is what lets the
- * request through the middleware, the settings are what let the service run.
+ * A workspace whose plan includes the assistant. Still to do before it can
+ * ask anything: choose a key ({@see provisionAssistant()}).
  */
 function assistantUser(bool $withFeature = true): User
 {
@@ -66,17 +73,30 @@ function assistantUser(bool $withFeature = true): User
     return $user->fresh();
 }
 
-function provisionAssistant(): void
+function provisionAssistant(User $user, bool $rented = false): FlowAssistantSetting
 {
-    // The platform's key at the hub — the assistant rides the same tenant
-    // token as every other hub call this application makes.
+    // Runs go out under the platform's hub token whatever key the workspace
+    // chose — Pingly is one tenant of the hub.
     Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
 
-    Setting::set(FlowAssistantConfig::KEY_ENABLED, '1');
-    Setting::set(FlowAssistantConfig::KEY_API_KEY, 'sk-platform-key');
-    Setting::set(FlowAssistantConfig::KEY_AGENT_EXTERNAL_ID, FlowAssistantConfig::AGENT_EXTERNAL_ID);
-    Setting::set(FlowAssistantConfig::KEY_HUB_AGENT_ID, 'hub-agent-1');
-    Setting::set(FlowAssistantConfig::KEY_HUB_CREDENTIAL_ID, 'hub-cred-1');
+    $hubTenant = app(AiAgentHubService::class)->createTenant($user->tenant);
+
+    $credential = AiHubProviderCredential::create([
+        'ai_hub_tenant_id' => $hubTenant->id,
+        'hub_provider_credential_id' => 'hub-cred-' . uniqid(),
+        'provider' => 'OPENAI',
+        'name' => $rented ? 'Pingly — OPENAI (alugado)' : 'Minha chave',
+        'status' => 'ACTIVE',
+        'ai_token_pool_key_id' => $rented ? CreditFixtures::poolKey()->id : null,
+    ]);
+
+    return FlowAssistantSetting::create([
+        'tenant_id' => $user->tenant_id,
+        'ai_hub_provider_credential_id' => $credential->id,
+        'model' => 'gpt-4o',
+        'hub_agent_id' => 'hub-agent-1',
+        'agent_external_id' => config('app.name') . '_' . $hubTenant->id . '_flow_assistant',
+    ]);
 }
 
 /** One file in a workspace's media library. */
@@ -199,15 +219,15 @@ test('a sound flow reports nothing', function () {
 // ────────────────────────────── The service ─────────────────────────────
 
 test('a valid blueprint comes back with its positions intact', function () {
-    assistantUser();
-    provisionAssistant();
+    $user = assistantUser();
+    provisionAssistant($user);
 
     Http::fake([
         '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
         '*/runs' => hubRun(envelope(validBlueprint(), 'Criei um fluxo simples.')),
     ]);
 
-    $result = app(FlowAssistantService::class)->ask('Crie um atendimento simples', ['flow' => null]);
+    $result = app(FlowAssistantService::class)->ask($user->tenant, 'Crie um atendimento simples', ['flow' => null]);
 
     expect($result['flow']['nodes'])->toHaveCount(3)
         ->and($result['reply'])->toBe('Criei um fluxo simples.')
@@ -215,8 +235,8 @@ test('a valid blueprint comes back with its positions intact', function () {
 });
 
 test('an invalid blueprint is handed back to the model instead of to the builder', function () {
-    assistantUser();
-    provisionAssistant();
+    $user = assistantUser();
+    provisionAssistant($user);
 
     // First answer: a response node with no variable_key — the single most
     // common slip, and one the save endpoint refuses.
@@ -234,7 +254,7 @@ test('an invalid blueprint is handed back to the model instead of to the builder
             ->push(hubRunBody(envelope(validBlueprint(), 'Corrigido.'))),
     ]);
 
-    $result = app(FlowAssistantService::class)->ask('Pergunte o nome', ['flow' => null]);
+    $result = app(FlowAssistantService::class)->ask($user->tenant, 'Pergunte o nome', ['flow' => null]);
 
     expect($result['flow'])->not->toBeNull()
         ->and($result['warnings'])->toHaveCount(1);
@@ -246,8 +266,8 @@ test('an invalid blueprint is handed back to the model instead of to the builder
 });
 
 test('a blueprint that will not validate is never handed to the builder', function () {
-    assistantUser();
-    provisionAssistant();
+    $user = assistantUser();
+    provisionAssistant($user);
 
     $broken = validBlueprint();
     $broken['nodes'][1]['type'] = 'response';
@@ -259,7 +279,7 @@ test('a blueprint that will not validate is never handed to the builder', functi
         '*/runs' => hubRun(envelope($broken)),
     ]);
 
-    $result = app(FlowAssistantService::class)->ask('Pergunte o nome', ['flow' => null]);
+    $result = app(FlowAssistantService::class)->ask($user->tenant, 'Pergunte o nome', ['flow' => null]);
 
     // Prose, no flow. Putting a canvas full of nodes in front of someone and
     // then refusing to save it is worse than saying it did not work.
@@ -282,7 +302,7 @@ test('a blueprint that will not validate is never handed to the builder', functi
 
 test('a tag from another workspace is refused, not saved', function () {
     $user = assistantUser();
-    provisionAssistant();
+    provisionAssistant($user);
 
     $stranger = User::factory()->create();
     $otherTenant = Tenant::create(['user_id' => $stranger->id]);
@@ -305,36 +325,36 @@ test('a tag from another workspace is refused, not saved', function () {
     ]);
 
     $this->actingAs($user, 'sanctum');
-    $result = app(FlowAssistantService::class)->ask('Marque como VIP', ['flow' => null]);
+    $result = app(FlowAssistantService::class)->ask($user->tenant, 'Marque como VIP', ['flow' => null]);
 
     expect($result['flow'])->toBeNull();
 });
 
 test('prose with no flow is a legitimate turn, not a parse failure', function () {
-    assistantUser();
-    provisionAssistant();
+    $user = assistantUser();
+    provisionAssistant($user);
 
     Http::fake([
         '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
         '*/runs' => hubRun(envelope(null, 'Um nó de condição divide o fluxo em dois caminhos.')),
     ]);
 
-    $result = app(FlowAssistantService::class)->ask('O que faz um nó de condição?', ['flow' => null]);
+    $result = app(FlowAssistantService::class)->ask($user->tenant, 'O que faz um nó de condição?', ['flow' => null]);
 
     expect($result['flow'])->toBeNull()
         ->and($result['reply'])->toContain('condição');
 });
 
 test('a fenced envelope with a sentence in front of it is still read', function () {
-    assistantUser();
-    provisionAssistant();
+    $user = assistantUser();
+    provisionAssistant($user);
 
     Http::fake([
         '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
         '*/runs' => hubRun("Claro! Aqui está:\n```json\n" . envelope(validBlueprint()) . "\n```"),
     ]);
 
-    $result = app(FlowAssistantService::class)->ask('Crie um fluxo', ['flow' => null]);
+    $result = app(FlowAssistantService::class)->ask($user->tenant, 'Crie um fluxo', ['flow' => null]);
 
     expect($result['flow']['nodes'])->toHaveCount(3);
 });
@@ -342,8 +362,8 @@ test('a fenced envelope with a sentence in front of it is still read', function 
 // ────────────────────────── Talking to the hub ──────────────────────────
 
 test('a hub validation failure keeps its sentence instead of arriving as a JSON blob', function () {
-    assistantUser();
-    provisionAssistant();
+    $user = assistantUser();
+    provisionAssistant($user);
 
     // The shape a NestJS hub answers with. Handing the raw body to UpstreamError
     // matched nothing in its dictionary, so every failure of this feature came
@@ -358,7 +378,7 @@ test('a hub validation failure keeps its sentence instead of arriving as a JSON 
     ]);
 
     try {
-        app(FlowAssistantService::class)->ask('Crie um fluxo', ['flow' => null]);
+        app(FlowAssistantService::class)->ask($user->tenant, 'Crie um fluxo', ['flow' => null]);
         $this->fail('the hub failure should have surfaced');
     } catch (App\Exceptions\UpstreamServiceException $e) {
         // The customer still gets our copy…
@@ -369,15 +389,15 @@ test('a hub validation failure keeps its sentence instead of arriving as a JSON 
 });
 
 test('the run says whatsapp, the one channel value every working agent already sends', function () {
-    assistantUser();
-    provisionAssistant();
+    $user = assistantUser();
+    provisionAssistant($user);
 
     Http::fake([
         '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
         '*/runs' => hubRun(envelope(null, 'ok')),
     ]);
 
-    app(FlowAssistantService::class)->ask('Oi', ['flow' => null]);
+    app(FlowAssistantService::class)->ask($user->tenant, 'Oi', ['flow' => null]);
 
     Http::assertSent(function ($request) {
         if (! str_ends_with($request->url(), '/runs')) return false;
@@ -386,26 +406,26 @@ test('the run says whatsapp, the one channel value every working agent already s
     });
 });
 
-test('a credential the hub already holds is adopted rather than deadlocking on 409', function () {
-    // The hub uniques a credential on (tenant, provider, name). Once the local
-    // settings row holding its id is lost, every re-create answers 409 and
-    // provisioning can never finish again from any screen — the same dead end
-    // AiTokenRentalService::rent() had to grow an adoption path for.
-    Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
+test('an agent the hub already holds is adopted rather than deadlocking on 409', function () {
+    // `externalId` is unique at the hub. Once the local row holding the agent's
+    // id is lost, every re-create answers 409 and the workspace could never
+    // choose a key again from any screen.
+    $user = assistantUser();
+    $setting = provisionAssistant($user);
+    $setting->update(['hub_agent_id' => null]);
 
     Http::fake([
-        '*/provider-credentials/*' => Http::response(['id' => 'existing-cred']),
-        '*/provider-credentials' => Http::sequence()
-            ->push(['message' => 'name already in use'], 409)
-            ->push([['id' => 'existing-cred', 'name' => 'Pingly platform — flow assistant']]),
-        '*/agents/*' => Http::response(['id' => 'hub-agent-1', 'externalId' => 'platform_flow_assistant']),
-        '*/agents' => Http::response(['id' => 'hub-agent-1', 'externalId' => 'platform_flow_assistant']),
+        '*/agents/*' => Http::response(['id' => 'existing-agent']),
+        '*/agents' => function ($request) use ($setting) {
+            return $request->method() === 'POST'
+                ? Http::response(['message' => 'externalId already in use'], 409)
+                : Http::response([['id' => 'existing-agent', 'externalId' => $setting->agent_external_id]]);
+        },
     ]);
 
-    $result = app(FlowAssistantService::class)->provision('sk-platform-key', 'gpt-4o');
+    $configured = app(FlowAssistantService::class)->configure($user->tenant, $setting->providerCredential, 'gpt-4o');
 
-    expect($result['credential_id'])->toBe('existing-cred')
-        ->and(FlowAssistantConfig::hubCredentialId())->toBe('existing-cred');
+    expect($configured->hub_agent_id)->toBe('existing-agent');
 });
 
 // ───────────────────────────── The endpoints ────────────────────────────
@@ -414,7 +434,7 @@ test('the assistant is refused to a plan that does not include it', function () 
     config()->set('services.billing.enforce', true);
 
     $user = assistantUser(withFeature: false);
-    provisionAssistant();
+    provisionAssistant($user);
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
 
     $this->actingAs($user, 'sanctum')
@@ -427,7 +447,7 @@ test('the assistant answers a workspace whose plan includes it', function () {
     config()->set('services.billing.enforce', true);
 
     $user = assistantUser();
-    provisionAssistant();
+    provisionAssistant($user);
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
     $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
 
@@ -445,7 +465,7 @@ test('the assistant answers a workspace whose plan includes it', function () {
 
 test('the workspace real tags and agents reach the model, and nothing else does', function () {
     $user = assistantUser();
-    provisionAssistant();
+    provisionAssistant($user);
 
     $tag = Tag::create(['tenant_id' => $user->tenant_id, 'name' => 'Urgente', 'color' => '#f00']);
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
@@ -483,7 +503,7 @@ test('the thread is readable by another agent on the same flow', function () {
     // colleague opening the same flow saw an empty box with no idea what had
     // been asked or why the flow looks the way it does.
     $owner = assistantUser();
-    provisionAssistant();
+    provisionAssistant($owner);
 
     $flow = Flow::create(['tenant_id' => $owner->tenant_id, 'name' => 'Fluxo']);
     $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
@@ -531,7 +551,7 @@ test('another workspace cannot read the thread', function () {
 
 test('the model is told the earlier turns, without the blueprints', function () {
     $user = assistantUser();
-    provisionAssistant();
+    provisionAssistant($user);
 
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
     $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
@@ -571,7 +591,7 @@ test('the model is told the earlier turns, without the blueprints', function () 
 
 test('picked library files reach the model as URLs it is told to copy exactly', function () {
     $user = assistantUser();
-    provisionAssistant();
+    provisionAssistant($user);
 
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
     $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
@@ -606,7 +626,7 @@ test('a library file from another workspace is silently not offered to the model
     // built by hand — cannot put a stranger's file into a flow that will send
     // it to customers for months.
     $user = assistantUser();
-    provisionAssistant();
+    provisionAssistant($user);
 
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
     $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
@@ -650,7 +670,29 @@ test('the specification tells the model how to call an API with GET and POST', f
         ->toContain('"success" and "error"');
 });
 
-test('the assistant reports itself unavailable until the platform provisions it', function () {
+test('the assistant reports itself not set up until the workspace chooses a key', function () {
+    $user = assistantUser();
+    Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
+
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/flows/assistant/status')
+        ->assertOk()
+        ->assertJsonPath('data.available', true)
+        ->assertJsonPath('data.configured', false);
+
+    provisionAssistant($user);
+
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/flows/assistant/status')
+        ->assertOk()
+        ->assertJsonPath('data.configured', true)
+        ->assertJsonPath('data.mode', 'own')
+        ->assertJsonPath('data.model', 'gpt-4o');
+});
+
+test('the assistant is unavailable without the platform hub token', function () {
+    // Nothing a customer can do about that one, so the builder hides the
+    // button rather than asking for a key that would not help.
     $user = assistantUser();
 
     $this->actingAs($user, 'sanctum')
@@ -677,7 +719,7 @@ test('a long pasted prompt is accepted', function () {
     // limit was refusing the requests this feature is best at, after they had
     // already been written.
     $user = assistantUser();
-    provisionAssistant();
+    provisionAssistant($user);
 
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
     $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
@@ -706,7 +748,7 @@ test('a message past the ceiling is refused before the model is called', functio
     // whole message is replayed into the prompt, and a paste with no upper
     // bound is a prompt with no upper bound.
     $user = assistantUser();
-    provisionAssistant();
+    provisionAssistant($user);
 
     $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
     $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
@@ -725,4 +767,273 @@ test('a message past the ceiling is refused before the model is called', functio
     // And nothing landed in the shared transcript — a refused turn is not part
     // of the reasoning a colleague reads later.
     expect(FlowAssistantMessage::where('flow_id', $flow->id)->count())->toBe(0);
+});
+
+// ──────────────────────── Whose key the turn runs on ─────────────────────
+
+/** A flow with only its start node, for the endpoint tests. */
+function assistantFlow(User $user): Flow
+{
+    $flow = Flow::create(['tenant_id' => $user->tenant_id, 'name' => 'Fluxo']);
+    $flow->nodes()->create(['type' => NodeType::Start, 'data' => null, 'position_x' => 0, 'position_y' => 0]);
+
+    return $flow;
+}
+
+test('a turn without a key is refused with the setup code, before the hub and the transcript', function () {
+    // The code is what the panel switches into its key setup on — and it has
+    // to arrive as a status, before the stream starts, or there is none left.
+    $user = assistantUser();
+    Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
+    $flow = assistantFlow($user);
+
+    Http::fake(['*' => Http::response([])]);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant", ['message' => 'Crie um fluxo'])
+        ->assertStatus(409)
+        ->assertJsonPath('code', FlowAssistantService::SETUP_REQUIRED);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant/stream", ['message' => 'Crie um fluxo'])
+        ->assertStatus(409)
+        ->assertJsonPath('code', FlowAssistantService::SETUP_REQUIRED);
+
+    Http::assertNothingSent();
+    expect(FlowAssistantMessage::where('flow_id', $flow->id)->count())->toBe(0);
+});
+
+test('a key that is deleted puts the assistant back to asking for one', function () {
+    $user = assistantUser();
+    $setting = provisionAssistant($user);
+
+    $setting->providerCredential->delete();
+
+    $this->actingAs($user, 'sanctum')
+        ->getJson('/api/flows/assistant/status')
+        ->assertJsonPath('data.configured', false);
+});
+
+test('choosing one of the workspace keys builds the workspace its own agent on it', function () {
+    $user = assistantUser();
+    $existing = provisionAssistant($user);
+    $credential = $existing->providerCredential;
+    $existing->delete();
+
+    Http::fake([
+        '*/agents' => Http::response(['id' => 'agent-new', 'externalId' => 'Pingly_scoped_flow_assistant'], 201),
+    ]);
+
+    $this->actingAs($user, 'sanctum')
+        ->putJson('/api/flows/assistant/settings', [
+            'mode' => 'own',
+            'provider_credential_id' => $credential->id,
+            'model' => 'gpt-4o-mini',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.configured', true)
+        ->assertJsonPath('data.mode', 'own')
+        ->assertJsonPath('data.model', 'gpt-4o-mini');
+
+    // The hub's id for the credential — never the local one, never a key —
+    // and an external id scoped to this workspace, so no other workspace's
+    // assistant can collide with it.
+    Http::assertSent(fn ($request) => $request->method() === 'POST'
+        && str_ends_with($request->url(), '/agents')
+        && $request['providerCredentialId'] === $credential->hub_provider_credential_id
+        && $request['model'] === 'gpt-4o-mini'
+        && str_contains($request['externalId'], '_' . $credential->ai_hub_tenant_id . '_flow_assistant'));
+
+    // What runs is the external id the hub answered with.
+    expect(FlowAssistantSetting::where('tenant_id', $user->tenant_id)->value('agent_external_id'))
+        ->toBe('Pingly_scoped_flow_assistant');
+});
+
+test('a key pasted in the setup is registered and the assistant runs on it', function () {
+    $user = assistantUser();
+    Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
+
+    Http::fake([
+        '*/provider-credentials' => Http::response(['id' => 'hub-pasted', 'provider' => 'OPENAI', 'name' => 'Chave do assistente', 'keyPreview' => 'sk-...0123', 'status' => 'ACTIVE'], 201),
+        '*/agents' => Http::response(['id' => 'agent-new'], 201),
+    ]);
+
+    $this->actingAs($user, 'sanctum')
+        ->putJson('/api/flows/assistant/settings', [
+            'mode' => 'own',
+            'provider' => 'openai',
+            'api_key' => 'sk-test-0123',
+            'name' => 'Chave do assistente',
+            'model' => 'gpt-4o',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.credential.name', 'Chave do assistente')
+        ->assertJsonPath('data.credential.is_rented', false);
+
+    Http::assertSent(fn ($request) => str_ends_with($request->url(), '/provider-credentials')
+        && $request['apiKey'] === 'sk-test-0123'
+        && $request['provider'] === 'OPENAI');
+
+    $credential = AiHubProviderCredential::where('hub_provider_credential_id', 'hub-pasted')->firstOrFail();
+
+    expect($credential->isRented())->toBeFalse()
+        ->and(FlowAssistantSetting::where('tenant_id', $user->tenant_id)->value('ai_hub_provider_credential_id'))->toBe($credential->id);
+});
+
+test('another workspace key cannot be chosen', function () {
+    $user = assistantUser();
+    Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
+
+    $stranger = assistantUser();
+    $foreign = provisionAssistant($stranger)->providerCredential;
+
+    Http::fake(['*' => Http::response([])]);
+
+    $this->actingAs($user, 'sanctum')
+        ->putJson('/api/flows/assistant/settings', [
+            'mode' => 'own', 'provider_credential_id' => $foreign->id, 'model' => 'gpt-4o',
+        ])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('provider_credential_id');
+
+    Http::assertNothingSent();
+});
+
+test('the setup lists the workspace own agent keys, and nothing else', function () {
+    $user = assistantUser();
+    $setting = provisionAssistant($user);
+    $hubTenantId = $setting->providerCredential->ai_hub_tenant_id;
+
+    AiHubProviderCredential::create([
+        'ai_hub_tenant_id' => $hubTenantId, 'hub_provider_credential_id' => 'hub-voice',
+        'provider' => 'ELEVENLABS', 'name' => 'Voz', 'status' => 'ACTIVE',
+    ]);
+    AiHubProviderCredential::create([
+        'ai_hub_tenant_id' => $hubTenantId, 'hub_provider_credential_id' => 'hub-rented',
+        'provider' => 'OPENAI', 'name' => 'Alugado', 'status' => 'ACTIVE',
+        'ai_token_pool_key_id' => CreditFixtures::poolKey()->id,
+    ]);
+    provisionAssistant(assistantUser());
+
+    $names = collect($this->actingAs($user, 'sanctum')
+        ->getJson('/api/flows/assistant/settings')
+        ->assertOk()
+        ->assertJsonPath('data.configured', true)
+        ->assertJsonPath('data.default_model', FlowAssistantConfig::DEFAULT_MODEL)
+        ->json('data.credentials'))->pluck('name')->all();
+
+    // Rented keys are the other mode; ElevenLabs cannot be an agent's brain.
+    expect($names)->toBe(['Minha chave']);
+});
+
+test('renting from the setup rents a platform key and puts the assistant on it', function () {
+    $user = assistantUser();
+    Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
+    CreditFixtures::poolKey();
+
+    $minted = null;
+    Http::fake(function ($request) use (&$minted) {
+        if (str_ends_with($request->url(), '/provider-credentials') && $request->method() === 'POST') {
+            $minted = 'hub-rented-' . uniqid();
+
+            return Http::response(['id' => $minted, 'provider' => 'OPENAI', 'name' => 'rented', 'status' => 'ACTIVE'], 201);
+        }
+
+        if (str_ends_with($request->url(), '/provider-credentials')) {
+            return Http::response($minted ? [['id' => $minted, 'provider' => 'OPENAI', 'status' => 'ACTIVE']] : []);
+        }
+
+        return Http::response(['id' => 'agent-rented'], 201);
+    });
+
+    $this->actingAs($user, 'sanctum')
+        ->putJson('/api/flows/assistant/settings', ['mode' => 'rented', 'provider' => 'OPENAI', 'model' => 'gpt-4o'])
+        ->assertOk()
+        ->assertJsonPath('data.mode', 'rented')
+        ->assertJsonPath('data.credential.is_rented', true);
+
+    Http::assertSent(fn ($request) => str_ends_with($request->url(), '/agents')
+        && $request['providerCredentialId'] === $minted);
+});
+
+test('each run on a rented key is charged to the balance, and a run on an own key is not', function () {
+    $user = assistantUser();
+    provisionAssistant($user, rented: true);
+    app(App\Services\Credits\CreditService::class)->adjust($user->tenant, 5000, 'test');
+
+    Http::fake([
+        '*/agents/*' => Http::response(['id' => 'hub-agent-1']),
+        '*/runs' => Http::response([
+            'id' => 'run-paid', 'status' => 'COMPLETED', 'provider' => 'OPENAI', 'model' => 'gpt-4o',
+            'providerCostUsd' => 0.02, 'output' => ['message' => envelope(null, 'ok')],
+        ]),
+    ]);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson('/api/flows/' . assistantFlow($user)->id . '/assistant', ['message' => 'Oi'])
+        ->assertOk();
+
+    $charge = CreditTransaction::where('reference', 'flow-assistant:run-paid')->firstOrFail();
+
+    expect($charge->amount_cents)->toBeLessThan(0)
+        ->and(CreditWallet::where('tenant_id', $user->tenant_id)->value('balance_cents'))->toBeLessThan(5000);
+
+    // Same turn on a workspace's own key: it pays its provider, not us.
+    $own = assistantUser();
+    provisionAssistant($own);
+
+    $this->actingAs($own, 'sanctum')
+        ->postJson('/api/flows/' . assistantFlow($own)->id . '/assistant', ['message' => 'Oi'])
+        ->assertOk();
+
+    expect(CreditTransaction::where('tenant_id', $own->tenant_id)->count())->toBe(0);
+});
+
+test('a rented key with an empty balance is refused before the hub is called', function () {
+    config()->set('services.billing.enforce', true);
+
+    $user = assistantUser();
+    provisionAssistant($user, rented: true);
+    $flow = assistantFlow($user);
+
+    Http::fake(['*' => Http::response([])]);
+
+    $this->actingAs($user, 'sanctum')
+        ->postJson("/api/flows/{$flow->id}/assistant/stream", ['message' => 'Oi'])
+        ->assertStatus(402)
+        ->assertJsonPath('code', 'credit_exhausted');
+
+    Http::assertNothingSent();
+});
+
+test('a hub that lost the workspace agent gets it back, and the turn still runs', function () {
+    $user = assistantUser();
+    provisionAssistant($user);
+
+    Http::fake([
+        '*/agents/*' => Http::response(['message' => 'Agent not found'], 404),
+        '*/agents' => Http::response(['id' => 'agent-rebuilt'], 201),
+        '*/runs' => Http::sequence()
+            ->push(['message' => 'Agent not found'], 404)
+            ->push(hubRunBody(envelope(null, 'De volta.'))),
+    ]);
+
+    $result = app(FlowAssistantService::class)->ask($user->tenant, 'Oi', ['flow' => null]);
+
+    expect($result['reply'])->toBe('De volta.')
+        ->and(FlowAssistantSetting::where('tenant_id', $user->tenant_id)->value('hub_agent_id'))->toBe('agent-rebuilt');
+});
+
+test('a rented key the assistant runs on cannot be given back', function () {
+    // Releasing it would leave the assistant's agent pointing at a credential
+    // the hub no longer has, and the failure would surface far from the button.
+    $user = assistantUser();
+    $credential = provisionAssistant($user, rented: true)->providerCredential;
+
+    Http::fake(['*' => Http::response([])]);
+
+    expect(fn () => app(AiTokenRentalService::class)->release($credential))
+        ->toThrow(HttpException::class);
+
+    expect($credential->fresh())->not->toBeNull();
 });

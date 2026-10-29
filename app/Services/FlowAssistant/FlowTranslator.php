@@ -73,7 +73,10 @@ class FlowTranslator
         $kept = 0;
 
         foreach ($this->batches($texts) as $batch) {
+            // On the workspace's own assistant key — the flow's owner pays for
+            // its translation, the same as for building it.
             $answers = $this->assistant->translate(
+                $source->tenant,
                 array_map(fn (int $i) => ['id' => "t{$i}", 'text' => $texts[$i]['text'], 'max' => $texts[$i]['max']], $batch),
                 $languageName,
             );

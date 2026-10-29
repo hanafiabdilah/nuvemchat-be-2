@@ -2,15 +2,22 @@
 
 namespace App\Services\FlowAssistant;
 
-use App\Models\Setting;
+use App\Exceptions\Billing\CreditExhaustedException;
+use App\Exceptions\UserFacingException;
+use App\Models\AiHubProviderCredential;
+use App\Models\FlowAssistantSetting;
+use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\Credits\CreditService;
 use App\Services\Flow\FlowBlueprint;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -29,16 +36,24 @@ use Illuminate\Validation\ValidationException;
  * worse than no assistant: the customer cannot tell whether they asked for
  * something impossible or the product is broken, and the canvas is now dirty.
  *
+ * ── Whose key it runs on ──
+ *
+ * The workspace's. It used to be one OpenAI key the platform pasted into the
+ * Back Office, paying for every turn of every workspace; now each workspace
+ * picks its own provider key or rents one from the platform, exactly as it
+ * does for an AI agent, and a rented key is billed to the prepaid balance run
+ * by run. Each workspace therefore gets its own agent at the hub — the agent is
+ * what carries the credential and the model — recorded in
+ * {@see FlowAssistantSetting} rather than in `ai_hub_agents`, so it never shows
+ * up on the AI Agents page where its prompt could be edited away.
+ *
  * ── Why this does not go through AiAgentHubTenantService::runAgent ──
  *
  * That method exists to answer a customer, and everything it does around the
- * HTTP call says so: it needs a real Conversation, it can spend the
- * workspace's prepaid balance, and
- * it writes an `ai_hub_runs` row keyed to a local agent. None of that is true
- * here. The assistant is a platform tool running on the platform's own OpenAI
- * key: no conversation, nothing to bill. Reusing that
- * method would mean weakening every one of those guarantees for the one caller
- * that must not have them.
+ * HTTP call says so: it needs a real Conversation and writes an `ai_hub_runs`
+ * row keyed to a local agent. Neither is true here. What the two share is the
+ * one thing that matters — a rented key is gated on the balance before the run
+ * and charged after it, through the same wallet.
  *
  * ── Turns are stateless, on purpose ──
  *
@@ -60,6 +75,9 @@ class FlowAssistantService
      */
     private const MAX_NODES = 60;
 
+    /** The code the builder switches into its key setup on. */
+    public const SETUP_REQUIRED = 'flow_assistant_setup_required';
+
     private string $baseUrl;
 
     public function __construct()
@@ -67,235 +85,248 @@ class FlowAssistantService
         $this->baseUrl = AiAgentHubConfig::baseUrl();
     }
 
-    // ─────────────────────────── Provisioning ───────────────────────────
+    // ────────────────────────────── Setup ───────────────────────────────
 
     /**
-     * Register (or refresh) the platform's OpenAI credential and assistant
-     * agent at the hub. Called from the Back Office when an operator saves the
-     * key or the model.
+     * Whether the assistant can run at all on this deployment.
      *
-     * Idempotent by design: it PATCHes what already exists and only creates
-     * what does not, so pressing Save twice does not leave two agents behind —
-     * and re-pasting a rotated key is the same action as setting it the first
-     * time.
-     *
-     * @param  string|null  $apiKey  null keeps the stored key (the operator is
-     *                               only changing the model)
-     * @return array{credential_id: string, agent_external_id: string, model: string}
+     * Only the platform's hub token is ours to provide now; the key is the
+     * workspace's. Without the token there is nothing a customer can do about
+     * it, so the builder hides the button rather than asking for a key that
+     * would not help.
      */
-    public function provision(?string $apiKey = null, ?string $model = null): array
+    public static function available(): bool
     {
-        $apiKey = $apiKey ?: FlowAssistantConfig::apiKey();
-        $model = $model ?: FlowAssistantConfig::model();
+        return AiAgentHubConfig::tenantToken() !== null;
+    }
 
-        if (! $apiKey) {
-            throw ValidationException::withMessages([
-                'flow_assistant.openai_api_key' => ['An OpenAI API key is required before the flow assistant can be provisioned.'],
-            ]);
-        }
-
-        $credentialId = $this->ensureCredential($apiKey, $model);
-        $externalId = $this->ensureAgent($credentialId, $model);
-
-        Setting::set(FlowAssistantConfig::KEY_API_KEY, $apiKey);
-        Setting::set(FlowAssistantConfig::KEY_MODEL, $model);
-        Setting::set(FlowAssistantConfig::KEY_HUB_CREDENTIAL_ID, $credentialId);
-        Setting::set(FlowAssistantConfig::KEY_AGENT_EXTERNAL_ID, $externalId);
-        Setting::set(FlowAssistantConfig::KEY_PROMPT_HASH, $this->promptHash());
-
-        return [
-            'credential_id' => $credentialId,
-            'agent_external_id' => $externalId,
-            'model' => $model,
-        ];
+    public function settingFor(Tenant $tenant): ?FlowAssistantSetting
+    {
+        return FlowAssistantSetting::with('providerCredential')
+            ->where('tenant_id', $tenant->id)
+            ->first();
     }
 
     /**
-     * The hub credential holding the platform's OpenAI key, created or updated.
+     * Put the workspace's assistant on a key and a model.
      *
-     * ⚠️ `providerCredentialId` at the hub is an id, never the key itself —
-     * the lesson `AiTranscription::credentialId()` was written after. What we
-     * store below is the id the hub hands back.
+     * Creates the workspace's agent at the hub the first time and updates it
+     * after that, so choosing again is the same action as choosing first. The
+     * agent is written before the row is saved: a choice the hub refused is not
+     * a choice the builder may report as made.
      */
-    private function ensureCredential(string $apiKey, string $model): string
+    public function configure(Tenant $tenant, AiHubProviderCredential $credential, string $model): FlowAssistantSetting
     {
-        $existing = FlowAssistantConfig::hubCredentialId();
+        return Cache::lock("flow-assistant:configure:{$tenant->id}", 30)->block(10, function () use ($tenant, $credential, $model) {
+            $setting = FlowAssistantSetting::firstOrNew(['tenant_id' => $tenant->id]);
+            $setting->ai_hub_provider_credential_id = $credential->id;
+            $setting->model = $model;
+            $setting->setRelation('providerCredential', $credential);
 
-        $payload = [
-            'name' => 'Pingly platform — flow assistant',
-            'apiKey' => $apiKey,
-            'defaultModel' => $model,
-        ];
+            $this->pushAgent($setting);
+            $setting->save();
 
-        if ($existing) {
-            $response = Http::withHeaders($this->headers())
-                ->patch("{$this->baseUrl}/provider-credentials/{$existing}", $payload);
+            return $setting->fresh('providerCredential');
+        });
+    }
 
-            // A hub that no longer knows this credential (rebuilt, or the row
-            // deleted on their side) is not a failure to report — it is a
-            // credential to create. Falling through is what keeps an operator
-            // from having to know that.
-            if ($response->successful()) {
-                return $existing;
+    /**
+     * Move every assistant on one credential onto another — a rented key that
+     * was rotated or re-minted.
+     *
+     * Local only, on purpose: it runs inside a rotation that may be moving
+     * dozens of workspaces, and the agent's fingerprint changes with the
+     * credential, so each assistant re-points itself at the hub on its next
+     * turn ({@see syncAgent()}). Nothing runs on the old credential in between,
+     * because nothing runs without a turn.
+     */
+    public static function repoint(AiHubProviderCredential $old, AiHubProviderCredential $new): void
+    {
+        FlowAssistantSetting::where('ai_hub_provider_credential_id', $old->id)
+            ->update(['ai_hub_provider_credential_id' => $new->id]);
+    }
+
+    /**
+     * The workspace's setting, refusing the turn when there is nothing to run
+     * it on — or nothing to pay for it with.
+     *
+     * Public so the builder's endpoints can call it before anything is
+     * written or streamed: inside an SSE response the status code is already
+     * sent, and "set up a key first" has to arrive as a 409 the panel can
+     * switch on, not as a sentence in an error event.
+     *
+     * @throws UserFacingException when no key is set up
+     * @throws CreditExhaustedException when a rented key has an empty wallet behind it
+     */
+    public function assertReady(Tenant $tenant): FlowAssistantSetting
+    {
+        $setting = $this->configuredSetting($tenant);
+
+        // Only rented keys are gated, and only behind the same master switch as
+        // every other AI run: a workspace on its own key pays its provider, not
+        // us, and stopping it here would be inventing a limit nobody sold.
+        if ($setting->isRented() && config('services.billing.enforce')) {
+            $credits = app(CreditService::class);
+
+            if (! $credits->canSpend($tenant)) {
+                throw new CreditExhaustedException($credits->balanceCents($tenant), $credits->currencyFor($tenant));
             }
-
-            Log::warning('FlowAssistantService: stored hub credential did not update, re-creating', [
-                'hub_credential_id' => $existing,
-                'status' => $response->status(),
-            ]);
         }
 
-        $response = Http::withHeaders($this->headers())
-            ->post("{$this->baseUrl}/provider-credentials", $payload + [
-                'provider' => 'OPENAI',
-                'metadata' => ['ownerType' => 'platform', 'usage' => ['flow_assistant']],
-            ]);
+        return $setting;
+    }
 
-        // ⚠️ The hub uniques a credential on (tenant, provider, name), so once
-        // one exists under this name every re-create answers 409 — and if the
-        // settings row holding its id was ever lost, provisioning would be
-        // permanently stuck with no way out from any screen. This is the same
-        // dead end AiTokenRentalService::rent() had to grow an adoption path
-        // for; the cure is the same: find the one we already own and take it
-        // back, then PATCH the key onto it.
-        if ($response->status() === 409) {
-            $adopted = $this->findCredentialByName($payload['name']);
+    private function configuredSetting(Tenant $tenant): FlowAssistantSetting
+    {
+        $setting = $this->settingFor($tenant);
 
-            if ($adopted !== null) {
-                Log::info('FlowAssistantService: adopted the existing hub credential', [
-                    'hub_credential_id' => $adopted,
-                ]);
-
-                Http::withHeaders($this->headers())
-                    ->patch("{$this->baseUrl}/provider-credentials/{$adopted}", $payload);
-
-                return $adopted;
-            }
-        }
-
-        $this->ensureSuccessful($response, 'create the flow assistant credential');
-
-        $id = $response->json('id');
-
-        if (! $id) {
-            throw UpstreamError::exception(
-                UpstreamProvider::AiHub,
-                'The hub did not return an id for the flow assistant credential.',
-                upstreamCode: 'credential_id_missing',
+        if ($setting === null || ! $setting->isConfigured() || $setting->providerCredential === null) {
+            throw new UserFacingException(
+                'Choose which AI key the assistant should use before asking it anything.',
+                409,
+                self::SETUP_REQUIRED,
             );
         }
 
-        return (string) $id;
+        return $setting;
     }
 
     /**
-     * The platform assistant agent at the hub, created or updated.
+     * Bring the hub agent up to date when anything it carries has moved on.
      *
-     * The agent carries the system prompt — which is built from FlowBlueprint
-     * and therefore changes whenever the flow format does. See
-     * {@see syncPromptIfStale()} for how a deploy repairs that without anyone
-     * revisiting the Back Office.
+     * The prompt is built from FlowBlueprint, so it changes whenever the flow
+     * format does — and a deploy that adds a node type must not leave the
+     * assistant explaining the old format. The credential changes when a rented
+     * key is rotated. Hashing all three makes every one of those repairs the
+     * same string comparison, paid for with one PATCH, once.
      */
-    private function ensureAgent(string $credentialId, string $model): string
+    private function syncAgent(FlowAssistantSetting $setting): void
     {
-        $externalId = FlowAssistantConfig::AGENT_EXTERNAL_ID;
+        if ($setting->agent_hash === $this->fingerprint($setting)) {
+            return;
+        }
+
+        try {
+            $this->pushAgent($setting);
+            $setting->save();
+
+            Log::info('FlowAssistantService: refreshed the workspace assistant agent', [
+                'tenant_id' => $setting->tenant_id,
+                'hub_agent_id' => $setting->hub_agent_id,
+            ]);
+        } catch (\Throwable $e) {
+            // The old agent still mostly works, and the person is waiting on an
+            // answer — this is not the moment to fail their turn over
+            // housekeeping. It retries on the next one.
+            Log::warning('FlowAssistantService: could not refresh the workspace assistant agent', [
+                'tenant_id' => $setting->tenant_id,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Create or update the workspace's assistant agent at the hub, and record
+     * what was pushed on the (unsaved) setting.
+     *
+     * Only a 404 falls through to creating a new one: anything else the hub
+     * refuses — a disabled credential, a model it does not carry — is the
+     * answer to the choice just made, and has to reach the person making it.
+     */
+    private function pushAgent(FlowAssistantSetting $setting): void
+    {
+        $credential = $setting->providerCredential;
+        $externalId = $this->agentExternalId($credential);
 
         $payload = [
             'externalId' => $externalId,
             'name' => 'Flow assistant',
-            'description' => 'Builds and edits Nuvemchat flows from a description. Platform-owned.',
-            'providerCredentialId' => $credentialId,
-            'model' => $model,
+            'description' => 'Builds and edits flows from a description. Managed by the platform.',
+            // ⚠️ The hub's id, never the local one and never the key itself.
+            'providerCredentialId' => $credential->hub_provider_credential_id,
+            'model' => $setting->model,
             'systemPrompt' => $this->systemPrompt(),
             // Low but not zero. The output is a strict envelope, so there is
             // nothing to gain from sampling — but the prose half is written to
             // a person, and at 0 it reads like a form letter.
             'temperature' => 0.2,
             'maxTokens' => 8000,
-            'metadata' => ['ownerType' => 'platform', 'usage' => ['flow_assistant']],
+            'metadata' => ['ownerType' => 'platform', 'usage' => ['flow_assistant'], 'workspace' => $setting->tenant_id],
         ];
 
-        $hubAgentId = FlowAssistantConfig::hubAgentId();
-
-        if ($hubAgentId) {
+        if ($setting->hub_agent_id) {
             $response = Http::withHeaders($this->headers())
-                ->patch("{$this->baseUrl}/agents/{$hubAgentId}", $payload);
+                ->patch("{$this->baseUrl}/agents/{$setting->hub_agent_id}", $payload);
 
-            if ($response->successful()) {
-                // The hub's value again, for the reason on the create path
-                // below — re-provisioning must not overwrite a normalised
-                // external id with the raw constant we sent.
-                return (string) ($response->json('externalId') ?: $externalId);
+            if ($response->status() !== 404) {
+                $this->ensureSuccessful($response, 'update the flow assistant agent');
+
+                $this->recordAgent($setting, (string) $setting->hub_agent_id, $response->json('externalId') ?: $externalId);
+
+                return;
             }
 
-            Log::warning('FlowAssistantService: stored hub agent did not update, re-creating', [
-                'hub_agent_id' => $hubAgentId,
-                'status' => $response->status(),
+            Log::warning('FlowAssistantService: the hub lost this workspace assistant agent, re-creating it', [
+                'tenant_id' => $setting->tenant_id,
+                'hub_agent_id' => $setting->hub_agent_id,
             ]);
         }
 
         $response = Http::withHeaders($this->headers())
             ->post("{$this->baseUrl}/agents", $payload);
 
-        // Same dead end as the credential above: `externalId` is unique at the
-        // hub, so an agent that exists without us holding its id can never be
-        // created again and never be updated.
+        // `externalId` is unique at the hub, so an agent that exists without us
+        // holding its id could never be created again nor updated — the same
+        // dead end AiTokenRentalService::rent() had to grow an adoption path
+        // for. Find the one that is ours and take it back.
         if ($response->status() === 409) {
             $adopted = $this->findAgentByExternalId($externalId);
 
             if ($adopted !== null) {
-                Log::info('FlowAssistantService: adopted the existing hub agent', $adopted);
+                Log::info('FlowAssistantService: adopted the existing workspace assistant agent', $adopted);
 
-                Setting::set(FlowAssistantConfig::KEY_HUB_AGENT_ID, $adopted['id']);
-
-                Http::withHeaders($this->headers())
+                $patched = Http::withHeaders($this->headers())
                     ->patch("{$this->baseUrl}/agents/{$adopted['id']}", $payload);
 
-                return $adopted['externalId'];
+                $this->ensureSuccessful($patched, 'update the flow assistant agent');
+                $this->recordAgent($setting, $adopted['id'], $adopted['externalId']);
+
+                return;
             }
         }
 
         $this->ensureSuccessful($response, 'create the flow assistant agent');
 
-        Setting::set(FlowAssistantConfig::KEY_HUB_AGENT_ID, (string) $response->json('id'));
+        // ⚠️ The hub's own external id, not ours: it is what `POST /runs`
+        // matches on, and if the hub normalises what it was given, the string
+        // we sent is not the string that will resolve.
+        $this->recordAgent($setting, (string) $response->json('id'), $response->json('externalId') ?: $externalId);
+    }
 
-        // ⚠️ The hub's own value, not ours: it is what `POST /runs` matches on,
-        // and if the hub normalises or prefixes what it was given, the string we
-        // sent is not the string that will resolve.
-        return (string) ($response->json('externalId') ?: $externalId);
+    private function recordAgent(FlowAssistantSetting $setting, string $hubAgentId, string $externalId): void
+    {
+        $setting->hub_agent_id = $hubAgentId;
+        $setting->agent_external_id = $externalId;
+        $setting->agent_hash = $this->fingerprint($setting);
     }
 
     /**
-     * The hub id of the credential we already own under this name, if the hub
-     * has one. Null when it does not — in which case the 409 was about
-     * something else and should surface normally.
-     *
-     * A list rather than a GET by id, for the reason `ensureCredentialOnHub()`
-     * gives: we are looking for a thing whose id we do not have, and a 404 from
-     * a by-id route cannot be told apart from that route not existing.
+     * Scoped like every other agent we create — `{app}_{scope}_{id}` — because
+     * every workspace's agents live in the platform's one hub scope, and two
+     * workspaces must never reach for the same id.
      */
-    private function findCredentialByName(string $name): ?string
+    private function agentExternalId(AiHubProviderCredential $credential): string
     {
-        try {
-            $response = Http::withHeaders($this->headers())
-                ->get("{$this->baseUrl}/provider-credentials");
+        return config('app.name').'_'.$credential->ai_hub_tenant_id.'_'.FlowAssistantConfig::AGENT_EXTERNAL_ID;
+    }
 
-            if (! $response->successful()) {
-                return null;
-            }
-
-            foreach ($this->rows($response->json()) as $row) {
-                if (($row['name'] ?? null) === $name && ! empty($row['id'])) {
-                    return (string) $row['id'];
-                }
-            }
-        } catch (\Throwable $e) {
-            Log::warning('FlowAssistantService: could not list hub credentials to adopt one', [
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        return null;
+    private function fingerprint(FlowAssistantSetting $setting): string
+    {
+        return substr(hash('sha256', implode("\n", [
+            $this->systemPrompt(),
+            (string) $setting->providerCredential?->hub_provider_credential_id,
+            (string) $setting->model,
+        ])), 0, 32);
     }
 
     /** @return array{id: string, externalId: string}|null */
@@ -311,8 +342,8 @@ class FlowAssistantService
 
             foreach ($this->rows($response->json()) as $row) {
                 // Endswith rather than equals: the hub may have namespaced what
-                // it was given, and the id we are hunting for is the one it
-                // stored, not the one we sent.
+                // it was given. The id is fully scoped already, so no other
+                // workspace's agent can end with it.
                 $candidate = (string) ($row['externalId'] ?? '');
 
                 if ($candidate !== '' && str_ends_with($candidate, $externalId) && ! empty($row['id'])) {
@@ -345,59 +376,6 @@ class FlowAssistantService
         return is_array($rows) ? array_values(array_filter($rows, 'is_array')) : [];
     }
 
-    /**
-     * Re-push the system prompt when the flow format has moved on since it was
-     * last sent.
-     *
-     * The alternative is an assistant that keeps describing the format it was
-     * provisioned against — writing nodes with fields that no longer exist,
-     * failing validation every time, with nothing on any screen saying why.
-     * The check is a string comparison against a stored hash; the PATCH costs
-     * one call, once per deploy that changes the spec.
-     */
-    private function syncPromptIfStale(): void
-    {
-        $hash = $this->promptHash();
-
-        if (FlowAssistantConfig::promptHash() === $hash) {
-            return;
-        }
-
-        $hubAgentId = FlowAssistantConfig::hubAgentId();
-
-        if (! $hubAgentId) {
-            return;
-        }
-
-        try {
-            $response = Http::withHeaders($this->headers())
-                ->patch("{$this->baseUrl}/agents/{$hubAgentId}", [
-                    'systemPrompt' => $this->systemPrompt(),
-                    'model' => FlowAssistantConfig::model(),
-                ]);
-
-            if ($response->successful()) {
-                Setting::set(FlowAssistantConfig::KEY_PROMPT_HASH, $hash);
-
-                Log::info('FlowAssistantService: refreshed the assistant prompt after a format change', [
-                    'hub_agent_id' => $hubAgentId,
-                ]);
-            }
-        } catch (\Throwable $e) {
-            // The old prompt still mostly works, and the customer is waiting
-            // on an answer — this is not the moment to fail their turn over
-            // housekeeping. It retries on the next one.
-            Log::warning('FlowAssistantService: could not refresh the assistant prompt', [
-                'error' => $e->getMessage(),
-            ]);
-        }
-    }
-
-    private function promptHash(): string
-    {
-        return substr(hash('sha256', $this->systemPrompt()), 0, 32);
-    }
-
     // ─────────────────────────────── Runs ───────────────────────────────
 
     /**
@@ -410,24 +388,20 @@ class FlowAssistantService
      * @param  ?callable $emit    fn (string $event, array $data) — progress, for the SSE stream
      * @return array{reply: string, flow: ?array, warnings: list<string>}
      */
-    public function ask(string $message, array $context, array $history = [], ?callable $emit = null): array
+    public function ask(Tenant $tenant, string $message, array $context, array $history = [], ?callable $emit = null): array
     {
         $emit ??= fn () => null;
 
-        if (! FlowAssistantConfig::ready()) {
-            throw UpstreamError::exception(
-                UpstreamProvider::AiHub,
-                'The flow assistant is not configured.',
-                status: 503,
-                upstreamCode: 'flow_assistant_unconfigured',
-            );
-        }
+        // Checked once per turn, not per run: a turn that has started is
+        // finished even if its repairs take the balance below zero — refusing
+        // the repair would throw away the answer that was already paid for.
+        $setting = $this->assertReady($tenant);
 
-        $this->syncPromptIfStale();
+        $this->syncAgent($setting);
 
         $emit('status', ['stage' => 'thinking']);
 
-        $answer = $this->runTurn($this->userMessage($message, $context, $history));
+        $answer = $this->runTurn($setting, $this->userMessage($message, $context, $history));
         $blueprint = $answer['flow'];
         $warnings = [];
 
@@ -464,7 +438,7 @@ class FlowAssistantService
 
             $emit('status', ['stage' => 'repairing', 'attempt' => $attempt + 1]);
 
-            $answer = $this->runTurn($this->repairMessage($blueprint, $problems, $message));
+            $answer = $this->runTurn($setting, $this->repairMessage($blueprint, $problems, $message));
             $warnings[] = 'Corrigi ' . count($problems) . ' problema(s) na primeira versão.';
 
             if ($answer['flow'] === null) {
@@ -502,21 +476,18 @@ class FlowAssistantService
      * or drop a node. What comes back is keyed by the ids that went in; an id
      * the model left out is simply absent, and the caller keeps the original.
      *
+     * The balance is not re-checked here: a translation is several batches,
+     * and stopping halfway would throw away the ones already paid for. The
+     * caller checks once, before the first ({@see assertReady()}).
+     *
      * @param  list<array{id: string, text: string, max?: int|null}>  $strings
      * @return array<string, string>
      */
-    public function translate(array $strings, string $language): array
+    public function translate(Tenant $tenant, array $strings, string $language): array
     {
-        if (! FlowAssistantConfig::ready()) {
-            throw UpstreamError::exception(
-                UpstreamProvider::AiHub,
-                'The flow assistant is not configured.',
-                status: 503,
-                upstreamCode: 'flow_assistant_unconfigured',
-            );
-        }
+        $setting = $this->configuredSetting($tenant);
 
-        $this->syncPromptIfStale();
+        $this->syncAgent($setting);
 
         $items = $this->encode(array_map(fn (array $string) => array_filter([
             'id' => $string['id'],
@@ -550,7 +521,7 @@ class FlowAssistantService
         {$items}
         PROMPT;
 
-        $json = $this->extractJsonObject($this->runRaw($content));
+        $json = $this->extractJsonObject($this->runRaw($setting, $content));
         $decoded = $json !== null ? json_decode($json, true) : null;
         $translations = is_array($decoded) ? ($decoded['translations'] ?? null) : null;
 
@@ -570,19 +541,19 @@ class FlowAssistantService
      *
      * @return array{reply: string, flow: ?array}
      */
-    private function runTurn(string $content): array
+    private function runTurn(FlowAssistantSetting $setting, string $content): array
     {
-        return $this->parseEnvelope($this->runRaw($content));
+        return $this->parseEnvelope($this->runRaw($setting, $content));
     }
 
     /** One hub run, returning exactly what the model wrote. */
-    private function runRaw(string $content): string
+    private function runRaw(FlowAssistantSetting $setting, string $content, bool $healed = false): string
     {
         // A fresh conversation id per turn — see "Turns are stateless" above.
         $conversationId = 'flow-assistant-' . bin2hex(random_bytes(8));
 
         $payload = [
-            'agentExternalId' => FlowAssistantConfig::agentExternalId(),
+            'agentExternalId' => $setting->agent_external_id,
             'responseMode' => 'sync',
             'conversation' => [
                 'externalId' => $conversationId,
@@ -604,11 +575,29 @@ class FlowAssistantService
                 'role' => 'USER',
                 'content' => $content,
             ],
+            'metadata' => ['purpose' => 'flow_assistant'],
         ];
 
         $response = Http::timeout(120)
             ->withHeaders($this->headers())
             ->post("{$this->baseUrl}/runs", $payload);
+
+        // The hub no longer knows this workspace's agent (rebuilt, or deleted on
+        // their side). Everything needed to put it back is here, and the person
+        // waiting knows a flow, not an agent id — so it is rebuilt and the run
+        // tried once more, silently.
+        if ($response->status() === 404 && ! $healed) {
+            Log::warning('FlowAssistantService: the hub does not know this workspace assistant agent, rebuilding it', [
+                'tenant_id' => $setting->tenant_id,
+                'agent_external_id' => $setting->agent_external_id,
+            ]);
+
+            $setting->hub_agent_id = null;
+            $this->pushAgent($setting);
+            $setting->save();
+
+            return $this->runRaw($setting, $content, healed: true);
+        }
 
         $this->ensureSuccessful($response, 'run the flow assistant');
 
@@ -630,20 +619,61 @@ class FlowAssistantService
         }
 
         $usage = $data['output']['usage'] ?? [];
+        $costUsd = $data['providerCostUsd'] ?? ($data['output']['cost']['usd'] ?? null);
 
-        // The platform pays for these, and nothing else records them: the
-        // assistant writes no `ai_hub_runs` row, because that table is keyed
-        // to a local agent belonging to a workspace and this agent belongs to
-        // nobody. The log line is the whole audit trail — grep
-        // 'flow assistant turn' to total it up.
         Log::info('FlowAssistantService: flow assistant turn', [
+            'tenant_id' => $setting->tenant_id,
             'hub_run_id' => $data['id'] ?? null,
             'model' => $data['model'] ?? null,
+            'rented' => $setting->isRented(),
             'total_tokens' => $usage['totalTokens'] ?? null,
-            'cost_usd' => $data['providerCostUsd'] ?? null,
+            'cost_usd' => $costUsd,
         ]);
 
+        $this->chargeIfRented($setting, $data, $costUsd);
+
         return (string) ($data['output']['message'] ?? '');
+    }
+
+    /**
+     * Bill a completed run to the prepaid balance, when it ran on a rented key.
+     *
+     * After the run, never before: the price is the provider's own cost, and
+     * the hub only reports that with the result. Failures are swallowed for the
+     * reason AiAgentHubTenantService::chargeRentedRun gives — the answer has
+     * been generated and paid for at the provider, and losing it over a
+     * bookkeeping problem helps nobody. An unbilled run is a log line and a
+     * reconcilable gap.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function chargeIfRented(FlowAssistantSetting $setting, array $data, mixed $costUsd): void
+    {
+        if (! $setting->isRented()) {
+            return;
+        }
+
+        try {
+            $tenant = $setting->tenant;
+
+            if ($tenant === null) {
+                return;
+            }
+
+            app(CreditService::class)->chargeAssistantRun(
+                $tenant,
+                (string) ($data['id'] ?? Str::uuid()),
+                $costUsd === null ? null : (float) $costUsd,
+                $data['provider'] ?? $setting->providerCredential?->provider,
+                $data['model'] ?? $setting->model,
+            );
+        } catch (\Throwable $e) {
+            Log::error('FlowAssistantService: failed to charge a rented run to the wallet', [
+                'tenant_id' => $setting->tenant_id,
+                'hub_run_id' => $data['id'] ?? null,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**

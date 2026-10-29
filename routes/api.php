@@ -11,7 +11,6 @@ use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AdminConversationOverviewController;
 use App\Http\Controllers\Api\Admin\AdminCreditController;
 use App\Http\Controllers\Api\Admin\AdminEntitlementController;
-use App\Http\Controllers\Api\Admin\AdminFlowAssistantController;
 use App\Http\Controllers\Api\Admin\AdminHealthController;
 use App\Http\Controllers\Api\Admin\AdminInvoiceController;
 use App\Http\Controllers\Api\Admin\AdminLiveController;
@@ -800,14 +799,20 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         Route::post('/flows/import', [FlowController::class, 'import'])->middleware('permission:flows.create');
 
         // The AI that writes flows. Its own plan feature on top of `flow`: a
-        // plan can sell the builder without selling the assistant, which costs
-        // the platform on every turn (it runs on the platform's OpenAI key).
+        // plan can sell the builder without selling the assistant. It runs on
+        // the workspace's own key or one it rents (billed to the balance) —
+        // chosen through the settings routes below.
         //
         // ⚠️ Registered before `/flows/{id}` — that route has no numeric
         // constraint, so anything declared after it would be swallowed as an id.
         Route::middleware(['feature:flow_assistant', 'permission:flows.update'])->group(function () {
             Route::get('/flows/assistant/status', [FlowAssistantController::class, 'status']);
             Route::get('/flows/assistant/specification', [FlowAssistantController::class, 'specification']);
+            // Which key the assistant runs on. Here rather than under /ai-hub:
+            // those routes need the AI agent feature and permissions, and the
+            // person setting up the assistant may have neither.
+            Route::get('/flows/assistant/settings', [FlowAssistantController::class, 'settings']);
+            Route::put('/flows/assistant/settings', [FlowAssistantController::class, 'updateSettings'])->middleware('throttle:20,1');
             // A turn is one synchronous hub call plus up to two repairs, so the
             // throttle is per-minute rather than generous: it is a chat box, and
             // nobody types faster than this on purpose.
@@ -1124,14 +1129,6 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::post('/tiktok/url-property/verify', [\App\Http\Controllers\Api\Admin\AdminTikTokController::class, 'verifyUrlProperty']);
             // The Google OAuth client YouTube channels connect through.
             Route::get('/youtube/test', [\App\Http\Controllers\Api\Admin\AdminYoutubeController::class, 'test']);
-
-            // The flow builder's AI assistant. Not part of the bulk settings
-            // save: storing the key provisions a credential and an agent at the
-            // AI Hub, and an unreachable hub must not fail an unrelated edit on
-            // the same screen.
-            Route::get('/flow-assistant', [AdminFlowAssistantController::class, 'show']);
-            Route::put('/flow-assistant', [AdminFlowAssistantController::class, 'update']);
-            Route::post('/flow-assistant/test', [AdminFlowAssistantController::class, 'test']);
 
             // API Way *numbers* — a different account and a different API from
             // the ProxyBR partner surface above. These sit with the settings

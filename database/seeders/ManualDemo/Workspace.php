@@ -63,7 +63,6 @@ trait Workspace
         $this->seedQuickMessages();
 
         Setting::set('ai_agent_hub.tenant_token', 'manual-demo-token');
-        Setting::set('flow_assistant.enabled', '1');
     }
 
     private function tunePlans(): void

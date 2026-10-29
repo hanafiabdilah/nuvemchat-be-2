@@ -13,6 +13,7 @@ use App\Models\AiModelPrice;
 use App\Models\AiTokenPoolKey;
 use App\Models\Flow;
 use App\Models\FlowAssistantMessage;
+use App\Models\FlowAssistantSetting;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
 use App\Models\Integration;
@@ -137,6 +138,14 @@ trait Automation
                 'created_at' => $this->now->copy()->subDays(60), 'updated_at' => $this->now->copy()->subDays(3),
             ]);
         }
+
+        // The flow assistant on the rented OpenAI key, so the builder opens the
+        // chat rather than the key setup in every screenshot of it.
+        $this->make(FlowAssistantSetting::class, [
+            'tenant_id' => $this->tenant->id, 'ai_hub_provider_credential_id' => $this->creds['rented']->id,
+            'model' => 'gpt-4o', 'hub_agent_id' => 'agt_' . Str::lower(Str::random(10)),
+            'agent_external_id' => "pingly_{$hubTenant->id}_flow_assistant",
+        ]);
 
         $sofia = $this->ai['sofia'];
         $this->make(AiHubAgentProfile::class, [

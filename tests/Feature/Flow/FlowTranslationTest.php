@@ -4,7 +4,9 @@ use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Enums\Flow\NodeType;
+use App\Models\AiHubProviderCredential;
 use App\Models\Flow;
+use App\Models\FlowAssistantSetting;
 use App\Models\FlowEdge;
 use App\Models\Plan;
 use App\Models\Setting;
@@ -12,8 +14,9 @@ use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\AiAgentHub\AiAgentHubConfig;
+use App\Services\AiAgentHub\AiAgentHubService;
 use App\Services\Flow\FlowGraph;
-use App\Services\FlowAssistant\FlowAssistantConfig;
+use App\Services\FlowAssistant\FlowAssistantService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request as HubRequest;
 use Illuminate\Support\Facades\Http;
@@ -23,7 +26,7 @@ use Spatie\Permission\Models\Role;
 
 uses(RefreshDatabase::class);
 
-function translationUser(array $features = ['flow' => true, 'flow_assistant' => true], array $permissions = ['flows.create']): User
+function translationUser(array $features = ['flow' => true, 'flow_assistant' => true], array $permissions = ['flows.create'], bool $withKey = true): User
 {
     $user = User::factory()->create();
     $tenant = Tenant::create(['user_id' => $user->id]);
@@ -53,11 +56,20 @@ function translationUser(array $features = ['flow' => true, 'flow_assistant' => 
     $user->assignRole($role);
 
     Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'hub-tenant-token');
-    Setting::set(FlowAssistantConfig::KEY_ENABLED, '1');
-    Setting::set(FlowAssistantConfig::KEY_API_KEY, 'sk-platform-key');
-    Setting::set(FlowAssistantConfig::KEY_AGENT_EXTERNAL_ID, FlowAssistantConfig::AGENT_EXTERNAL_ID);
-    Setting::set(FlowAssistantConfig::KEY_HUB_AGENT_ID, 'hub-agent-1');
-    Setting::set(FlowAssistantConfig::KEY_HUB_CREDENTIAL_ID, 'hub-cred-1');
+
+    // The workspace's own key for the assistant — the translation is paid by
+    // the flow's owner, the same as building the flow.
+    if ($withKey) {
+        $hubTenant = app(AiAgentHubService::class)->createTenant($tenant);
+        $credential = AiHubProviderCredential::create([
+            'ai_hub_tenant_id' => $hubTenant->id, 'hub_provider_credential_id' => 'hub-cred-'.uniqid(),
+            'provider' => 'OPENAI', 'name' => 'Minha chave', 'status' => 'ACTIVE',
+        ]);
+        FlowAssistantSetting::create([
+            'tenant_id' => $tenant->id, 'ai_hub_provider_credential_id' => $credential->id, 'model' => 'gpt-4o',
+            'hub_agent_id' => 'hub-agent-1', 'agent_external_id' => config('app.name').'_'.$hubTenant->id.'_flow_assistant',
+        ]);
+    }
 
     return $user->fresh();
 }
@@ -208,4 +220,18 @@ test('translation is refused without the plan feature, the permission, a known l
     $this->postJson("/api/flows/{$own->id}/translate", ['language' => 'en'])->assertForbidden();
 
     expect(Flow::count())->toBe(2);
+});
+
+test('without an assistant key nothing is translated and the builder is told to set one up', function () {
+    $user = translationUser(withKey: false);
+    $flow = translationFlow($user);
+    Http::fake(['*' => Http::response([])]);
+
+    Sanctum::actingAs($user);
+    $this->postJson("/api/flows/{$flow->id}/translate", ['language' => 'en'])
+        ->assertStatus(409)
+        ->assertJsonPath('code', FlowAssistantService::SETUP_REQUIRED);
+
+    Http::assertNothingSent();
+    expect(Flow::count())->toBe(1);
 });

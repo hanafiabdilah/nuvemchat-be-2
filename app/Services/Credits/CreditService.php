@@ -362,6 +362,51 @@ class CreditService
     }
 
     /**
+     * Charge one flow-assistant run made on a rented key.
+     *
+     * Its own method because the assistant writes no `ai_hub_runs` row: that
+     * table is keyed to a workspace agent, and the assistant's agent is
+     * deliberately not one (see FlowAssistantSetting). The hub's run id is the
+     * reference, so a retried bookkeeping call cannot bill the same run twice.
+     *
+     * @param  array<string, mixed>  $meta
+     */
+    public function chargeAssistantRun(
+        Tenant $tenant,
+        string $hubRunId,
+        ?float $costUsd,
+        ?string $provider,
+        ?string $model,
+        array $meta = [],
+    ): ?CreditTransaction {
+        $price = CreditPricing::priceRun($costUsd, $provider, $model, $this->currencyFor($tenant));
+
+        if ($price['estimated'] || ($price['rate_missing'] ?? false)) {
+            Log::warning('CreditService: flow assistant run priced without a reported cost or rate', [
+                'tenant_id' => $tenant->id,
+                'hub_run_id' => $hubRunId,
+                'estimated' => $price['estimated'],
+                'rate_missing' => $price['rate_missing'] ?? false,
+                'cents' => $price['cents'],
+            ]);
+        }
+
+        return $this->record(
+            $tenant,
+            CreditTransactionType::Usage,
+            -$price['cents'],
+            [
+                'reference' => "flow-assistant:{$hubRunId}",
+                'cost_usd' => $price['cost_usd'],
+                'usd_rate' => $price['rate'],
+                'markup_pct' => $price['markup_pct'],
+                'description' => trim('Flow assistant · '.($provider ?? 'AI').' '.($model ?? '')),
+                'meta' => ['estimated' => $price['estimated'], 'purpose' => 'flow_assistant'] + $meta,
+            ],
+        );
+    }
+
+    /**
      * Credit a paid top-up invoice.
      *
      * Idempotent through the ledger's unique `invoice_id`: the payment service delivers

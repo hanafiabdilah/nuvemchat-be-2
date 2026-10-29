@@ -2,13 +2,24 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
+use App\Http\Resources\AiHubProviderCredentialResource;
 use App\Http\Resources\FlowSummaryResource;
+use App\Models\AiHubProviderCredential;
 use App\Models\Flow;
 use App\Models\FlowAssistantMessage;
 use App\Models\FlowEdge;
 use App\Models\GalleryAsset;
+use App\Models\Tenant;
+use App\Services\AiAgentHub\AiAgentHubService;
+use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\AiTokens\AiTokenPool;
+use App\Services\AiTokens\AiTokenRentalService;
+use App\Services\AiTokens\KnownModelPrices;
+use App\Services\Credits\CreditPricing;
+use App\Services\Credits\CreditService;
 use App\Services\Flow\FlowBlueprint;
 use App\Services\Flow\FlowVocabulary;
 use App\Services\FlowAssistant\FlowAssistantConfig;
@@ -16,7 +27,9 @@ use App\Services\FlowAssistant\FlowAssistantService;
 use App\Services\FlowAssistant\FlowTranslator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -49,20 +62,27 @@ class FlowAssistantController extends Controller
     ) {}
 
     /**
-     * Whether the assistant is available at all, so the builder can decide
-     * whether to show the panel.
+     * Whether the assistant can be used here, and whether this workspace has
+     * chosen a key for it.
      *
      * Separate from the plan feature check (that is middleware, and a plan
-     * without the feature never reaches here): this answers the other half —
-     * whether the platform has finished setting it up. The two read the same
-     * to a customer and are fixed in completely different places, so the
-     * builder shows a plain "unavailable" rather than a wrong instruction.
+     * without the feature never reaches here). `available` is the platform's
+     * half — without the hub token there is nothing a customer can fix, so the
+     * builder hides the button. `configured` is the workspace's half, and the
+     * builder answers it by opening the key setup instead of the chat.
      */
-    public function status(): JsonResponse
+    public function status(Request $request): JsonResponse
     {
+        $setting = $this->assistant->settingFor($request->user()->tenant);
+        $configured = $setting?->isConfigured() && $setting->providerCredential !== null;
+
         return response()->json([
             'data' => [
-                'available' => FlowAssistantConfig::ready(),
+                'available' => FlowAssistantService::available(),
+                'configured' => (bool) $configured,
+                'mode' => $configured ? ($setting->isRented() ? 'rented' : 'own') : null,
+                'provider' => $configured ? $setting->providerCredential->provider : null,
+                'model' => $configured ? $setting->model : null,
                 // The composer's ceiling, served rather than mirrored in
                 // TypeScript: a second copy of the number drifts the day this
                 // one moves, and the drift shows up as a request the browser
@@ -71,6 +91,188 @@ class FlowAssistantController extends Controller
                 'max_message_chars' => FlowAssistantConfig::MAX_MESSAGE_CHARS,
             ],
         ]);
+    }
+
+    /**
+     * Everything the key setup needs to draw itself: what is chosen now, the
+     * workspace's own keys, and what can be rented and at what price.
+     *
+     * Served here rather than borrowed from `/ai-hub/*`, because those routes
+     * sit behind the AI agent feature and permissions — and the person setting
+     * up the flow assistant may have neither. Choosing the assistant's key is
+     * part of using the assistant.
+     */
+    public function settings(Request $request, AiTokenPool $pool, AiTokenRentalService $rentals, CreditService $credits): JsonResponse
+    {
+        return response()->json([
+            'data' => $this->settingsPayload($request->user()->tenant, $pool, $rentals, $credits),
+        ]);
+    }
+
+    /**
+     * Choose the key and model the assistant runs on.
+     *
+     * Three ways in, the same three the AI agent form offers: a key the
+     * workspace already registered, a key pasted here (registered on the way,
+     * and then listed with the others), or a key rented from the platform.
+     * Renting happens server-side so this works without the AI agent
+     * permissions; it is idempotent per provider, so choosing a rented model
+     * again never mints a second rental.
+     */
+    public function updateSettings(
+        Request $request,
+        AiTokenPool $pool,
+        AiTokenRentalService $rentals,
+        CreditService $credits,
+        AiAgentHubTenantService $hub,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'mode' => ['required', Rule::in(['own', 'rented'])],
+            'model' => ['required', 'string', 'max:100'],
+            'provider_credential_id' => ['nullable', 'integer'],
+            'provider' => ['nullable', 'string', 'max:50'],
+            'api_key' => ['nullable', 'string', 'max:512'],
+            'name' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        $tenant = $request->user()->tenant;
+        $model = trim($validated['model']);
+        $provider = strtoupper((string) ($validated['provider'] ?? ''));
+
+        if ($validated['mode'] === 'rented') {
+            if (! in_array($provider, $this->rentableProviders($tenant, $pool, $rentals), true)) {
+                throw ValidationException::withMessages([
+                    'provider' => 'This provider cannot be rented right now. Use your own key, or pick another model.',
+                ]);
+            }
+
+            try {
+                $credential = $rentals->ensureUsable($rentals->rent($tenant, $provider));
+            } catch (UpstreamServiceException $e) {
+                throw $e;
+            } catch (\RuntimeException $e) {
+                // The pool ran dry between the list and the click: a stock
+                // problem with an action behind it, worded as TokenRentalController
+                // words it.
+                Log::warning('Flow assistant: token rental refused', [
+                    'tenant_id' => $tenant->id,
+                    'provider' => $provider,
+                    'error' => $e->getMessage(),
+                ]);
+
+                throw ValidationException::withMessages([
+                    'provider' => 'Não há tokens desta plataforma disponíveis para aluguel no momento. Tente novamente mais tarde.',
+                ]);
+            }
+        } elseif (filled($validated['api_key'] ?? null)) {
+            if (! in_array($provider, KnownModelPrices::providers(), true)) {
+                throw ValidationException::withMessages(['provider' => 'Choose the provider this key belongs to.']);
+            }
+
+            $credential = $hub->createProviderCredential(app(AiAgentHubService::class)->createTenant($tenant), [
+                'provider' => $provider,
+                'name' => trim((string) ($validated['name'] ?? '')) ?: 'Flow assistant key',
+                'apiKey' => trim($validated['api_key']),
+                'defaultModel' => $model,
+            ]);
+        } else {
+            $credential = $this->ownCredentials($tenant)
+                ->firstWhere('id', (int) ($validated['provider_credential_id'] ?? 0));
+
+            if ($credential === null) {
+                throw ValidationException::withMessages([
+                    'provider_credential_id' => 'Choose one of your keys, or add a new one.',
+                ]);
+            }
+        }
+
+        $this->assistant->configure($tenant, $credential, $model);
+
+        return response()->json([
+            'data' => $this->settingsPayload($tenant, $pool, $rentals, $credits),
+        ]);
+    }
+
+    /** @return array<string, mixed> */
+    private function settingsPayload(Tenant $tenant, AiTokenPool $pool, AiTokenRentalService $rentals, CreditService $credits): array
+    {
+        // Renting or pasting a key may have opened the workspace's AI hub scope
+        // during this request, after an earlier read cached its absence.
+        $tenant->unsetRelation('aiHubTenant');
+
+        $setting = $this->assistant->settingFor($tenant);
+        $configured = $setting?->isConfigured() && $setting->providerCredential !== null;
+        $currency = $credits->currencyFor($tenant);
+
+        return [
+            'configured' => (bool) $configured,
+            'mode' => $configured ? ($setting->isRented() ? 'rented' : 'own') : null,
+            'model' => $configured ? $setting->model : null,
+            'credential' => $configured ? new AiHubProviderCredentialResource($setting->providerCredential) : null,
+            'default_model' => FlowAssistantConfig::DEFAULT_MODEL,
+            // Own keys: the agent-capable providers we know, and their models
+            // for the picker — which also takes a typed id for anything newer.
+            'providers' => KnownModelPrices::providers(),
+            'models' => array_map(fn (array $model) => [
+                'provider' => $model['provider'],
+                'id' => $model['id'],
+                'name' => $model['name'],
+            ], KnownModelPrices::all()),
+            'credentials' => AiHubProviderCredentialResource::collection($this->ownCredentials($tenant)),
+            'rental' => [
+                'enabled' => (bool) config('ai.credits.enabled', true),
+                'available_providers' => $this->rentableProviders($tenant, $pool, $rentals),
+                'models' => CreditPricing::rentableModels($this->rentableProviders($tenant, $pool, $rentals), $currency),
+                'balance_cents' => $credits->balanceCents($tenant),
+            ],
+        ];
+    }
+
+    /**
+     * The workspace's own keys that can power an agent — never a rented one
+     * (that is the other mode) and never an audio-only provider, which the hub
+     * refuses as an agent's brain.
+     *
+     * @return \Illuminate\Support\Collection<int, AiHubProviderCredential>
+     */
+    private function ownCredentials(Tenant $tenant)
+    {
+        $aiHubTenant = $tenant->aiHubTenant;
+
+        if ($aiHubTenant === null) {
+            return collect();
+        }
+
+        return $aiHubTenant->providerCredentials()
+            ->owned()
+            ->orderByDesc('created_at')
+            ->get()
+            ->filter(fn (AiHubProviderCredential $c) => in_array(strtoupper((string) $c->provider), KnownModelPrices::providers(), true))
+            ->values();
+    }
+
+    /**
+     * Providers the workspace could rent today, plus the ones it already does
+     * — the rule TokenRentalController follows, so a pool key that has since
+     * filled up does not make the assistant's current choice vanish.
+     *
+     * @return list<string>
+     */
+    private function rentableProviders(Tenant $tenant, AiTokenPool $pool, AiTokenRentalService $rentals): array
+    {
+        if (! config('ai.credits.enabled', true)) {
+            return [];
+        }
+
+        $providers = array_merge(
+            $pool->availableProviders(),
+            $rentals->rentals($tenant)->pluck('provider')->all(),
+        );
+
+        return array_values(array_filter(
+            array_unique(array_map('strtoupper', $providers)),
+            fn (string $provider) => in_array($provider, KnownModelPrices::providers(), true),
+        ));
     }
 
     /**
@@ -91,6 +293,15 @@ class FlowAssistantController extends Controller
         ]);
 
         $flow = Flow::where('tenant_id', $request->user()->tenant_id)->findOrFail($id);
+
+        // Before the first batch: a translation is several runs, and finding
+        // out halfway that there is no key, or no balance, would throw away
+        // the batches already paid for.
+        try {
+            $this->assistant->assertReady($request->user()->tenant);
+        } catch (CreditExhaustedException $e) {
+            return $this->creditExhausted($e);
+        }
 
         // Several model calls on a long flow, one after the other.
         set_time_limit(300);
@@ -155,20 +366,27 @@ class FlowAssistantController extends Controller
      * Events: `status` (stage changes), `result` ({reply, flow, warnings}),
      * `error` ({message}). The connection closes after `result` or `error`.
      */
-    public function stream(int $id, Request $request): StreamedResponse
+    public function stream(int $id, Request $request): StreamedResponse|JsonResponse
     {
         $flow = $this->flow($id);
         $input = $this->validated($request);
+        $tenant = $request->user()->tenant;
 
-        // Everything that touches the database happens here, before the
-        // response starts streaming: inside the callback the headers are
-        // already sent, so a query that throws there has no status code left to
-        // fail with.
+        // Everything that can refuse the turn happens here, before the response
+        // starts streaming: inside the callback the headers are already sent,
+        // so "set up a key first" (409) and "top up" (402) would have no status
+        // code left to arrive with — and the panel switches on those codes.
+        try {
+            $this->assistant->assertReady($tenant);
+        } catch (CreditExhaustedException $e) {
+            return $this->creditExhausted($e);
+        }
+
         $context = $this->context($flow, $input['gallery_asset_ids']);
         $history = $this->history($flow);
         $this->record($flow, 'user', $input['message']);
 
-        return response()->stream(function () use ($input, $context, $history, $flow) {
+        return response()->stream(function () use ($input, $context, $history, $flow, $tenant) {
             $emit = function (string $event, array $data): void {
                 echo "event: {$event}\n";
                 echo 'data: '.json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)."\n\n";
@@ -183,7 +401,7 @@ class FlowAssistantController extends Controller
             };
 
             try {
-                $result = $this->assistant->ask($input['message'], $context, $history, $emit);
+                $result = $this->assistant->ask($tenant, $input['message'], $context, $history, $emit);
 
                 $message = $this->record($flow, 'assistant', $result['reply'], $result['flow'], $result['warnings']);
                 $result['id'] = (string) $message->id;
@@ -218,17 +436,34 @@ class FlowAssistantController extends Controller
     {
         $flow = $this->flow($id);
         $input = $this->validated($request);
+        $tenant = $request->user()->tenant;
+
+        try {
+            $this->assistant->assertReady($tenant);
+        } catch (CreditExhaustedException $e) {
+            return $this->creditExhausted($e);
+        }
 
         $context = $this->context($flow, $input['gallery_asset_ids']);
         $history = $this->history($flow);
         $this->record($flow, 'user', $input['message']);
 
-        $result = $this->assistant->ask($input['message'], $context, $history);
+        $result = $this->assistant->ask($tenant, $input['message'], $context, $history);
 
         $message = $this->record($flow, 'assistant', $result['reply'], $result['flow'], $result['warnings']);
         $result['id'] = (string) $message->id;
 
         return response()->json(['data' => $result]);
+    }
+
+    /** Same code and status as every other AI surface, so the client already knows it. */
+    private function creditExhausted(CreditExhaustedException $e): JsonResponse
+    {
+        return response()->json([
+            'message' => 'Your credit balance is empty. Top it up to keep using AI.',
+            'code' => 'credit_exhausted',
+            'balance_cents' => $e->balanceCents,
+        ], 402);
     }
 
     private function flow(int $id): Flow

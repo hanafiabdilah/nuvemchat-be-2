@@ -7,10 +7,12 @@ use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
 use App\Models\AiTokenPoolKey;
 use App\Models\AiHubTenant;
+use App\Models\FlowAssistantSetting;
 use App\Models\FlowNode;
 use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubService;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\FlowAssistant\FlowAssistantService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -156,6 +158,10 @@ class AiTokenRentalService
 
         if ($nodes->isNotEmpty()) {
             abort(422, 'Still used for audio in ' . $nodes->count() . ' flow node(s). Change them first.');
+        }
+
+        if (FlowAssistantSetting::where('ai_hub_provider_credential_id', $credential->id)->exists()) {
+            abort(422, 'Still used by the flow assistant. Choose another key for it first (Flows › AI assistant › Key settings).');
         }
 
         $this->tenantService->deleteProviderCredential($credential);
@@ -501,7 +507,9 @@ class AiTokenRentalService
      *
      *  - agents, which hold the local id and must also be updated hub-side;
      *  - AIAgent flow nodes, whose transcription and voice settings hold the
-     *    *hub* credential id as a string, chosen in the node editor.
+     *    *hub* credential id as a string, chosen in the node editor;
+     *  - the workspace's flow assistant, whose hub agent follows on its next
+     *    turn (FlowAssistantService::repoint).
      *
      * The second one is easy to forget precisely because it does not look like
      * a foreign key.
@@ -527,6 +535,8 @@ class AiTokenRentalService
 
             $node->update(['data' => $data]);
         });
+
+        FlowAssistantService::repoint($old, $new);
     }
 
     /**
