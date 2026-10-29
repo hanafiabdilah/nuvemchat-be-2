@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Youtube;
 
 use App\Http\Controllers\Api\Youtube\Concerns\ResolvesYoutubeAccount;
 use App\Http\Controllers\Controller;
+use App\Services\Social\CommentMarks;
 use App\Services\Youtube\YoutubeClientFactory;
 use App\Services\Youtube\YoutubePresenter;
 use Illuminate\Http\Request;
@@ -35,6 +36,7 @@ class YoutubeCommentController extends Controller
 
     public function __construct(
         private readonly YoutubeClientFactory $clients,
+        private readonly CommentMarks $marks,
     ) {}
 
     /**
@@ -87,7 +89,7 @@ class YoutubeCommentController extends Controller
         }, $client->videos($videoIds));
 
         return response()->json([
-            'data' => $threads,
+            'data' => $this->marks->apply($threads, (int) $account->tenant_id, 'youtube'),
             'videos' => $videos,
             'next_cursor' => $page['nextPageToken'] ?? null,
             'has_more' => isset($page['nextPageToken']),
@@ -143,6 +145,9 @@ class YoutubeCommentController extends Controller
 
         $created = $this->clients->for($account)->reply($commentId, $data['message']);
 
+        // Answering a comment is dealing with it.
+        $this->marks->touchRead((int) $account->tenant_id, 'youtube', (int) $account->id, $commentId, (int) $request->user()->id);
+
         return response()->json([
             'data' => YoutubePresenter::comment($created, $account->channel_id),
         ], 201);
@@ -168,6 +173,8 @@ class YoutubeCommentController extends Controller
             $data['status'],
             (bool) ($data['ban_author'] ?? false),
         );
+
+        $this->marks->touchRead((int) $account->tenant_id, 'youtube', (int) $account->id, $commentId, (int) $request->user()->id);
 
         return response()->json([
             'message' => match ($data['status']) {

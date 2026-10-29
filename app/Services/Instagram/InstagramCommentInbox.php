@@ -78,6 +78,25 @@ class InstagramCommentInbox
         ];
     }
 
+    /**
+     * One post's comments in the same shape as the Comments section, paged by
+     * Instagram's cursor — what the section shows once a post is opened, where
+     * the per-post cap of the all-posts view would hide the older comments.
+     *
+     * @return array{data: list<array<string, mixed>>, next_cursor: ?string, has_more: bool}
+     */
+    public function forMedia(Connection $connection, string $mediaId, ?string $after = null): array
+    {
+        $page = $this->clients->for($connection)->comments($mediaId, self::COMMENTS_PER_POST, $after);
+        $username = $connection->credentials['username'] ?? null;
+
+        return [
+            'data' => array_map(fn (array $row) => $this->comment($row, $mediaId, $username), $page['data'] ?? []),
+            'next_cursor' => $page['paging']['cursors']['after'] ?? null,
+            'has_more' => isset($page['paging']['next']),
+        ];
+    }
+
     /** The picture a post is recognised by: the cover of a video or a carousel's first item. */
     public static function thumbnail(array $media): ?string
     {

@@ -77,6 +77,7 @@ use App\Http\Controllers\Api\ImpersonationController;
 use App\Http\Controllers\Api\Instagram\InstagramAccountController;
 use App\Http\Controllers\Api\Instagram\InstagramCommentController;
 use App\Http\Controllers\Api\Instagram\InstagramPostController;
+use App\Http\Controllers\Api\Social\CommentMarkController;
 use App\Http\Controllers\Api\TikTok\TikTokAccountController;
 use App\Http\Controllers\Api\TikTok\TikTokCommentController;
 use App\Http\Controllers\Api\TikTok\TikTokPostController;
@@ -626,6 +627,14 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             });
         });
 
+        // Read and starred marks on comments, shared by the Instagram, YouTube
+        // and TikTok Comments sections (none of the platforms has either).
+        // The moderation permission of each platform is checked inside.
+        Route::patch('/social/{platform}/accounts/{account}/comments/{comment}/marks', [CommentMarkController::class, 'update'])
+            ->whereIn('platform', \App\Services\Social\CommentMarks::PLATFORMS);
+        Route::post('/social/{platform}/accounts/{account}/comments/marks', [CommentMarkController::class, 'markRead'])
+            ->whereIn('platform', \App\Services\Social\CommentMarks::PLATFORMS);
+
         // TikTok publishing, on the TikTok inbox connections — the same shape
         // as Instagram's: `/tiktok/posts/{post}` is one of our rows,
         // `/tiktok/accounts/{connection}/videos/{video}` a live post. Live
@@ -646,6 +655,8 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
 
             Route::get('/accounts/{connection}/videos/{video}/comments', [TikTokCommentController::class, 'index'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
             Route::middleware('permission:tiktok-comments.manage')->group(function () {
+                // The all-posts view: latest comments across the latest posts.
+                Route::get('/accounts/{connection}/comments', [TikTokCommentController::class, 'inbox']);
                 Route::get('/accounts/{connection}/videos/{video}/comments/{comment}/replies', [TikTokCommentController::class, 'replies']);
                 Route::post('/accounts/{connection}/videos/{video}/comments', [TikTokCommentController::class, 'store']);
                 Route::post('/accounts/{connection}/videos/{video}/comments/{comment}/replies', [TikTokCommentController::class, 'reply']);

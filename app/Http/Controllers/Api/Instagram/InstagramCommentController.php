@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\Instagram\Concerns\ResolvesInstagramConnection;
 use App\Http\Controllers\Controller;
 use App\Services\Instagram\InstagramCommentInbox;
 use App\Services\Instagram\InstagramGraphClientFactory;
+use App\Services\Social\CommentMarks;
 use Illuminate\Http\Request;
 
 /**
@@ -26,6 +27,7 @@ class InstagramCommentController extends Controller
     public function __construct(
         private readonly InstagramGraphClientFactory $clients,
         private readonly InstagramCommentInbox $inbox,
+        private readonly CommentMarks $marks,
     ) {}
 
     /**
@@ -38,9 +40,17 @@ class InstagramCommentController extends Controller
 
         $data = $request->validate([
             'after' => ['nullable', 'string', 'max:512'],
+            // One post, opened from the post list: all its comments, paged.
+            'media' => ['nullable', 'string', 'max:64'],
         ]);
 
-        return response()->json($this->inbox->read($connection, $data['after'] ?? null));
+        $result = ! empty($data['media'])
+            ? $this->inbox->forMedia($connection, $data['media'], $data['after'] ?? null)
+            : $this->inbox->read($connection, $data['after'] ?? null);
+
+        $result['data'] = $this->marks->apply($result['data'], (int) $connection->tenant_id, 'instagram');
+
+        return response()->json($result);
     }
 
     public function index(Request $request, string $connectionId, string $mediaId)
@@ -69,9 +79,12 @@ class InstagramCommentController extends Controller
             'message' => ['required', 'string', 'max:2200'],
         ]);
 
-        return response()->json([
-            'data' => $this->clients->for($connection)->replyToComment($commentId, $data['message']),
-        ], 201);
+        $reply = $this->clients->for($connection)->replyToComment($commentId, $data['message']);
+
+        // Answering a comment is dealing with it.
+        $this->marks->touchRead((int) $connection->tenant_id, 'instagram', (int) $connection->id, $commentId, (int) $request->user()->id);
+
+        return response()->json(['data' => $reply], 201);
     }
 
     /** Hide or unhide. */
@@ -84,6 +97,10 @@ class InstagramCommentController extends Controller
         ]);
 
         $this->clients->for($connection)->setCommentHidden($commentId, $data['hidden']);
+
+        if ($data['hidden']) {
+            $this->marks->touchRead((int) $connection->tenant_id, 'instagram', (int) $connection->id, $commentId, (int) $request->user()->id);
+        }
 
         return response()->json(['message' => $data['hidden'] ? 'Comment hidden.' : 'Comment unhidden.']);
     }
