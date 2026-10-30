@@ -372,7 +372,7 @@ test('a level is applied as its values, and the panel names the level the number
     ]);
 
     expect($data['preset'])->toBe('moderate')
-        ->and(array_column($data['presets'], 'key'))->toBe(['default', 'moderate', 'high', 'very_high', 'unlimited']);
+        ->and(array_column($data['presets'], 'key'))->toBe(['unlimited', 'very_high', 'high', 'moderate', 'default']);
 });
 
 test('the no-limits level still never sends a daily cap of 0', function () {
@@ -428,8 +428,8 @@ test('the levels can be listed before any instance exists', function () {
         ->assertOk()
         ->json('data');
 
-    expect(array_column($data['presets'], 'key'))->toBe(['default', 'moderate', 'high', 'very_high', 'unlimited'])
-        ->and($data['presets'][0]['daily_cap'])->toBe(800)
+    expect(array_column($data['presets'], 'key'))->toBe(['unlimited', 'very_high', 'high', 'moderate', 'default'])
+        ->and($data['presets'][0]['daily_cap'])->toBe(999999)
         ->and($data['unlimited_daily_cap'])->toBe(999999);
 
     Http::assertNothingSent();

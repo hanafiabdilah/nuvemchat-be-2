@@ -76,23 +76,30 @@ final class ApiwaySendPolicy
     ];
 
     /**
-     * Five steps from the core's default to as far as Pingly goes, so the
-     * owner picks a level instead of tuning four numbers. Ordered, most
-     * protective first.
+     * Five steps from as far as Pingly goes back to the core's default, so
+     * the owner picks a level instead of tuning four numbers. Ordered fewest
+     * limits first: "no limits" is what a number linked from the connection
+     * wizard gets unless the owner picks otherwise, so it leads the list.
      *
      * The gap is set to match the pace (60 ÷ messages a minute, as a range
      * around it): a gap wider than that would quietly cap the pace below what
-     * the level promises. Every level but the last keeps the automatic
+     * the level promises. Every level but "no limits" keeps the automatic
      * slow-down at high risk — the one protection that reacts to how the
      * number is actually being received, rather than to a count.
      */
     public const PRESETS = [
-        'default' => self::DEFAULTS,
-        'moderate' => [
-            'msgs_per_min' => 20,
-            'min_delay_ms' => 2000,
-            'max_delay_ms' => 4000,
-            'daily_cap' => 1500,
+        'unlimited' => [
+            'msgs_per_min' => self::MAX_MSGS_PER_MIN,
+            'min_delay_ms' => self::MIN_DELAY_MS,
+            'max_delay_ms' => self::MIN_DELAY_MS,
+            'daily_cap' => self::UNLIMITED_DAILY_CAP,
+            'auto_throttle_enabled' => false,
+        ],
+        'very_high' => [
+            'msgs_per_min' => 45,
+            'min_delay_ms' => 1000,
+            'max_delay_ms' => 1500,
+            'daily_cap' => 6000,
             'auto_throttle_enabled' => true,
         ],
         'high' => [
@@ -102,20 +109,14 @@ final class ApiwaySendPolicy
             'daily_cap' => 3000,
             'auto_throttle_enabled' => true,
         ],
-        'very_high' => [
-            'msgs_per_min' => 45,
-            'min_delay_ms' => 1000,
-            'max_delay_ms' => 1500,
-            'daily_cap' => 6000,
+        'moderate' => [
+            'msgs_per_min' => 20,
+            'min_delay_ms' => 2000,
+            'max_delay_ms' => 4000,
+            'daily_cap' => 1500,
             'auto_throttle_enabled' => true,
         ],
-        'unlimited' => [
-            'msgs_per_min' => self::MAX_MSGS_PER_MIN,
-            'min_delay_ms' => self::MIN_DELAY_MS,
-            'max_delay_ms' => self::MIN_DELAY_MS,
-            'daily_cap' => self::UNLIMITED_DAILY_CAP,
-            'auto_throttle_enabled' => false,
-        ],
+        'default' => self::DEFAULTS,
     ];
 
     /**
