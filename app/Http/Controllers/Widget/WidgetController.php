@@ -10,7 +10,6 @@ use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\MessageResource;
-use App\Jobs\EnsureLeadForConversation;
 use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
@@ -251,15 +250,6 @@ class WidgetController extends Controller
 
         $isOpeningMessage = $this->isOpeningMessage($session->conversation, $message);
 
-        // The funnel skipped this conversation when the session opened — a
-        // visitor who only loads the page is not a lead, and the row existed
-        // before they had said anything. Now they have said something, so the
-        // card is opened here instead, at the moment there is a person behind
-        // the thread. Idempotent: an existing open card is reused, not doubled.
-        if ($isOpeningMessage) {
-            EnsureLeadForConversation::dispatch($session->conversation->id);
-        }
-
         // A visitor who reopens the widget minutes after their chat was closed
         // goes back to the agent they were speaking to. Only on the opening
         // message: after that the thread is wherever it was routed, and the
@@ -467,9 +457,8 @@ class WidgetController extends Controller
 
         // ⚠️ Info messages are excluded. They are the workspace's own notes —
         // written as Outgoing but never sent to any channel — and they carry
-        // agent names, handoff reasons, payment amounts and the metadata a
-        // partner posted with an API lead. The visitor is the one person in
-        // this conversation who is not part of the workspace.
+        // agent names, handoff reasons and payment amounts. The visitor is the
+        // one person in this conversation who is not part of the workspace.
         $messages = $session->conversation->messages()
             ->where('message_type', '!=', MessageType::Info)
             ->orderBy('sent_at')

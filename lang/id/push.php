@@ -7,6 +7,9 @@ return [
     'conversation_handoff' => 'AI menyerahkan percakapan ini ke agen',
     'conversation_transferred' => '{{agent}} mengalihkan percakapan ini ke Anda',
     'conversation_taken_over' => '{{agent}} mengambil alih percakapan ini',
+    'crm_assigned' => '{{agent}} menugaskan ini kepada Anda',
+    'crm_task_due' => 'Tugas jatuh tempo {{when}}',
+    'crm_automation' => '{{message}}',
     'test_title' => 'Pingly',
     'test_body' => 'Notifikasi berfungsi di perangkat ini.',
 ];

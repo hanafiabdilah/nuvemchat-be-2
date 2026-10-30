@@ -28,7 +28,32 @@ class ActionNodes
     /** Write a line into the thread that the customer never sees. */
     public const INTERNAL_NOTE = 'internal_note';
 
-    public const TYPES = [self::ASSIGN_AGENT, self::TRANSFER_HUMAN, self::INTERNAL_NOTE];
+    /**
+     * CRM (the `crm` plan feature): open a lead for the person in the
+     * conversation — one that nobody is in charge of yet, so a CRM automation
+     * on "lead created" (or a person) decides who works it. A person who
+     * already has an open lead does not get a second one. The flow carries on.
+     */
+    public const CREATE_LEAD = 'create_lead';
+
+    /**
+     * CRM: a follow-up task about the person in the conversation, due in N
+     * days. The flow carries on.
+     */
+    public const CREATE_TASK = 'create_task';
+
+    public const TYPES = [
+        self::ASSIGN_AGENT, self::TRANSFER_HUMAN, self::INTERNAL_NOTE,
+        self::CREATE_LEAD, self::CREATE_TASK,
+    ];
+
+    /** Ceiling for a follow-up task's "due in N days". */
+    public const MAX_TASK_DAYS = 365;
+
+    /** Info-note codes for what the CRM actions did (`lib/infoMessage.ts`). */
+    public const INFO_LEAD_CREATED = 'crm_lead_created_by_flow';
+
+    public const INFO_TASK_CREATED = 'crm_task_created_by_flow';
 
     /**
      * What to do when the agent named on the node cannot take the conversation

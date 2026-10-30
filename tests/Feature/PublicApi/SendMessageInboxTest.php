@@ -16,7 +16,7 @@ use App\Services\V1\SendMessage\SentMessageRecorder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
-use Tests\Support\LeadIntakeFixtures as F;
+use Tests\Support\PublicApiFixtures as F;
 
 /*
  * A WhatsApp message sent through POST /v1/send-message lands in the inbox.

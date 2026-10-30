@@ -17,8 +17,7 @@ use Illuminate\Support\Facades\Log;
  * reader of that conversation wrong about what was said.
  *
  * Resolved here rather than passed in by the caller because not every caller
- * has it: the campaign runner stores components, and POST /api/v1/leads is
- * called by somebody else's system that only knows the template's name.
+ * has it: the campaign runner stores components, not the text they render.
  */
 class TemplateBody
 {

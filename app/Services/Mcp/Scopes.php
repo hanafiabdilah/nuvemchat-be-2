@@ -66,12 +66,6 @@ final class Scopes
      */
     public const LIVE_READ = 'mcp:live.read';
 
-    /** The sales funnel: pipelines, stages, leads, and looking up contacts. */
-    public const LEADS_READ = 'mcp:leads.read';
-
-    /** Open a lead, edit it, move it between stages (won and lost included). Never delete. */
-    public const LEADS_WRITE = 'mcp:leads.write';
-
     /**
      * Every scope this server issues, in the order a consent screen should
      * read them: what it can see before what it can change.
@@ -88,8 +82,6 @@ final class Scopes
             self::CAMPAIGNS_WRITE,
             self::STATISTICS_READ,
             self::LIVE_READ,
-            self::LEADS_READ,
-            self::LEADS_WRITE,
         ];
     }
 
@@ -132,8 +124,7 @@ final class Scopes
      * `flows.read` could save a flow it is not allowed to fetch first — which
      * is not a narrower permission, it is a worse one: the only safe way to
      * edit a flow here is to read it, change it and send the whole thing back.
-     * The same holds for pausing a campaign it cannot list, or moving a lead
-     * it cannot see.
+     * The same holds for pausing a campaign it cannot list.
      *
      * @param  list<string>  $granted
      */
@@ -158,7 +149,6 @@ final class Scopes
         return match ($scope) {
             self::FLOWS_READ, self::FLOWS_WRITE => Feature::Flow,
             self::STATISTICS_READ, self::LIVE_READ => Feature::Statistics,
-            self::LEADS_READ, self::LEADS_WRITE => Feature::Crm,
             self::CAMPAIGNS_READ, self::CAMPAIGNS_WRITE => Feature::Campaigns,
             // The gallery is not a plan feature (its gate is the storage
             // meter), so MCP itself is the only feature in front of it.

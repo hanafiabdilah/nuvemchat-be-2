@@ -40,7 +40,7 @@ test('a role held in several workspaces is copied so each has its own', function
     $bruno = roleBackfillTenantUser();
 
     $supervisor = roleBackfillLegacy('Supervisor');
-    $supervisor->givePermissionTo(Permission::findOrCreate('leads.view', 'web'));
+    $supervisor->givePermissionTo(Permission::findOrCreate('tags.create', 'web'));
     $ana->assignRole($supervisor);
     $bruno->assignRole($supervisor);
 
@@ -59,8 +59,8 @@ test('a role held in several workspaces is copied so each has its own', function
     expect($anasRole->id)->toBe($supervisor->id)
         ->and($brunosRole->id)->not->toBe($supervisor->id)
         ->and($brunosRole->tenant_id)->toBe($bruno->tenant_id)
-        ->and($brunosRole->permissions->pluck('name')->all())->toBe(['leads.view'])
-        ->and($bruno->fresh()->hasPermissionTo('leads.view'))->toBeTrue();
+        ->and($brunosRole->permissions->pluck('name')->all())->toBe(['tags.create'])
+        ->and($bruno->fresh()->hasPermissionTo('tags.create'))->toBeTrue();
 });
 
 test('a role held in one workspace becomes that workspace\'s', function () {
@@ -113,8 +113,8 @@ test('back office permissions are flagged and taken off workspace roles and user
 
     // A `bo.*` name no migration creates, so it starts without the flag.
     $flagless = Permission::create(['name' => 'bo.flagless.view', 'guard_name' => 'web']);
-    $leads = Permission::findOrCreate('leads.view', 'web');
-    $owner->givePermissionTo($flagless, $leads);
+    $tags = Permission::findOrCreate('tags.create', 'web');
+    $owner->givePermissionTo($flagless, $tags);
     $ana->givePermissionTo($flagless);
 
     $superAdmin = Role::query()->create(['name' => 'super-admin', 'guard_name' => 'web']);
@@ -124,6 +124,6 @@ test('back office permissions are flagged and taken off workspace roles and user
 
     expect((bool) $flagless->fresh()->is_platform)->toBeTrue()
         ->and((bool) $superAdmin->fresh()->is_platform)->toBeTrue()
-        ->and($owner->fresh()->permissions->pluck('name')->all())->toBe(['leads.view'])
+        ->and($owner->fresh()->permissions->pluck('name')->all())->toBe(['tags.create'])
         ->and(DB::table('model_has_permissions')->where('model_id', $ana->id)->count())->toBe(0);
 });

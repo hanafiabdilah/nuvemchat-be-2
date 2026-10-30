@@ -15,8 +15,7 @@ use Illuminate\Queue\SerializesModels;
  * different.
  *
  * On the tenant channel rather than the per-connection one that carries
- * conversation content, for the same reason LeadUpdated is: a contact is not
- * scoped to a connection — the same person can have threads on several — so
+ * conversation content: a contact is not scoped to a connection — the same person can have threads on several — so
  * there is no single connection channel this belongs on. What keeps it
  * defensible is the payload: an id and a set of tag rows the whole workspace
  * already reads from GET /tags. No name, no address, no message.

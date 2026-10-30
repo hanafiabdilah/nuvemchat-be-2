@@ -40,6 +40,11 @@ memindahkannya ke `App\Support\PublicUrl` supaya ketiganya bisa membacanya;
 (pesannya tentang webhook, dan kalimat bersama harus berhenti menjadi tentang
 apa pun).
 
+> Okt 2026: webhook keluar dihapus bersama modul Leads (event-nya hanya event
+> lead), dan `WebhookUrl` ikut hilang. Aturannya kini hanya tinggal di
+> `PublicUrl`, dan yang tersisa membacanya adalah node `http_request` dan
+> `media_url`.
+
 ### `PublicUrl::isFetchable()`
 
 ```

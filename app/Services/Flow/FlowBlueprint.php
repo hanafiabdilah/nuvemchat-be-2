@@ -41,7 +41,7 @@ class FlowBlueprint
     public const NODE_TYPES = [
         'start', 'message', 'interval', 'response', 'wait_response', 'status',
         'tagging', 'condition', 'action', 'ai_agent', 'ai_tools', 'http_request',
-        'interactive', 'payment', 'invoice', 'pixel', 'receipt', 'ai_media', 'go_to_flow', 'lead',
+        'interactive', 'payment', 'invoice', 'pixel', 'receipt', 'ai_media', 'go_to_flow',
     ];
 
     /**
@@ -204,6 +204,16 @@ class FlowBlueprint
                 ],
                 'parameters.when_unavailable' => ['nullable', 'string', Rule::in(ActionNodes::UNAVAILABLE_MODES)],
                 'parameters.note' => ['nullable', 'string', 'max:4000'],
+                // create_lead / create_task (CRM).
+                'parameters.lead_title' => ['nullable', 'string', 'max:255'],
+                'parameters.lead_value_cents' => ['nullable', 'integer', 'min:0', 'max:1000000000000000'],
+                'parameters.task_title' => ['nullable', 'string', 'max:255'],
+                'parameters.task_due_in_days' => ['nullable', 'integer', 'min:0', 'max:'.ActionNodes::MAX_TASK_DAYS],
+                'parameters.task_assignee_id' => [
+                    'nullable',
+                    'integer',
+                    Rule::exists('users', 'id')->where('tenant_id', self::tenantId()),
+                ],
             ],
             // Both nullable, like every other node auto-save catches mid-edit.
             // They used to be required, and a single AI node without an agent
@@ -461,28 +471,6 @@ class FlowBlueprint
             'go_to_flow' => [
                 'flow_id' => ['nullable', 'integer', Rule::exists('flows', 'id')->where('tenant_id', self::tenantId())],
                 'carry_variables' => ['nullable', 'boolean'],
-            ],
-            // A stage is scoped through its pipeline: stages carry no tenant of
-            // their own, and a node naming another workspace's column would
-            // otherwise move this workspace's cards into it.
-            'lead' => [
-                'pipeline_id' => ['nullable', 'integer', Rule::exists('lead_pipelines', 'id')->where('tenant_id', self::tenantId())],
-                'stage_id' => [
-                    'nullable',
-                    'integer',
-                    Rule::exists('lead_stages', 'id')->where(function ($query) {
-                        $tenantId = self::tenantId();
-                        $query->whereIn('pipeline_id', fn ($sub) => $sub
-                            ->select('id')
-                            ->from('lead_pipelines')
-                            ->where('tenant_id', $tenantId));
-                    }),
-                ],
-                'only_forward' => ['nullable', 'boolean'],
-                'title' => ['nullable', 'string', 'max:255'],
-                'value' => ['nullable', 'string', 'max:64'],
-                'owner_id' => ['nullable', 'integer', Rule::exists('users', 'id')->where('tenant_id', self::tenantId())],
-                'lost_reason' => ['nullable', 'string', 'max:255'],
             ],
             default => [],
         };
@@ -961,6 +949,7 @@ class FlowBlueprint
         $waitUnits = self::quoted(array_keys(WaitResponseNodes::TIMEOUT_UNITS));
         $actionTypes = self::quoted(ActionNodes::TYPES);
         $unavailable = self::quoted(ActionNodes::UNAVAILABLE_MODES);
+        $maxTaskDays = ActionNodes::MAX_TASK_DAYS;
         $interactiveTypes = self::quoted(InteractiveNodes::TYPES);
         $carouselMin = InteractiveNodes::CAROUSEL_MIN_CARDS;
         $carouselMax = InteractiveNodes::CAROUSEL_MAX_CARDS;
@@ -1213,7 +1202,7 @@ class FlowBlueprint
           and "{$toolsPaymentFailed}". Every output is optional: leaving one unwired
           means the AI keeps serving. After "{$toolsPaid}" these variables are set:
           {$orderVariables} plus {$paymentVariables}. A typical "{$toolsPaid}" branch
-          sends a thank-you message, then invoice / lead / pixel nodes.
+          sends a thank-you message, then invoice / pixel nodes.
 
         ### tagging — label the conversation or the contact
         { "action": "add", "target": "conversation", "tags": [3, 7] }
@@ -1232,6 +1221,16 @@ class FlowBlueprint
           outgoing edge.
         - "internal_note": `parameters.note` (supports {{variable}}). A note for the
           team, never sent to the customer. This one CONTINUES — it has one output.
+        - "create_lead": opens a CRM lead for the person in the conversation, with
+          nobody in charge yet. `parameters.lead_title` (supports {{variable}};
+          empty = the customer's name) and optional `parameters.lead_value_cents`
+          (integer, minor units of the workspace currency: 150.00 = 15000). A person who already has
+          an open lead does not get a second one. CONTINUES — one output. Only
+          when the person asks for leads/the CRM.
+        - "create_task": a CRM follow-up task about the person.
+          `parameters.task_title` (supports {{variable}}),
+          `parameters.task_due_in_days` (0–{$maxTaskDays}, default 1) and optional
+          `parameters.task_assignee_id` (from the agent list). CONTINUES — one output.
 
         ### http_request — call an external API
         GET, reading a value back out:
@@ -1349,25 +1348,6 @@ class FlowBlueprint
         - Invisible to the customer and never waits. One output.
         - Natural places: "lead" after the customer gave their contact details,
           "purchase" on a payment node's "{$paid}" branch.
-
-        ### lead — put the contact on the sales board
-        { "stage_id": 14, "only_forward": true, "value": "{{payment_value}}" }
-        - Makes sure the contact has an open lead (opens one when there is none)
-          and, when `stage_id` is set, moves the lead to that stage. `stage_id`
-          MUST come from the lead stages listed in the context; leave it null to
-          only make sure the lead exists. If no lead stages are listed, DO NOT use
-          this node.
-        - `only_forward` (default true): never moves a lead back to an earlier
-          stage of the same pipeline, so a returning customer already in a later
-          stage stays there.
-        - Optional: `title` and `value` (both accept {{variable}}), `owner_id` (an
-          agent from the context), `lost_reason` (only used on a stage whose kind
-          is "lost").
-        - Afterwards {{lead_id}}, {{lead_stage}} and {{lead_status}} are set.
-        - Invisible to the customer. One output.
-        - Natural places: a qualification stage right after the customer answered
-          the deciding question; the "won" stage on a payment node's "{$paid}"
-          branch.
 
         ### go_to_flow — continue in another flow
         { "flow_id": 12, "carry_variables": true }

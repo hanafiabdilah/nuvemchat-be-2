@@ -9,6 +9,8 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Services\Contact\ContactService;
 use App\Services\Contact\ContactTags;
+use App\Services\Crm\CustomerFilter;
+use App\Services\Crm\CustomerService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -65,6 +67,12 @@ class ContactController extends Controller
             // campaign too, because both address people by phone number.
             ->when($addressType, function ($query, $addressType) {
                 $query->whereIn('channel', $this->channelsAddressedBy($addressType));
+            })
+            // The channel contacts of a CRM segment's customers — a campaign to
+            // "VIP customers who wrote in the last 30 days" without retyping it.
+            ->when($request->query('segment_id'), function ($query, $segmentId) use ($request) {
+                $customers = CustomerFilter::query($request->user(), ['segment_id' => (int) $segmentId])->select('customers.id');
+                $query->whereIn('customer_id', $customers);
             })
             ->orderBy('created_at', 'desc')
             ->paginate($per_page);
@@ -139,6 +147,12 @@ class ContactController extends Controller
         }
 
         $contact->update($validated);
+
+        // The contact is one identity of a person; their name is the
+        // customer's, and every other identity of theirs takes it too.
+        if (array_key_exists('name', $validated)) {
+            app(CustomerService::class)->renameFromContact($contact, $request->user());
+        }
 
         return response()->json([
             'message' => 'Contact updated successfully',

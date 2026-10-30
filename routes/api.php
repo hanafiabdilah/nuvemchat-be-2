@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\Admin\AdminBroadcastController;
 use App\Http\Controllers\Api\Admin\AdminController as AdminAdminController;
 use App\Http\Controllers\Api\Admin\AdminConversationOverviewController;
 use App\Http\Controllers\Api\Admin\AdminCreditController;
+use App\Http\Controllers\Api\Admin\AdminDashboardController;
 use App\Http\Controllers\Api\Admin\AdminEntitlementController;
 use App\Http\Controllers\Api\Admin\AdminHealthController;
 use App\Http\Controllers\Api\Admin\AdminInvoiceController;
@@ -38,6 +39,7 @@ use App\Http\Controllers\Api\Admin\WhatsappLogController as AdminWhatsappLogCont
 use App\Http\Controllers\Api\AgentController;
 use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
 use App\Http\Controllers\Api\AiHub\AgentKnowledgeController as AiHubAgentKnowledgeController;
+use App\Http\Controllers\Api\AiHub\AgentPreviewController as AiHubAgentPreviewController;
 use App\Http\Controllers\Api\AiHub\AgentProfileController as AiHubAgentProfileController;
 use App\Http\Controllers\Api\AiHub\AgentSkillController as AiHubAgentSkillController;
 use App\Http\Controllers\Api\AiHub\AgentTrainingExampleController as AiHubAgentTrainingExampleController;
@@ -66,6 +68,24 @@ use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\ConversationFlowController;
 use App\Http\Controllers\Api\ConversationNoteController;
 use App\Http\Controllers\Api\Credits\CreditController;
+use App\Http\Controllers\Api\Crm\ActivityController as CrmActivityController;
+use App\Http\Controllers\Api\Crm\CompanyController;
+use App\Http\Controllers\Api\Crm\CrmAutomationController;
+use App\Http\Controllers\Api\Crm\CrmBulkController;
+use App\Http\Controllers\Api\Crm\CrmExportController;
+use App\Http\Controllers\Api\Crm\CrmReportController;
+use App\Http\Controllers\Api\Crm\CustomerController;
+use App\Http\Controllers\Api\Crm\CustomerImportController;
+use App\Http\Controllers\Api\Crm\CustomerSalesController;
+use App\Http\Controllers\Api\Crm\CustomFieldController;
+use App\Http\Controllers\Api\Crm\DealController;
+use App\Http\Controllers\Api\Crm\LeadController;
+use App\Http\Controllers\Api\Crm\LeadScoringController;
+use App\Http\Controllers\Api\Crm\PipelineController;
+use App\Http\Controllers\Api\Crm\SavedViewController;
+use App\Http\Controllers\Api\Crm\SegmentController;
+use App\Http\Controllers\Api\Crm\TaskController as CrmTaskController;
+use App\Http\Controllers\Api\EmailVerificationController;
 use App\Http\Controllers\Api\FlowAssistantController;
 use App\Http\Controllers\Api\FlowController;
 use App\Http\Controllers\Api\FlowTestController;
@@ -87,9 +107,6 @@ use App\Http\Controllers\Api\Youtube\YoutubeAccountController;
 use App\Http\Controllers\Api\Youtube\YoutubeCommentController;
 use App\Http\Controllers\Api\Youtube\YoutubePostController;
 use App\Http\Controllers\Api\IntegrationController;
-use App\Http\Controllers\Api\LeadController;
-use App\Http\Controllers\Api\LeadPipelineController;
-use App\Http\Controllers\Api\LeadSettingsController;
 use App\Http\Controllers\Api\LiveController;
 use App\Http\Controllers\Api\Mcp\AuthorizeController as McpAuthorizeController;
 use App\Http\Controllers\Api\Mcp\ConnectionController as McpConnectionController;
@@ -112,9 +129,7 @@ use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\V1\ConnectionController as V1ConnectionController;
 use App\Http\Controllers\Api\V1\ConversationMessageController as V1ConversationMessageController;
 use App\Http\Controllers\Api\V1\ConversationToolController as V1ConversationToolController;
-use App\Http\Controllers\Api\V1\LeadController as V1LeadController;
 use App\Http\Controllers\Api\V1\SendMessageController;
-use App\Http\Controllers\Api\WebhookController;
 use App\Http\Controllers\Api\WorkspaceController;
 use App\Http\Middleware\V1\ApiKeyAuth;
 use Illuminate\Support\Facades\Route;
@@ -400,17 +415,6 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         Route::get('/scopes', [McpConnectionController::class, 'scopes'])->name('scopes');
     });
 
-    // Outbound webhooks (lead events → the workspace's own systems).
-    Route::prefix('webhooks')->name('webhooks.')->middleware('permission:webhooks.manage')->group(function () {
-        Route::get('/', [WebhookController::class, 'index'])->name('index');
-        Route::post('/', [WebhookController::class, 'store'])->name('store');
-        Route::put('/{id}', [WebhookController::class, 'update'])->whereNumber('id')->name('update');
-        Route::delete('/{id}', [WebhookController::class, 'destroy'])->whereNumber('id')->name('destroy');
-        Route::post('/{id}/rotate-secret', [WebhookController::class, 'rotateSecret'])->whereNumber('id')->name('rotate-secret');
-        Route::post('/{id}/test', [WebhookController::class, 'test'])->whereNumber('id')->middleware('throttle:20,1')->name('test');
-        Route::get('/{id}/deliveries', [WebhookController::class, 'deliveries'])->whereNumber('id')->name('deliveries');
-    });
-
     Route::middleware('feature:'.Feature::Chat->value)->group(function () {
         Route::get('/messages', [MessageController::class, 'index']);
         // Message search runs here rather than over the client's own cache —
@@ -527,6 +531,146 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // /conversations/{id}/tags, different lifetime — see
         // ContactController@syncTags.
         Route::post('/contacts/{id}/tags', [ContactController::class, 'syncTags'])->middleware('permission:contacts.update');
+        // CRM (the `crm` plan feature): the customer above the channel
+        // contacts (one per person), the companies they work for, custom
+        // fields, leads, deals on pipeline boards, follow-up tasks, logged
+        // activity, insights and automations.
+        Route::middleware(['feature:crm', 'user.locale'])->group(function () {
+            Route::get('/contacts/{id}/customer', [CustomerController::class, 'forContact'])->middleware('permission:customers.view');
+            Route::prefix('customers')->group(function () {
+                Route::get('/', [CustomerController::class, 'index'])->middleware('permission:customers.view');
+                // Bulk changes and spreadsheets in — before the {id} routes.
+                Route::post('/bulk', [CrmBulkController::class, 'customers'])->middleware(['permission:customers.update|customers.delete', 'throttle:30,1']);
+                Route::post('/import/preview', [CustomerImportController::class, 'preview'])->middleware(['permission:crm-data.import', 'throttle:20,1']);
+                Route::post('/import', [CustomerImportController::class, 'commit'])->middleware(['permission:crm-data.import', 'throttle:20,1']);
+                Route::get('/owners', [CustomerController::class, 'owners'])->middleware('permission:customers.view|companies.view|leads.view|deals.view|crm-tasks.manage');
+                Route::post('/', [CustomerController::class, 'store'])->middleware('permission:customers.update');
+                Route::get('/{id}', [CustomerController::class, 'show'])->middleware('permission:customers.view');
+                Route::put('/{id}', [CustomerController::class, 'update'])->middleware('permission:customers.update');
+                Route::delete('/{id}', [CustomerController::class, 'destroy'])->middleware('permission:customers.delete');
+                Route::get('/{id}/conversations', [CustomerController::class, 'conversations'])->middleware('permission:customers.view');
+                Route::get('/{id}/timeline', [CustomerController::class, 'timeline'])->middleware('permission:customers.view');
+                Route::get('/{id}/duplicates', [CustomerController::class, 'duplicates'])->middleware('permission:customers.view');
+                Route::post('/{id}/tags', [CustomerController::class, 'syncTags'])->middleware('permission:customers.update');
+                Route::post('/{id}/contacts', [CustomerController::class, 'linkContact'])->middleware('permission:customers.update');
+                Route::delete('/{id}/contacts/{contactId}', [CustomerController::class, 'unlinkContact'])->middleware('permission:customers.update');
+                Route::post('/{id}/merge', [CustomerController::class, 'merge'])->middleware('permission:customers.merge');
+                Route::post('/{id}/relationships', [CustomerController::class, 'addRelationship'])->middleware('permission:customers.update');
+                Route::delete('/{id}/relationships/{relatedId}', [CustomerController::class, 'removeRelationship'])->middleware('permission:customers.update');
+            });
+            Route::prefix('companies')->group(function () {
+                Route::get('/', [CompanyController::class, 'index'])->middleware('permission:companies.view');
+                Route::post('/', [CompanyController::class, 'store'])->middleware('permission:companies.manage');
+                Route::get('/{id}', [CompanyController::class, 'show'])->middleware('permission:companies.view');
+                Route::put('/{id}', [CompanyController::class, 'update'])->middleware('permission:companies.manage');
+                Route::delete('/{id}', [CompanyController::class, 'destroy'])->middleware('permission:companies.manage');
+            });
+            // CRM data out, as CSV.
+            Route::get('/crm/export/{entity}', [CrmExportController::class, 'download'])
+                ->middleware(['permission:crm-data.export', 'throttle:20,1']);
+            Route::get('/crm/custom-fields', [CustomFieldController::class, 'index'])->middleware('permission:customers.view|companies.view');
+            Route::middleware('permission:crm-settings.manage')->group(function () {
+                Route::post('/crm/custom-fields', [CustomFieldController::class, 'store']);
+                Route::put('/crm/custom-fields/{id}', [CustomFieldController::class, 'update']);
+                Route::delete('/crm/custom-fields/{id}', [CustomFieldController::class, 'destroy']);
+            });
+
+            Route::get('/customers/{id}/sales', [CustomerSalesController::class, 'show'])->middleware('permission:customers.view');
+
+            // Insights (phase 3): the overview, the reports, segments, saved
+            // views, lead scoring, bulk changes and sales data out.
+            Route::get('/crm/overview', [CrmReportController::class, 'overview'])->middleware('permission:leads.view|deals.view|crm-tasks.manage');
+            Route::prefix('crm/reports')->middleware('permission:crm-reports.view')->group(function () {
+                Route::get('/sales', [CrmReportController::class, 'sales']);
+                Route::get('/sources', [CrmReportController::class, 'sources']);
+                Route::get('/pipeline', [CrmReportController::class, 'pipeline']);
+                Route::get('/forecast', [CrmReportController::class, 'forecast']);
+                Route::get('/activities', [CrmReportController::class, 'activities']);
+            });
+
+            Route::prefix('crm/segments')->group(function () {
+                Route::get('/', [SegmentController::class, 'index'])->middleware('permission:customers.view');
+                Route::post('/preview', [SegmentController::class, 'preview'])->middleware('permission:customers.view');
+                Route::post('/', [SegmentController::class, 'store'])->middleware('permission:segments.manage');
+                Route::get('/{id}', [SegmentController::class, 'show'])->middleware('permission:customers.view');
+                Route::put('/{id}', [SegmentController::class, 'update'])->middleware('permission:segments.manage');
+                Route::delete('/{id}', [SegmentController::class, 'destroy'])->middleware('permission:segments.manage');
+            });
+
+            Route::prefix('crm/views')->middleware('permission:customers.view|companies.view|leads.view|deals.view|crm-tasks.manage')->group(function () {
+                Route::get('/', [SavedViewController::class, 'index']);
+                Route::post('/', [SavedViewController::class, 'store']);
+                Route::put('/{id}', [SavedViewController::class, 'update']);
+                Route::delete('/{id}', [SavedViewController::class, 'destroy']);
+            });
+
+            Route::get('/crm/lead-scoring', [LeadScoringController::class, 'show'])->middleware('permission:leads.view|crm-settings.manage');
+            Route::put('/crm/lead-scoring', [LeadScoringController::class, 'update'])->middleware('permission:crm-settings.manage');
+
+            // CRM automations: trigger → conditions → actions, with the
+            // history of every run (phase 4).
+            Route::prefix('crm/automations')->middleware('permission:crm-automations.manage')->group(function () {
+                Route::get('/', [CrmAutomationController::class, 'index']);
+                Route::get('/meta', [CrmAutomationController::class, 'meta']);
+                Route::get('/runs', [CrmAutomationController::class, 'runs']);
+                Route::post('/', [CrmAutomationController::class, 'store']);
+                Route::get('/{id}', [CrmAutomationController::class, 'show'])->whereNumber('id');
+                Route::put('/{id}', [CrmAutomationController::class, 'update'])->whereNumber('id');
+                Route::delete('/{id}', [CrmAutomationController::class, 'destroy'])->whereNumber('id');
+                Route::get('/{id}/runs', [CrmAutomationController::class, 'runs'])->whereNumber('id');
+            });
+
+            Route::post('/leads/bulk', [CrmBulkController::class, 'leads'])->middleware(['permission:leads.manage|leads.delete', 'throttle:30,1']);
+            Route::post('/deals/bulk', [CrmBulkController::class, 'deals'])->middleware(['permission:deals.manage|deals.delete', 'throttle:30,1']);
+            Route::post('/crm/tasks/bulk', [CrmBulkController::class, 'tasks'])->middleware(['permission:crm-tasks.manage', 'throttle:30,1']);
+
+            Route::prefix('leads')->group(function () {
+                Route::get('/', [LeadController::class, 'index'])->middleware('permission:leads.view');
+                Route::post('/', [LeadController::class, 'store'])->middleware('permission:leads.manage');
+                Route::get('/{id}', [LeadController::class, 'show'])->middleware('permission:leads.view');
+                Route::put('/{id}', [LeadController::class, 'update'])->middleware('permission:leads.manage');
+                Route::post('/{id}/convert', [LeadController::class, 'convert'])->middleware('permission:leads.manage|deals.manage');
+                Route::delete('/{id}', [LeadController::class, 'destroy'])->middleware('permission:leads.delete');
+            });
+
+            Route::prefix('deals')->group(function () {
+                Route::get('/', [DealController::class, 'index'])->middleware('permission:deals.view');
+                Route::get('/board', [DealController::class, 'board'])->middleware('permission:deals.view');
+                Route::post('/', [DealController::class, 'store'])->middleware('permission:deals.manage');
+                Route::get('/{id}', [DealController::class, 'show'])->middleware('permission:deals.view');
+                Route::put('/{id}', [DealController::class, 'update'])->middleware('permission:deals.manage');
+                Route::post('/{id}/move', [DealController::class, 'move'])->middleware('permission:deals.manage');
+                Route::delete('/{id}', [DealController::class, 'destroy'])->middleware('permission:deals.delete');
+            });
+
+            Route::get('/crm/pipelines', [PipelineController::class, 'index'])->middleware('permission:deals.view|pipelines.manage');
+            Route::middleware('permission:pipelines.manage')->prefix('crm/pipelines')->group(function () {
+                Route::post('/', [PipelineController::class, 'store']);
+                Route::put('/{id}', [PipelineController::class, 'update']);
+                Route::delete('/{id}', [PipelineController::class, 'destroy']);
+                Route::post('/{id}/stages', [PipelineController::class, 'storeStage']);
+                Route::put('/{id}/stages/order', [PipelineController::class, 'orderStages']);
+                Route::put('/{id}/stages/{stageId}', [PipelineController::class, 'updateStage']);
+                Route::delete('/{id}/stages/{stageId}', [PipelineController::class, 'destroyStage']);
+            });
+
+            Route::middleware('permission:crm-tasks.manage')->prefix('crm/tasks')->group(function () {
+                Route::get('/', [CrmTaskController::class, 'index']);
+                Route::post('/', [CrmTaskController::class, 'store']);
+                Route::put('/{id}', [CrmTaskController::class, 'update']);
+                Route::post('/{id}/complete', [CrmTaskController::class, 'complete']);
+                Route::post('/{id}/reopen', [CrmTaskController::class, 'reopen']);
+                Route::delete('/{id}', [CrmTaskController::class, 'destroy']);
+            });
+
+            Route::middleware('permission:crm-activities.manage')->prefix('crm/activities')->group(function () {
+                Route::get('/', [CrmActivityController::class, 'index']);
+                Route::post('/', [CrmActivityController::class, 'store']);
+                Route::put('/{id}', [CrmActivityController::class, 'update']);
+                Route::delete('/{id}', [CrmActivityController::class, 'destroy']);
+            });
+        });
+
 
         // Tag routes - protected by permissions
         Route::post('/tags', [TagController::class, 'store'])->middleware('permission:tags.create');
@@ -567,42 +711,6 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             Route::post('/broadcasts/{id}/resume', [BroadcastController::class, 'resume'])->middleware('permission:broadcasts.send');
             Route::post('/broadcasts/{id}/cancel', [BroadcastController::class, 'cancel'])->middleware('permission:broadcasts.send');
             Route::post('/broadcasts/{id}/retry-failed', [BroadcastController::class, 'retryFailed'])->middleware('permission:broadcasts.send');
-        });
-
-        // Sales funnel — gated by the `crm` plan feature. A workspace can run a
-        // busy support inbox and never sell anything from it, so this is its own
-        // feature rather than part of `chat`.
-        Route::middleware('feature:crm')->group(function () {
-            // The board is deliberately its own endpoint rather than index()
-            // with a large page size: six columns that fetch every lead to
-            // render are fine at forty cards and unusable at five thousand.
-            Route::get('/leads/board', [LeadController::class, 'board'])->middleware('permission:leads.view');
-            // Before /leads/{id}, or "owners" is read as an id.
-            Route::get('/leads/owners', [LeadController::class, 'owners'])->middleware('permission:leads.view');
-            Route::get('/leads', [LeadController::class, 'index'])->middleware('permission:leads.view');
-            Route::post('/leads', [LeadController::class, 'store'])->middleware('permission:leads.create');
-            // Before /leads/{id}, like `owners` above.
-            Route::post('/leads/bulk-close', [LeadController::class, 'bulkClose'])->middleware(['permission:leads.update', 'throttle:10,1']);
-            Route::get('/leads/{id}', [LeadController::class, 'show'])->middleware('permission:leads.view');
-            Route::patch('/leads/{id}', [LeadController::class, 'update'])->middleware('permission:leads.update');
-            // The drag. Its own verb because it writes the audit row the
-            // conversion report is built from — see LeadController::move().
-            Route::patch('/leads/{id}/stage', [LeadController::class, 'move'])->middleware('permission:leads.update');
-            Route::delete('/leads/{id}', [LeadController::class, 'destroy'])->middleware('permission:leads.delete');
-
-            Route::get('/contacts/{contact}/leads', [LeadController::class, 'forContact'])->middleware('permission:leads.view');
-
-            // Changing the shape of the funnel is a different level of trust
-            // from working a card.
-            // Auto-close window, and whether it runs at all. Every workspace
-            // sells on a different clock, so none of it is hard-coded.
-            Route::get('/lead-settings', [LeadSettingsController::class, 'show'])->middleware('permission:leads.view');
-            Route::put('/lead-settings', [LeadSettingsController::class, 'update'])->middleware('permission:lead-pipelines.manage');
-
-            Route::get('/lead-pipelines', [LeadPipelineController::class, 'index'])->middleware('permission:leads.view');
-            Route::post('/lead-pipelines/{pipeline}/stages', [LeadPipelineController::class, 'storeStage'])->middleware('permission:lead-pipelines.manage');
-            Route::patch('/lead-pipelines/{pipeline}/stages/{stage}', [LeadPipelineController::class, 'updateStage'])->middleware('permission:lead-pipelines.manage');
-            Route::delete('/lead-pipelines/{pipeline}/stages/{stage}', [LeadPipelineController::class, 'destroyStage'])->middleware('permission:lead-pipelines.manage');
         });
 
         // Instagram publishing. Two id spaces meet here and are kept apart by
@@ -1030,8 +1138,6 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
 // connection's public id. Throttle after auth, so it counts per key.
 Route::prefix('/v1')->middleware([ApiKeyAuth::class, 'throttle:public-api'])->group(function () {
     Route::post('send-message', [SendMessageController::class, 'handle']);
-    Route::post('leads', [V1LeadController::class, 'store']);
-    Route::post('leads/close', [V1LeadController::class, 'close']);
     Route::get('connections', [V1ConnectionController::class, 'index']);
 
     // The AI Hub answering in a conversation it is already serving. Named by
@@ -1281,8 +1387,8 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         Route::middleware('permission:bo.plans.manage')->group(function () {
             Route::get('/plans', [AdminPlanController::class, 'index']);
             // The feature/quota vocabulary, so the plan editor stops keeping
-            // its own copy of it — the copy went stale and silently dropped
-            // `crm` from every plan it saved.
+            // its own copy of it — the copy went stale and silently dropped a
+            // feature from every plan it saved.
             Route::get('/plans/meta', [AdminPlanController::class, 'meta']);
             Route::post('/plans', [AdminPlanController::class, 'store']);
             Route::put('/plans/{plan}', [AdminPlanController::class, 'update']);

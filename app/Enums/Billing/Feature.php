@@ -21,9 +21,12 @@ enum Feature: string
     case WhatsappApi = 'whatsapp_api';
 
     /**
-     * The sales funnel: leads, pipelines, the board. Separate from `chat`
+     * The CRM: one customer above the channel contacts, companies, custom
+     * fields, leads, deals on pipeline boards, tasks with reminders, logged
+     * activity, segments, reports and automations. Separate from `chat`
      * because a workspace can run a busy support inbox and never sell anything
      * from it — and because it is the natural thing to put on a higher tier.
+     * Everything CRM sits behind it, the customer pages included.
      */
     case Crm = 'crm';
 
@@ -111,7 +114,7 @@ enum Feature: string
         return match ($this) {
             self::Chat => 'Chat inbox',
             self::WhatsappApi => 'WhatsApp API (API Way)',
-            self::Crm => 'CRM / Leads',
+            self::Crm => 'CRM',
             self::Flow => 'Flow automation',
             self::FlowAssistant => 'Flow AI assistant',
             self::AiAgentHub => 'AI Agent Hub',
@@ -130,7 +133,7 @@ enum Feature: string
         return match ($this) {
             self::Chat => 'The omnichannel inbox itself.',
             self::WhatsappApi => 'Marks an API Way workspace. Granted automatically by owning instances — it does NOT gate buying them, which is open to every tenant.',
-            self::Crm => 'Lead board, pipelines and stages.',
+            self::Crm => 'Customers across channels, companies, leads, deals on pipeline boards, tasks with reminders, logged activity, segments, reports and automations.',
             self::Flow => 'The visual automation builder.',
             self::FlowAssistant => 'Builds and edits flows from a description, in the builder. Runs on the workspace\'s own AI key or one it rents from the platform (charged to its balance), chosen in the builder. Needs `flow` to be of any use.',
             self::AiAgentHub => 'AI agents, handoff and reply suggestions.',

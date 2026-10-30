@@ -149,6 +149,48 @@ class PushNotifier
     }
 
     /**
+     * A notification about one person's own work (CRM: a lead given to them,
+     * a task reminder) — to their phones, not decided by a conversation.
+     * Queued per phone; never throws.
+     *
+     * @param  array<string, string>  $params
+     */
+    public static function queueForUser(User $user, string $type, string $title, array $params, string $url): void
+    {
+        try {
+            if (! config('push.enabled') || ! FirebaseConfig::isConfigured()) {
+                return;
+            }
+
+            $devices = DeviceToken::query()->where('user_id', $user->id)->where('tenant_id', $user->tenant_id)->get();
+
+            if ($devices->isEmpty()) {
+                return;
+            }
+
+            $notifier = app(self::class);
+
+            foreach ($devices as $device) {
+                $locale = $notifier->localeFor($device);
+                $message = [
+                    'notification' => [
+                        'title' => $title,
+                        'body' => $notifier->text($type, $locale, $params),
+                    ],
+                    // FCM data values must all be strings.
+                    'data' => ['type' => $type, 'url' => $url],
+                    'android' => ['priority' => 'high', 'notification' => ['channel_id' => 'activity']],
+                    'apns' => ['payload' => ['aps' => ['sound' => 'default']]],
+                ];
+
+                SendPushNotification::dispatch($device->id, $message)->onQueue(config('push.queue'));
+            }
+        } catch (Throwable $e) {
+            Log::warning('Push notification could not be queued', ['type' => $type, 'user_id' => $user->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
      * A test notification to one person's own phones, sent synchronously so the
      * answer is on the screen that asked for it.
      *

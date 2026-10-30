@@ -6,8 +6,6 @@ use App\Enums\Integration\IntegrationCategory;
 use App\Models\AiHubAgent;
 use App\Models\Flow;
 use App\Models\Integration;
-use App\Models\LeadPipeline;
-use App\Models\LeadStage;
 use App\Models\Tag;
 use App\Models\User;
 
@@ -15,8 +13,8 @@ use App\Models\User;
  * The real ids a flow in this workspace may point at.
  *
  * Half of `FlowBlueprint`'s validation rules are tenant-scoped `exists` checks —
- * a tag, an agent, an AI agent, a payment or invoice or pixel integration, a
- * lead stage, another flow. Anything writing a flow has to know which ids those
+ * a tag, an agent, an AI agent, a payment or invoice or pixel integration,
+ * another flow. Anything writing a flow has to know which ids those
  * are, and there is no way to guess one: an invented id is not a wrong answer,
  * it is a save that fails.
  *
@@ -70,8 +68,6 @@ final class FlowVocabulary
                 ->get(['id', 'name'])
                 ->map(fn (Flow $other) => ['id' => $other->id, 'name' => $other->name])
                 ->all(),
-
-            'lead_stages' => self::leadStages($tenantId),
         ];
     }
 
@@ -95,24 +91,6 @@ final class FlowVocabulary
                 'name' => $integration->name,
                 'provider' => $integration->provider->label(),
                 'payment_methods' => $integration->provider->paymentMethods() ?: null,
-            ]))
-            ->values()
-            ->all();
-    }
-
-    /** @return list<array<string, mixed>> */
-    public static function leadStages(int $tenantId): array
-    {
-        return LeadPipeline::where('tenant_id', $tenantId)
-            ->with('stages')
-            ->orderByDesc('is_default')
-            ->orderBy('position')
-            ->get()
-            ->flatMap(fn (LeadPipeline $pipeline) => $pipeline->stages->map(fn (LeadStage $stage) => [
-                'id' => $stage->id,
-                'name' => $stage->name,
-                'kind' => $stage->kind->value,
-                'pipeline' => $pipeline->name,
             ]))
             ->values()
             ->all();

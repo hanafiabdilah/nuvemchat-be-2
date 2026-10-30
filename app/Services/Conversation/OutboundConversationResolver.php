@@ -50,9 +50,9 @@ class OutboundConversationResolver
      * @param  bool  $activateOnReuse  Promote a reused thread to Active. Callers that
      *                                 must not interrupt a running AI turn pass false.
      * @param  Status  $createAs  Status of a thread this call creates. Active suits a
-     *                            sender who is about to own it; a lead received through
-     *                            the public API with nobody named goes to the Pending
-     *                            queue instead, where every agent can see it.
+     *                            sender who is about to own it; a thread nobody owns yet
+     *                            belongs in the Pending queue instead, where every agent
+     *                            can see it.
      * @return ResolvedConversation|null  Null when the channel offers no way to address
      *                                    this contact yet (see the class docblock).
      */

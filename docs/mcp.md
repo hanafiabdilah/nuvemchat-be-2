@@ -2,7 +2,7 @@
 
 Lets a workspace drive Pingly from an LLM client — Claude Code, Claude Desktop,
 Codex — over the Model Context Protocol. It exposes the flow builder, the media
-gallery, broadcast campaigns, statistics, the live monitor and the lead funnel.
+gallery, broadcast campaigns, statistics and the live monitor.
 
 This is the platform's first surface where an outside program acts as **a named
 person** rather than as the workspace. The public API (`/v1/*`) authenticates
@@ -68,18 +68,14 @@ nobody can act on.
 | `get_statistics_filters`, `get_statistics` | `mcp:statistics.read` | `statistics.tenant.view` |
 | `get_agent_statistics` | `mcp:statistics.read` | `statistics.agents.view` |
 | `get_live` | `mcp:live.read` | `statistics.tenant.view` (+ `statistics.agents.view` for the roster) |
-| `list_lead_pipelines`, `list_leads`, `get_lead`, `find_contacts` | `mcp:leads.read` | `leads.view` |
-| `create_lead` | `mcp:leads.write` | `leads.create` |
-| `update_lead` | `mcp:leads.write` | `leads.update` |
 
-Plan features: flows → `flow`; statistics & live → `statistics`; leads → `crm`;
+Plan features: flows → `flow`; statistics & live → `statistics`;
 campaigns and the gallery → `mcp` only (neither is a plan feature). Every
 `*.write` scope implies its `*.read` (`Scopes::satisfies`).
 
-### Campaigns, statistics, live, leads (Sep 2026)
+### Campaigns, statistics, live (Sep 2026)
 
-⚠️ **Deliberately missing: creating or starting a campaign, and deleting a
-lead.** A campaign spends the reputation of the number it goes out on, so the
+⚠️ **Deliberately missing: creating or starting a campaign.** A campaign spends the reputation of the number it goes out on, so the
 decision to message thousands of customers stays in the dashboard; an editor may
 only *operate* one somebody already decided to send (pause, resume, cancel,
 retry failures). Adding `create_campaign`/`start_campaign` is a product decision,
@@ -99,14 +95,10 @@ model to confirm with the person, and the server instructions repeat it.
 - **Live = `LiveMonitor::forUser()`** — metadata only (no message text), and an
   agent holding one inbox sees that inbox only, exactly as on the page. `after_id`
   / `cursor` work like the page's keyset delta.
-- **Leads** are tenant-scoped like `LeadController`. `update_lead` edits fields
-  *and* moves stages in one call; the move goes through `Lead::moveToStage()`
-  with the person as actor, so stage history, `closed_at`, rescoring, the
-  `LeadUpdated` broadcast and outbound webhooks all fire as for a drag.
-  Everything is validated before anything is written (a refused stage does not
-  leave the title half-changed). `find_contacts` exists so `create_lead` has an
-  id; it rides on `leads.view` because the contact book is readable by every
-  member in the dashboard anyway. Audit: `mcp.lead.{created,updated}`.
+- **The lead tools are gone (Oct 2026)** together with the Leads module:
+  `list_lead_pipelines`, `list_leads`, `get_lead`, `find_contacts`,
+  `create_lead`, `update_lead` and the `mcp:leads.{read,write}` scopes. The
+  removal migration strips those scopes from stored connections.
 - ⚠️ Existing connections do not gain the new scopes: the person must disconnect
   and connect again, allowing them. A client that asks for no scope still gets
   only `mcp:flows.read`.

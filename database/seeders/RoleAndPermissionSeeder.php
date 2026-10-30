@@ -21,6 +21,41 @@ class RoleAndPermissionSeeder extends Seeder
             // Contacts
             'contacts.update',
 
+            // CRM: the customer above the channel contacts, and companies.
+            // `merge` folds two customers into one and `delete` removes one —
+            // both reach every channel contact linked to them, so they are
+            // split from editing. `crm-settings.manage` is the workspace's
+            // custom fields.
+            'customers.view',
+            'customers.update',
+            'customers.merge',
+            'customers.delete',
+            'companies.view',
+            'companies.manage',
+            'crm-settings.manage',
+            // CRM sales (phase 2): leads, deals, tasks, logged activity.
+            // `pipelines.manage` shapes the boards every deal sits on.
+            'leads.view',
+            'leads.manage',
+            'leads.delete',
+            'deals.view',
+            'deals.manage',
+            'deals.delete',
+            'pipelines.manage',
+            'crm-tasks.manage',
+            'crm-activities.manage',
+            // CRM insights (phase 3): shared customer segments, the reports
+            // (everyone's sales numbers), and moving data in and out of the
+            // workspace in bulk — each the owner's until handed out, except
+            // segments, which go with editing customers.
+            'segments.manage',
+            'crm-reports.view',
+            'crm-data.export',
+            'crm-data.import',
+            // CRM automations (phase 4): rules that act on everyone's records
+            // without anybody pressing a button — the owner's until handed out.
+            'crm-automations.manage',
+
             // Conversations. Both sit on top of the assignee / connection-access
             // rules, never instead of them: transfer still needs the thread to
             // be yours, take-over still needs the connection.
@@ -41,9 +76,6 @@ class RoleAndPermissionSeeder extends Seeder
 
             // API keys for the public API (/v1/*).
             'api-keys.manage',
-
-            // Outbound webhooks (lead events sent to the workspace's systems).
-            'webhooks.manage',
 
             // Tags
             'tags.create',
@@ -109,14 +141,6 @@ class RoleAndPermissionSeeder extends Seeder
             'broadcasts.create',
             'broadcasts.send',
             'broadcasts.delete',
-
-            // Sales funnel. Reshaping the funnel is split from working a card:
-            // moving a lead is daily work, deciding what counts as a sale is not.
-            'leads.view',
-            'leads.create',
-            'leads.update',
-            'leads.delete',
-            'lead-pipelines.manage',
 
             // Instagram publishing. `delete` covers our own drafts and
             // schedules only — Instagram Login has no endpoint for removing a

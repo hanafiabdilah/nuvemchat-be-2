@@ -17,22 +17,18 @@ use App\Models\FlowAssistantSetting;
 use App\Models\FlowEdge;
 use App\Models\FlowNode;
 use App\Models\Integration;
-use App\Models\LeadPipeline;
 use App\Models\TrainedAgentBlueprint;
 use App\Models\TrainedAgentCategory;
 use App\Models\TrainedAgentHire;
-use App\Services\Lead\PipelineProvisioner;
 use Illuminate\Support\Str;
 
 trait Automation
 {
     /** @var array<string, Integration> */
     protected array $integrations = [];
-    protected ?LeadPipeline $pipeline = null;
 
     protected function seedAutomation(): void
     {
-        $this->pipeline = app(PipelineProvisioner::class)->ensureDefault($this->tenant->id)->load('stages');
         $this->seedIntegrations();
         $this->seedAiHub();
         $this->seedFlows();
@@ -42,11 +38,6 @@ trait Automation
         $this->conn['apiway']->forceFill(['ai_suggest_agent_id' => $this->ai['sofia']->id])->save();
         $this->conn['widget']->forceFill(['flow_id' => $this->flows['suporte']->id])->save();
         $this->conn['ig']->forceFill(['ai_suggest_agent_id' => $this->ai['leo']->id])->save();
-    }
-
-    protected function stage(string $name): ?int
-    {
-        return $this->pipeline?->stages->firstWhere('name', $name)?->id;
     }
 
     private function seedIntegrations(): void
@@ -232,7 +223,7 @@ trait Automation
     {
         // Rows first, so go-to-flow nodes can point at flows built later.
         foreach (['inicial' => 'Atendimento inicial', 'pix' => 'Cobrança Pix', 'fora' => 'Fora do horário',
-                  'pesquisa' => 'Pesquisa de satisfação', 'api' => 'Qualificação de leads (API)', 'suporte' => 'Suporte técnico',
+                  'pesquisa' => 'Pesquisa de satisfação', 'api' => 'Qualificação de atacado (API)', 'suporte' => 'Suporte técnico',
                   'rascunho' => 'Black Friday (rascunho)', 'nota' => 'Cobrança com nota fiscal'] as $key => $name) {
             $this->flows[$key] = $this->make(Flow::class, ['name' => $name, 'tenant_id' => $this->tenant->id]);
         }
@@ -251,8 +242,7 @@ trait Automation
                 'variable_key' => 'email', 'timeout_seconds' => 3600, 'timeout_unit' => 'hours', 'buffer_seconds' => 0, 'validation' => 'email',
                 'error_message' => 'Não consegui ler esse e-mail. Pode repetir?'], 980, -160],
             ['tag', 'tagging', ['action' => 'add', 'target' => 'conversation', 'tags' => [$this->tags['orcamento']->id]], 1340, -240],
-            ['lead', 'lead', ['pipeline_id' => $this->pipeline?->id, 'stage_id' => $this->stage('Qualificação'), 'only_forward' => true,
-                'title' => 'Interesse via WhatsApp', 'value' => '', 'owner_id' => $this->users['carlos']->id], 1680, -240],
+            ['buyer', 'action', ['type' => 'internal_note', 'parameters' => ['note' => 'Quer comprar. E-mail: {{email}}']], 1680, -240],
             ['pixel', 'pixel', ['integration_ids' => [$this->integrations['pixel']->id], 'event' => 'lead', 'value' => '', 'currency' => 'BRL', 'parameters' => []], 2020, -240],
             ['later', 'message', ['messages' => [$text('Sem problemas! Quando quiser, é só chamar 😉')]], 1340, 40],
             ['hours', 'condition', ['label' => 'Dentro do horário?', 'field' => 'service_hours.is_open', 'operator' => 'equals', 'value' => 'true'], 980, 300],
@@ -274,8 +264,8 @@ trait Automation
             ['human', 'action', ['type' => 'transfer_human', 'parameters' => []], 1340, 1000],
         ], [
             ['start', 'welcome', null], ['welcome', 'menu', null], ['menu', 'email', 'btn_comprar'], ['menu', 'hours', 'btn_suporte'],
-            ['menu', 'note', 'btn_atendente'], ['email', 'tag', 'replied'], ['email', 'later', 'timeout'], ['tag', 'lead', null],
-            ['lead', 'pixel', null], ['later', 'end', null], ['hours', 'ai', 'true'], ['hours', 'closed', 'false'], ['closed', 'end', null], ['note', 'human', null],
+            ['menu', 'note', 'btn_atendente'], ['email', 'tag', 'replied'], ['email', 'later', 'timeout'], ['tag', 'buyer', null],
+            ['buyer', 'pixel', null], ['later', 'end', null], ['hours', 'ai', 'true'], ['hours', 'closed', 'false'], ['closed', 'end', null], ['note', 'human', null],
         ], 70);
 
         $this->buildFlow('pix', 'Cobrança Pix', [
@@ -288,10 +278,10 @@ trait Automation
                 'send_copy_paste' => true, 'send_link' => false, 'payer_document' => '{{cpf}}'], 620, 160],
             ['pixel', 'pixel', ['integration_ids' => [$this->integrations['pixel']->id, $this->integrations['ga4']->id], 'event' => 'purchase',
                 'value' => '{{payment_value}}', 'currency' => 'BRL', 'parameters' => []], 980, 40],
-            ['won', 'lead', ['pipeline_id' => $this->pipeline?->id, 'stage_id' => $this->stage('Cliente'), 'only_forward' => true, 'title' => '', 'value' => '{{payment_value}}', 'owner_id' => null], 1300, 40],
+            ['thanks', 'message', ['messages' => [$text('Pagamento confirmado! Obrigada pela compra 💙')]], 1300, 40],
             ['expired', 'message', ['messages' => [$text('O Pix expirou, mas posso gerar outro! Um atendente vai te ajudar.')]], 980, 380],
             ['human', 'action', ['type' => 'transfer_human', 'parameters' => []], 1300, 400],
-        ], [['start', 'cpf', null], ['cpf', 'pay', null], ['pay', 'pixel', 'paid'], ['pay', 'expired', 'failed'], ['pixel', 'won', null], ['expired', 'human', null]], 40);
+        ], [['start', 'cpf', null], ['cpf', 'pay', null], ['pay', 'pixel', 'paid'], ['pay', 'expired', 'failed'], ['pixel', 'thanks', null], ['expired', 'human', null]], 40);
 
         $this->buildFlow('fora', 'Fora do horário', [
             ['start', 'start', null, 0, 160],
@@ -309,19 +299,19 @@ trait Automation
             ['goto', 'go_to_flow', ['flow_id' => $this->flows['suporte']->id, 'carry_variables' => true], 660, 380],
         ], [['start', 'ask', null], ['ask', 'tag', 'nota_otimo'], ['ask', 'thanks', 'nota_bom'], ['ask', 'goto', 'nota_ruim']], 30);
 
-        $this->buildFlow('api', 'Qualificação de leads (API)', [
+        $this->buildFlow('api', 'Qualificação de atacado (API)', [
             ['start', 'start', null, 0, 200],
             ['cnpj', 'wait_response', ['label' => 'Aguarda o CNPJ', 'message' => 'Para liberar a tabela de atacado, qual é o CNPJ da sua loja?',
                 'variable_key' => 'cnpj', 'timeout_seconds' => 1800, 'timeout_unit' => 'minutes', 'buffer_seconds' => 0, 'validation' => 'number',
                 'error_message' => 'Envie só os números do CNPJ.'], 280, 160],
-            ['http', 'http_request', ['label' => 'Consulta CNPJ (HTTP)', 'method' => 'POST', 'url' => 'https://api.lojaaurora.example/v1/leads/consulta',
+            ['http', 'http_request', ['label' => 'Consulta CNPJ (HTTP)', 'method' => 'POST', 'url' => 'https://api.lojaaurora.example/v1/atacado/consulta',
                 'headers' => [['key' => 'Authorization', 'value' => 'Bearer {{token_api}}'], ['key' => 'Content-Type', 'value' => 'application/json']],
                 'body' => '{"cnpj":"{{cnpj}}","origem":"whatsapp"}', 'timeout' => 15,
                 'response_mappings' => [['path' => 'data.razao_social', 'variable' => 'razao_social'], ['path' => 'data.porte', 'variable' => 'porte']]], 640, 160],
             ['big', 'condition', ['field' => 'porte', 'operator' => 'equals', 'value' => 'grande'], 1000, 60],
-            ['lead', 'lead', ['pipeline_id' => $this->pipeline?->id, 'stage_id' => $this->stage('Proposta'), 'only_forward' => true, 'title' => 'Atacado — {{razao_social}}', 'value' => '', 'owner_id' => $this->users['carlos']->id], 1340, 0],
+            ['wholesale', 'message', ['messages' => [$text('Ótimo, {{razao_social}}! Um consultor vai te enviar a tabela de atacado em instantes.')]], 1340, 0],
             ['human', 'action', ['type' => 'transfer_human', 'parameters' => []], 1000, 360],
-        ], [['start', 'cnpj', null], ['cnpj', 'http', 'replied'], ['http', 'big', 'success'], ['http', 'human', 'error'], ['big', 'lead', 'true'], ['big', 'human', 'false']], 25);
+        ], [['start', 'cnpj', null], ['cnpj', 'http', 'replied'], ['http', 'big', 'success'], ['http', 'human', 'error'], ['big', 'wholesale', 'true'], ['big', 'human', 'false']], 25);
 
         $this->buildFlow('suporte', 'Suporte técnico', [
             ['start', 'start', null, 0, 160],

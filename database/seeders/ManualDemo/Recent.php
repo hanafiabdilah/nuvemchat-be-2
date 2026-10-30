@@ -186,11 +186,11 @@ trait Recent
         ], 3);
     }
 
-    /** Marina connected Claude Desktop to the workspace's flows and leads. */
+    /** Marina connected Claude Desktop to the workspace's flows and statistics. */
     private function seedMcpConnection(): void
     {
         $clients = [
-            ['Claude', 'https://claude.ai', ['mcp:flows.read', 'mcp:flows.write', 'mcp:media.read', 'mcp:leads.read', 'mcp:statistics.read'], 35, 2],
+            ['Claude', 'https://claude.ai', ['mcp:flows.read', 'mcp:flows.write', 'mcp:media.read', 'mcp:statistics.read'], 35, 2],
             ['Codex', null, ['mcp:flows.read'], 12, 4300],
         ];
 

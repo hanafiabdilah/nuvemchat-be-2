@@ -109,6 +109,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'whatsapp.verified' => \App\Http\Middleware\EnsureWhatsAppVerified::class,
             'messaging.window' => \App\Http\Middleware\EnsureMessagingWindowIsOpen::class,
             'platform.only' => \App\Http\Middleware\EnsurePlatformHost::class,
+            'user.locale' => \App\Http\Middleware\UseUserLocale::class,
         ]);
 
         // The country-domain guard must run before authentication. Laravel

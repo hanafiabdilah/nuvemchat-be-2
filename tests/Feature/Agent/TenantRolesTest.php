@@ -19,7 +19,7 @@ uses(RefreshDatabase::class);
 const TENANT_ROLE_PERMISSIONS = [
     'roles.view', 'roles.create', 'roles.update', 'roles.delete',
     'agents.view', 'agents.create', 'agents.assign-roles', 'agents.assign-permissions',
-    'leads.view', 'contacts.update',
+    'tags.create', 'contacts.update',
 ];
 
 function roleScopeOwner(string $name = 'Dona'): User
@@ -42,7 +42,7 @@ function roleScopeAgent(User $owner, string $email): User
     return User::factory()->create(['tenant_id' => $owner->tenant_id, 'email' => $email]);
 }
 
-function roleScopeCreate(User $owner, string $name, array $permissions = ['leads.view']): Role
+function roleScopeCreate(User $owner, string $name, array $permissions = ['tags.create']): Role
 {
     test()->actingAs($owner, 'sanctum')
         ->postJson('/api/roles', ['name' => $name, 'permissions' => $permissions])
@@ -59,7 +59,7 @@ test('two workspaces can each have a role with the same name', function () {
     $roleB = roleScopeCreate($b, 'Supervisor', ['contacts.update']);
 
     expect($roleA->id)->not->toBe($roleB->id)
-        ->and($roleA->permissions->pluck('name')->all())->toBe(['leads.view'])
+        ->and($roleA->permissions->pluck('name')->all())->toBe(['tags.create'])
         ->and($roleB->permissions->pluck('name')->all())->toBe(['contacts.update']);
 
     // …but not twice in the same one.
@@ -98,7 +98,7 @@ test('back office permissions never reach a workspace', function () {
     $names = collect($this->actingAs($a, 'sanctum')->getJson('/api/permissions')->assertOk()->json('data'))->pluck('name');
     expect($names)->not->toContain('bo.health.view')
         ->and($names)->not->toContain('bo.leaked.view')
-        ->and($names)->toContain('leads.view');
+        ->and($names)->toContain('tags.create');
 
     $owner = collect($this->actingAs($a, 'sanctum')->getJson('/api/roles')->json('data'))->firstWhere('name', 'owner');
     expect(collect($owner['permissions'])->pluck('name'))->not->toContain('bo.health.view');

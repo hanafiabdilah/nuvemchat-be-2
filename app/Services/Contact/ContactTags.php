@@ -11,10 +11,10 @@ use Illuminate\Database\Eloquent\Collection;
  * Putting tags on a person, and making every screen that already shows that
  * person notice.
  *
- * Three callers write contact tags — the contact book, the panel beside a
- * thread, and the flow builder's Tagging node — and all three need the same
- * two things to happen afterwards, which is the whole reason this is a class
- * and not three copies of `$contact->tags()->sync()`.
+ * Four callers write contact tags — the customer page, the panel beside a
+ * thread, the flow builder's Tagging node and a customer merge — and all of
+ * them need the same things to happen afterwards, which is the whole reason
+ * this is a class and not copies of `$contact->tags()->sync()`.
  */
 class ContactTags
 {
@@ -30,9 +30,14 @@ class ContactTags
      */
     public function sync(Contact $contact, array $tagIds): Collection
     {
-        $contact->tags()->sync($this->ownedByTenant($contact, $tagIds));
+        $owned = $this->ownedByTenant($contact, $tagIds);
 
-        return $this->propagate($contact);
+        foreach ($this->samePerson($contact) as $each) {
+            $each->tags()->sync($owned);
+            $this->propagate($each);
+        }
+
+        return $contact->tags;
     }
 
     /**
@@ -42,9 +47,14 @@ class ContactTags
      */
     public function add(Contact $contact, array $tagIds): Collection
     {
-        $contact->tags()->syncWithoutDetaching($this->ownedByTenant($contact, $tagIds));
+        $owned = $this->ownedByTenant($contact, $tagIds);
 
-        return $this->propagate($contact);
+        foreach ($this->samePerson($contact) as $each) {
+            $each->tags()->syncWithoutDetaching($owned);
+            $this->propagate($each);
+        }
+
+        return $contact->tags;
     }
 
     /**
@@ -52,9 +62,40 @@ class ContactTags
      */
     public function remove(Contact $contact, array $tagIds): Collection
     {
-        $contact->tags()->detach($this->ownedByTenant($contact, $tagIds));
+        $owned = $this->ownedByTenant($contact, $tagIds);
 
-        return $this->propagate($contact);
+        foreach ($this->samePerson($contact) as $each) {
+            $each->tags()->detach($owned);
+            $this->propagate($each);
+        }
+
+        return $contact->tags;
+    }
+
+    /**
+     * This contact first, then the person's other channel contacts.
+     *
+     * A contact tag describes the person (CRM: one customer above the channel
+     * contacts), so it is written to every identity they write from — tagging
+     * someone "VIP" on WhatsApp must show on their Instagram thread too, and
+     * the customer page reads the tags off any of them.
+     *
+     * @return list<Contact>
+     */
+    private function samePerson(Contact $contact): array
+    {
+        if (! $contact->customer_id) {
+            return [$contact];
+        }
+
+        $siblings = Contact::query()
+            ->where('customer_id', $contact->customer_id)
+            ->where('tenant_id', $contact->tenant_id)
+            ->whereKeyNot($contact->id)
+            ->get()
+            ->all();
+
+        return [$contact, ...$siblings];
     }
 
     /**

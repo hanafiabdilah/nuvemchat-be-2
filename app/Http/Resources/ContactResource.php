@@ -19,6 +19,8 @@ class ContactResource extends JsonResource
             'channel' => $this->channel,
             'name' => $this->name,
             'is_group' => (bool) $this->is_group,
+            // The CRM customer this identity belongs to (null for groups).
+            'customer_id' => $this->customer_id,
             'username' => $this->username,
             'photo_profile_url' => $this->photo_profile_url,
             // The address a campaign would reach them at, and whether they have

@@ -11,6 +11,7 @@ class Contact extends Model
 {
     protected $fillable = [
         'tenant_id',
+        'customer_id',
         'external_id',
         'lid',
         'channel',
@@ -88,6 +89,16 @@ class Contact extends Model
     public function conversations()
     {
         return $this->hasMany(Conversation::class);
+    }
+
+    /**
+     * The person this identity belongs to (CRM). Set by CustomerResolver when
+     * the contact is created; null only for groups and for contacts the
+     * hourly `crm:link-contacts` sweep has not reached yet.
+     */
+    public function customer()
+    {
+        return $this->belongsTo(Customer::class);
     }
 
     /**

@@ -5,17 +5,16 @@ namespace App\Support;
 /**
  * Where this server is willing to send a request that somebody else chose.
  *
- * Three places take a URL from a customer and fetch it: outbound webhooks, the
- * flow engine's `http_request` node, and `media_url` on every send endpoint.
- * Only the first ever checked. The other two would happily fetch
- * `http://169.254.169.254/v1.json` (the instance metadata service),
+ * Two places take a URL from a customer and fetch it: the flow engine's
+ * `http_request` node and `media_url` on every send endpoint. Neither checked
+ * at first — only outbound webhooks did (a feature since removed). Both would
+ * happily fetch `http://169.254.169.254/v1.json` (the instance metadata service),
  * `http://127.0.0.1:6379`, or a Docker service name like `app:9000` — and both
  * hand the response back to the caller, so it was read access to the platform's
  * own network with the answer delivered to the attacker's chat.
  *
- * The rule itself was already written and already correct, in
- * App\Services\Webhooks\WebhookUrl. This is that rule, moved somewhere all
- * three can reach it; WebhookUrl keeps its own wording and delegates here.
+ * The rule itself was already written and already correct, for those outbound
+ * webhooks. This is that rule, moved somewhere every caller can reach it.
  *
  * ⚠️ Host checks alone are not enough, because a name can be pointed somewhere
  * else after it is checked, and because a public host can answer 302 to a

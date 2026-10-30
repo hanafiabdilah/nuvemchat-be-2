@@ -13,6 +13,9 @@ return [
     'conversation_handoff' => 'A IA transferiu esta conversa para um atendente',
     'conversation_transferred' => '{{agent}} transferiu esta conversa para você',
     'conversation_taken_over' => '{{agent}} assumiu esta conversa',
+    'crm_assigned' => '{{agent}} atribuiu isto a você',
+    'crm_task_due' => 'Tarefa com prazo {{when}}',
+    'crm_automation' => '{{message}}',
     'test_title' => 'Pingly',
     'test_body' => 'As notificações estão funcionando neste aparelho.',
 ];

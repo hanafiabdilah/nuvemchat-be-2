@@ -6,7 +6,7 @@ use App\Http\Resources\ConnectionResource;
 use App\Models\Connection;
 use App\Services\V1\SendMessage\SendMessageService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Tests\Support\LeadIntakeFixtures as F;
+use Tests\Support\PublicApiFixtures as F;
 
 uses(RefreshDatabase::class);
 

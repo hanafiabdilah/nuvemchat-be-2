@@ -39,7 +39,7 @@ class FlowSpecificationTool extends Tool
     {
         return 'Call this once before writing or changing any flow. Returns the exact node format this '
             .'workspace accepts — every step type, its fields and its branches — together with the real '
-            .'tags, agents, AI agents, integrations, lead stages and other flows you may reference. '
+            .'tags, agents, AI agents, integrations and other flows you may reference. '
             .'Ids that are not in this list will be refused: never invent one.';
     }
 

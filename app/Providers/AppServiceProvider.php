@@ -8,7 +8,6 @@ use App\Observers\ConversationObserver;
 use App\Observers\InvoiceFiscalObserver;
 use App\Observers\MessageAttachmentObserver;
 use App\Observers\MessageGalleryObserver;
-use App\Observers\MessageLeadObserver;
 use App\Services\Email\EmailInboxClientFactory;
 use App\Services\Email\WebklexEmailInboxClientFactory;
 use App\Support\Heartbeat;
@@ -45,13 +44,23 @@ class AppServiceProvider extends ServiceProvider
         Conversation::observe(ConversationObserver::class);
         Message::observe(MessageAttachmentObserver::class);
         Message::observe(MessageGalleryObserver::class);
-        Message::observe(MessageLeadObserver::class);
         Message::observe(\App\Observers\MessageAdReferralObserver::class);
         // Paid invoice (Brazil) → nota fiscal via Plugnotas; refunded → cancelled.
         \App\Models\Invoice::observe(InvoiceFiscalObserver::class);
+        \App\Models\Contact::observe(\App\Observers\ContactObserver::class);
+        // CRM automations start from saves, wherever they come from.
+        \App\Models\Lead::observe(\App\Observers\CrmAutomationObserver::class);
+        \App\Models\Deal::observe(\App\Observers\CrmAutomationObserver::class);
+        \App\Models\Customer::observe(\App\Observers\CrmAutomationObserver::class);
 
-        // lead.assigned / lead.stage_changed / lead.won / lead.lost webhooks.
-        \App\Services\Webhooks\LeadWebhooks::register();
+        // CRM timelines are polymorphic; store short names, not class names,
+        // so renaming a class never orphans a timeline.
+        \Illuminate\Database\Eloquent\Relations\Relation::morphMap([
+            'customer' => \App\Models\Customer::class,
+            'company' => \App\Models\Company::class,
+            'lead' => \App\Models\Lead::class,
+            'deal' => \App\Models\Deal::class,
+        ]);
 
         // Push notifications to the mobile app (docs/mobile-push.md).
         \App\Services\Push\PushEvents::register();

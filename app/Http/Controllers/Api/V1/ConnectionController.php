@@ -6,7 +6,6 @@ use App\Enums\Connection\Status as ConnectionStatus;
 use App\Http\Controllers\Controller;
 use App\Models\ApiKey;
 use App\Models\Connection;
-use App\Services\Lead\LeadIntakeService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -36,7 +35,6 @@ class ConnectionController extends Controller
                     'channel' => $connection->channel->value,
                     'status' => $connection->status->value,
                     'sends_messages' => $active && in_array($connection->channel, SendMessageController::CHANNELS, true),
-                    'accepts_leads' => $active && in_array($connection->channel, LeadIntakeService::CHANNELS, true),
                 ];
             });
 

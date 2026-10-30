@@ -34,8 +34,8 @@ use Illuminate\Support\Facades\Log;
  *
  * Left to the database on purpose, because the database already does the
  * right thing: `messages.sent_by_user_id`, `conversations.resolved_by_user_id`,
- * lead owners and stage events, conversation notes, gallery uploads and flow
- * assistant turns are all ON DELETE SET NULL. Personal quick messages
+ * conversation notes, gallery uploads and flow assistant turns are all ON
+ * DELETE SET NULL. Personal quick messages
  * (`quick_messages.user_id`, cascade) go with the person: nobody else could
  * ever see them, so no one loses anything they had.
  */

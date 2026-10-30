@@ -14,7 +14,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
-use Tests\Support\LeadIntakeFixtures as F;
+use Tests\Support\PublicApiFixtures as F;
 
 /*
  * POST /v1/send-message with `type` + `media_url`: what each channel is handed,

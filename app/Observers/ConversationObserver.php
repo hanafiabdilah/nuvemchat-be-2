@@ -5,7 +5,6 @@ namespace App\Observers;
 use App\Enums\Connection\Channel;
 use App\Enums\Conversation\Status;
 use App\Events\Widget\WidgetConversationStatusChanged;
-use App\Jobs\EnsureLeadForConversation;
 use App\Models\Conversation;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Flow\FlowExecutor;
@@ -47,28 +46,6 @@ class ConversationObserver
             // recording status changes for the rest of its life.
             self::$suppressed = $previous;
         }
-    }
-
-    /**
-     * A new thread means a new sale to track — or an existing one to attach to.
-     *
-     * Hooked here rather than in the nine per-channel webhook handlers because
-     * every channel funnels through this one point, so the funnel fills itself
-     * for WhatsApp, Instagram, Telegram, Discord and the rest without any of
-     * them knowing leads exist. Queued: a webhook must never wait on work the
-     * customer is not waiting for.
-     */
-    public function created(Conversation $conversation): void
-    {
-        // A thread born closed holds a record, not an opening: today that is
-        // a tap on another system's button (ExternalAutomationReply), filed
-        // without anyone being asked to answer it. A card in "Novo contato"
-        // would be the queue entry those buttons must not create.
-        if ($conversation->status === Status::Resolved) {
-            return;
-        }
-
-        EnsureLeadForConversation::dispatch($conversation->id);
     }
 
     /**

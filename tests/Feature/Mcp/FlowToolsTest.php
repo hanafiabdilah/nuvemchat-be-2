@@ -109,7 +109,7 @@ it('serves the format and this workspace\'s real ids together', function () {
     $vocabulary = $result['structuredContent']['vocabulary'];
 
     expect($vocabulary['tags'])->toBe([['id' => $tag->id, 'name' => 'urgente']])
-        ->and($vocabulary)->toHaveKeys(['agents', 'ai_agents', 'payment_integrations', 'lead_stages', 'flows']);
+        ->and($vocabulary)->toHaveKeys(['agents', 'ai_agents', 'payment_integrations', 'flows']);
 });
 
 // ───────────────────────────────── Writing ─────────────────────────────────

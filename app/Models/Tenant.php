@@ -15,9 +15,9 @@ class Tenant extends Model
     protected $fillable = [
         'user_id',
         'current_subscription_id',
-        'lead_settings',
         'entitlement_overrides',
         'audio_dictionary',
+        'crm_lead_scoring',
         // Unlike market_code this one may be corrected later: a business can
         // move, and its country's default zone is only ever a starting guess.
         'timezone',
@@ -30,11 +30,11 @@ class Tenant extends Model
     ];
 
     protected $casts = [
-        'lead_settings' => 'array',
         'sales_goal' => 'array',
         'entitlement_overrides' => 'array',
         'audio_dictionary' => 'array',
         'billing_address' => 'array',
+        'crm_lead_scoring' => 'array',
         // "Set up later" in the first-run guide — see OnboardingState.
         'onboarding_skipped_at' => 'datetime',
     ];

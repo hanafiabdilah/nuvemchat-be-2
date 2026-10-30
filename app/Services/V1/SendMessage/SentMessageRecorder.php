@@ -12,8 +12,8 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Message;
 use App\Services\Conversation\OutboundConversationResolver;
-use App\Services\Lead\LeadIntakeService;
 use App\Services\Message\ApiwaySendQueue;
+use App\Support\PhoneVariants;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -166,14 +166,14 @@ final class SentMessageRecorder
 
     /**
      * Someone the inbox already knows, under either spelling of a Brazilian
-     * mobile number (see LeadIntakeService::phoneVariants), keeps their row and
+     * mobile number (see PhoneVariants), keeps their row and
      * the name it shows for them.
      */
     private static function contactFor(Connection $connection, string $phone): Contact
     {
         $existing = Contact::where('tenant_id', $connection->tenant_id)
             ->where('is_group', false)
-            ->whereIn('external_id', LeadIntakeService::phoneVariants($phone))
+            ->whereIn('external_id', PhoneVariants::of($phone))
             ->orderByRaw('external_id = ? desc', [$phone])
             ->first();
 

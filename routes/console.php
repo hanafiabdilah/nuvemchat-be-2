@@ -245,41 +245,33 @@ Schedule::command('youtube:revive-uploads')
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('YouTube upload revival failed'));
 
-// --- Leads ---------------------------------------------------------------
+// CRM task reminders whose time has come.
+Schedule::command('crm:task-reminders')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('CRM task reminders failed'));
 
-// Recompute every open lead's temperature.
-//
-// This is the half of the axis only a schedule can do: an inbound message can
-// warm a lead on the spot, but going quiet emits no event at all. Without this
-// pass a score would fall only when something else happened to touch the lead —
-// exactly backwards, since the cards worth surfacing are the untouched ones.
-// Only a band change (frio↔morno↔quente) is broadcast, so this does not set
-// every open board flickering once an hour.
-Schedule::command('leads:score')
+// Lead scores that time alone moves ("wrote within 7 days"), and tags put on
+// customers from the inbox. Only workspaces with lead scoring on.
+Schedule::command('crm:score-leads')
     ->hourly()
-    ->withoutOverlapping(10)
-    ->onFailure(fn () => logger()->error('Lead scoring pass failed'));
+    ->withoutOverlapping(55)
+    ->onFailure(fn () => logger()->error('CRM lead scoring failed'));
 
-// Retire leads nothing has happened to inside each tenant's own window.
-//
-// Auto-creation means every stranger who asked a price becomes a card, and a
-// board full of people who wrote once and vanished stops being read at all.
-// Daily rather than hourly: the windows are measured in weeks, so a pass an
-// hour would be almost entirely wasted work. Every tenant sets its own number
-// of days, can turn the sweep off, and decides whether it may touch cards an
-// agent has actually worked — see LeadSettings.
-Schedule::command('leads:close-stale')
-    ->dailyAt('03:30')
-    ->timezone($platformTimezone)
-    ->withoutOverlapping(30)
-    ->onFailure(fn () => logger()->error('Stale lead sweep failed'));
+// CRM automations about time passing (stale deals, idle leads, overdue tasks):
+// no save announces those. Each record is claimed once per occurrence, so the
+// pass can run often.
+Schedule::command('crm:automations-scan')
+    ->everyTenMinutes()
+    ->withoutOverlapping(9)
+    ->onFailure(fn () => logger()->error('CRM automation scan failed'));
 
-// Webhook delivery logs carry full lead payloads; keep a month for debugging.
-Schedule::command('webhooks:prune')
-    ->dailyAt('04:10')
-    ->timezone($platformTimezone)
-    ->withoutOverlapping(30)
-    ->onFailure(fn () => logger()->error('Webhook delivery prune failed'));
+// Channel contacts without a CRM customer: the contact book from before the
+// CRM, worked through in batches, and anything created without model events.
+Schedule::command('crm:link-contacts')
+    ->hourly()
+    ->withoutOverlapping(55)
+    ->onFailure(fn () => logger()->error('CRM contact linking failed'));
 
 // Mobile push tokens of phones that stopped opening the app (docs/mobile-push.md).
 Schedule::command('push:prune-devices')

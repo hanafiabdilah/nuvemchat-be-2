@@ -12,6 +12,7 @@ use App\Models\FlowNode;
 use App\Services\Flow\FlowBlueprint;
 use App\Services\Flow\FlowGraph;
 use App\Services\Flow\LegacyWaitUpgrade;
+use App\Services\Flow\RetiredNodes;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -264,7 +265,8 @@ class FlowController extends Controller
             'flow.name' => ['required', 'string', 'max:255'],
             'flow.nodes' => ['required', 'array', 'min:1'],
             'flow.nodes.*.key' => ['required', 'string'],
-            'flow.nodes.*.type' => ['required', 'string', Rule::in(self::NODE_TYPES)],
+            // Retired types are accepted here, and only here, to be cut out below.
+            'flow.nodes.*.type' => ['required', 'string', Rule::in([...self::NODE_TYPES, ...RetiredNodes::TYPES])],
             'flow.nodes.*.data' => ['nullable'],
             'flow.nodes.*.position_x' => ['required', 'numeric'],
             'flow.nodes.*.position_y' => ['required', 'numeric'],
@@ -277,10 +279,14 @@ class FlowController extends Controller
             'version.max' => 'This flow export was created by a newer version and cannot be imported.',
         ]);
 
+        // A file exported while the Leads module existed can carry Lead nodes.
+        // Cut out the way the removal migration cut them out of stored flows.
+        $current = RetiredNodes::strip($validated['flow']['nodes'], $validated['flow']['edges']);
+
         // A file exported before the Wait for reply node carries the two older
         // ways of waiting. Rewritten the way the migration rewrote stored
         // flows, so an old export imports as the flow it was.
-        $upgraded = LegacyWaitUpgrade::upgrade($validated['flow']['nodes'], $validated['flow']['edges']);
+        $upgraded = LegacyWaitUpgrade::upgrade($current['nodes'], $current['edges']);
         $nodes = $upgraded['nodes'];
 
         // Same rule as saving, and dropped here for a second reason: export is

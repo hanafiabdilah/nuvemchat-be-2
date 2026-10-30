@@ -15,7 +15,6 @@ use App\Models\GalleryStorageRental;
 use App\Models\InstagramPost;
 use App\Models\InstagramPostItem;
 use App\Models\Invoice;
-use App\Models\Lead;
 use App\Models\Tag;
 use App\Models\VirtualNumber;
 use App\Models\VirtualNumberMessage;
@@ -23,12 +22,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
-/** Leads, campaigns, money and the paid add-ons (gallery, numbers, instances). */
+/** Campaigns, money and the paid add-ons (gallery, numbers, instances). */
 trait Commerce
 {
     protected function seedCommerce(): void
     {
-        $this->seedLeads();
         $this->seedBroadcasts();
         $this->seedBilling();
         $this->seedGallery();
@@ -36,73 +34,6 @@ trait Commerce
         $this->seedApiway();
         $this->seedFlowPayments();
         $this->seedInstagramPosts();
-    }
-
-    private function seedLeads(): void
-    {
-        $p = $this->people;
-        $pool = $this->pool;
-        $u = $this->users;
-
-        $rows = [
-            // contact, stage, title, value, temperature, owner, days-in-stage, source connection
-            [$p['aline'], 'Negociação', 'Pedido atacado — 40 pares', 12900, 'hot', 'carlos', 1, 'apiway'],
-            [$p['bia'], 'Proposta', 'Revenda Santos — kit inicial', 3400, 'warm', 'marina', 12, 'ig'],
-            [$p['mariana'], 'Negociação', 'Aurora Run 42 coral', 299.9, 'hot', 'marina', 0, 'apiway'],
-            [$p['joao'], 'Qualificação', 'Tênis de corrida', null, 'warm', 'carlos', 1, 'wa'],
-            [$p['pedro'], 'Novo contato', 'Interesse via WhatsApp', null, 'cold', null, 0, 'wa'],
-            [$p['thiago'], 'Proposta', 'Pedido Curitiba', 459, 'warm', 'juliana', 2, 'tg'],
-            [$p['larissa'], 'Atendidos', 'Boné preto', 79.9, 'cold', null, 1, 'tiktok'],
-            [$p['gustavo'], 'Qualificação', 'Troca + nova compra', 249.9, 'cold', 'gabriela', 3, 'ig'],
-            [$pool['wa'][0], 'Cliente', 'Kit presente corporativo', 4470, 'hot', 'carlos', 6, 'wa'],
-            [$pool['wa'][1], 'Novo contato', 'Orçamento camisetas dry-fit', null, 'cold', null, 2, 'wa'],
-            [$pool['wa'][2], 'Qualificação', 'Uniformes assessoria', 5200, 'warm', 'carlos', 5, 'wa'],
-            [$pool['wa'][3], 'Atendidos', 'Mochila Urbana', 189.9, 'warm', 'juliana', 0, 'wa'],
-            [$pool['apiway'][0], 'Cliente', 'Revenda mensal', 2350, 'hot', 'marina', 10, 'apiway'],
-            [$pool['ig'][0], 'Novo contato', 'Parceria influenciador', null, 'cold', null, 4, 'ig'],
-            [$pool['ig'][2], 'Proposta', 'Jaqueta corta-vento x3', 989.7, 'warm', 'gabriela', 4, 'ig'],
-            [$pool['tg'][1], 'Perdido', 'Relógio Pulse', 459, 'cold', 'rafael', 7, 'tg', 'Achou mais barato'],
-            [$pool['wa'][5], 'Perdido', 'Orçamento tênis', 299.9, 'cold', null, 3, 'wa', 'Sem resposta'],
-            [$pool['wa'][6], 'Novo contato', 'Garrafa térmica x10', 899, 'cold', null, 40, 'wa'],
-        ];
-
-        foreach ($rows as $row) {
-            [$contact, $stageName, $title, $value, $temperature, $owner, $days, $source] = $row;
-            $lostReason = $row[8] ?? null;
-            $stage = $this->pipeline->stages->firstWhere('name', $stageName);
-            $kind = $stage->kind->value ?? (string) $stage->kind;
-            $changed = $this->now->copy()->subDays($days)->subHours(mt_rand(1, 8));
-            $created = $changed->copy()->subDays(mt_rand(1, 9));
-
-            $lead = $this->make(Lead::class, [
-                'tenant_id' => $this->tenant->id, 'contact_id' => $contact->id, 'pipeline_id' => $this->pipeline->id,
-                'stage_id' => $stage->id, 'owner_id' => $owner ? $u[$owner]->id : null,
-                'source_connection_id' => $this->conn[$source]->id, 'title' => $title, 'value' => $value, 'currency' => 'BRL',
-                'status' => $kind, 'source' => 'inbound', 'temperature' => $temperature,
-                'temperature_score' => ['hot' => 82, 'warm' => 55, 'cold' => 18][$temperature],
-                'last_inbound_at' => $this->now->copy()->subHours(mt_rand(1, 60)), 'stage_changed_at' => $changed,
-                'lost_reason' => $lostReason, 'closed_at' => $kind === 'open' ? null : $changed,
-                'created_at' => $created, 'updated_at' => $changed,
-            ]);
-
-            $path = ['Novo contato', 'Atendidos', 'Qualificação', 'Proposta', 'Negociação'];
-            $target = array_search($stageName, $path, true);
-            $steps = $target === false ? ['Novo contato', $stageName] : array_slice($path, 0, $target + 1);
-            $previous = null;
-            foreach ($steps as $n => $name) {
-                $s = $this->pipeline->stages->firstWhere('name', $name);
-                DB::table('lead_stage_events')->insert([
-                    'lead_id' => $lead->id, 'tenant_id' => $this->tenant->id, 'from_stage_id' => $previous,
-                    'to_stage_id' => $s->id, 'to_stage_name' => $name,
-                    // Birth, the move to Atendidos and the stale sweep are the system's own moves.
-                    'user_id' => $n === 0 || $name === 'Atendidos' || ($lostReason === 'Sem resposta' && $name === 'Perdido') ? null : ($owner ? $u[$owner]->id : null),
-                    'created_at' => $n === count($steps) - 1 ? $changed : $created->copy()->addHours($n * 5),
-                ]);
-                $previous = $s->id;
-            }
-
-            Conversation::where('contact_id', $contact->id)->whereIn('status', ['active', 'pending', 'ai_handling'])->update(['lead_id' => $lead->id]);
-        }
     }
 
     private function seedBroadcasts(): void

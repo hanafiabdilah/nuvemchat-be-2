@@ -265,7 +265,7 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
      * Reply buttons: POST /v1/message/send-buttons.
      *
      * Takes the same data the Cloud API handler takes for `button`, so the
-     * flow node, the composer and the leads API hand both channels one shape.
+     * flow node and the composer hand both channels one shape.
      * The core has a single text field, so a header becomes the first line.
      *
      * Unlike the other sends here, a refusal throws instead of being stored:

@@ -93,8 +93,8 @@ it('runs the turn inline while the switch is off, which is the default', functio
         ['resume', $conversation->id, 'oi'],
     ]);
 
-    // Not assertNothingPushed: creating the conversation queues
-    // EnsureLeadForConversation, which has nothing to do with flows.
+    // Not assertNothingPushed: creating a conversation can queue other jobs
+    // that have nothing to do with flows.
     Queue::assertNotPushed(RunFlowTurn::class);
 });
 

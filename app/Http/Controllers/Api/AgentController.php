@@ -350,8 +350,7 @@ class AgentController extends Controller
         // check that the target was somebody other than the caller — so one
         // permission, `agents.assign-permissions`, was quietly equivalent to
         // all of them. A supervisor could give themselves `billing.manage` and
-        // spend the workspace's prepaid balance, or `webhooks.manage` and point
-        // every lead at an endpoint of their own.
+        // spend the workspace's prepaid balance.
         //
         // The owner is exempt because the owner already holds everything;
         // subtracting a set from itself would be a no-op with extra steps.

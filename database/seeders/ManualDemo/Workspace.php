@@ -39,12 +39,6 @@ trait Workspace
             // form compares against 'CPF'/'CNPJ' and mis-reads anything else.
             'billing_document_type' => 'CNPJ',
             'billing_document_number' => '11222333000181',
-            'lead_settings' => [
-                'auto_create' => true,
-                'auto_close_enabled' => true,
-                'auto_close_days' => 30,
-                'auto_close_engaged' => false,
-            ],
             'audio_dictionary' => $this->vocabulary(),
             'created_at' => $this->now->copy()->subDays(120),
         ]);
@@ -68,7 +62,7 @@ trait Workspace
     private function tunePlans(): void
     {
         $all = [
-            'chat' => true, 'whatsapp_api' => true, 'crm' => true, 'flow' => true,
+            'chat' => true, 'whatsapp_api' => true, 'flow' => true,
             'flow_assistant' => true, 'ai_agent_hub' => true, 'statistics' => true, 'catalog' => true, 'mcp' => true,
             'instagram_management' => true, 'tiktok_management' => true, 'youtube_management' => true, 'campaigns' => true,
         ];
@@ -102,12 +96,12 @@ trait Workspace
         $roles = [
             'Supervisor' => [
                 'agents.view', 'agents.update-avatar', 'agents.sync-connections', 'statistics.tenant.view',
-                'statistics.agents.view', 'leads.view', 'leads.create', 'leads.update', 'contacts.update',
+                'statistics.agents.view', 'contacts.update',
                 'conversations.transfer', 'conversations.take-over',
                 'tags.create', 'tags.update', 'tags.delete', 'broadcasts.view', 'flows.view', 'gallery.view',
             ],
             'Atendente' => ['contacts.update', 'templates.send', 'templates.view', 'gallery.view', 'conversations.transfer', 'conversations.take-over'],
-            'Vendas' => ['leads.view', 'leads.create', 'leads.update', 'contacts.update'],
+            'Vendas' => ['contacts.update', 'templates.send', 'templates.view', 'broadcasts.view'],
             'Financeiro' => ['billing.view', 'integrations.view'],
             'Estagiário' => [],
         ];

@@ -13,7 +13,6 @@ use App\Models\Conversation;
 use App\Models\Flow;
 use App\Models\FlowEdge;
 use App\Models\FlowState;
-use App\Models\Lead;
 use App\Models\Message;
 use App\Models\Tenant;
 use App\Models\User;
@@ -147,9 +146,7 @@ test('a renewal tap from a contact who never wrote is filed in a closed thread, 
         ])
         ->and(FlowState::count())->toBe(0)
         // No greeting, no menu: nothing went out.
-        ->and(Message::where('sender_type', SenderType::Outgoing)->count())->toBe(0)
-        // Nor a card in "Novo contato".
-        ->and(Lead::count())->toBe(0);
+        ->and(Message::where('sender_type', SenderType::Outgoing)->count())->toBe(0);
 
     Http::assertNothingSent();
 });
@@ -323,10 +320,7 @@ test('a button outside the prefixes still runs the flow', function () {
 
     expect(Message::where('sender_type', SenderType::Incoming)->sole()->meta)
         ->not->toHaveKey(ExternalAutomationReply::META_KEY)
-        ->and(FlowState::count())->toBe(1)
-        // The same fixture does open a card for a thread of its own, which is
-        // what makes "no card" above mean something.
-        ->and(Lead::count())->toBe(1);
+        ->and(FlowState::count())->toBe(1);
 });
 
 /*
