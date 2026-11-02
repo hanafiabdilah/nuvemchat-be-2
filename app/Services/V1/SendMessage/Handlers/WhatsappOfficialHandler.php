@@ -69,8 +69,8 @@ class WhatsappOfficialHandler implements SendMessageHandlerInterface
     }
 
     /**
-     * The Cloud API names the object after its type — `text`, `image`… — and
-     * fetches a `link` itself, so nothing is downloaded here.
+     * The Cloud API names the object after its type — `text`, `image`,
+     * `sticker`… — and fetches a `link` itself, so nothing is downloaded here.
      */
     private function content(OutgoingMessage $outgoing): array
     {

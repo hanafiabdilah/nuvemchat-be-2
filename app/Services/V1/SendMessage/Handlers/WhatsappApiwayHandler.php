@@ -26,8 +26,8 @@ class WhatsappApiwayHandler implements SendMessageHandlerInterface
         ]);
 
         // One endpoint per kind: send-text, send-image, send-video, send-audio,
-        // send-document. Each media endpoint takes the URL in the field named
-        // after it, the same fast path the dashboard's handler uses.
+        // send-document, send-sticker. Each media endpoint takes the URL in the
+        // field named after it, the same fast path the dashboard's handler uses.
         $endpoint = $outgoing->isText() ? 'send-text' : 'send-' . $outgoing->type;
 
         try {

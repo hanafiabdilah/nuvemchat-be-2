@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
- * POST /api/v1/send-message — send a text, or an image, video, audio or
+ * POST /api/v1/send-message — send a text, or an image, video, audio, sticker or
  * document by URL, through one of the workspace's connections.
  *
  * Authenticated by the workspace's API key (V1\ApiKeyAuth); the connection is

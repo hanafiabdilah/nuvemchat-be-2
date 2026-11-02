@@ -251,6 +251,90 @@ it('sends a TikTok image as an upload and keeps a copy in the thread', function 
         ->and(MediaStorage::disk()->get($sent->attachment))->toBe('PNGBYTES');
 });
 
+it('sends a WhatsApp Official sticker by link and files it in the inbox as a sticker', function () {
+    Http::fake(['graph.facebook.com/*' => Http::response([
+        'contacts' => [['wa_id' => '5511987654321']],
+        'messages' => [['id' => 'wamid.S1']],
+    ])]);
+    $owner = F::owner();
+    $connection = mediaApiConnection($owner, Channel::WhatsappOfficial, ['access_token' => 'tok', 'phone_number_id' => '111']);
+
+    mediaApiSend($owner, [
+        'connection_id' => $connection->public_id,
+        'to' => '5511987654321',
+        'type' => 'sticker',
+        'media_url' => 'https://cdn.example.com/stickers/obrigado.webp',
+    ])->assertCreated();
+
+    Http::assertSent(fn (Request $r) => $r['type'] === 'sticker'
+        && $r['sticker'] === ['link' => 'https://cdn.example.com/stickers/obrigado.webp']);
+
+    $sent = \App\Models\Message::where('external_id', 'wamid.S1')->sole();
+
+    expect($sent->message_type)->toBe(MessageType::Sticker)
+        ->and($sent->sender_type)->toBe(SenderType::Outgoing)
+        ->and($sent->attachment)->toBe('https://cdn.example.com/stickers/obrigado.webp')
+        ->and($sent->body)->toBeNull();
+});
+
+it('sends an API Way sticker to send-sticker, with the URL in the sticker field', function () {
+    Http::fake(['*' => Http::response(['success' => true, 'data' => ['id' => 'OUT-S1']])]);
+    $owner = F::owner();
+    $connection = mediaApiConnection($owner, Channel::WhatsappApiway, ['token' => 'tok', 'instance_id' => 'inst-1']);
+
+    // No extension in the URL: the channel fetches it and judges the bytes.
+    mediaApiSend($owner, [
+        'connection_id' => $connection->public_id,
+        'phone' => '5511987654321',
+        'type' => 'sticker',
+        'media_url' => 'https://cdn.example.com/sticker?id=42',
+    ])->assertCreated();
+
+    Http::assertSent(fn (Request $r) => str_contains($r->url(), '/v1/message/send-sticker?instanceId=inst-1')
+        && $r->data() === ['phone' => '5511987654321', 'sticker' => 'https://cdn.example.com/sticker?id=42']);
+});
+
+it('asks Telegram for sendSticker with the URL as the sticker', function () {
+    $outgoing = OutgoingMessage::fromData(Channel::Telegram, [
+        'chat_id' => '123456789',
+        'type' => 'sticker',
+        'media_url' => 'https://cdn.example.com/ok.webp',
+    ], ['chat_id' => 'required|string']);
+
+    $request = new ReflectionMethod(\App\Services\V1\SendMessage\Handlers\TelegramHandler::class, 'request');
+
+    expect($request->invoke(new \App\Services\V1\SendMessage\Handlers\TelegramHandler(), $outgoing, '123456789'))
+        ->toBe(['sendSticker', ['chat_id' => '123456789', 'sticker' => 'https://cdn.example.com/ok.webp']]);
+});
+
+it('refuses a sticker that is not WebP, one with a caption, and one on a channel that sends none', function () {
+    Http::fake();
+    $owner = F::owner();
+    $official = mediaApiConnection($owner, Channel::WhatsappOfficial, ['access_token' => 'tok', 'phone_number_id' => '111']);
+    $instagram = mediaApiConnection($owner, Channel::Instagram, ['access_token' => 'tok']);
+    $base = ['connection_id' => $official->public_id, 'to' => '5511987654321', 'type' => 'sticker'];
+
+    // WhatsApp would accept the request and fail the message in a webhook
+    // the integrator never sees.
+    mediaApiSend($owner, $base + ['media_url' => 'https://cdn.example.com/a.png'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['media_url' => 'A figurinha precisa ser um arquivo WebP (.webp). O endereço informado é um .png.']);
+
+    mediaApiSend($owner, $base + ['media_url' => 'https://cdn.example.com/a.webp', 'message' => 'Oi'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['message' => 'O WhatsApp Oficial não aceita legenda em figurinha. Envie a mídia sem message e o texto em outra requisição, com type text.']);
+
+    mediaApiSend($owner, [
+        'connection_id' => $instagram->public_id,
+        'recipient_id' => '17841400000000000',
+        'type' => 'sticker',
+        'media_url' => 'https://cdn.example.com/a.webp',
+    ])->assertUnprocessable()
+        ->assertJsonValidationErrors(['type' => 'O Instagram não envia figurinha pela API. Tipos aceitos: texto, imagem, vídeo, áudio, documento.']);
+
+    Http::assertNothingSent();
+});
+
 it('asks for type when a file is named, and refuses a body that mixes them up', function () {
     Http::fake();
     $owner = F::owner();
@@ -267,7 +351,7 @@ it('asks for type when a file is named, and refuses a body that mixes them up', 
     mediaApiSend($owner, $base + ['type' => 'image', 'message' => 'Oi'])
         ->assertUnprocessable()->assertJsonValidationErrors('media_url');
 
-    mediaApiSend($owner, $base + ['type' => 'sticker', 'media_url' => 'https://cdn.example.com/a.webp'])
+    mediaApiSend($owner, $base + ['type' => 'location', 'media_url' => 'https://cdn.example.com/a.webp'])
         ->assertUnprocessable()->assertJsonValidationErrors('type');
 
     mediaApiSend($owner, $base + ['type' => 'image', 'media_url' => 'ftp://cdn.example.com/a.png'])

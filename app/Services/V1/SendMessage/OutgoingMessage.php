@@ -11,7 +11,7 @@ use Illuminate\Validation\ValidationException;
 
 /**
  * What one call to POST /v1/send-message asks to send: a text, or a file
- * named by URL with an optional caption.
+ * named by URL with an optional caption — a sticker is one more kind of file.
  *
  * Every channel's handler reads its message through here, so the shape of the
  * body — `type`, `message`, `media_url`, `filename` — and what each channel can
@@ -27,7 +27,15 @@ use Illuminate\Validation\ValidationException;
 final class OutgoingMessage
 {
     /** What `type` accepts. Absent means text — how every integration written before media read. */
-    public const TYPES = ['text', 'image', 'video', 'audio', 'document'];
+    public const TYPES = ['text', 'image', 'video', 'audio', 'document', 'sticker'];
+
+    /**
+     * The one format a sticker can travel in on every channel that sends one:
+     * WhatsApp draws nothing else as a sticker, and Telegram fetches only a
+     * .WEBP from a URL (its animated .TGS and video .WEBM stickers must be
+     * uploaded).
+     */
+    public const STICKER_EXTENSION = 'webp';
 
     private function __construct(
         public readonly string $type,
@@ -39,8 +47,12 @@ final class OutgoingMessage
     /**
      * Media each channel sends through the API. Text goes everywhere.
      *
-     * TikTok is the one gap, and it is the platform's: its messaging API takes
-     * text and images only.
+     * TikTok's gap is the platform's: its messaging API takes text and images
+     * only. Stickers go where the channel has a sticker message that takes a
+     * file — WhatsApp (both routes) and Telegram. Instagram and Messenger only
+     * send their own built-in stickers (the like heart, a Facebook sticker id),
+     * and a Discord bot only the stickers of a server it is in, so none of the
+     * three can send the image the integrator points at.
      *
      * @return list<string>
      */
@@ -49,9 +61,9 @@ final class OutgoingMessage
         return match ($channel) {
             Channel::WhatsappOfficial,
             Channel::WhatsappApiway,
+            Channel::Telegram => ['image', 'video', 'audio', 'document', 'sticker'],
             Channel::Instagram,
             Channel::Messenger,
-            Channel::Telegram,
             Channel::Discord => ['image', 'video', 'audio', 'document'],
             Channel::TikTok => ['image'],
             default => [],
@@ -61,8 +73,8 @@ final class OutgoingMessage
     /**
      * Media that carries `message` as its caption.
      *
-     * WhatsApp has no caption on audio, and Instagram, Messenger and TikTok
-     * have none on anything. There a caption is refused rather than dropped:
+     * WhatsApp has no caption on audio, Instagram, Messenger and TikTok have
+     * none on anything, and no channel puts one on a sticker. There a caption is refused rather than dropped:
      * an image that silently lost the sentence it was sent with reads to the
      * customer as a different message, and the integrator never learns why.
      *
@@ -136,6 +148,19 @@ final class OutgoingMessage
         // network is refused as a 422 on that field) — every send path funnels
         // through it, and so does this one.
         $media = OutboundMedia::fromData(['media_url' => $data['media_url']], 'file');
+
+        // Judged from the URL alone: the channel fetches it, not us, and
+        // downloading every sticker to look at it would buy a round trip on a
+        // path that otherwise never touches the file. So only a name that says
+        // something else is refused — a URL with no extension (`?id=42`) goes
+        // through and is the channel's to judge. Refused rather than passed on
+        // because WhatsApp accepts the request and fails the message later, in
+        // a status webhook the integrator never sees.
+        if ($type === 'sticker' && $media->extension !== '' && $media->extension !== self::STICKER_EXTENSION) {
+            throw ValidationException::withMessages([
+                'media_url' => 'A figurinha precisa ser um arquivo WebP (.webp). O endereço informado é um .' . $media->extension . '.',
+            ]);
+        }
 
         $filename = isset($data['filename']) ? trim(basename(str_replace('\\', '/', $data['filename']))) : null;
 
@@ -215,6 +240,7 @@ final class OutgoingMessage
             'video' => 'vídeo',
             'audio' => 'áudio',
             'document' => 'documento',
+            'sticker' => 'figurinha',
             default => $type,
         };
     }

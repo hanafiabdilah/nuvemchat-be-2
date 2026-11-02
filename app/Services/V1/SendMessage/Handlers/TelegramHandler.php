@@ -69,7 +69,9 @@ class TelegramHandler implements SendMessageHandlerInterface
     /**
      * The Bot API method and its payload. Telegram fetches an HTTP URL given
      * in place of a file, so nothing is downloaded here. Audio goes as a voice
-     * message, the same as the dashboard sends it.
+     * message, the same as the dashboard sends it; a sticker only ever as a
+     * .WEBP, the one kind Telegram will fetch by URL (OutgoingMessage refuses
+     * a name that says otherwise).
      *
      * @return array{0: string, 1: array<string, mixed>}
      */
@@ -84,6 +86,7 @@ class TelegramHandler implements SendMessageHandlerInterface
             'video' => ['sendVideo', 'video'],
             'audio' => ['sendVoice', 'voice'],
             'document' => ['sendDocument', 'document'],
+            'sticker' => ['sendSticker', 'sticker'],
         };
 
         $payload = ['chat_id' => $chatId, $field => $outgoing->url()];
