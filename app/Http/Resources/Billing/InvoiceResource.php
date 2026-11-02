@@ -55,7 +55,12 @@ class InvoiceResource extends JsonResource
             'card_payable' => $this->payment_method?->value === 'card'
                 && $this->status?->value === 'pending'
                 && blank($this->payment_id)
+                && $this->purpose?->value !== 'subscription_addon'
                 && (bool) $this->subscription?->paysCardPerCycle(),
+            // What an extras purchase bought: units by add-on key, as totals.
+            'addons' => $this->purpose?->value === 'subscription_addon'
+                ? ($this->meta['addons'] ?? null)
+                : null,
             // Why the card was refused, in our own vocabulary (CardDecline) —
             // the page says it in the reader's language. Null when no issuer
             // refused anything (our side failed), so "your bank declined" is

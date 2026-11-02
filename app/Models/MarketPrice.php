@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\Billing\Addon;
 use App\Services\Market\MarketBillingMethods;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
@@ -23,6 +24,9 @@ class MarketPrice extends Model
         // The cycle this price buys (a plan); null for something bought once.
         'billing_cycle',
         'amount_cents',
+        // A plan only: what one unit of each extra (Addon) costs here, for
+        // this cycle, by add-on key. Absent key = that extra is not sold.
+        'addon_cents',
         'currency',
         'card_enabled',
         'pix_enabled',
@@ -30,6 +34,7 @@ class MarketPrice extends Model
 
     protected $casts = [
         'amount_cents' => 'integer',
+        'addon_cents' => 'array',
         // Which methods this thing is bought with **here**. Pix is a Brazilian
         // rail, so this is a per-country question, not a per-plan one. Ignored
         // for anything not bought at a checkout (a trained agent).
@@ -68,6 +73,18 @@ class MarketPrice extends Model
             get: fn ($value, array $attributes) => (bool) $value
                 && MarketBillingMethods::has($attributes['market_code'] ?? null, 'card'),
         );
+    }
+
+    /**
+     * One unit of an extra for this plan, here, for this cycle — or null when
+     * it is not sold. Zero is not a price: a free extra would be a quota, and
+     * a quota is the plan's to grant.
+     */
+    public function addonUnitCents(Addon $addon): ?int
+    {
+        $cents = $this->addon_cents[$addon->value] ?? null;
+
+        return is_numeric($cents) && (int) $cents > 0 ? (int) $cents : null;
     }
 
     public function priceable(): MorphTo

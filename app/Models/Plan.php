@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Billing\BillingCycle;
 use App\Models\Concerns\HasMarketPrices;
 use Illuminate\Database\Eloquent\Builder;
@@ -76,6 +77,39 @@ class Plan extends Model
         // only abroad that would put it on sale at home at a price nobody typed.
         static::query()->whereKey($this->getKey())->update($columns);
         $this->forceFill($columns)->syncOriginalAttributes(array_keys($columns));
+    }
+
+    /**
+     * One unit of each extra this plan sells in a country, for a cycle, by
+     * add-on key.
+     *
+     * An extra is sold only where both hold: the plan limits what it raises
+     * (an unlimited quota has nothing to add to) and a price was typed for it
+     * on this country's row for this cycle. The cycle defaults to the one this
+     * instance stands at — the one applyMarketPrice() resolved it to.
+     *
+     * @return array<string, int>
+     */
+    public function addonUnitPrices(?string $marketCode, BillingCycle|string|null $cycle = null): array
+    {
+        $price = $this->priceForMarket($marketCode, $cycle);
+
+        if ($price === null) {
+            return [];
+        }
+
+        $quotas = $this->quotas ?? [];
+        $prices = [];
+
+        foreach (Addon::cases() as $addon) {
+            $unit = $price->addonUnitCents($addon);
+
+            if ($unit !== null && $addon->limitedBy($quotas)) {
+                $prices[$addon->value] = $unit;
+            }
+        }
+
+        return $prices;
     }
 
     public function subscriptions()

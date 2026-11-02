@@ -261,6 +261,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         Route::get('/plan-change', [BillingController::class, 'planChangeQuote'])->middleware('permission:billing.view')->name('plan-change.quote');
         Route::post('/plan-change/schedule', [BillingController::class, 'schedulePlanChange'])->middleware('permission:billing.manage')->name('plan-change.schedule');
         Route::delete('/plan-change/schedule', [BillingController::class, 'cancelScheduledPlanChange'])->middleware('permission:billing.manage')->name('plan-change.cancel');
+        // Extra agents and WhatsApp numbers on the running plan. Reading and
+        // pricing are billing.view; buying (or scheduling fewer) is billing.manage.
+        Route::get('/addons', [BillingController::class, 'addons'])->middleware('permission:billing.view')->name('addons');
+        Route::post('/addons/quote', [BillingController::class, 'addonsQuote'])->middleware('permission:billing.view')->name('addons.quote');
+        Route::post('/addons', [BillingController::class, 'purchaseAddons'])->middleware(['permission:billing.manage', 'throttle:20,1'])->name('addons.purchase');
         Route::post('/pix/refresh', [BillingController::class, 'refreshPix'])->middleware('permission:billing.manage')->name('pix-refresh');
         Route::post('/cancel', [BillingController::class, 'cancel'])->middleware('permission:billing.manage')->name('cancel');
         // Undo a scheduled cancellation before the period actually ends.

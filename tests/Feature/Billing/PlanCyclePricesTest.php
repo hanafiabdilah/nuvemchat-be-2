@@ -155,8 +155,9 @@ test('the catalogue lists the plan once, with every cycle it is sold at', functi
         ->and($res->json('data.0.billing_cycle'))->toBe('monthly')
         ->and($res->json('data.0.price_cents'))->toBe(10000)
         ->and($res->json('data.0.cycle_prices'))->toBe([
-            ['billing_cycle' => 'monthly', 'price_cents' => 10000, 'currency' => 'BRL'],
-            ['billing_cycle' => 'yearly', 'price_cents' => 108000, 'currency' => 'BRL'],
+            // No extras priced for this plan: nothing on sale beside it.
+            ['billing_cycle' => 'monthly', 'price_cents' => 10000, 'currency' => 'BRL', 'addon_cents' => []],
+            ['billing_cycle' => 'yearly', 'price_cents' => 108000, 'currency' => 'BRL', 'addon_cents' => []],
         ]);
 });
 

@@ -2,6 +2,7 @@
 
 namespace App\Models\Concerns;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Billing\BillingCycle;
 use App\Models\Market;
 use App\Models\MarketPrice;
@@ -273,6 +274,13 @@ trait HasMarketPrices
                 }
             }
 
+            // The extras a plan sells beside itself, priced for this cycle.
+            // Same rule as the methods: absent is "as it was", so an editor
+            // that predates extras cannot take them off sale by saving.
+            if ($perCycle && array_key_exists('addon_cents', $row)) {
+                $attributes['addon_cents'] = $this->cleanAddonCents($row['addon_cents']);
+            }
+
             $this->marketPrices()->updateOrCreate(
                 ['market_code' => $code, 'billing_cycle' => $cycle],
                 $attributes,
@@ -333,7 +341,7 @@ trait HasMarketPrices
     /**
      * The price list as the Back Office edits it.
      *
-     * @return list<array{market_code: string, billing_cycle: ?string, amount_cents: int, currency: string, card_enabled?: bool, pix_enabled?: bool}>
+     * @return list<array{market_code: string, billing_cycle: ?string, amount_cents: int, currency: string, card_enabled?: bool, pix_enabled?: bool, addon_cents?: array<string, int>|null}>
      */
     public function marketPriceList(): array
     {
@@ -352,9 +360,30 @@ trait HasMarketPrices
                     'card_enabled' => (bool) $price->card_enabled,
                     'pix_enabled' => (bool) $price->pix_enabled,
                 ] : []),
+                ...($this->pricedPerCycle() ? ['addon_cents' => $this->cleanAddonCents($price->addon_cents)] : []),
             ])
             ->values()
             ->all();
+    }
+
+    /**
+     * Positive per-unit prices by known add-on key, or null when none is sold.
+     *
+     * @return array<string, int>|null
+     */
+    protected function cleanAddonCents(mixed $raw): ?array
+    {
+        $prices = [];
+
+        foreach (Addon::cases() as $addon) {
+            $value = is_array($raw) ? ($raw[$addon->value] ?? null) : null;
+
+            if (is_numeric($value) && (int) $value > 0) {
+                $prices[$addon->value] = (int) $value;
+            }
+        }
+
+        return $prices ?: null;
     }
 
     private function cycleValue(BillingCycle|string|null $cycle): ?string

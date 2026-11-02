@@ -239,16 +239,21 @@ class StripeBillingGateway implements BillingGateway, KeepsRenewalCards
      * A later cycle, with nobody at a screen. An issuer that insists on
      * authentication here cannot get it, so it comes back as a decline
      * (`authentication_required`) and the customer pays the cycle by hand.
+     *
+     * `on_session` is the other use of the kept card: extras bought on the
+     * Billing page, with the customer looking at it. Without `off_session` an
+     * issuer asking for 3-D Secure comes back `requires_action`, finished in
+     * place by Stripe.js, instead of a refusal.
      */
     protected function chargeStoredCard(string $instrumentId, array $payload, string $idempotencyKey): array
     {
         [$customerId, $paymentMethodId] = $this->instrumentParts($instrumentId);
 
-        return $this->charge([
+        return $this->charge(array_filter([
             'customer' => $customerId,
             'payment_method' => $paymentMethodId,
-            'off_session' => 'true',
-        ], $payload, $idempotencyKey);
+            'off_session' => ($payload['on_session'] ?? false) ? null : 'true',
+        ]), $payload, $idempotencyKey);
     }
 
     /**

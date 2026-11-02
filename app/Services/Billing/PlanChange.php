@@ -2,9 +2,12 @@
 
 namespace App\Services\Billing;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Billing\BillingCycle;
+use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
+use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\Tenant;
@@ -33,6 +36,11 @@ use Illuminate\Validation\ValidationException;
  *  - **New** — there is no paid, running plan to credit or to wait for (no plan,
  *    an unpaid checkout, a lapsed or comped one): an ordinary subscription.
  *
+ * Extras (agents, WhatsApp connections) count as part of what a plan costs: the
+ * comparison, the credit and every renewal read the plan *with* the capacity
+ * bought on top of it, at **the new plan's** price per extra — a bigger plan
+ * sells them cheaper.
+ *
  * ⚠️ The credit is read off **paid invoices**, never off the plan's list price:
  * an invoice is what the customer actually bought, for the period it names.
  * That is what makes a renewal charged three days early (billing:charge-renewals
@@ -52,9 +60,15 @@ class PlanChange
     public function __construct(protected BillingGateways $gateways) {}
 
     /**
+     * `$addons` is the capacity bought on top of the new plan, in units by
+     * add-on key. Null keeps the capacity the workspace already has (see
+     * carriedUnits()), so a client that does not know about extras never
+     * drops them by changing plan.
+     *
+     * @param  array<string, mixed>|null  $addons
      * @return array<string, mixed>
      */
-    public function quote(Tenant $tenant, Plan $plan, ?PaymentMethod $method = null, ?CarbonInterface $at = null, bool $autoRenew = true): array
+    public function quote(Tenant $tenant, Plan $plan, ?PaymentMethod $method = null, ?CarbonInterface $at = null, bool $autoRenew = true, ?array $addons = null): array
     {
         $at = $at ? Carbon::instance($at) : now();
         $price = $plan->priceForMarket($tenant->market_code);
@@ -68,7 +82,14 @@ class PlanChange
         $priceCents = (int) $price->amount_cents;
         $currency = $price->currency ?: ($plan->currency ?: $tenant->currency());
         $current = $tenant->currentSubscription?->loadMissing(['plan', 'scheduledPlan']);
-        $type = $this->classify($current, $plan, $priceCents, $currency, $at);
+
+        $unitPrices = $plan->addonUnitPrices($tenant->market_code);
+        $units = self::addonUnitsFor($unitPrices, $addons ?? $this->carriedUnits($current, $plan, $unitPrices));
+        $lines = self::addonLines($units, $unitPrices);
+        $addonsCents = array_sum(array_column($lines, 'total_cents'));
+        $totalCents = $priceCents + $addonsCents;
+
+        $type = $this->classify($current, $plan, $totalCents, $currency, $at);
 
         $base = [
             'type' => $type,
@@ -79,6 +100,19 @@ class PlanChange
                 'currency' => $currency,
                 'billing_cycle' => $plan->billing_cycle->value,
             ],
+            'addons' => [
+                'units' => $units,
+                'lines' => $lines,
+                'total_cents' => $addonsCents,
+                // One unit of every extra this plan sells, per cycle — what a
+                // checkout needs to price units not chosen yet — and what the
+                // plan already includes of each.
+                'unit_cents' => $unitPrices,
+                'included' => self::includedFor($plan, array_keys($unitPrices)),
+                'max_units' => Addon::MAX_UNITS,
+            ],
+            // The plan and its extras, per cycle: what every renewal charges.
+            'total_cents' => $totalCents,
             'current' => $type === self::NEW ? null : $this->describe($current, $tenant),
             'credit_cents' => 0,
             'remaining_days' => 0,
@@ -87,24 +121,108 @@ class PlanChange
             'charge_now_cents' => 0,
             'effective_at' => $at->toIso8601String(),
             'next_renewal_at' => null,
-            'next_renewal_cents' => $priceCents,
+            'next_renewal_cents' => $totalCents,
             'blocked_reason' => null,
             'scheduled' => false,
         ];
 
         return match ($type) {
-            self::UPGRADE => $this->upgradeTerms($base, $current, $plan, $priceCents, $method, $at, $autoRenew),
+            self::UPGRADE => $this->upgradeTerms($base, $current, $plan, $totalCents, $method, $at, $autoRenew),
             self::DOWNGRADE => $this->downgradeTerms($base, $current, $plan),
             self::CURRENT => array_merge($base, [
                 'effective_at' => $current->current_period_end?->toIso8601String(),
                 'next_renewal_at' => $current->current_period_end?->toIso8601String(),
-                'next_renewal_cents' => (int) $current->price_cents,
+                'next_renewal_cents' => $current->cycleTotalCents(),
             ]),
             default => array_merge($base, [
-                'charge_now_cents' => $priceCents,
+                'charge_now_cents' => $totalCents,
                 'next_renewal_at' => $plan->billing_cycle->advance($at)->toIso8601String(),
             ]),
         };
+    }
+
+    /**
+     * The units a plan can take from a request: whole, non-negative, capped,
+     * and only for extras this plan sells — units for anything else are
+     * dropped rather than charged.
+     *
+     * @param  array<string, int>  $unitPrices  addonUnitPrices() of the plan.
+     * @param  array<string, mixed>  $requested
+     * @return array<string, int>
+     */
+    public static function addonUnitsFor(array $unitPrices, array $requested): array
+    {
+        return array_intersect_key(Addon::clean($requested), $unitPrices);
+    }
+
+    /**
+     * @param  array<string, int>  $units
+     * @param  array<string, int>  $unitPrices
+     * @return list<array{key: string, quantity: int, unit_cents: int, total_cents: int}>
+     */
+    public static function addonLines(array $units, array $unitPrices): array
+    {
+        $lines = [];
+
+        foreach ($units as $key => $quantity) {
+            $unit = (int) ($unitPrices[$key] ?? 0);
+            $lines[] = ['key' => $key, 'quantity' => $quantity, 'unit_cents' => $unit, 'total_cents' => $unit * $quantity];
+        }
+
+        return $lines;
+    }
+
+    /**
+     * What a plan includes of each quota an extra raises.
+     *
+     * @param  list<string>  $keys
+     * @return array<string, int>
+     */
+    public static function includedFor(Plan $plan, array $keys): array
+    {
+        $quotas = $plan->quotas ?? [];
+        $included = [];
+
+        foreach ($keys as $key) {
+            $included[$key] = (int) ($quotas[Addon::from($key)->quota()->value] ?? 0);
+        }
+
+        return $included;
+    }
+
+    /**
+     * The extras a plan change keeps when nobody chose otherwise: enough units
+     * on the new plan to keep the **capacity** the workspace has now.
+     *
+     * Not the same number of units: three extra agents on a plan with two
+     * included is five seats, and a plan that includes five needs none — moving
+     * the three across would charge for eight.
+     *
+     * @param  array<string, int>  $unitPrices
+     * @return array<string, int>
+     */
+    public function carriedUnits(?Subscription $current, Plan $plan, array $unitPrices): array
+    {
+        if ($current === null) {
+            return [];
+        }
+
+        $held = $current->entitlements()['quotas'];
+        $included = $plan->quotas ?? [];
+        $units = [];
+
+        foreach (array_keys($unitPrices) as $key) {
+            $quota = Addon::from($key)->quota()->value;
+
+            // Only from a limit: an unlimited allowance has no number to keep.
+            if (! isset($held[$quota], $included[$quota])) {
+                continue;
+            }
+
+            $units[$key] = max(0, (int) $held[$quota] - (int) $included[$quota]);
+        }
+
+        return array_filter($units);
     }
 
     /**
@@ -118,7 +236,11 @@ class PlanChange
         $cents = 0.0;
         $seconds = 0;
 
-        $invoices = $subscription->invoices()
+        // The extras bought mid-period are paid for too: what is left of them
+        // is credited like what is left of the plan.
+        $invoices = Invoice::query()
+            ->where('subscription_id', $subscription->id)
+            ->whereIn('purpose', [InvoicePurpose::Subscription->value, InvoicePurpose::SubscriptionAddon->value])
             ->where('status', InvoiceStatus::Paid->value)
             ->whereNotNull('period_start')
             ->whereNotNull('period_end')
@@ -157,25 +279,38 @@ class PlanChange
      * the cycle after a downgrade must already be at the lower price, while
      * the plan itself only changes when that cycle actually starts.
      *
-     * @return array{price_cents: int, cycle: BillingCycle, plan: ?Plan, scheduled: bool}
+     * `price_cents` is the whole cycle — the plan and its extras — so every
+     * renewal path charges both in one payment without knowing extras exist.
+     *
+     * @return array{price_cents: int, plan_cents: int, addons_cents: int, addons: array<string, int>, cycle: BillingCycle, plan: ?Plan, scheduled: bool}
      */
     public static function termsFor(Subscription $subscription, CarbonInterface $periodStart): array
     {
-        if ($subscription->hasScheduledChange()
-            && Carbon::instance($periodStart)->greaterThanOrEqualTo($subscription->scheduled_change_at)) {
-            return [
-                'price_cents' => (int) $subscription->scheduled_price_cents,
-                'cycle' => $subscription->scheduled_billing_cycle ?? $subscription->billing_cycle,
-                'plan' => $subscription->scheduledPlan,
-                'scheduled' => true,
-            ];
-        }
+        $start = Carbon::instance($periodStart);
+        $scheduled = $subscription->hasScheduledChange()
+            && $start->greaterThanOrEqualTo($subscription->scheduled_change_at);
+
+        $planCents = (int) ($scheduled ? $subscription->scheduled_price_cents : $subscription->price_cents);
+
+        $units = $subscription->hasScheduledAddons() && $start->greaterThanOrEqualTo($subscription->scheduled_addons_at)
+            ? $subscription->scheduledAddonQuantities()
+            : $subscription->addonQuantities();
+        // A downgrade prices its extras at the plan it moves to.
+        $prices = $scheduled && $subscription->scheduled_addon_unit_cents !== null
+            ? $subscription->scheduled_addon_unit_cents
+            : $subscription->addon_unit_cents;
+        $addonsCents = $subscription->addonsCents($units, $prices ?? []);
 
         return [
-            'price_cents' => (int) $subscription->price_cents,
-            'cycle' => $subscription->billing_cycle,
-            'plan' => $subscription->plan,
-            'scheduled' => false,
+            'price_cents' => $planCents + $addonsCents,
+            'plan_cents' => $planCents,
+            'addons_cents' => $addonsCents,
+            'addons' => $units,
+            'cycle' => $scheduled
+                ? ($subscription->scheduled_billing_cycle ?? $subscription->billing_cycle)
+                : $subscription->billing_cycle,
+            'plan' => $scheduled ? $subscription->scheduledPlan : $subscription->plan,
+            'scheduled' => $scheduled,
         ];
     }
 
@@ -203,7 +338,8 @@ class PlanChange
         return null;
     }
 
-    protected function classify(?Subscription $current, Plan $plan, int $priceCents, string $currency, Carbon $at): string
+    /** `$totalCents`: the new plan with the extras chosen for it, per cycle. */
+    protected function classify(?Subscription $current, Plan $plan, int $totalCents, string $currency, Carbon $at): string
     {
         if (! $this->isCreditable($current, $currency, $at)) {
             return self::NEW;
@@ -218,7 +354,7 @@ class PlanChange
             return self::CURRENT;
         }
 
-        return $plan->billing_cycle->rank() >= $currentCycle->rank() && $priceCents > (int) $current->price_cents
+        return $plan->billing_cycle->rank() >= $currentCycle->rank() && $totalCents > $current->cycleTotalCents()
             ? self::UPGRADE
             : self::DOWNGRADE;
     }
@@ -232,7 +368,7 @@ class PlanChange
         return $current !== null
             && $current->isUsable()
             && $current->payment_method !== PaymentMethod::Manual
-            && (int) $current->price_cents > 0
+            && $current->cycleTotalCents() > 0
             && $current->current_period_end !== null
             && $current->current_period_end->greaterThan($at)
             && strtoupper((string) ($current->currency ?: 'BRL')) === strtoupper($currency);
@@ -242,7 +378,7 @@ class PlanChange
      * @param  array<string, mixed>  $base
      * @return array<string, mixed>
      */
-    protected function upgradeTerms(array $base, Subscription $current, Plan $plan, int $priceCents, ?PaymentMethod $method, Carbon $at, bool $autoRenew = true): array
+    protected function upgradeTerms(array $base, Subscription $current, Plan $plan, int $totalCents, ?PaymentMethod $method, Carbon $at, bool $autoRenew = true): array
     {
         $unused = $this->unusedValue($current, $at);
         $credit = $unused['cents'];
@@ -263,8 +399,8 @@ class PlanChange
             // a zero charge, which no gateway takes and which stores no card.
             // What does not fit as a discount goes to the balance instead.
             $cycleSeconds = max(1, $at->diffInSeconds($plan->billing_cycle->advance($at), false));
-            $floor = min($priceCents, (int) ceil($priceCents * 86400 / $cycleSeconds));
-            $discount = min($credit, max(0, $priceCents - $floor));
+            $floor = min($totalCents, (int) ceil($totalCents * 86400 / $cycleSeconds));
+            $discount = min($credit, max(0, $totalCents - $floor));
         }
 
         return array_merge($base, [
@@ -272,7 +408,7 @@ class PlanChange
             'remaining_days' => (int) ceil($unused['seconds'] / 86400),
             'discount_cents' => $discount,
             'balance_credit_cents' => max(0, $credit - $discount),
-            'charge_now_cents' => $priceCents - $discount,
+            'charge_now_cents' => $totalCents - $discount,
             'next_renewal_at' => $plan->billing_cycle->advance($at)->toIso8601String(),
         ]);
     }
@@ -307,6 +443,9 @@ class PlanChange
             'plan_id' => $current->plan_id,
             'name' => $plan?->name,
             'price_cents' => (int) $current->price_cents,
+            'addons' => $current->addonQuantities(),
+            'addons_cents' => $current->addonsCents(),
+            'total_cents' => $current->cycleTotalCents(),
             'currency' => $current->currency,
             'billing_cycle' => $current->billing_cycle?->value,
             'payment_method' => $current->payment_method?->value,

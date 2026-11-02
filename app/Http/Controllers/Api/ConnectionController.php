@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Billing\Quota;
+use App\Services\Billing\SubscriptionAddons;
 use App\Enums\Connection\Channel;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Connection\SyncStatus;
@@ -240,6 +242,9 @@ class ConnectionController extends Controller
                 : 'You have reached the maximum number of non-WhatsApp connections for your plan.',
             'code' => 'quota_exceeded',
             'quota' => $quota->value,
+            // Whether an extra WhatsApp number can be bought instead.
+            'addon_available' => $quota === Quota::MaxWhatsappConnections
+                && app(SubscriptionAddons::class)->canBuy(request()->user()->tenant, Addon::WhatsappConnection),
         ], 422);
     }
 

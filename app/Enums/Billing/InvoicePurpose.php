@@ -26,6 +26,14 @@ enum InvoicePurpose: string
      */
     case CreditTopup = 'ai_credit_topup';
 
+    /**
+     * Extras (agents, WhatsApp connections) bought on a running plan: what is
+     * left of the paid period, prorated. The units are added once it is paid
+     * (SubscriptionAddons::handleInvoicePaid); from the next renewal on they
+     * ride on the plan's own charge, so this purpose never renews.
+     */
+    case SubscriptionAddon = 'subscription_addon';
+
     public function isApiway(): bool
     {
         return $this === self::ApiwayPurchase || $this === self::ApiwayRenewal;

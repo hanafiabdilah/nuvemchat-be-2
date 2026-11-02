@@ -2,6 +2,7 @@
 
 namespace App\Services\Billing;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
@@ -87,11 +88,22 @@ class BillingService
      */
     protected const CARD_CHECKOUT_MINUTES = 60;
 
+    /** Clears a schedule of extras (a reduction, or what a downgrade carried). */
+    protected const NO_SCHEDULED_ADDONS = [
+        'scheduled_addons' => null,
+        'scheduled_addons_at' => null,
+        'scheduled_addon_unit_cents' => null,
+    ];
+
     /**
      * Subscribe a tenant to a plan via card (recurring), Pix, or a hosted
      * checkout.
      *
-     * @param  array{card_token?:string, provider?:string, payer_email:string}  $opts
+     * `addons` — extra agents and WhatsApp connections bought with the plan,
+     * in units by add-on key, charged with it in the same payment. Null keeps
+     * the capacity the workspace already has (PlanChange::carriedUnits()).
+     *
+     * @param  array{card_token?:string, provider?:string, payer_email:string, addons?: array<string, int>|null}  $opts
      */
     public function subscribe(Tenant $tenant, Plan $plan, PaymentMethod $method, array $opts): Subscription
     {
@@ -129,7 +141,7 @@ class BillingService
             ]);
         }
 
-        $quote = $this->planChange->quote($tenant, $plan, $method, autoRenew: ! $perCycleCard);
+        $quote = $this->planChange->quote($tenant, $plan, $method, autoRenew: ! $perCycleCard, addons: $opts['addons'] ?? null);
 
         if ($quote['type'] === PlanChange::DOWNGRADE) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -319,7 +331,7 @@ class BillingService
      *
      * @return array{checkout_token: string, expires_at: string}
      */
-    public function openCardCheckout(Tenant $tenant, Plan $plan, ?string $payerEmail = null): array
+    public function openCardCheckout(Tenant $tenant, Plan $plan, ?string $payerEmail = null, ?array $addons = null): array
     {
         $price = $plan->priceForMarket($tenant->market_code);
 
@@ -345,7 +357,7 @@ class BillingService
 
         $this->assertBillable($tenant);
 
-        $quote = $this->planChange->quote($tenant, $plan, PaymentMethod::Card);
+        $quote = $this->planChange->quote($tenant, $plan, PaymentMethod::Card, addons: $addons);
 
         if (in_array($quote['type'], [PlanChange::DOWNGRADE, PlanChange::CURRENT], true)) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -372,6 +384,9 @@ class BillingService
             // One plan, several cycles: the form is bound to this one's price.
             'billing_cycle' => $plan->billing_cycle->value,
             'plan_price_cents' => $price->amount_cents,
+            // The extras the form's amount includes: a different choice at
+            // confirm time is a different charge.
+            'addons' => $quote['addons']['units'],
             'amount_cents' => $quote['charge_now_cents'],
             // The credit frozen at the moment the form opened. It only shrinks
             // as time passes, so honouring the opened number is never a loss
@@ -1276,7 +1291,8 @@ class BillingService
             || ($opened['billing_cycle'] ?? $plan->billing_cycle->value) !== $plan->billing_cycle->value
             || ($opened['gateway'] ?? null) !== $gateway->name()
             || $price === null
-            || (int) ($opened['plan_price_cents'] ?? $opened['amount_cents']) !== (int) $price->amount_cents) {
+            || (int) ($opened['plan_price_cents'] ?? $opened['amount_cents']) !== (int) $price->amount_cents
+            || ($opened['addons'] ?? []) != ($quote['addons']['units'] ?? [])) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'checkout_token' => __('This card form has expired. Please enter your card again.'),
             ]);
@@ -1523,6 +1539,284 @@ class BillingService
             ->whereIn('payment_method', $subscription->perCycleMethods())
             ->latest('id')
             ->first();
+    }
+
+    // --- Extras bought on a running plan ------------------------------------
+
+    /**
+     * How a purchase of extras can be paid right now, for this subscription.
+     *
+     * - `card_on_file` — the card the plan already renews on, charged now with
+     *   the customer at the screen (Stripe asks for 3-D Secure in place). Only
+     *   where we hold the card and charge it ourselves; a card held by a
+     *   Mercado Pago preapproval cannot be charged a one-off amount.
+     * - `card` — a saved card and its security code (Mercado Pago, Brazil).
+     * - `pix` / `checkout` — what the workspace's gateway issues by hand.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function addonPaymentOptions(Subscription $subscription): array
+    {
+        $tenant = $subscription->tenant;
+        $options = [];
+
+        if ($this->chargesCardOnFile($subscription)) {
+            $options[] = ['method' => 'card_on_file', 'card' => filled($subscription->payment_card['last_four'] ?? null) ? [
+                'brand' => $subscription->payment_card['brand'] ?? null,
+                'last_four' => $subscription->payment_card['last_four'],
+            ] : null];
+        }
+
+        if ($tenant && $this->savedCards->gatewayFor($tenant) !== null) {
+            $options[] = ['method' => 'card'];
+        }
+
+        // Blind (the gateway could not be asked): Pix where the rail exists,
+        // never a hosted checkout nobody confirmed this gateway issues.
+        $offered = $tenant ? $this->offeredMethods($tenant) : [];
+
+        foreach ([PaymentMethod::Pix, PaymentMethod::Checkout] as $method) {
+            $ok = $offered === null
+                ? $method === PaymentMethod::Pix && MarketBillingMethods::has($tenant->market_code, 'pix')
+                : in_array($method->value, $offered, true);
+
+            if ($ok) {
+                $options[] = ['method' => $method->value];
+            }
+        }
+
+        return $options;
+    }
+
+    /** Whether the plan's own card can be charged a one-off amount by us. */
+    protected function chargesCardOnFile(Subscription $subscription): bool
+    {
+        if ($subscription->payment_method !== PaymentMethod::Card
+            || $subscription->paysCardPerCycle()
+            || blank($subscription->payment_instrument_id)) {
+            return false;
+        }
+
+        return ! $this->gateways->forSubscription($subscription)->renewsItself($subscription->payment_instrument_id);
+    }
+
+    /**
+     * Charge a purchase of extras: what is left of the paid period, prorated.
+     *
+     * ⚠️ Nothing is added here. The units it buys are in `$meta['addons']` and
+     * are added when the invoice is paid (SubscriptionAddons::handleInvoicePaid)
+     * — a Pix left unpaid, a card refused, a 3-D Secure abandoned all change
+     * nothing. A card that pays in this request is settled in this request,
+     * through the same path the notification would take.
+     *
+     * One open purchase at a time: a new one closes the previous unpaid one, so
+     * two pending QR codes for the same extras can never both be paid.
+     *
+     * @param  array<string, mixed>  $meta  addons (totals), lines, covered_until
+     * @param  array{saved_card?: ?SavedCard, card_token?: ?string, payer_email?: ?string}  $opts
+     * @return array{invoice: Invoice, status: string, client_secret?: ?string}
+     */
+    public function createAddonInvoice(Subscription $subscription, int $amountCents, CarbonInterface $coveredUntil, array $meta, string $method, array $opts = []): array
+    {
+        $tenant = $subscription->tenant;
+        $this->assertBillable($tenant);
+
+        $allowed = array_column($this->addonPaymentOptions($subscription), 'method');
+
+        if (! in_array($method, $allowed, true)) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'method' => __('This purchase cannot be paid this way.'),
+            ]);
+        }
+
+        /** @var SavedCard|null $card */
+        $card = $opts['saved_card'] ?? null;
+
+        $gateway = match ($method) {
+            'card_on_file' => $this->gateways->forSubscription($subscription),
+            default => $this->gateways->forTenant($tenant),
+        };
+
+        if ($method === 'card' && (! $card || $card->gateway !== $gateway->name() || blank($opts['card_token'] ?? null))) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'saved_card_id' => __('Choose a saved card to pay with.'),
+            ]);
+        }
+
+        $this->voidOpenAddonInvoices($subscription);
+
+        $paymentMethod = in_array($method, ['card_on_file', 'card'], true) ? PaymentMethod::Card : PaymentMethod::from($method);
+        $expiresAt = now()->addHours(self::PIX_WINDOW_HOURS);
+
+        $invoice = Invoice::create([
+            'tenant_id' => $subscription->tenant_id,
+            'subscription_id' => $subscription->id,
+            'purpose' => InvoicePurpose::SubscriptionAddon,
+            'status' => InvoiceStatus::Pending,
+            'payment_method' => $paymentMethod,
+            'gateway' => $gateway->name(),
+            'amount_cents' => $amountCents,
+            // The subscription's money: the extras are priced in it.
+            'currency' => $subscription->currency ?: $tenant->currency(),
+            // The paid time it buys, so an upgrade later credits what is left.
+            'period_start' => now(),
+            'period_end' => $coveredUntil,
+            'due_date' => now()->toDateString(),
+            'idempotency_key' => (string) Str::uuid(),
+            'meta' => $meta,
+        ]);
+
+        // No period of its own to key on: the invoice id is the identity.
+        $invoice->update(['order_reference' => "pingly-addon-{$invoice->id}"]);
+
+        $description = 'Extras '.($subscription->plan?->name ?? '')." — fatura #{$invoice->id}";
+
+        try {
+            $payment = match ($method) {
+                'card_on_file' => $gateway->createPayment([
+                    'order_reference' => $invoice->order_reference,
+                    'amount' => $invoice->amount_cents,
+                    'currency' => $invoice->currency,
+                    'payment_method' => 'card',
+                    'instrument_id' => $subscription->payment_instrument_id,
+                    'initiator' => 'merchant',
+                    // The customer is at the screen: a bank asking for 3-D
+                    // Secure gets it in place instead of a refusal.
+                    'on_session' => true,
+                    'description' => $description,
+                    'metadata' => ['tenant_id' => $tenant->id, 'subscription_id' => $subscription->id, 'purpose' => 'subscription_addon'],
+                ], $invoice->idempotency_key)['data'] ?? [],
+                'card' => $this->chargeSavedCardOnce($invoice, $card, (string) $opts['card_token'], $description),
+                default => $gateway->createPayment([
+                    'order_reference' => $invoice->order_reference,
+                    'amount' => $invoice->amount_cents,
+                    'currency' => $invoice->currency,
+                    'payment_method' => $method,
+                    'description' => $description,
+                    'expires_at' => $expiresAt->toIso8601String(),
+                    'return_url' => DirectBillingConfig::returnUrl('/billing'),
+                    'customer' => $this->customerPayload($tenant, $opts['payer_email'] ?? null),
+                    'metadata' => ['tenant_id' => $tenant->id, 'subscription_id' => $subscription->id, 'purpose' => 'subscription_addon'],
+                ], $invoice->idempotency_key)['data'] ?? [],
+            };
+        } catch (\Throwable $e) {
+            $this->markInvoiceFailed($invoice, 'addons', $e);
+
+            throw $e;
+        }
+
+        if ($paymentMethod !== PaymentMethod::Card) {
+            $this->applyInstructions($invoice, $payment, $expiresAt);
+            $this->fireUpdated($subscription);
+
+            return ['invoice' => $invoice->fresh(), 'status' => 'pending'];
+        }
+
+        $status = $payment['status'] ?? null;
+
+        if (filled($payment['id'] ?? null)) {
+            $invoice->update(['payment_id' => (string) $payment['id']]);
+        }
+
+        if ($card && in_array($status, ['paid', 'pending', 'unknown'], true)) {
+            $this->savedCards->markUsed($card);
+        }
+
+        if ($status === 'paid') {
+            $this->applyPaymentUpdate($payment + ['order_reference' => $invoice->order_reference], $gateway->name());
+
+            return ['invoice' => $invoice->fresh(), 'status' => 'paid'];
+        }
+
+        if (in_array($status, ['pending', 'unknown'], true)) {
+            $secret = $payment['instructions']['client_secret'] ?? null;
+
+            if ($secret !== null) {
+                $invoice->update(['meta' => array_merge($invoice->meta ?? [], [
+                    'authentication' => ['client_secret' => $secret],
+                ])]);
+            }
+
+            return [
+                'invoice' => $invoice->fresh(),
+                'status' => $secret !== null ? 'requires_action' : 'processing',
+                'client_secret' => $secret,
+            ];
+        }
+
+        $this->markInvoiceFailed($invoice, 'addons', payment: $payment);
+
+        throw CardDeclinedException::from($payment['decline'] ?? null);
+    }
+
+    /**
+     * Close an earlier unpaid purchase of extras before starting another.
+     *
+     * One paid meanwhile is honoured by cancelInvoice() — and the new purchase
+     * asks for totals, so its units are never bought twice. A card still with
+     * the bank (3-D Secure never finished) is stopped there too, so the two
+     * can never both be paid.
+     */
+    protected function voidOpenAddonInvoices(Subscription $subscription): void
+    {
+        $subscription->addonInvoices()
+            ->where('status', InvoiceStatus::Pending->value)
+            ->get()
+            ->each(function (Invoice $invoice) {
+                $invoice = $this->cancelInvoice($invoice);
+
+                if ($invoice->status !== InvoiceStatus::Cancelled
+                    || $invoice->payment_method !== PaymentMethod::Card
+                    || blank($invoice->payment_id)) {
+                    return;
+                }
+
+                $gateway = $this->gateways->forInvoice($invoice);
+
+                if ($gateway instanceof KeepsRenewalCards) {
+                    try {
+                        $gateway->cancelPayment($invoice->payment_id);
+                    } catch (\Throwable $e) {
+                        Log::warning('Could not stop an unconfirmed card charge for extras', [
+                            'invoice_id' => $invoice->id,
+                            'error' => $e->getMessage(),
+                        ]);
+                    }
+                }
+            });
+    }
+
+    /**
+     * The extras on a subscription changed: everything already issued for the
+     * next cycle at the old total is brought in line.
+     *
+     * A per-cycle renewal (Pix, checkout, a card paid by hand) issued but not
+     * paid is closed — the next run issues it at the new total — and a
+     * preapproval is told the new amount. A card we charge ourselves needs
+     * nothing: it reads the total when the cycle is charged.
+     */
+    public function addonsChanged(Subscription $subscription): void
+    {
+        $subscription->refresh();
+
+        $this->voidCycleChargesFrom($subscription, $subscription->current_period_end);
+
+        if ($subscription->current_period_end) {
+            try {
+                $this->syncRecurringAmount(
+                    $subscription,
+                    PlanChange::termsFor($subscription, $subscription->current_period_end)['price_cents'],
+                );
+            } catch (\Throwable $e) {
+                Log::error('Could not tell the gateway the new renewal amount after extras changed', [
+                    'subscription_id' => $subscription->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        $this->gate->forget($subscription->tenant);
+        $this->fireUpdated($subscription);
     }
 
     /**
@@ -2088,6 +2382,7 @@ class BillingService
                 $fresh = $invoice->fresh();
 
                 match (true) {
+                    $fresh->purpose === InvoicePurpose::SubscriptionAddon => app(SubscriptionAddons::class)->handleInvoicePaid($fresh),
                     $fresh->purpose === InvoicePurpose::TrainedAgentPurchase => app(TrainedAgentService::class)->handleInvoicePaid($fresh),
                     $fresh->purpose === InvoicePurpose::CreditTopup => app(CreditService::class)->creditTopup($fresh),
                     default => app(ApiwayService::class)->handleApiwayInvoicePaid($fresh),
@@ -2692,9 +2987,9 @@ class BillingService
      * charged now and nothing is taken away early. Choosing a cheaper plan on
      * a subscription set to end also keeps it — that is what the choice means.
      */
-    public function schedulePlanChange(Tenant $tenant, Plan $plan): Subscription
+    public function schedulePlanChange(Tenant $tenant, Plan $plan, ?array $addons = null): Subscription
     {
-        $quote = $this->planChange->quote($tenant, $plan);
+        $quote = $this->planChange->quote($tenant, $plan, addons: $addons);
 
         if ($quote['type'] !== PlanChange::DOWNGRADE) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -2709,10 +3004,11 @@ class BillingService
         /** @var Subscription $current */
         $current = $tenant->currentSubscription;
         $price = (int) $quote['plan']['price_cents'];
+        $units = $quote['addons']['units'] ?? [];
 
         // Gateway first: a preapproval left at the old amount would charge the
         // old price for the new plan, and that is the customer's money.
-        $this->syncRecurringAmount($current, $price);
+        $this->syncRecurringAmount($current, (int) $quote['total_cents']);
 
         $this->discardPendingChanges($tenant);
 
@@ -2725,6 +3021,10 @@ class BillingService
             'scheduled_price_cents' => $price,
             'scheduled_billing_cycle' => $plan->billing_cycle,
             'scheduled_change_at' => $current->current_period_end,
+            // The extras the new plan carries, at its price for them.
+            'scheduled_addons' => $units,
+            'scheduled_addons_at' => $current->current_period_end,
+            'scheduled_addon_unit_cents' => array_intersect_key($quote['addons']['unit_cents'] ?? [], $units),
             'cancel_at_period_end' => false,
             'cancelled_at' => null,
         ]);
@@ -2747,15 +3047,18 @@ class BillingService
             return $current;
         }
 
-        $this->syncRecurringAmount($current, (int) $current->price_cents);
+        $this->syncRecurringAmount($current, $current->cycleTotalCents());
 
         $from = $current->scheduled_change_at;
 
+        // The extras chosen for the cheaper plan go with it: keeping the plan
+        // keeps what it holds now.
         $current->update([
             'scheduled_plan_id' => null,
             'scheduled_price_cents' => null,
             'scheduled_billing_cycle' => null,
             'scheduled_change_at' => null,
+            ...self::NO_SCHEDULED_ADDONS,
         ]);
 
         $this->voidCycleChargesFrom($current, $from);
@@ -2780,6 +3083,7 @@ class BillingService
                 'scheduled_price_cents' => null,
                 'scheduled_billing_cycle' => null,
                 'scheduled_change_at' => null,
+                ...self::NO_SCHEDULED_ADDONS,
             ]);
 
             return false;
@@ -2796,10 +3100,16 @@ class BillingService
             // the day the workspace moves onto it.
             'quotas_snapshot' => $plan?->quotas ?? $subscription->quotas_snapshot,
             'features_snapshot' => $plan?->features ?? $subscription->features_snapshot,
+            // The extras move with it, at the new plan's price for them.
+            ...($subscription->hasScheduledAddons() ? [
+                'addons' => $subscription->scheduledAddonQuantities() ?: null,
+                'addon_unit_cents' => $subscription->scheduled_addon_unit_cents ?: null,
+            ] : []),
             'scheduled_plan_id' => null,
             'scheduled_price_cents' => null,
             'scheduled_billing_cycle' => null,
             'scheduled_change_at' => null,
+            ...self::NO_SCHEDULED_ADDONS,
         ]);
 
         $this->gate->forget($subscription->tenant);
@@ -2814,10 +3124,56 @@ class BillingService
         return true;
     }
 
-    /** Every downgrade whose period has ended. Called by billing:process-overdue. */
+    /**
+     * Fewer extras from the period that starts now: the reduction asked for
+     * during the last one. Returns whether anything changed.
+     */
+    public function applyScheduledAddons(Subscription $subscription): bool
+    {
+        if (! $subscription->hasScheduledAddons() || $subscription->scheduled_addons_at->isFuture()) {
+            return false;
+        }
+
+        // A downgrade carries its extras itself (applyScheduledChange).
+        if ($subscription->hasScheduledChange()) {
+            return false;
+        }
+
+        $subscription->update([
+            'addons' => $subscription->status === SubscriptionStatus::Cancelled
+                ? $subscription->addons
+                : ($subscription->scheduledAddonQuantities() ?: null),
+            ...self::NO_SCHEDULED_ADDONS,
+        ]);
+
+        $this->gate->forget($subscription->tenant);
+        $this->fireUpdated($subscription);
+
+        return true;
+    }
+
+    /**
+     * Every downgrade — and every reduction of extras — whose period has
+     * ended. Called by billing:process-overdue.
+     */
     public function applyDueScheduledChanges(): int
     {
         $applied = 0;
+
+        Subscription::query()
+            ->whereNull('scheduled_plan_id')
+            ->whereNotNull('scheduled_addons_at')
+            ->where('scheduled_addons_at', '<=', now())
+            ->each(function (Subscription $subscription) use (&$applied) {
+                try {
+                    $applied += $this->applyScheduledAddons($subscription) ? 1 : 0;
+                } catch (\Throwable $e) {
+                    Log::error('Could not apply a scheduled reduction of extras', [
+                        'subscription_id' => $subscription->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            });
 
         Subscription::query()
             ->whereNotNull('scheduled_plan_id')
@@ -2842,7 +3198,7 @@ class BillingService
      * next cycles cost. Throws: a downgrade the gateway did not hear about is
      * one charged at the old price.
      */
-    protected function syncRecurringAmount(Subscription $subscription, int $amountCents): void
+    public function syncRecurringAmount(Subscription $subscription, int $amountCents): void
     {
         $instrumentId = $subscription->payment_instrument_id;
 
@@ -3184,6 +3540,12 @@ class BillingService
                 'currency' => $price?->currency ?: ($plan->currency ?: $tenant->currency()),
                 'quotas_snapshot' => $plan->quotas,
                 'features_snapshot' => $plan->features,
+                // The extras chosen with the plan, at this plan's price for
+                // them — frozen like the plan's own price.
+                'addons' => ($quote['addons']['units'] ?? []) ?: null,
+                'addon_unit_cents' => ($quote['addons']['units'] ?? [])
+                    ? array_intersect_key($quote['addons']['unit_cents'] ?? [], $quote['addons']['units'])
+                    : null,
                 'current_period_start' => now(),
                 // A trial is for somebody arriving, not somebody already paying.
                 'trial_ends_at' => ! $upgrade && $plan->trial_days > 0 ? now()->addDays($plan->trial_days) : null,
@@ -3200,21 +3562,21 @@ class BillingService
     }
 
     /**
-     * The first charge of a new subscription: the plan's price, minus the
-     * unused part of the plan an upgrade replaces.
+     * The first charge of a new subscription: the plan's price and its extras,
+     * minus the unused part of the plan an upgrade replaces.
      *
      * @return array{amount_cents: int, proration_credit_cents: int|null}
      */
     protected function firstCharge(Subscription $subscription, ?array $quote): array
     {
         if (($quote['type'] ?? null) !== PlanChange::UPGRADE) {
-            return ['amount_cents' => (int) $subscription->price_cents, 'proration_credit_cents' => null];
+            return ['amount_cents' => $subscription->cycleTotalCents(), 'proration_credit_cents' => null];
         }
 
         $discount = (int) ($quote['discount_cents'] ?? 0);
 
         return [
-            'amount_cents' => max(0, (int) $subscription->price_cents - $discount),
+            'amount_cents' => max(0, $subscription->cycleTotalCents() - $discount),
             'proration_credit_cents' => $discount > 0 ? $discount : null,
         ];
     }

@@ -47,7 +47,7 @@ class BillingNotifier
         // one after it.
         $terms = $type === NotificationType::SubscriptionDue && $subscription->current_period_end
             ? PlanChange::termsFor($subscription, $subscription->current_period_end)
-            : ['plan' => $subscription->plan, 'price_cents' => $subscription->price_cents];
+            : ['plan' => $subscription->plan, 'price_cents' => $subscription->cycleTotalCents()];
 
         // Every placeholder is passed regardless of the event: render() only
         // substitutes the ones the template actually uses.

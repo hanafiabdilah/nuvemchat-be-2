@@ -33,6 +33,7 @@ class PlanResource extends JsonResource
                         'currency' => $price->currency,
                         'card_enabled' => (bool) $price->card_enabled,
                         'pix_enabled' => (bool) $price->pix_enabled,
+                        'addon_cents' => $price->addon_cents ?: null,
                     ])
                     ->values(),
             ),
@@ -50,6 +51,9 @@ class PlanResource extends JsonResource
                         'billing_cycle' => $price->billing_cycle,
                         'price_cents' => $price->amount_cents,
                         'currency' => $price->currency,
+                        // One extra agent / WhatsApp number at this cycle, by
+                        // add-on key. Only what this plan actually sells.
+                        'addon_cents' => (object) $this->addonUnitPrices($this->resolvedMarketCode(), $price->billing_cycle),
                     ])
                     ->values(),
             ),

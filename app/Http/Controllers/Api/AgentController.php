@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Conversation\Status;
 use App\Events\ConnectionAccessUpdated;
 use App\Http\Controllers\Controller;
@@ -10,6 +11,7 @@ use App\Models\AuditLog;
 use App\Models\Conversation;
 use App\Models\User;
 use App\Services\Access\TenantRoles;
+use App\Services\Billing\SubscriptionAddons;
 use App\Services\User\AgentRemoval;
 use App\Services\User\AvatarStorage;
 use Illuminate\Http\JsonResponse;
@@ -70,6 +72,8 @@ class AgentController extends Controller
                 'message' => 'You have reached the maximum number of agents for your plan.',
                 'code' => 'quota_exceeded',
                 'quota' => 'max_agents',
+                // Whether an extra seat can be bought instead (Billing → extras).
+                'addon_available' => app(SubscriptionAddons::class)->canBuy($tenant, Addon::Agent),
             ], 422);
         }
 

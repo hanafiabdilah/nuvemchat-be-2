@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\Feature;
 use App\Enums\Billing\Quota;
@@ -67,6 +68,14 @@ class AdminPlanController extends Controller
                     ]),
                 // Which of them the plan row's own `price_cents` belongs to.
                 'default_market' => MarketResolver::defaultCode(),
+                // The extras a plan can sell beside itself, priced per market
+                // and cycle on each price row. Each raises one quota, and is
+                // only sold where the plan limits that quota.
+                'addons' => array_map(fn (Addon $a) => [
+                    'key' => $a->value,
+                    'label' => $a->label(),
+                    'quota' => $a->quota()->value,
+                ], Addon::cases()),
             ],
         ]);
     }
@@ -163,6 +172,12 @@ class AdminPlanController extends Controller
                 $row['billing_cycle'] = $value['billing_cycle'] ?? null;
             }
 
+            // One extra agent / WhatsApp number at this row's cycle. Absent
+            // keeps what was stored (HasMarketPrices::syncMarketPrices()).
+            if (array_key_exists('addon_cents', $value)) {
+                $row['addon_cents'] = $value['addon_cents'];
+            }
+
             // Clamped, not merely validated: "Pix in Indonesia" is not a
             // decision an admin is allowed to record (see MarketBillingMethods),
             // and storing it would write back the very lie the read-side
@@ -209,6 +224,10 @@ class AdminPlanController extends Controller
             'prices.*.amount_cents' => ['sometimes', 'integer', 'min:0'],
             'prices.*.card_enabled' => ['sometimes', 'boolean'],
             'prices.*.pix_enabled' => ['sometimes', 'boolean'],
+            // Price per unit of each extra, for this row's country and cycle.
+            // Blank = that extra is not sold there.
+            'prices.*.addon_cents' => ['sometimes', 'nullable', 'array:'.implode(',', Addon::values())],
+            'prices.*.addon_cents.*' => ['nullable', 'integer', 'min:0'],
             'name' => ['required', 'string', 'max:100'],
             'slug' => ['nullable', 'string', 'max:120', Rule::unique('plans', 'slug')->ignore($plan?->id)],
             'description' => ['nullable', 'string', 'max:500'],

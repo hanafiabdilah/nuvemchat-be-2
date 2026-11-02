@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Billing;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
@@ -16,6 +17,7 @@ use App\Models\Tenant;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\PlanChange;
 use App\Services\Billing\SavedCardService;
+use App\Services\Billing\SubscriptionAddons;
 use App\Services\Market\MarketDocuments;
 use App\Support\Errors\HasUserSafeMessage;
 use Illuminate\Http\Request;
@@ -100,6 +102,7 @@ class BillingController extends Controller
             // Absent = the plan's own cycle (a client that predates this).
             'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
             'payer_email' => ['nullable', 'email'],
+            ...self::addonRules(),
         ]);
 
         $plan = $this->planFor($request, $validated);
@@ -109,6 +112,7 @@ class BillingController extends Controller
                 $this->tenant($request),
                 $plan,
                 $validated['payer_email'] ?? $request->user()->email,
+                $this->addonsFrom($request, $validated),
             ),
         ]);
     }
@@ -229,6 +233,8 @@ class BillingController extends Controller
                 'subscription_id' => $pending->id,
                 'plan' => $pending->plan ? ['id' => $pending->plan->id, 'name' => $pending->plan->name] : null,
                 'price_cents' => $pending->price_cents,
+                'addons' => $pending->addonQuantities(),
+                'total_cents' => $pending->cycleTotalCents(),
                 'billing_cycle' => $pending->billing_cycle?->value,
                 'currency' => $pending->currency,
                 'invoice' => $pendingInvoice ? new InvoiceResource($pendingInvoice) : null,
@@ -251,6 +257,7 @@ class BillingController extends Controller
             // A card paid by hand each cycle carries an upgrade's credit on
             // the charge, where a self-renewing one sometimes cannot.
             'auto_renew' => ['sometimes', 'boolean'],
+            ...self::addonRules(),
         ]);
 
         $plan = $this->planFor($request, $validated);
@@ -262,6 +269,7 @@ class BillingController extends Controller
                 $plan,
                 $method,
                 autoRenew: $request->boolean('auto_renew', true),
+                addons: $this->addonsFrom($request, $validated),
             ),
         ]);
     }
@@ -274,13 +282,14 @@ class BillingController extends Controller
             // Which of the plan's prices: one plan is sold monthly and yearly.
             // Absent = the plan's own cycle (a client that predates this).
             'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
+            ...self::addonRules(),
         ]);
 
         $plan = $this->planFor($request, $validated);
         $tenant = $this->tenant($request);
 
         try {
-            $subscription = $this->billing->schedulePlanChange($tenant, $plan);
+            $subscription = $this->billing->schedulePlanChange($tenant, $plan, $this->addonsFrom($request, $validated));
         } catch (\Throwable $e) {
             if ($e instanceof HasUserSafeMessage || $e instanceof \Illuminate\Validation\ValidationException) {
                 throw $e;
@@ -357,6 +366,7 @@ class BillingController extends Controller
             // same way. Absent = renews by itself, as a card always did.
             'auto_renew' => ['sometimes', 'boolean'],
             'payer_email' => ['required', 'email'],
+            ...self::addonRules(),
         ]);
 
         // ⚠️ `->public()` as well, matching plans() above. Without it the
@@ -383,6 +393,7 @@ class BillingController extends Controller
                     'discard_card_on_failure' => (bool) ($validated['discard_card_on_failure'] ?? false),
                     'auto_renew' => (bool) ($validated['auto_renew'] ?? true),
                     'payer_email' => $validated['payer_email'],
+                    'addons' => $this->addonsFrom($request, $validated),
                 ],
             );
         } catch (\Throwable $e) {
@@ -409,6 +420,93 @@ class BillingController extends Controller
             // card, the charge's outcome: refused, or waiting on 3-D Secure.
             'invoice' => $invoice ? new InvoiceResource($invoice) : null,
         ], 201);
+    }
+
+    // --- Extras on the running plan ------------------------------------------
+
+    /** What the workspace holds and can buy: extra agents and WhatsApp numbers. */
+    public function addons(Request $request)
+    {
+        return response()->json([
+            'data' => app(SubscriptionAddons::class)->state($this->tenant($request)),
+        ]);
+    }
+
+    /** What a change of extras costs now and what the next renewal becomes. */
+    public function addonsQuote(Request $request)
+    {
+        $validated = $request->validate([
+            ...self::addonRules(),
+            'addons' => ['required', 'array:'.implode(',', Addon::values())],
+        ]);
+
+        return response()->json([
+            'data' => app(SubscriptionAddons::class)->quote($this->tenant($request), $validated['addons']),
+        ]);
+    }
+
+    /**
+     * Change the extras: fewer from the next period, more now — paid with the
+     * plan's card, a saved card, Pix or a hosted checkout, and added once paid.
+     *
+     * Answers what the page has to do next: nothing (`paid`), show the Pix or
+     * checkout (`pending`, with the invoice), finish 3-D Secure with the client
+     * secret (`requires_action`), or wait (`processing`). A refused card is 422
+     * `card_declined`, and nothing is added.
+     */
+    public function purchaseAddons(Request $request)
+    {
+        $validated = $request->validate([
+            ...self::addonRules(),
+            'addons' => ['required', 'array:'.implode(',', Addon::values())],
+            'method' => ['nullable', Rule::in(['card_on_file', 'card', 'pix', 'checkout'])],
+            'saved_card_id' => ['required_if:method,card', 'nullable', 'integer'],
+            'card_token' => ['required_if:method,card', 'nullable', 'string', 'max:128'],
+            'payer_email' => ['nullable', 'email'],
+        ]);
+
+        $tenant = $this->tenant($request);
+        $savedCard = ($validated['method'] ?? null) === 'card'
+            ? app(SavedCardService::class)->find($tenant, (int) $validated['saved_card_id'])
+            : null;
+
+        $result = app(SubscriptionAddons::class)->purchase($tenant, $validated['addons'], [
+            'method' => $validated['method'] ?? null,
+            'saved_card' => $savedCard,
+            'card_token' => $validated['card_token'] ?? null,
+            'payer_email' => $validated['payer_email'] ?? $request->user()->email,
+        ]);
+
+        return response()->json([
+            'data' => $result['state'],
+            'invoice' => $result['invoice'] ? new InvoiceResource($result['invoice']) : null,
+            'payment' => $result['payment'],
+        ]);
+    }
+
+    /**
+     * Units on top of the plan, by add-on key: whole and capped. The keys are
+     * the enum's, nothing else.
+     *
+     * @return array<string, array<int, mixed>>
+     */
+    protected static function addonRules(): array
+    {
+        return [
+            'addons' => ['sometimes', 'nullable', 'array:'.implode(',', Addon::values())],
+            'addons.*' => ['integer', 'min:0', 'max:'.Addon::MAX_UNITS],
+        ];
+    }
+
+    /**
+     * The extras asked for, or null when the client said nothing — which keeps
+     * the capacity the workspace already has (PlanChange::carriedUnits()).
+     *
+     * @return array<string, int>|null
+     */
+    protected function addonsFrom(Request $request, array $validated): ?array
+    {
+        return $request->has('addons') ? array_map('intval', $validated['addons'] ?? []) : null;
     }
 
     /**

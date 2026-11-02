@@ -7,6 +7,7 @@ use App\Models\Connection;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\PlanChange;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Gallery\GalleryStorage;
@@ -51,6 +52,17 @@ class SubscriptionResource extends JsonResource
             'payment_method' => $this->payment_method,
             'billing_cycle' => $this->billing_cycle,
             'price_cents' => $this->price_cents,
+            // The extras bought on top of the plan, and what one cycle of the
+            // plan with them costs — the number every renewal charges.
+            'addons' => $this->addonQuantities(),
+            'addon_unit_cents' => $this->addon_unit_cents ?? (object) [],
+            'addons_cents' => $this->addonsCents(),
+            'total_cents' => $this->cycleTotalCents(),
+            // The next cycle's charge, with a scheduled downgrade or reduction
+            // already applied — the dashboard cannot add that up itself.
+            'next_renewal_cents' => $this->current_period_end
+                ? PlanChange::termsFor($this->resource, $this->current_period_end)['price_cents']
+                : null,
             // Snapshotted with the price when the workspace subscribed. Sent
             // because the dashboard used to fall back to the *plan's* currency,
             // which is the platform's home one — so a country whose plan was
@@ -94,6 +106,14 @@ class SubscriptionResource extends JsonResource
                 'price_cents' => $this->scheduled_price_cents,
                 'billing_cycle' => $this->scheduled_billing_cycle,
                 'effective_at' => $this->scheduled_change_at,
+                'addons' => $this->scheduledAddonQuantities(),
+                'total_cents' => (int) $this->scheduled_price_cents
+                    + $this->addonsCents($this->scheduledAddonQuantities(), $this->scheduled_addon_unit_cents ?? []),
+            ] : null,
+            // Fewer extras from the end of the paid period (no plan change).
+            'scheduled_addons' => $this->hasScheduledAddons() && ! $this->hasScheduledChange() ? [
+                'addons' => $this->scheduledAddonQuantities(),
+                'effective_at' => $this->scheduled_addons_at,
             ] : null,
             'plan' => new PlanResource($this->whenLoaded('plan')),
             'tenant' => $this->whenLoaded('tenant', fn () => [
