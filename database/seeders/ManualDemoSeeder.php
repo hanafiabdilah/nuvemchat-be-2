@@ -5,7 +5,9 @@ namespace Database\Seeders;
 use Database\Seeders\ManualDemo\Automation;
 use Database\Seeders\ManualDemo\Catalog;
 use Database\Seeders\ManualDemo\Commerce;
+use Database\Seeders\ManualDemo\Crm;
 use Database\Seeders\ManualDemo\EmailInbox;
+use Database\Seeders\ManualDemo\Folders;
 use Database\Seeders\ManualDemo\History;
 use Database\Seeders\ManualDemo\Inbox;
 use Database\Seeders\ManualDemo\Recent;
@@ -30,7 +32,7 @@ use Illuminate\Database\Seeder;
  */
 class ManualDemoSeeder extends Seeder
 {
-    use Support, Workspace, Automation, Inbox, EmailInbox, History, Commerce, Catalog, Recent;
+    use Support, Workspace, Automation, Inbox, EmailInbox, History, Commerce, Catalog, Recent, Crm, Folders;
 
     public const OWNER_EMAIL = 'marina@lojaaurora.example';
     public const PASSWORD = 'aurora2026';
@@ -61,6 +63,9 @@ class ManualDemoSeeder extends Seeder
         $this->seedCommerce();
         $this->seedCatalog();
         $this->seedRecent();
+        $this->seedCrm();
+        $this->seedCrmFlows();
+        $this->seedGalleryFolders();
 
         $this->command?->info('Manual demo workspace ready — login: ' . self::OWNER_EMAIL . ' / ' . self::PASSWORD);
     }

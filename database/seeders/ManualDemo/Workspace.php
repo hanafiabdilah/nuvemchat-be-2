@@ -62,7 +62,7 @@ trait Workspace
     private function tunePlans(): void
     {
         $all = [
-            'chat' => true, 'whatsapp_api' => true, 'flow' => true,
+            'chat' => true, 'whatsapp_api' => true, 'crm' => true, 'flow' => true,
             'flow_assistant' => true, 'ai_agent_hub' => true, 'statistics' => true, 'catalog' => true, 'mcp' => true,
             'instagram_management' => true, 'tiktok_management' => true, 'youtube_management' => true, 'campaigns' => true,
         ];
@@ -97,11 +97,15 @@ trait Workspace
             'Supervisor' => [
                 'agents.view', 'agents.update-avatar', 'agents.sync-connections', 'statistics.tenant.view',
                 'statistics.agents.view', 'contacts.update',
+                'customers.view', 'customers.update', 'companies.view', 'leads.view', 'leads.manage',
+                'deals.view', 'deals.manage', 'crm-tasks.manage', 'crm-activities.manage', 'crm-reports.view',
                 'conversations.transfer', 'conversations.take-over',
                 'tags.create', 'tags.update', 'tags.delete', 'broadcasts.view', 'flows.view', 'gallery.view',
             ],
             'Atendente' => ['contacts.update', 'templates.send', 'templates.view', 'gallery.view', 'conversations.transfer', 'conversations.take-over'],
-            'Vendas' => ['contacts.update', 'templates.send', 'templates.view', 'broadcasts.view'],
+            'Vendas' => ['contacts.update', 'templates.send', 'templates.view', 'broadcasts.view',
+                'customers.view', 'customers.update', 'companies.view', 'leads.view', 'leads.manage',
+                'deals.view', 'deals.manage', 'crm-tasks.manage', 'crm-activities.manage'],
             'Financeiro' => ['billing.view', 'integrations.view'],
             'Estagiário' => [],
         ];
@@ -163,6 +167,16 @@ trait Workspace
 
     private function seedSubscription(): void
     {
+        // Extras each plan sells on top of its quotas, per cycle (Faturamento › Extras).
+        foreach (['starter' => [2990, 6990], 'pro' => [3990, 7990], 'business' => [4990, 8990]] as $slug => [$agent, $whatsapp]) {
+            $id = Plan::where('slug', $slug)->value('id');
+            foreach (['monthly' => 1, 'yearly' => 10.8] as $cycle => $factor) {
+                \Illuminate\Support\Facades\DB::table('market_prices')
+                    ->where('priceable_type', (new Plan())->getMorphClass())->where('priceable_id', $id)->where('billing_cycle', $cycle)
+                    ->update(['addon_cents' => json_encode(['agents' => (int) round($agent * $factor), 'whatsapp_connections' => (int) round($whatsapp * $factor)])]);
+            }
+        }
+
         $plan = Plan::where('slug', 'business')->firstOrFail();
 
         $subscription = $this->make(Subscription::class, [
@@ -178,6 +192,8 @@ trait Workspace
             'current_period_end' => $this->now->copy()->addDays(14)->startOfDay(),
             'payment_instrument_id' => 'inst_manual_demo_card',
             'payment_customer_id' => 'cus_manual_demo',
+            'addons' => ['agents' => 2, 'whatsapp_connections' => 1],
+            'addon_unit_cents' => ['agents' => 4990, 'whatsapp_connections' => 8990],
             'created_at' => $this->now->copy()->subDays(106),
         ]);
 
