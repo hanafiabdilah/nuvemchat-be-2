@@ -31,6 +31,12 @@ enum NodeType: string
     case AiMedia = 'ai_media';
     case GoToFlow = 'go_to_flow';
 
+    /**
+     * Shares new conversations between variants of a funnel — one output per
+     * variant — to compare them. See App\Services\Flow\SplitTestNodes.
+     */
+    case SplitTest = 'split_test';
+
     public function data(): array
     {
         return match($this) {
@@ -214,6 +220,10 @@ enum NodeType: string
                 'flow_id' => null,
                 'carry_variables' => true,
             ],
+            // One output per variant (edge condition_value = variant id).
+            // Usually each leads to a Go-to-flow node pointing at the funnel
+            // being tested. See App\Services\Flow\SplitTestNodes.
+            self::SplitTest => \App\Services\Flow\SplitTestNodes::defaults(),
             // Everything an AI Agent node carries, plus what it may act on.
             // Every capability starts off: the node is auto-saved the moment
             // it lands on the canvas, and one that could already charge

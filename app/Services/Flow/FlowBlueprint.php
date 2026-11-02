@@ -42,15 +42,16 @@ class FlowBlueprint
         'start', 'message', 'interval', 'response', 'wait_response', 'status',
         'tagging', 'condition', 'action', 'ai_agent', 'ai_tools', 'http_request',
         'interactive', 'payment', 'invoice', 'pixel', 'receipt', 'ai_media', 'go_to_flow',
+        'split_test',
     ];
 
     /**
      * Node types whose outputs are not a fixed pair but depend on the node's
      * own data — an interactive node's options, an AI-with-actions node's
-     * capabilities. Listed so the prose below can name every branching type
-     * without anyone keeping a second list in a sentence.
+     * capabilities, a split test's variants. Listed so the prose below can name
+     * every branching type without anyone keeping a second list in a sentence.
      */
-    public const DYNAMIC_BRANCH_TYPES = ['interactive', 'ai_tools'];
+    public const DYNAMIC_BRANCH_TYPES = ['interactive', 'ai_tools', 'split_test'];
 
     /**
      * Edge branch values: the fixed pair per branching node — condition
@@ -472,6 +473,19 @@ class FlowBlueprint
                 'flow_id' => ['nullable', 'integer', Rule::exists('flows', 'id')->where('tenant_id', self::tenantId())],
                 'carry_variables' => ['nullable', 'boolean'],
             ],
+            // Variant ids are the edges' branch values, so they take the same
+            // pattern as an interactive option's. Everything else optional:
+            // SplitTestNodes::variants() fills a label from the letter, a
+            // weight of 1, and no limit.
+            'split_test' => [
+                'mode' => ['nullable', 'string', Rule::in(SplitTestNodes::MODES)],
+                'variants' => ['nullable', 'array', 'max:'.SplitTestNodes::MAX_VARIANTS],
+                'variants.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN],
+                'variants.*.label' => ['nullable', 'string', 'max:'.SplitTestNodes::MAX_LABEL_LENGTH],
+                'variants.*.weight' => ['nullable', 'integer', 'min:1', 'max:'.SplitTestNodes::MAX_WEIGHT],
+                'variants.*.limit' => ['nullable', 'integer', 'min:1', 'max:'.SplitTestNodes::MAX_LIMIT],
+                'started_at' => ['nullable', 'date'],
+            ],
             default => [],
         };
     }
@@ -615,7 +629,49 @@ class FlowBlueprint
             }
         }
 
-        return array_merge($problems, self::incompleteNodeProblems($nodes));
+        return array_merge($problems, self::incompleteNodeProblems($nodes), self::splitTestProblems($nodes));
+    }
+
+    /**
+     * Variant ids that are not unique within the flow.
+     *
+     * A split test counts its conversations by flow and variant id (see
+     * SplitTestNodes for why not by node), so two variants sharing an id —
+     * in one node or across two — share one counter, and each test reads the
+     * other's conversations as its own.
+     *
+     * @param  list<array>  $nodes
+     * @return list<string>
+     */
+    private static function splitTestProblems(array $nodes): array
+    {
+        $problems = [];
+        $owners = [];
+
+        foreach ($nodes as $node) {
+            if (($node['type'] ?? null) !== 'split_test') {
+                continue;
+            }
+
+            $key = (string) ($node['key'] ?? '');
+            $variants = SplitTestNodes::variants((array) ($node['data'] ?? []));
+
+            if (count($variants) < 2) {
+                $problems[] = "Node \"{$key}\" (split_test) needs at least two variants to compare.";
+            }
+
+            foreach ($variants as $variant) {
+                if (isset($owners[$variant['id']])) {
+                    $problems[] = "Variant id \"{$variant['id']}\" is used twice (node \"{$owners[$variant['id']]}\" and node \"{$key}\"); every variant in a flow needs its own id.";
+
+                    continue;
+                }
+
+                $owners[$variant['id']] = $key;
+            }
+        }
+
+        return $problems;
     }
 
     /**
@@ -705,6 +761,19 @@ class FlowBlueprint
                 $list = '"'.implode('", "', $allowed).'"';
 
                 return ["Edge from ai_tools node \"{$sourceKey}\" has condition_value {$shown}; it must be one of {$list} (\"paid\" and \"payment_failed\" exist only when capabilities.payment.enabled is true)."];
+            }
+
+            return [];
+        }
+
+        if ($type === 'split_test') {
+            $allowed = SplitTestNodes::branches((array) ($sourceNode['data'] ?? []));
+
+            if (! in_array($value, $allowed, true)) {
+                $shown = $value === null ? 'null' : "\"{$value}\"";
+                $list = '"'.implode('", "', $allowed).'"';
+
+                return ["Edge from split_test node \"{$sourceKey}\" has condition_value {$shown}; it must be one of that node's variant ids: {$list}."];
             }
 
             return [];
@@ -984,6 +1053,11 @@ class FlowBlueprint
         $toolsPaid = AiToolNodes::BRANCH_PAID;
         $toolsPaymentFailed = AiToolNodes::BRANCH_PAYMENT_FAILED;
         $orderVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', AiToolNodes::ORDER_VARIABLES));
+        $splitModes = self::quoted(SplitTestNodes::MODES);
+        $splitRotate = SplitTestNodes::MODE_ROTATE;
+        $splitSequence = SplitTestNodes::MODE_SEQUENCE;
+        $splitMax = SplitTestNodes::MAX_VARIANTS;
+        $splitVariable = SplitTestNodes::VARIABLE;
 
         return <<<SPEC
         # Flow file format ("{$format}", version {$version})
@@ -1012,6 +1086,7 @@ class FlowBlueprint
             payment       → "{$paid}" / "{$failed}"
             invoice       → "{$issued}" / "{$invoiceFailed}"
             interactive   → the id of one of that node's own options, or "{$invalidBranch}"
+            split_test    → the id of one of that node's own variants
             ai_tools      → "{$toolsHandoff}", plus "{$toolsPaid}" / "{$toolsPaymentFailed}" when it charges payments
         - status and go_to_flow END the flow: no edge may leave them.
         - Lay the canvas out left to right: x grows by ~280 per step, y separates
@@ -1355,6 +1430,24 @@ class FlowBlueprint
           the context — never the flow being edited.
         - `carry_variables`: whether the answers collected so far go along.
         - TERMINAL: no outgoing edge. The other flow's start node takes over.
+
+        ### split_test — compare two or more versions of a funnel
+        { "mode": "{$splitRotate}",
+          "variants": [ { "id": "variant_a", "label": "A", "weight": 1 },
+                        { "id": "variant_b", "label": "B", "weight": 1 } ] }
+        - Each variant is one output: its edges carry the variant's `id` as
+          `condition_value`. Usually each variant's edge leads to a go_to_flow
+          node pointing at the flow being tested, or straight into its steps.
+        - `mode`: {$splitModes}.
+          "{$splitRotate}" runs every variant at once and deals conversations out
+          by `weight` (equal weights alternate A, B, A, B…).
+          "{$splitSequence}" runs one variant at a time: each takes `limit`
+          conversations, then the next one takes over; the last takes the rest.
+        - 2–{$splitMax} variants. Variant ids must be unique across the whole flow
+          ([A-Za-z0-9_-], e.g. "variant_a"); labels are what the results show.
+        - The chosen label is stored in {{{$splitVariable}}}. A variant without an
+          edge receives no conversations.
+        - Use it only when the user asks to test or compare funnels.
 
         ### status — close the conversation
         { "value": "{$resolved}" }

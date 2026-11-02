@@ -378,6 +378,10 @@ class FlowExecutor
                 $this->executeGoToFlowNode($flowState, $node);
                 break;
 
+            case NodeType::SplitTest:
+                $this->executeSplitTestNode($flowState, $node);
+                break;
+
             default:
                 Log::warning('FlowExecutor: Unsupported node type', [
                     'node_type' => $node->type->value,
@@ -7044,6 +7048,53 @@ class FlowExecutor
         ]);
 
         $this->executeFromNode($flowState, $start);
+    }
+
+    // ────────────────────────────  Split test  ────────────────────────────
+
+    /**
+     * Execute a Split test node — send the conversation down one variant.
+     *
+     * Only variants with an edge compete: a conversation dealt to an output
+     * nobody wired would be counted for a funnel it never saw, and the test
+     * would compare a real funnel against silence. With none wired the path
+     * ends here, like any unwired branch.
+     *
+     * The variant's label is kept in {{split_variant}}, so a later node can
+     * say which funnel the customer came through — to a pixel, to an API, in
+     * a note.
+     */
+    protected function executeSplitTestNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $wired = $node->outgoingEdges()
+            ->whereNotNull('condition_value')
+            ->pluck('condition_value')
+            ->all();
+
+        $candidates = array_values(array_filter(
+            SplitTestNodes::variants($data),
+            fn (array $variant) => in_array($variant['id'], $wired, true),
+        ));
+
+        $variantId = SplitTests::assign($flowState, $node, $candidates);
+
+        if ($variantId === null) {
+            Log::info('FlowExecutor: Split test has no wired variant, flow path ends (flow state preserved)', [
+                'node_id' => $node->id,
+                'flow_state_id' => $flowState->id,
+            ]);
+
+            return;
+        }
+
+        $label = collect($candidates)->firstWhere('id', $variantId)['label'] ?? $variantId;
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[SplitTestNodes::VARIABLE] = $label;
+        $flowState->update(['state_data' => $stateData]);
+
+        $this->moveToNextNodeByBranch($flowState, $node, $variantId);
     }
 
     /** End the flow on a node that has nowhere to go, and clear its live line. */

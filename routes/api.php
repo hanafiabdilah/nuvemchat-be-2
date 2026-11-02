@@ -88,6 +88,7 @@ use App\Http\Controllers\Api\Crm\TaskController as CrmTaskController;
 use App\Http\Controllers\Api\EmailVerificationController;
 use App\Http\Controllers\Api\FlowAssistantController;
 use App\Http\Controllers\Api\FlowController;
+use App\Http\Controllers\Api\FlowSplitTestController;
 use App\Http\Controllers\Api\FlowTestController;
 use App\Http\Controllers\Api\Gallery\GalleryAssetController;
 use App\Http\Controllers\Api\Gallery\GalleryFolderController;
@@ -981,6 +982,8 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             ->middleware(['permission:flows.update', 'throttle:30,1']);
 
         Route::get('/flows/{id}/export', [FlowController::class, 'export'])->middleware('permission:flows.view');
+        // How each split test variant is doing: conversations, replies, sales.
+        Route::get('/flows/{id}/split-tests', [FlowSplitTestController::class, 'index'])->middleware('permission:flows.view');
         Route::get('/flows/{id}', [FlowController::class, 'show'])->middleware('permission:flows.view');
         Route::put('/flows/{id}', [FlowController::class, 'update'])->middleware('permission:flows.update');
         Route::delete('/flows/{id}', [FlowController::class, 'destroy'])->middleware('permission:flows.delete');
