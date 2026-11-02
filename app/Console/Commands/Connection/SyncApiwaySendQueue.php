@@ -25,7 +25,7 @@ class SyncApiwaySendQueue extends Command
 {
     protected $signature = 'apiway:sync-send-queue {--connections=50 : Most connections read per pass}';
 
-    protected $description = 'Settle WhatsApp messages API Way held in its anti-ban queue: sent, failed or unconfirmed';
+    protected $description = 'Settle WhatsApp messages API Way held in its send queue: sent, failed or unconfirmed';
 
     public function handle(ApiwaySendQueue $queue): int
     {
