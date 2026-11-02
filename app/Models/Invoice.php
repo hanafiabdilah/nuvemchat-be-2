@@ -76,12 +76,6 @@ class Invoice extends Model
         return $this->belongsTo(TrainedAgentHire::class);
     }
 
-    /** The nota fiscal issued for this invoice (Brazil only), if any. */
-    public function fiscalInvoice()
-    {
-        return $this->hasOne(FiscalInvoice::class);
-    }
-
     public function scopePending(Builder $query): Builder
     {
         return $query->where('status', InvoiceStatus::Pending->value);

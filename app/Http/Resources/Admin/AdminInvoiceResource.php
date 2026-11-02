@@ -44,13 +44,6 @@ class AdminInvoiceResource extends JsonResource
                 'id' => $this->subscription->plan->id,
                 'name' => $this->subscription->plan->name,
             ] : null),
-            // The nota fiscal for this invoice (Brazil), when one exists.
-            'fiscal' => $this->whenLoaded('fiscalInvoice', fn () => $this->fiscalInvoice ? [
-                'id' => $this->fiscalInvoice->id,
-                'status' => $this->fiscalInvoice->status->value,
-                'number' => $this->fiscalInvoice->number,
-                'message' => $this->fiscalInvoice->message,
-            ] : null),
             // Why a charge failed, in the gateway's own words (endpoint, status,
             // body, decline code) — written by BillingService::markInvoiceFailed.
             // Operators only; the tenant-facing InvoiceResource never ships it.

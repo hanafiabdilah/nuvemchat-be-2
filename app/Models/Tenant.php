@@ -24,16 +24,12 @@ class Tenant extends Model
         'billing_name',
         'billing_document_type',
         'billing_document_number',
-        // Brazil only, optional: the tomador's address on the nota fiscal.
-        // {cep, logradouro, numero, complemento, bairro, codigo_cidade, cidade, estado}
-        'billing_address',
     ];
 
     protected $casts = [
         'sales_goal' => 'array',
         'entitlement_overrides' => 'array',
         'audio_dictionary' => 'array',
-        'billing_address' => 'array',
         'crm_lead_scoring' => 'array',
         // "Set up later" in the first-run guide — see OnboardingState.
         'onboarding_skipped_at' => 'datetime',

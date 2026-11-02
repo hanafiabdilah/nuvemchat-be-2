@@ -246,7 +246,6 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // renewal runs with nobody at a screen to supply it.
         Route::get('/profile', [BillingController::class, 'billingProfile'])->middleware('permission:billing.view')->name('profile');
         Route::put('/profile', [BillingController::class, 'updateBillingProfile'])->middleware('permission:billing.manage')->name('profile-update');
-        Route::put('/address', [BillingController::class, 'updateBillingAddress'])->middleware('permission:billing.manage')->name('address-update');
         Route::get('/subscription', [BillingController::class, 'subscription'])->middleware('permission:billing.view')->name('subscription');
         // The card behind a plan we renew ourselves: change it, and pay the
         // cycle a refused renewal left owing. Throttled — each call reaches
@@ -258,13 +257,6 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         Route::get('/invoices', [BillingController::class, 'invoices'])->middleware('permission:billing.view')->name('invoices');
         Route::get('/invoices/{invoice}/status', [BillingController::class, 'invoiceStatus'])->middleware('permission:billing.view')->name('invoice-status');
         Route::post('/invoices/{invoice}/pay-card', [BillingController::class, 'payInvoiceWithCard'])->middleware('permission:billing.manage')->name('invoice-pay-card');
-        // The nota fiscal Pingly issued for a paid invoice (Brazil), streamed
-        // through us because the file sits behind Pingly's Plugnotas key.
-        Route::get('/invoices/{invoice}/nota-fiscal/{kind}', [\App\Http\Controllers\Api\Billing\FiscalInvoiceController::class, 'document'])
-            ->whereIn('kind', ['pdf', 'xml'])->middleware(['permission:billing.view', 'throttle:30,1'])->name('invoice-nota-fiscal');
-        // Fills the billing address from a CEP, for the tomador on the nota.
-        Route::get('/cep/{cep}', [\App\Http\Controllers\Api\Billing\FiscalInvoiceController::class, 'cep'])
-            ->middleware(['permission:billing.manage', 'throttle:30,1'])->name('cep');
         Route::post('/subscribe', [BillingController::class, 'subscribe'])->middleware('permission:billing.manage')->name('subscribe');
         Route::get('/plan-change', [BillingController::class, 'planChangeQuote'])->middleware('permission:billing.view')->name('plan-change.quote');
         Route::post('/plan-change/schedule', [BillingController::class, 'schedulePlanChange'])->middleware('permission:billing.manage')->name('plan-change.schedule');
@@ -1250,11 +1242,6 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             // The payment service credential's own proof: what can be charged,
             // and whether any active gateway can auto-renew a card at all.
             Route::get('/payment-service/test', [AdminPaymentServiceController::class, 'test']);
-            // Nota fiscal (Plugnotas): Pingly's own NFS-e account, Brazil.
-            Route::get('/fiscal/settings', [\App\Http\Controllers\Api\Admin\AdminFiscalInvoiceController::class, 'settings']);
-            Route::put('/fiscal/settings', [\App\Http\Controllers\Api\Admin\AdminFiscalInvoiceController::class, 'updateSettings']);
-            Route::post('/fiscal/test', [\App\Http\Controllers\Api\Admin\AdminFiscalInvoiceController::class, 'test']);
-            Route::post('/fiscal/webhook', [\App\Http\Controllers\Api\Admin\AdminFiscalInvoiceController::class, 'registerWebhook']);
             // Firebase service account for mobile push (uploaded as the JSON file).
             Route::get('/firebase', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'show']);
             Route::post('/firebase', [\App\Http\Controllers\Api\Admin\AdminFirebaseController::class, 'store']);
@@ -1473,16 +1460,6 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         // there is no separate payments table, an invoice is the charge record.
         Route::get('/invoices', [AdminInvoiceController::class, 'index'])
             ->middleware('permission:bo.invoices.view');
-
-        // Billing — notas fiscais Pingly issued for paid invoices (Brazil).
-        // Reading is invoices.view; acting on one is subscriptions.manage.
-        Route::get('/fiscal-invoices', [\App\Http\Controllers\Api\Admin\AdminFiscalInvoiceController::class, 'index'])
-            ->middleware('permission:bo.invoices.view');
-        Route::middleware('permission:bo.subscriptions.manage')->group(function () {
-            Route::post('/fiscal-invoices/{fiscalInvoice}/retry', [\App\Http\Controllers\Api\Admin\AdminFiscalInvoiceController::class, 'retry']);
-            Route::post('/fiscal-invoices/{fiscalInvoice}/refresh', [\App\Http\Controllers\Api\Admin\AdminFiscalInvoiceController::class, 'refresh']);
-            Route::post('/invoices/{invoice}/fiscal-invoice', [\App\Http\Controllers\Api\Admin\AdminFiscalInvoiceController::class, 'issueForInvoice']);
-        });
 
         // Billing — money received, aggregated.
         Route::get('/statistics/revenue', [AdminStatisticsController::class, 'revenue'])

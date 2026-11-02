@@ -5,7 +5,6 @@ namespace App\Providers;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Observers\ConversationObserver;
-use App\Observers\InvoiceFiscalObserver;
 use App\Observers\MessageAttachmentObserver;
 use App\Observers\MessageGalleryObserver;
 use App\Services\Email\EmailInboxClientFactory;
@@ -45,8 +44,6 @@ class AppServiceProvider extends ServiceProvider
         Message::observe(MessageAttachmentObserver::class);
         Message::observe(MessageGalleryObserver::class);
         Message::observe(\App\Observers\MessageAdReferralObserver::class);
-        // Paid invoice (Brazil) → nota fiscal via Plugnotas; refunded → cancelled.
-        \App\Models\Invoice::observe(InvoiceFiscalObserver::class);
         \App\Models\Contact::observe(\App\Observers\ContactObserver::class);
         // CRM automations start from saves, wherever they come from.
         \App\Models\Lead::observe(\App\Observers\CrmAutomationObserver::class);

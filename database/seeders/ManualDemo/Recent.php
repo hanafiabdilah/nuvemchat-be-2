@@ -3,9 +3,7 @@
 namespace Database\Seeders\ManualDemo;
 
 use App\Models\Contact;
-use App\Models\FiscalInvoice;
 use App\Models\GalleryAsset;
-use App\Models\Invoice;
 use App\Models\MarketPrice;
 use App\Models\McpClient;
 use App\Models\McpConnection;
@@ -30,7 +28,6 @@ trait Recent
         $this->seedReopenableThread();
         $this->seedReturnedThread();
         $this->seedYearlyPrices();
-        $this->seedFiscalInvoices();
         $this->seedLinkedGalleryFiles();
         $this->seedIntervalFlow();
         $this->seedMcpConnection();
@@ -99,33 +96,6 @@ trait Recent
                 ['priceable_type' => $plan->getMorphClass(), 'priceable_id' => $plan->id, 'market_code' => 'BR', 'billing_cycle' => 'yearly'],
                 ['amount_cents' => (int) (round($monthly->amount_cents * 12 * 0.9 / 100) * 100 - 10), 'currency' => 'BRL'],
             );
-        }
-    }
-
-    /** Notas fiscais on Pingly's monthly invoices, and the tomador's address. */
-    private function seedFiscalInvoices(): void
-    {
-        $this->tenant->forceFill(['billing_address' => [
-            'cep' => '01310100', 'logradouro' => 'Avenida Paulista', 'numero' => '1000', 'complemento' => 'Sala 42',
-            'bairro' => 'Bela Vista', 'cidade' => 'São Paulo', 'codigo_cidade' => '3550308', 'estado' => 'SP',
-        ]])->saveQuietly();
-
-        $paid = Invoice::where('tenant_id', $this->tenant->id)->where('status', 'paid')->orderByDesc('created_at')->get();
-        $numbers = ['2026/000418', '2026/000371', '2026/000329', '2026/000287', '2026/000254', '2026/000233', '2026/000201'];
-
-        foreach ($paid as $i => $invoice) {
-            $issued = $i > 0;
-            $at = $invoice->paid_at?->copy()->addMinutes(20) ?? $invoice->created_at;
-
-            $this->make(FiscalInvoice::class, [
-                'invoice_id' => $invoice->id, 'tenant_id' => $this->tenant->id, 'provider' => 'plugnotas',
-                'status' => $issued ? 'issued' : 'processing', 'attempt' => 1,
-                'reference' => 'pingly-inv-' . $invoice->id, 'provider_id' => $issued ? 'pn_' . Str::lower(Str::random(16)) : null,
-                'protocol' => 'prot-' . $invoice->id, 'number' => $issued ? $numbers[$i % count($numbers)] : null,
-                'verification_code' => $issued ? strtoupper(Str::random(8)) : null, 'amount_cents' => $invoice->amount_cents,
-                'description' => 'Licença de uso do Pingly', 'submitted_at' => $at, 'checked_at' => $at,
-                'issued_at' => $issued ? $at->copy()->addMinutes(9) : null, 'created_at' => $at, 'updated_at' => $at,
-            ]);
         }
     }
 
