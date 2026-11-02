@@ -106,6 +106,8 @@ return Application::configure(basePath: dirname(__DIR__))
             'onboarding.completed' => \App\Http\Middleware\EnsureOnboardingCompleted::class,
             'feature' => \App\Http\Middleware\EnsureFeatureEnabled::class,
             'capability' => \App\Http\Middleware\EnsureMarketCapability::class,
+            // TikTok, YouTube, Instagram comments: off until the platform approves (config/social.php).
+            'social' => \App\Http\Middleware\EnsureSocialFeatureEnabled::class,
             'whatsapp.verified' => \App\Http\Middleware\EnsureWhatsAppVerified::class,
             'messaging.window' => \App\Http\Middleware\EnsureMessagingWindowIsOpen::class,
             'platform.only' => \App\Http\Middleware\EnsurePlatformHost::class,

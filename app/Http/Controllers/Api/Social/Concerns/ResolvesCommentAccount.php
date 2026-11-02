@@ -8,6 +8,7 @@ use App\Models\Connection;
 use App\Models\YoutubeAccount;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Social\CommentMarks;
+use App\Services\Social\SocialFeatures;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpKernel\Exception\HttpException;
@@ -33,6 +34,12 @@ trait ResolvesCommentAccount
 
         if (! $user->can("{$platform}-comments.manage")) {
             throw new HttpException(403, 'You may not moderate these comments.');
+        }
+
+        $switch = SocialFeatures::forCommentPlatform($platform);
+
+        if (! SocialFeatures::enabled($switch)) {
+            throw new HttpResponseException(SocialFeatures::refusal($switch));
         }
 
         $this->assertCommentFeature($user->tenant, $platform);

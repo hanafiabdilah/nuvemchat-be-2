@@ -734,9 +734,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             Route::post('/posts/{post}/publish', [InstagramPostController::class, 'publish'])->middleware('permission:instagram-posts.publish');
 
             // Comment moderation on a live post. Read is bundled with viewing
-            // posts; every write needs the moderation permission.
-            Route::get('/accounts/{connection}/media/{media}/comments', [InstagramCommentController::class, 'index'])->middleware('permission:instagram-posts.view');
-            Route::middleware('permission:instagram-comments.manage')->group(function () {
+            // posts; every write needs the moderation permission. Off while
+            // Meta reviews the comment permissions (config/social.php) —
+            // publishing above stays on.
+            Route::get('/accounts/{connection}/media/{media}/comments', [InstagramCommentController::class, 'index'])->middleware(['social:instagram_comments', 'permission:instagram-posts.view']);
+            Route::middleware(['social:instagram_comments', 'permission:instagram-comments.manage'])->group(function () {
                 // The account's Comments section: its latest comments in one list.
                 Route::get('/accounts/{connection}/comments', [InstagramCommentController::class, 'inbox']);
                 Route::post('/accounts/{connection}/comments/{comment}/replies', [InstagramCommentController::class, 'reply']);
@@ -778,7 +780,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         // as Instagram's: `/tiktok/posts/{post}` is one of our rows,
         // `/tiktok/accounts/{connection}/videos/{video}` a live post. Live
         // posts are read only; the Accounts API neither edits nor deletes them.
-        Route::prefix('tiktok')->middleware('feature:'.Feature::TiktokManagement->value)->group(function () {
+        Route::prefix('tiktok')->middleware(['social:tiktok', 'feature:'.Feature::TiktokManagement->value])->group(function () {
             Route::get('/accounts', [TikTokAccountController::class, 'index'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
             Route::get('/accounts/{connection}', [TikTokAccountController::class, 'show'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
 
@@ -812,7 +814,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
         //
         // A channel is connected from the YouTube page itself (no Connection
         // row), which is why connecting has a permission of its own.
-        Route::prefix('youtube')->middleware('feature:'.Feature::YoutubeManagement->value)->group(function () {
+        Route::prefix('youtube')->middleware(['social:youtube', 'feature:'.Feature::YoutubeManagement->value])->group(function () {
             Route::get('/accounts', [YoutubeAccountController::class, 'index'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');
             Route::get('/oauth-url', [YoutubeAccountController::class, 'authorizeUrl'])->middleware('permission:youtube-accounts.manage');
             Route::get('/accounts/{account}', [YoutubeAccountController::class, 'show'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');

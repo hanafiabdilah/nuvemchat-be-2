@@ -34,5 +34,10 @@
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+        <!-- On here so the suites for these features keep testing them; config/social.php
+             defaults them off. SocialFeatureSwitchTest switches them off itself. -->
+        <env name="SOCIAL_TIKTOK_ENABLED" value="true"/>
+        <env name="SOCIAL_YOUTUBE_ENABLED" value="true"/>
+        <env name="SOCIAL_INSTAGRAM_COMMENTS_ENABLED" value="true"/>
     </php>
 </phpunit>

@@ -10,6 +10,7 @@ use App\Models\Connection;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Onboarding\OnboardingState;
+use App\Services\Social\SocialFeatures;
 use App\Services\User\AvatarStorage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -77,6 +78,9 @@ class UserController extends Controller
             'ai_tools' => (bool) config('ai.tools.enabled', false),
             // Whether the AI Hub can generate media yet (config ai.media.enabled).
             'ai_media' => (bool) config('ai.media.enabled', false),
+            // TikTok, YouTube and Instagram comments, each off until its
+            // platform approves the app (config/social.php).
+            ...SocialFeatures::flags(),
         ];
 
         return response()->json([

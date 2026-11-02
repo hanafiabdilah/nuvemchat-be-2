@@ -27,6 +27,7 @@ use App\Services\Connection\TikTok\TikTokAuthClient;
 use App\Services\Connection\WhatsApp\WhatsappBusinessProfileService;
 use App\Services\Connection\WhatsApp\WhatsappNumberMigrationService;
 use App\Services\Email\EmailInboxSynchronizer;
+use App\Services\Social\SocialFeatures;
 use App\Services\Webhook\ExternalAutomationReply;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -264,6 +265,12 @@ class ConnectionController extends Controller
 
         $tenant = $request->user()->tenant;
         $channel = Channel::from($validated['channel']);
+
+        // TikTok waits on TikTok's app review (config/social.php). A connection
+        // made now could never be authorised.
+        if ($channel === Channel::TikTok && ! SocialFeatures::enabled(SocialFeatures::TIKTOK)) {
+            return SocialFeatures::refusal(SocialFeatures::TIKTOK);
+        }
 
         // ⚠️ API Way channels are deliberately NOT gated on the `whatsapp_api`
         // plan feature. An instance is bought, not granted: the feature turns
@@ -896,6 +903,10 @@ class ConnectionController extends Controller
     public function oauth(int $id, Request $request)
     {
         $connection = request()->user()->tenant->connections()->findOrFail($id);
+
+        if ($connection->channel === Channel::TikTok && ! SocialFeatures::enabled(SocialFeatures::TIKTOK)) {
+            return SocialFeatures::refusal(SocialFeatures::TIKTOK);
+        }
 
         // Instagram, Messenger and TikTok use OAuth URL generation (WhatsApp uses embedded signup in frontend)
         $oauthUrl = match ($connection->channel) {

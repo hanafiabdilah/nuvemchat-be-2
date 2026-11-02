@@ -16,6 +16,7 @@ use App\Models\Connection;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Services\Instagram\InstagramGraphClientFactory;
+use App\Services\Social\SocialFeatures;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
 use Illuminate\Database\QueryException;
@@ -64,6 +65,12 @@ class CommentDmAutomations
      */
     public static function shouldConsider(Connection $connection, array $comment): bool
     {
+        // Off while Meta reviews the comment permissions: a rule saved before
+        // keeps its row, it just does not answer anyone.
+        if (! SocialFeatures::enabled(SocialFeatures::INSTAGRAM_COMMENTS)) {
+            return false;
+        }
+
         if (empty($comment['id']) || ! empty($comment['parent_id']) || self::isFromAccount($connection, $comment)) {
             return false;
         }
