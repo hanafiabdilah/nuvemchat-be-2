@@ -71,7 +71,8 @@ class EmailHandler implements MessageHandlerInterface, MarksMessagesAsRead
         $this->rejectRemoteAttachment($data);
 
         validator($data, [
-            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            // mp4: an iPhone recording that sniffs as video/mp4 (see TelegramHandler).
+            'audio' => 'required|file|mimes:ogg,mp3,wav,m4a,mp4,opus,webm|max:16384',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();

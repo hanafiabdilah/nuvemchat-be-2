@@ -85,7 +85,8 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         return $this->handleSendMedia($conversation, $data, MessageType::Audio, [
-            'audio' => 'required_without:media_url|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            // mp4: an iPhone recording that sniffs as video/mp4 (see TelegramHandler).
+            'audio' => 'required_without:media_url|file|mimes:ogg,mp3,wav,m4a,mp4,opus,webm|max:16384',
             'media_url' => 'required_without:audio|url',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ], 'audio');

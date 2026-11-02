@@ -6,17 +6,21 @@ use App\Exceptions\ChannelCapabilityException;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\PresenceKind;
 use App\Enums\Message\SenderType;
+use App\Models\Connection;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
+use App\Services\Message\AudioNormalizer;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use Carbon\Carbon;
 use Exception;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
+use Telegram\Bot\HttpClients\HttpClientInterface;
 
 class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
 {
@@ -43,7 +47,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
         ?string $body = null,
     ): Message {
         $connection = $conversation->connection;
-        $telegram = new Api($connection->credentials['token']);
+        $telegram = $this->api($connection);
 
         $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
 
@@ -117,7 +121,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
         $connection = $conversation->connection;
 
         try {
-            $telegram = new Api($connection->credentials['token']);
+            $telegram = $this->api($connection);
 
             $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
 
@@ -186,7 +190,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
         }
 
         try {
-            $telegram = new Api($connection->credentials['token']);
+            $telegram = $this->api($connection);
 
             $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
 
@@ -234,41 +238,89 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
         }
     }
 
+    /**
+     * What Telegram plays as a voice note, read off the bytes — never off the
+     * name the browser gave them.
+     *
+     * The Bot API takes OGG/Opus, MP3 or M4A for `sendVoice`, and the trap is
+     * that it accepts everything else too: the file is stored as a voice note
+     * labelled audio/ogg with a duration of 0, and the recipient's app cannot
+     * play it while a browser opening the same file plays it fine. Recordings
+     * are exactly "everything else". Chrome and the iOS app (WebKit) record
+     * WebM — WebKit's is written as a live stream, with no duration and no
+     * index, and that is the one Telegram's apps refuse outright — and an iOS
+     * that cannot record WebM hands over MP4, which the composer names .m4a but
+     * which sniffs as video/mp4. All of them are re-encoded; the formats on
+     * Telegram's list pass through untouched, so the AI's mp3 voice replies
+     * never depend on ffmpeg.
+     *
+     * `.opus` is the same Ogg container under another name; it only ever shows
+     * up on a URL, which is judged by its extension because Telegram fetches it
+     * itself.
+     */
+    private const VOICE_FORMATS = ['ogg', 'opus', 'mp3', 'm4a'];
+
     public function handleSendAudio(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'audio' => 'required_without:media_url|file|mimes:ogg,mp3,wav,m4a,opus,webm|max:16384',
+            // mp4 because that is what an iPhone records when it cannot record
+            // WebM: named .m4a by the composer, but this rule reads the bytes,
+            // and they sniff as video/mp4. It is converted below, not refused.
+            'audio' => 'required_without:media_url|file|mimes:ogg,mp3,wav,m4a,mp4,opus,webm|max:16384',
             'media_url' => 'required_without:audio|url',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();
 
         $connection = $conversation->connection;
+        $downloaded = null;
 
         $media = OutboundMedia::fromData($data, 'audio');
         if ($media && $media->isUrl()) {
-            try {
-                return $this->sendMediaByUrl($conversation, $data, 'voice', 'sendVoice', MessageType::Audio, $media->url);
-            } catch (\Throwable $th) {
-                Log::warning('TelegramHandler: URL audio send failed, falling back to download', [
-                    'error' => $th->getMessage(),
-                    'conversation_id' => $conversation->id,
-                ]);
-                $file = $media->toUploadedFile();
-                if (!$file) {
-                    throw new Exception('Failed to send Telegram audio by URL and download fallback failed', 0, $th);
+            $urlFailure = null;
+
+            // Only a URL Telegram can play is offered as a URL; anything else
+            // would be fetched, accepted, and delivered as a voice note nobody
+            // can play, so it is pulled down and converted like an upload.
+            if (in_array(strtolower($media->extension), self::VOICE_FORMATS, true)) {
+                try {
+                    return $this->sendMediaByUrl($conversation, $data, 'voice', 'sendVoice', MessageType::Audio, $media->url);
+                } catch (\Throwable $th) {
+                    Log::warning('TelegramHandler: URL audio send failed, falling back to download', [
+                        'error' => $th->getMessage(),
+                        'conversation_id' => $conversation->id,
+                    ]);
+                    $urlFailure = $th;
                 }
-                $data['audio'] = $file;
             }
+
+            $downloaded = $media->toUploadedFile();
+            if (!$downloaded) {
+                throw new Exception('Failed to download the Telegram audio from its URL', 0, $urlFailure);
+            }
+            $data['audio'] = $downloaded;
+        }
+
+        // Kept apart from the send's try below on purpose: a recording that
+        // cannot be converted is refused in our own words, and the catch there
+        // would flatten that into "failed to send".
+        try {
+            $voice = $this->voiceFile($data['audio']);
+        } catch (\Throwable $th) {
+            if ($downloaded !== null) {
+                @unlink($downloaded->getRealPath());
+            }
+
+            throw $th;
         }
 
         try {
-            $telegram = new Api($connection->credentials['token']);
+            $telegram = $this->api($connection);
 
             $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
 
             $payload = [
                 'chat_id' => $conversation->external_id,
-                'voice' => fopen($data['audio']->getRealPath(), 'r'),
+                'voice' => fopen($voice->getRealPath(), 'r'),
             ];
 
             if ($repliedMessageExternalId) {
@@ -290,8 +342,10 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
                 'meta' => $responseArray,
             ]);
 
-            $mediaPath = MediaFilename::path('media', (string) $message->id, $data['audio']->getClientOriginalName(), $data['audio']->getClientOriginalExtension());
-            MediaStorage::disk()->put($mediaPath, file_get_contents($data['audio']->getRealPath()));
+            // The copy kept is the one the customer received, as on WhatsApp:
+            // what the thread plays back is what was delivered.
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $voice->getClientOriginalName(), $voice->getClientOriginalExtension());
+            MediaStorage::disk()->put($mediaPath, file_get_contents($voice->getRealPath()));
 
             $message->update([
                 'attachment' => $mediaPath,
@@ -306,7 +360,56 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
             ]);
 
             throw new Exception('Failed to send Telegram audio message', 0, $th);
+        } finally {
+            // Temp files this request created; nothing else will collect them.
+            if ($voice !== $data['audio']) {
+                @unlink($voice->getRealPath());
+            }
+            if ($downloaded !== null) {
+                @unlink($downloaded->getRealPath());
+            }
         }
+    }
+
+    /**
+     * The file to hand to sendVoice: the upload itself when Telegram can play
+     * it, otherwise a mono Ogg/Opus re-encode of it. See VOICE_FORMATS.
+     *
+     * ⚠️ A converted file is a temp file; the caller unlinks it.
+     */
+    private function voiceFile(UploadedFile $file): UploadedFile
+    {
+        $format = strtolower((string) $file->guessExtension());
+
+        if (in_array($format, self::VOICE_FORMATS, true)) {
+            return $file;
+        }
+
+        Log::info('TelegramHandler: re-encoding audio to Ogg/Opus for sendVoice', [
+            'format' => $format !== '' ? $format : null,
+            'filename' => $file->getClientOriginalName(),
+        ]);
+
+        return app(AudioNormalizer::class)->toOggOpus($file);
+    }
+
+    /**
+     * The SDK client for a connection's bot.
+     *
+     * The HTTP handler comes from the container only when something bound it,
+     * and nothing does outside tests — so in production this is the SDK's own
+     * Guzzle client, exactly what `new Api($token)` was. The seam exists
+     * because that client is out of reach of Http::fake(), and resolving
+     * `Api::class` is not a way round it: the SDK binds it to the default bot
+     * in config/telegram.php, so a token passed to the container is ignored.
+     */
+    private function api(Connection $connection): Api
+    {
+        return new Api(
+            $connection->credentials['token'],
+            false,
+            app()->bound(HttpClientInterface::class) ? app(HttpClientInterface::class) : null,
+        );
     }
 
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
@@ -338,7 +441,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
         }
 
         try {
-            $telegram = new Api($connection->credentials['token']);
+            $telegram = $this->api($connection);
 
             $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
 
@@ -415,7 +518,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
         }
 
         try {
-            $telegram = new Api($connection->credentials['token']);
+            $telegram = $this->api($connection);
 
             // Get original filename
             $filename = $data['document']->getClientOriginalName();
@@ -481,7 +584,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
         $connection = $conversation->connection;
 
         try {
-            $telegram = new Api($connection->credentials['token']);
+            $telegram = $this->api($connection);
             $response = $telegram->editMessageText([
                 'chat_id' => $conversation->external_id,
                 'message_id' => $message->external_id,
@@ -521,7 +624,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
         $connection = $conversation->connection;
 
         try {
-            $telegram = new Api($connection->credentials['token']);
+            $telegram = $this->api($connection);
             $telegram->deleteMessage([
                 'chat_id' => $conversation->external_id,
                 'message_id' => $message->external_id,
@@ -565,7 +668,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
             return false;
         }
 
-        return (new Api($conversation->connection->credentials['token']))->sendChatAction([
+        return $this->api($conversation->connection)->sendChatAction([
             'chat_id' => $conversation->external_id,
             // The one channel that draws all three states, so it gets the one
             // the bubble deserves: "gravando mensagem de voz" ahead of a voice

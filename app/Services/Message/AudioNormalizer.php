@@ -14,7 +14,9 @@ use Illuminate\Support\Facades\Log;
  * MP4. Only one of those is a container the WhatsApp Cloud API accepts, so a
  * voice note recorded by an agent on the most common browser in the world is
  * rejected at upload unless something in between rewrites it. That something
- * is this class.
+ * is this class. Telegram's sendVoice is the same story told quietly: it takes
+ * a WebM without complaint and delivers a voice note the recipient's app
+ * cannot play.
  *
  * ⚠️ It shells out to ffmpeg, so the feature is only ever as present as the
  * binary. That is why the failure has its own sentence rather than being left
@@ -58,9 +60,9 @@ class AudioNormalizer
      * One sentence for every way this can fail, on purpose. The agent's remedy
      * is identical whether the binary is missing or the file was unreadable,
      * and the difference between those two belongs in the log, where someone
-     * can act on it.
+     * can act on it. It names no channel: more than one calls this.
      */
-    public const FAILURE_MESSAGE = 'Não foi possível converter este áudio para um formato que o WhatsApp aceita. Tente enviar um arquivo .mp3, .m4a ou .ogg.';
+    public const FAILURE_MESSAGE = 'Não foi possível converter este áudio para um formato que este canal aceita. Tente enviar um arquivo .mp3, .m4a ou .ogg.';
 
     public const FAILURE_CODE = 'audio_conversion_failed';
 
