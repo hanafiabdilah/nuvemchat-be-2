@@ -307,8 +307,13 @@ class WhatsappCoexistenceHandler extends WhatsappOfficialHandler
         $event = $value['event'] ?? null;
 
         if ($event === 'PARTNER_REMOVED') {
+            $wasActive = $connection->status === ConnectionStatus::Active;
             $connection->update(['status' => ConnectionStatus::Inactive]);
             broadcast(new ConnectionUpdated($connection->fresh()));
+
+            if ($wasActive) {
+                \App\Services\Notification\WhatsappAlerts::connectionDown($connection, 'partner_removed');
+            }
 
             Log::warning('WhatsappCoexistenceHandler: business disconnected from Business Platform (PARTNER_REMOVED)', [
                 'connection_id' => $connection->id,

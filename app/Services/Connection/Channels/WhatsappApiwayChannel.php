@@ -11,6 +11,7 @@ use App\Models\Connection;
 use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\ChannelInterface;
 use App\Services\Connection\Proxy\ApiwayConfig;
+use App\Services\Notification\WhatsappAlerts;
 use App\Services\Webhook\ChatWebhookSecret;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
@@ -583,6 +584,11 @@ class WhatsappApiwayChannel implements ChannelInterface
         ]);
 
         broadcast(new ConnectionUpdated($connection->fresh()));
+
+        // Somebody's number stopped working without anyone here asking it to.
+        if ($previous === Status::Active && $next === Status::Inactive) {
+            WhatsappAlerts::connectionDown($connection, $loggedIn ? 'offline' : 'logged_out');
+        }
 
         return true;
     }

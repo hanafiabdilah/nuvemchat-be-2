@@ -103,8 +103,13 @@ class WhatsAppTokenValidator
                 continue;
             }
 
+            $wasActive = $connection->status === Status::Active;
             $connection->update(['status' => Status::Inactive]);
             broadcast(new ConnectionUpdated($connection->fresh()));
+
+            if ($wasActive) {
+                \App\Services\Notification\WhatsappAlerts::connectionDown($connection, 'token_revoked');
+            }
             $deauthorized->push($connection);
 
             Log::info('WhatsApp connection deauthorized via token validation', [
@@ -133,9 +138,14 @@ class WhatsAppTokenValidator
         $deauthorized = collect();
 
         foreach ($connections as $connection) {
+            $wasActive = $connection->status === Status::Active;
             $connection->update(['status' => Status::Inactive]);
             broadcast(new ConnectionUpdated($connection->fresh()));
             $deauthorized->push($connection);
+
+            if ($wasActive) {
+                \App\Services\Notification\WhatsappAlerts::connectionDown($connection, 'app_removed');
+            }
 
             Log::info('WhatsApp connection deauthorized via fb_user_id match', [
                 'connection_id' => $connection->id,

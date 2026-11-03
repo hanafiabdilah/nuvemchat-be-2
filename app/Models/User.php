@@ -137,6 +137,10 @@ class User extends Authenticatable
         return [
             'incoming_messages' => (bool) ($stored['incoming_messages'] ?? true),
             'muted_connection_ids' => array_values(array_unique(array_map('intval', $muted))),
+            // Alerts sent to this person's own WhatsApp — all off until chosen.
+            'whatsapp_alerts' => \App\Services\Notification\WhatsappAlerts::settings(
+                is_array($stored['whatsapp_alerts'] ?? null) ? $stored['whatsapp_alerts'] : []
+            ),
         ];
     }
 

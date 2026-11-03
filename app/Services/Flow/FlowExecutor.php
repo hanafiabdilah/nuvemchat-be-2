@@ -88,6 +88,7 @@ use App\Services\Message\Apiway\ButtonReply;
 use App\Services\Message\InteractiveDelivery;
 use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
+use App\Services\Notification\WhatsappAlerts;
 use App\Services\Reservations\ReservationAnnouncement;
 use App\Services\Reservations\ReservationService;
 use App\Services\Sales\SalesLedger;
@@ -750,6 +751,8 @@ class FlowExecutor
             $reason ? 'flow_message_failed_reason' : 'flow_message_failed',
             array_filter(['position' => $position, 'reason' => $reason]),
         );
+
+        WhatsappAlerts::flowFailed($flowState->conversation, $flowState->flow?->name, $reason);
 
         $this->endFlowHere($flowState, FlowStateStatus::Failed);
     }
@@ -7450,6 +7453,12 @@ class FlowExecutor
 
         SalesLedger::fromReceipt($receipt);
 
+        if ($approved) {
+            // A sale, whatever the flow does next — even if a person took the
+            // conversation while the AI was reading.
+            WhatsappAlerts::receiptApproved($conversation, (int) $receipt->amount_cents, $currency);
+        }
+
         $flowState->refresh();
         $this->setReceiptVariables($flowState, $approved ? 'approved' : 'rejected', $reason, $reading);
 
@@ -7669,6 +7678,8 @@ class FlowExecutor
                 'flow_receipt_rejected',
                 ['receipt_reason' => (string) $reason],
             );
+
+            WhatsappAlerts::receiptRejected($flowState->conversation, $reason);
         }
 
         $edge = $node->outgoingEdges()->where('condition_value', $branch)->first();

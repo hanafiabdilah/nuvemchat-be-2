@@ -53,4 +53,16 @@ return [
 
     'gallery_storage_cancelled_no_credit' => 'Hi {{name}}, your extra gallery storage ({{gb}} GB) ended for want of balance. No file was deleted — they are all still available to send. To upload new files again, top up and rent the space once more.',
 
+    'alert_connection_down' => '⚠️ {{name}}, the connection *{{connection}}* was disconnected: {{reason}}. Open Pingly → Connections to connect it again.',
+
+    'alert_flow_failed' => '⚠️ {{name}}, the flow *{{flow}}* stopped in {{count}} conversation(s) on *{{connection}}* because messages could not be sent. Reason: {{reason}}',
+
+    'alert_receipt_approved' => '✅ {{name}}, receipt approved: *{{contact}}* paid {{amount}} ({{connection}}).',
+
+    'alert_receipt_rejected' => '❌ {{name}}, receipt rejected from *{{contact}}* ({{connection}}): {{reason}}.',
+
+    'alert_lead_summary' => '📊 {{name}}, {{period}}: *{{leads}}* new leads.{{details}}',
+
+    'alert_test' => '✅ {{name}}, all set: Pingly alerts will reach this number.',
+
 ];

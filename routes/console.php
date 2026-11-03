@@ -169,6 +169,13 @@ Schedule::command('apiway:sync-connection-status')
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('API Way connection status sync failed'));
 
+// The new-leads summaries people asked for on their own WhatsApp (Settings →
+// Notifications): hourly ones every hour, daily ones at 08:00 workspace time.
+Schedule::command('alerts:lead-summary')
+    ->hourly()
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->error('Lead summary alerts failed'));
+
 // Messages the API Way core held in its anti-ban queue (a 202 instead of a
 // WhatsApp id): read its send log and tell the thread whether they went out.
 // Capped at 5 minutes like the other per-minute passes, so a run killed

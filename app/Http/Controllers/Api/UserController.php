@@ -9,6 +9,7 @@ use App\Http\Resources\UserResource;
 use App\Models\Connection;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Notification\WhatsappAlerts;
 use App\Services\Onboarding\OnboardingState;
 use App\Services\Social\SocialFeatures;
 use App\Services\User\AvatarStorage;
@@ -256,7 +257,19 @@ class UserController extends Controller
             'incoming_messages' => ['sometimes', 'boolean'],
             'muted_connection_ids' => ['sometimes', 'array'],
             'muted_connection_ids.*' => ['integer'],
+            'whatsapp_alerts' => ['sometimes', 'array'],
+            'whatsapp_alerts.connection_down' => ['sometimes', 'boolean'],
+            'whatsapp_alerts.flow_failed' => ['sometimes', 'boolean'],
+            'whatsapp_alerts.receipt_approved' => ['sometimes', 'boolean'],
+            'whatsapp_alerts.receipt_rejected' => ['sometimes', 'boolean'],
+            'whatsapp_alerts.lead_summary' => ['sometimes', 'string', Rule::in(WhatsappAlerts::SUMMARY_MODES)],
         ]);
+
+        // Merged into what is stored, so flipping one alert never resets the others.
+        if (array_key_exists('whatsapp_alerts', $validated)) {
+            $stored = $user->notification_preferences['whatsapp_alerts'] ?? [];
+            $validated['whatsapp_alerts'] = WhatsappAlerts::settings(array_merge(is_array($stored) ? $stored : [], $validated['whatsapp_alerts']));
+        }
 
         if (array_key_exists('muted_connection_ids', $validated)) {
             // Narrowed to the tenant's own connections rather than rejected:

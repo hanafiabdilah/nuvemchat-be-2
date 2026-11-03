@@ -25,6 +25,14 @@ class OtpService
     public const PURPOSE_WHATSAPP = 'whatsapp_verification';
     public const PURPOSE_PASSWORD_RESET = 'password_reset';
 
+    /**
+     * Replacing (or adding) the account's WhatsApp number. The code goes to the
+     * NEW number, and the account keeps the old one until it is confirmed: an
+     * unverified number on the account locks its owner out of the app
+     * (EnsureWhatsAppVerified), and a typo must never be able to do that.
+     */
+    public const PURPOSE_WHATSAPP_CHANGE = 'whatsapp_change';
+
     private const CODE_LENGTH = 6;
 
     /**
@@ -86,9 +94,10 @@ class OtpService
      * Generate, persist and dispatch a fresh OTP for the user's WhatsApp number.
      * Enforces a resend cooldown. Returns the created Otp.
      */
-    public function request(User $user, string $purpose = self::PURPOSE_WHATSAPP): Otp
+    public function request(User $user, string $purpose = self::PURPOSE_WHATSAPP, ?string $destination = null): Otp
     {
-        $number = self::normalizeNumber((string) $user->whatsapp_number);
+        // Only a number change sends somewhere other than the number on file.
+        $number = self::normalizeNumber((string) ($purpose === self::PURPOSE_WHATSAPP_CHANGE ? $destination : $user->whatsapp_number));
         $identity = OtpGuard::identityFor($user, $purpose);
 
         // A blocked verification cannot be restarted by asking for a new code:
@@ -158,6 +167,15 @@ class OtpService
 
         if ($purpose === self::PURPOSE_WHATSAPP) {
             $this->completeWhatsappVerification($user, $otp);
+        }
+
+        if ($purpose === self::PURPOSE_WHATSAPP_CHANGE) {
+            // The number the code went to is the number proven, whatever the
+            // account held before.
+            $user->forceFill([
+                'whatsapp_number' => $otp->whatsapp_number,
+                'whatsapp_verified_at' => now(),
+            ])->save();
         }
     }
 

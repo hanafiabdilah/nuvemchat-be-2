@@ -62,4 +62,16 @@ return [
 
     'gallery_storage_cancelled_no_credit' => 'Olá {{name}}, seu armazenamento extra da galeria ({{gb}} GB) foi encerrado por falta de saldo. Nenhum arquivo foi apagado — eles continuam disponíveis para envio. Para voltar a subir arquivos novos, recarregue e contrate o espaço novamente.',
 
+    'alert_connection_down' => '⚠️ {{name}}, a conexão *{{connection}}* foi desconectada: {{reason}}. Abra o Pingly → Conexões para conectar de novo.',
+
+    'alert_flow_failed' => '⚠️ {{name}}, o fluxo *{{flow}}* parou em {{count}} conversa(s) da conexão *{{connection}}* porque mensagens não puderam ser enviadas. Motivo: {{reason}}',
+
+    'alert_receipt_approved' => '✅ {{name}}, comprovante aprovado: *{{contact}}* pagou {{amount}} ({{connection}}).',
+
+    'alert_receipt_rejected' => '❌ {{name}}, comprovante recusado de *{{contact}}* ({{connection}}): {{reason}}.',
+
+    'alert_lead_summary' => '📊 {{name}}, {{period}}: *{{leads}}* novos leads.{{details}}',
+
+    'alert_test' => '✅ {{name}}, tudo certo: os alertas do Pingly vão chegar neste número.',
+
 ];

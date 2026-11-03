@@ -75,7 +75,18 @@ it('merges a partial update instead of dropping the other switch', function () {
         ->assertOk();
 
     expect($user->fresh()->notificationSettings())
-        ->toBe(['incoming_messages' => false, 'muted_connection_ids' => [$connection->id]]);
+        ->toBe([
+            'incoming_messages' => false,
+            'muted_connection_ids' => [$connection->id],
+            // Untouched by this update, and off until chosen.
+            'whatsapp_alerts' => [
+                'connection_down' => false,
+                'flow_failed' => false,
+                'receipt_approved' => false,
+                'receipt_rejected' => false,
+                'lead_summary' => 'off',
+            ],
+        ]);
 });
 
 it('drops connection ids that do not belong to the tenant', function () {

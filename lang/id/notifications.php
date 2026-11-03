@@ -54,4 +54,16 @@ return [
 
     'gallery_storage_cancelled_no_credit' => 'Halo {{name}}, penyimpanan galeri tambahan Anda ({{gb}} GB) berakhir karena saldo tidak mencukupi. Tidak ada berkas yang dihapus — semuanya tetap bisa dikirim. Untuk mengunggah berkas baru lagi, isi saldo dan sewa ruang penyimpanannya kembali.',
 
+    'alert_connection_down' => '⚠️ {{name}}, koneksi *{{connection}}* terputus: {{reason}}. Buka Pingly → Koneksi untuk menyambungkannya lagi.',
+
+    'alert_flow_failed' => '⚠️ {{name}}, flow *{{flow}}* berhenti di {{count}} percakapan pada koneksi *{{connection}}* karena pesan tidak dapat dikirim. Penyebab: {{reason}}',
+
+    'alert_receipt_approved' => '✅ {{name}}, bukti bayar disetujui: *{{contact}}* membayar {{amount}} ({{connection}}).',
+
+    'alert_receipt_rejected' => '❌ {{name}}, bukti bayar dari *{{contact}}* ditolak ({{connection}}): {{reason}}.',
+
+    'alert_lead_summary' => '📊 {{name}}, {{period}}: *{{leads}}* lead baru.{{details}}',
+
+    'alert_test' => '✅ {{name}}, berhasil: alert Pingly akan dikirim ke nomor ini.',
+
 ];

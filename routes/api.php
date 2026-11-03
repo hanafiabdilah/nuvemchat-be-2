@@ -219,6 +219,11 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
     // on the account so the choice follows them to another browser; applied by
     // the dashboard, which is the only place that knows who is looking at what.
     Route::put('/user/notification-preferences', [UserController::class, 'updateNotificationPreferences']);
+    // The number WhatsApp alerts go to (the account's own) and a test send. Throttled:
+    // each call sends a WhatsApp message on the platform's number.
+    Route::post('/user/whatsapp-number', [\App\Http\Controllers\Api\WhatsappAlertController::class, 'requestNumber'])->middleware('throttle:5,1,whatsapp-number');
+    Route::post('/user/whatsapp-number/verify', [\App\Http\Controllers\Api\WhatsappAlertController::class, 'verifyNumber'])->middleware('throttle:10,1,whatsapp-number-verify');
+    Route::post('/user/whatsapp-alerts/test', [\App\Http\Controllers\Api\WhatsappAlertController::class, 'test'])->middleware('throttle:3,1,whatsapp-alert-test');
     // Your own photo. No permission gate: changing your own picture is not an
     // act on somebody else's account, and an agent whose role happened to omit
     // the grant could otherwise never replace a photo taken of them.

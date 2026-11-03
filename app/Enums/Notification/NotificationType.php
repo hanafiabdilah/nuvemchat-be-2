@@ -76,6 +76,29 @@ enum NotificationType: string
     /** Rented gallery storage ended for want of balance. Files are untouched. */
     case GalleryStorageCancelledNoCredit = 'gallery_storage_cancelled_no_credit';
 
+    /*
+     * Operational alerts a person opts into for their own WhatsApp
+     * (Settings → Notifications). Sent by App\Services\Notification\WhatsappAlerts.
+     */
+
+    /** A connection stopped working without anyone asking it to. */
+    case AlertConnectionDown = 'alert_connection_down';
+
+    /** Flows stopped because messages could not be delivered — gathered per connection. */
+    case AlertFlowFailed = 'alert_flow_failed';
+
+    /** The AI accepted a payment receipt. */
+    case AlertReceiptApproved = 'alert_receipt_approved';
+
+    /** The AI refused a payment receipt, for the last time. */
+    case AlertReceiptRejected = 'alert_receipt_rejected';
+
+    /** How many leads came in over the last hour or the last day. */
+    case AlertLeadSummary = 'alert_lead_summary';
+
+    /** Sent from the settings page, so a person sees alerts reach the number. */
+    case AlertTest = 'alert_test';
+
     /** Human-readable label for the Back Office configuration UI. */
     public function label(): string
     {
@@ -100,6 +123,12 @@ enum NotificationType: string
             self::VirtualNumberRefunded => 'Virtual number not delivered (credit returned)',
             self::GalleryStorageRenewalNoCredit => 'Gallery storage renewal blocked by balance',
             self::GalleryStorageCancelledNoCredit => 'Gallery storage ended (no balance)',
+            self::AlertConnectionDown => 'Alert: connection disconnected',
+            self::AlertFlowFailed => 'Alert: flow stopped (messages not sent)',
+            self::AlertReceiptApproved => 'Alert: payment receipt approved',
+            self::AlertReceiptRejected => 'Alert: payment receipt rejected',
+            self::AlertLeadSummary => 'Alert: new leads summary',
+            self::AlertTest => 'Alert: test message',
         };
     }
 
@@ -183,6 +212,12 @@ enum NotificationType: string
             self::VirtualNumberRefunded => ['name', 'amount'],
             self::GalleryStorageRenewalNoCredit => ['name', 'gb', 'due_date', 'amount'],
             self::GalleryStorageCancelledNoCredit => ['name', 'gb'],
+            self::AlertConnectionDown => ['name', 'connection', 'reason'],
+            self::AlertFlowFailed => ['name', 'count', 'flow', 'connection', 'reason'],
+            self::AlertReceiptApproved => ['name', 'contact', 'amount', 'connection'],
+            self::AlertReceiptRejected => ['name', 'contact', 'reason', 'connection'],
+            self::AlertLeadSummary => ['name', 'period', 'leads', 'details'],
+            self::AlertTest => ['name'],
         };
     }
 
