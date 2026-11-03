@@ -3,6 +3,7 @@
 namespace App\Services\Connection\Channels;
 
 use App\Enums\Connection\Status;
+use App\Events\ConnectionUpdated;
 use App\Exceptions\ApiwayPartnerException;
 use App\Exceptions\ConnectionException as AppConnectionException;
 use App\Models\ApiwayInstance;
@@ -13,6 +14,7 @@ use App\Services\Connection\Proxy\ApiwayConfig;
 use App\Services\Webhook\ChatWebhookSecret;
 use App\Support\Errors\UpstreamError;
 use App\Support\Errors\UpstreamProvider;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -448,6 +450,141 @@ class WhatsappApiwayChannel implements ChannelInterface
         $user = explode('.', $user)[0];  // strip any agent suffix
 
         return $user !== '' ? $user : null;
+    }
+
+    /**
+     * How long a paired session may stay off the line before it counts as
+     * disconnected. whatsmeow reconnects by itself after a network blip, and
+     * a status that flips to "disconnected" and back within a minute is noise
+     * that reads like an outage.
+     */
+    public const DISCONNECTED_GRACE_SECONDS = 300;
+
+    /**
+     * Bring the connection's status in line with the core's, on our own
+     * initiative — a webhook event or the scheduled pass, not a person
+     * pressing "check status".
+     *
+     * Deliberately not checkStatus(): that one marks the connection inactive
+     * on any failure, which is right for somebody who asked and can read the
+     * error, and wrong here — a core outage would mark every number
+     * disconnected at once. Only a definitive answer moves anything:
+     *
+     *  - not logged in → Inactive (unlinked from the phone, logged out by
+     *    WhatsApp, or never paired);
+     *  - logged in but off the line → Inactive only once that has lasted
+     *    DISCONNECTED_GRACE_SECONDS;
+     *  - logged in and connected → Active.
+     *
+     * A connection still being paired (Pending) only ever moves to Active:
+     * "not logged in" is exactly what it is while its QR code is on screen.
+     *
+     * @return bool|null whether the status changed; null when the core gave
+     *                   no answer worth acting on
+     */
+    public function syncStatus(Connection $connection): ?bool
+    {
+        $instanceId = $connection->credentials['instance_id'] ?? null;
+        $token = $connection->credentials['token'] ?? null;
+
+        if (! $instanceId || ! $token) {
+            return null;
+        }
+
+        try {
+            $response = Http::withToken($token)
+                ->connectTimeout(10)
+                ->timeout(15)
+                ->get($this->base() . '/v1/instance/status-instance?instanceId=' . $instanceId);
+        } catch (\Throwable $th) {
+            Log::warning('API Way status sync: the core did not answer', [
+                'connection' => $connection->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        $data = $response->json('data') ?? $response->json();
+
+        if (! $response->successful() || ! is_array($data) || ! array_key_exists('loggedIn', $data)) {
+            Log::warning('API Way status sync: no usable answer from the core', [
+                'connection' => $connection->id,
+                'status' => $response->status(),
+            ]);
+
+            return null;
+        }
+
+        $loggedIn = ($data['loggedIn'] ?? false) === true;
+        $connected = ($data['connected'] ?? false) === true;
+        $offlineKey = "apiway-offline-since:{$connection->id}";
+
+        if ($loggedIn && $connected) {
+            Cache::forget($offlineKey);
+            $next = Status::Active;
+        } elseif ($loggedIn) {
+            // Paired but off the line: give the client its chance to come back.
+            $since = Cache::get($offlineKey);
+
+            if (! is_int($since)) {
+                Cache::put($offlineKey, now()->timestamp, now()->addDay());
+
+                return false;
+            }
+
+            if (now()->timestamp - $since < self::DISCONNECTED_GRACE_SECONDS) {
+                return false;
+            }
+
+            $next = Status::Inactive;
+        } else {
+            Cache::forget($offlineKey);
+            $next = Status::Inactive;
+        }
+
+        if ($connection->status === Status::Pending && $next !== Status::Active) {
+            return false;
+        }
+
+        $updates = [];
+
+        if ($connection->status !== $next) {
+            $updates['status'] = $next;
+        }
+
+        if ($next === Status::Active
+            && ($phone = $this->phoneFromJid($data['jid'] ?? null))
+            && ($connection->credentials['phone_number'] ?? null) !== $phone) {
+            $updates['credentials'] = array_merge($connection->credentials, ['phone_number' => $phone]);
+        }
+
+        if ($updates === []) {
+            return false;
+        }
+
+        $previous = $connection->status;
+        $connection->update($updates);
+
+        if ($next === Status::Active) {
+            \App\Jobs\ImportWhatsappChatHistory::dispatchIfPending($connection);
+        }
+
+        if (! isset($updates['status'])) {
+            return false;
+        }
+
+        Log::info('API Way connection status changed', [
+            'connection' => $connection->id,
+            'from' => $previous?->value,
+            'to' => $next->value,
+            'logged_in' => $loggedIn,
+            'connected' => $connected,
+        ]);
+
+        broadcast(new ConnectionUpdated($connection->fresh()));
+
+        return true;
     }
 
     public function checkStatus(Connection $connection): void

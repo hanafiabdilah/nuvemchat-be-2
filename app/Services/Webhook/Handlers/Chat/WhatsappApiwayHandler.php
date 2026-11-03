@@ -10,6 +10,7 @@ use App\Events\MessageReceived;
 use App\Events\MessageUpdated;
 use App\Jobs\DownloadInboundMedia;
 use App\Jobs\SyncContactPhoto;
+use App\Jobs\SyncApiwayConnectionStatus;
 use App\Jobs\SyncGroupMetadata;
 use App\Models\Connection;
 use App\Models\Contact;
@@ -80,6 +81,19 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         // The top-level `type` is the authoritative discriminator.
         $type = $payload['type'] ?? null;
         $event = $payload['event'] ?? $payload['data'] ?? $payload;
+
+        // The core's connect/disconnect slots may name the event in `event`
+        // itself ("logged_out") rather than wrapping a whatsmeow object.
+        if ($type === null && is_string($event)) {
+            $type = $event;
+            $event = $payload;
+        }
+
+        if (is_string($type) && ($delay = self::connectionEventDelay($type)) !== null) {
+            SyncApiwayConnectionStatus::dispatchFor($connection, $delay);
+
+            return;
+        }
 
         if (! is_array($event)) {
             Log::warning('WhatsappApiwayHandler: event is not an object', ['value_type' => gettype($event)]);
@@ -219,8 +233,9 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             return;
         }
 
-        // Presence / connection / unknown events — connection status is handled by
-        // polling status-instance, so just log to capture new event types.
+        // Presence / unknown events — just logged, to capture new event types.
+        // Connection events never reach here: they are routed to a status
+        // check at the top of handle().
         Log::info('WhatsappApiwayHandler: unhandled event', [
             'connection_id' => $connection->id,
             'type' => $type,
@@ -809,6 +824,34 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         }
 
         SyncContactPhoto::dispatchForced($contact, $connection);
+    }
+
+    /**
+     * Session events: something happened to the connection between this
+     * number and WhatsApp. Final ones (logged out, paired, back online) are
+     * checked in seconds; a plain disconnect after a minute, since whatsmeow
+     * reconnects on its own. Matched loosely — whatsmeow names them
+     * "LoggedOut", the core's connection history "logged_out".
+     */
+    private const CONNECTION_EVENTS = [
+        'connected' => SyncApiwayConnectionStatus::DELAY_FINAL,
+        'pairsuccess' => SyncApiwayConnectionStatus::DELAY_FINAL,
+        'paired' => SyncApiwayConnectionStatus::DELAY_FINAL,
+        'loggedout' => SyncApiwayConnectionStatus::DELAY_FINAL,
+        'streamreplaced' => SyncApiwayConnectionStatus::DELAY_FINAL,
+        'temporaryban' => SyncApiwayConnectionStatus::DELAY_FINAL,
+        'clientoutdated' => SyncApiwayConnectionStatus::DELAY_FINAL,
+        'keepaliverestored' => SyncApiwayConnectionStatus::DELAY_FINAL,
+        'disconnected' => SyncApiwayConnectionStatus::DELAY_TRANSIENT,
+        'connectfailure' => SyncApiwayConnectionStatus::DELAY_TRANSIENT,
+        'streamerror' => SyncApiwayConnectionStatus::DELAY_TRANSIENT,
+        'keepalivetimeout' => SyncApiwayConnectionStatus::DELAY_TRANSIENT,
+    ];
+
+    /** Seconds before checking the status after this event, or null when it is not a session event. */
+    private static function connectionEventDelay(string $type): ?int
+    {
+        return self::CONNECTION_EVENTS[strtolower(str_replace(['_', '-', ' '], '', $type))] ?? null;
     }
 
     /**
