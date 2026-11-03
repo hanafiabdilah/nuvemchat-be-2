@@ -42,7 +42,7 @@ class FlowBlueprint
         'start', 'message', 'interval', 'response', 'wait_response', 'status',
         'tagging', 'condition', 'action', 'ai_agent', 'ai_tools', 'http_request',
         'interactive', 'payment', 'pix_key', 'invoice', 'pixel', 'receipt', 'ai_media', 'go_to_flow',
-        'split_test', 'call',
+        'split_test', 'call', 'phone_router',
     ];
 
     /**
@@ -51,7 +51,7 @@ class FlowBlueprint
      * capabilities, a split test's variants. Listed so the prose below can name
      * every branching type without anyone keeping a second list in a sentence.
      */
-    public const DYNAMIC_BRANCH_TYPES = ['interactive', 'ai_tools', 'split_test'];
+    public const DYNAMIC_BRANCH_TYPES = ['interactive', 'ai_tools', 'split_test', 'phone_router'];
 
     /**
      * Edge branch values: the fixed pair per branching node — condition
@@ -515,6 +515,19 @@ class FlowBlueprint
                 'variants.*.limit' => ['nullable', 'integer', 'min:1', 'max:'.SplitTestNodes::MAX_LIMIT],
                 'started_at' => ['nullable', 'date'],
             ],
+            // Route ids are the edges' branch values, like a split test's
+            // variants — and may not take the two fixed outputs' names. Codes
+            // are digit strings: a calling code is 1–3 digits, an area code
+            // prefix up to 6.
+            'phone_router' => [
+                'routes' => ['nullable', 'array', 'max:'.PhoneRouterNodes::MAX_ROUTES],
+                'routes.*.id' => ['nullable', 'string', self::BRANCH_VALUE_PATTERN, Rule::notIn(PhoneRouterNodes::RESERVED_BRANCHES)],
+                'routes.*.label' => ['nullable', 'string', 'max:'.PhoneRouterNodes::MAX_LABEL_LENGTH],
+                'routes.*.ddi' => ['nullable', 'array', 'max:'.PhoneRouterNodes::MAX_CODES_PER_ROUTE],
+                'routes.*.ddi.*' => ['string', 'regex:/^\d{1,3}$/'],
+                'routes.*.ddd' => ['nullable', 'array', 'max:'.PhoneRouterNodes::MAX_AREA_CODES_PER_ROUTE],
+                'routes.*.ddd.*' => ['string', 'regex:/^\d{1,6}$/'],
+            ],
             default => [],
         };
     }
@@ -658,7 +671,43 @@ class FlowBlueprint
             }
         }
 
-        return array_merge($problems, self::incompleteNodeProblems($nodes), self::splitTestProblems($nodes));
+        return array_merge($problems, self::incompleteNodeProblems($nodes), self::splitTestProblems($nodes), self::phoneRouterProblems($nodes));
+    }
+
+    /**
+     * Phone routers a generated flow should not ship: a route that names no
+     * calling code matches nobody, and two routes sharing an id are one output
+     * drawn twice.
+     *
+     * @param  list<array>  $nodes
+     * @return list<string>
+     */
+    private static function phoneRouterProblems(array $nodes): array
+    {
+        $problems = [];
+
+        foreach ($nodes as $node) {
+            if (($node['type'] ?? null) !== 'phone_router') {
+                continue;
+            }
+
+            $key = (string) ($node['key'] ?? '');
+            $seen = [];
+
+            foreach (PhoneRouterNodes::routes((array) ($node['data'] ?? [])) as $route) {
+                if ($route['ddi'] === []) {
+                    $problems[] = "Route \"{$route['id']}\" of node \"{$key}\" (phone_router) has no calling code in `ddi`, so it can never match.";
+                }
+
+                if (isset($seen[$route['id']])) {
+                    $problems[] = "Route id \"{$route['id']}\" is used twice in node \"{$key}\" (phone_router); every route needs its own id.";
+                }
+
+                $seen[$route['id']] = true;
+            }
+        }
+
+        return $problems;
     }
 
     /**
@@ -811,6 +860,19 @@ class FlowBlueprint
                 $list = '"'.implode('", "', $allowed).'"';
 
                 return ["Edge from split_test node \"{$sourceKey}\" has condition_value {$shown}; it must be one of that node's variant ids: {$list}."];
+            }
+
+            return [];
+        }
+
+        if ($type === 'phone_router') {
+            $allowed = PhoneRouterNodes::branches((array) ($sourceNode['data'] ?? []));
+
+            if (! in_array($value, $allowed, true)) {
+                $shown = $value === null ? 'null' : "\"{$value}\"";
+                $list = '"'.implode('", "', $allowed).'"';
+
+                return ["Edge from phone_router node \"{$sourceKey}\" has condition_value {$shown}; it must be one of that node's route ids, \"other\" or \"unknown\": {$list}."];
             }
 
             return [];
@@ -1104,6 +1166,10 @@ class FlowBlueprint
         $splitSequence = SplitTestNodes::MODE_SEQUENCE;
         $splitMax = SplitTestNodes::MAX_VARIANTS;
         $splitVariable = SplitTestNodes::VARIABLE;
+        $routerMax = PhoneRouterNodes::MAX_ROUTES;
+        $routerDdi = PhoneRouterNodes::VARIABLE_DDI;
+        $routerDdd = PhoneRouterNodes::VARIABLE_DDD;
+        $routerRoute = PhoneRouterNodes::VARIABLE_ROUTE;
 
         return <<<SPEC
         # Flow file format ("{$format}", version {$version})
@@ -1133,6 +1199,7 @@ class FlowBlueprint
             invoice       → "{$issued}" / "{$invoiceFailed}"
             interactive   → the id of one of that node's own options, or "{$invalidBranch}"
             split_test    → the id of one of that node's own variants
+            phone_router  → the id of one of that node's own routes, "other" or "unknown"
             ai_tools      → "{$toolsHandoff}", plus "{$toolsPaid}" / "{$toolsPaymentFailed}" when it charges payments, plus "{$toolsReservationConfirmed}" when it takes reservations
         - status and go_to_flow END the flow: no edge may leave them.
         - Lay the canvas out left to right: x grows by ~280 per step, y separates
@@ -1547,6 +1614,25 @@ class FlowBlueprint
         - The chosen label is stored in {{{$splitVariable}}}. A variant without an
           edge receives no conversations.
         - Use it only when the user asks to test or compare funnels.
+
+        ### phone_router — route the lead by the country (DDI) and area code (DDD) of their number
+        { "routes": [ { "id": "route_br", "label": "Brasil", "ddi": ["55"], "ddd": [] },
+                      { "id": "route_latam", "label": "LatAm", "ddi": ["52", "54", "57", "56", "51"], "ddd": [] } ] }
+        - One output per route: its edges carry the route's `id` as `condition_value`.
+          Plus two fixed outputs: "other" (a number no route covers) and "unknown" (no
+          phone number: Instagram, Telegram, e-mail, the site widget). "unknown" left
+          unwired falls back to "other". Usually each output leads to a go_to_flow node.
+        - `ddi`: calling codes as digit strings without "+" ("55" Brazil, "52" Mexico,
+          "1" USA/Canada/Caribbean). `ddd` (optional, only when the route has exactly
+          one code): area-code prefixes that follow it ("11", "21" for São Paulo and
+          Rio; "809", "829", "849" split the Dominican Republic out of +1).
+        - Routes are tried top to bottom; the first match wins, so put narrower routes
+          (by DDD) above broader ones (the whole country). Up to {$routerMax} routes.
+          Route ids: [A-Za-z0-9_-], never "other" or "unknown".
+        - Stores {{{$routerDdi}}}, {{{$routerDdd}}} (Brazil and +1 only) and
+          {{{$routerRoute}}} (the route's label, "other" or "unknown").
+        - Use it when the user sells to more than one country or region from the same
+          number and wants each lead in its own funnel.
 
         ### status — close the conversation
         { "value": "{$resolved}" }

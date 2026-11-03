@@ -397,6 +397,10 @@ class FlowExecutor
                 $this->executeSplitTestNode($flowState, $node);
                 break;
 
+            case NodeType::PhoneRouter:
+                $this->executePhoneRouterNode($flowState, $node);
+                break;
+
             default:
                 Log::warning('FlowExecutor: Unsupported node type', [
                     'node_type' => $node->type->value,
@@ -7878,6 +7882,45 @@ class FlowExecutor
         $flowState->update(['state_data' => $stateData]);
 
         $this->moveToNextNodeByBranch($flowState, $node, $variantId);
+    }
+
+    /**
+     * Execute a phone router node — pick the path by the lead's number.
+     *
+     * The number comes from ContactIdentity, the same reading {{contact.phone}}
+     * uses: only channels addressed by phone have one, so an Instagram or
+     * Telegram conversation takes the `unknown` output. Nothing is sent and
+     * nothing waits; the flow moves on at once.
+     */
+    protected function executePhoneRouterNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $wired = $node->outgoingEdges()
+            ->whereNotNull('condition_value')
+            ->pluck('condition_value')
+            ->all();
+
+        $phone = ContactIdentity::for($flowState->conversation?->contact)['phone'] ?? null;
+        $result = PhoneRouterNodes::resolve(PhoneRouterNodes::routes($data), $phone, $wired);
+
+        $stateData = $flowState->state_data ?? [];
+        $stateData[PhoneRouterNodes::VARIABLE_DDI] = $result['ddi'];
+        $stateData[PhoneRouterNodes::VARIABLE_DDD] = $result['ddd'];
+        $stateData[PhoneRouterNodes::VARIABLE_ROUTE] = $result['route'];
+        $flowState->update(['state_data' => $stateData]);
+
+        if ($result['branch'] === null) {
+            Log::info('FlowExecutor: Phone router has no wired output for this number, flow path ends (flow state preserved)', [
+                'node_id' => $node->id,
+                'flow_state_id' => $flowState->id,
+                'route' => $result['route'],
+                'ddi' => $result['ddi'],
+            ]);
+
+            return;
+        }
+
+        $this->moveToNextNodeByBranch($flowState, $node, $result['branch']);
     }
 
     /** End the flow on a node that has nowhere to go, and clear its live line. */

@@ -51,6 +51,13 @@ enum NodeType: string
      */
     case Call = 'call';
 
+    /**
+     * Sends the lead down a different path by where their number is from —
+     * calling code (DDI) and, optionally, area code (DDD). One output per
+     * route, plus "other" and "unknown". See App\Services\Flow\PhoneRouterNodes.
+     */
+    case PhoneRouter = 'phone_router';
+
     public function data(): array
     {
         return match($this) {
@@ -207,6 +214,9 @@ enum NodeType: string
             // One output: rings the customer (API Way only), waits for the call
             // to end, carries on. Skipped on channels that cannot call.
             self::Call => \App\Services\Flow\CallNodes::defaults(),
+            // One output per route, plus `other` (a number no route covers)
+            // and `unknown` (no phone number at all).
+            self::PhoneRouter => \App\Services\Flow\PhoneRouterNodes::defaults(),
             // Asks the workspace's own nota fiscal platform for an invoice and
             // waits for the authority to authorize it. Two outputs: `issued`
             // (the document went to the customer) and `failed`. See
