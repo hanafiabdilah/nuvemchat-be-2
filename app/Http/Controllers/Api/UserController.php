@@ -76,6 +76,10 @@ class UserController extends Controller
         // one saved in a flow still runs, as a plain AI agent.
         $data['platform'] = [
             'ai_tools' => (bool) config('ai.tools.enabled', false),
+            // Whether the AI may book reservations yet (config
+            // ai.tools.reservations) — the "Take reservations" capability of
+            // that node. The calendar itself does not depend on it.
+            'ai_reservation_tools' => \App\Services\Flow\AiToolNodes::reservationsEnabled(),
             // Whether the AI Hub can generate media yet (config ai.media.enabled).
             'ai_media' => (bool) config('ai.media.enabled', false),
             // TikTok, YouTube and Instagram comments, each off until its

@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Models\Reservation;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -42,6 +43,37 @@ class ContactResource extends JsonResource
             // ConversationController@index and @messages for the loads that
             // keep this off the hot paths.
             'tags' => TagResource::collection($this->resource->loadMissing('tags')->tags),
+            // The inbox's reservation marker, for the same reason and with the
+            // same `loadMissing` as `tags`: a broadcast that left it out would
+            // wipe the badge the operator is watching for.
+            'reservation' => $this->reservationMarker(),
+        ];
+    }
+
+    /** @return array<string, mixed>|null */
+    private function reservationMarker(): ?array
+    {
+        if ($this->is_group) {
+            return null;
+        }
+
+        $reservation = Reservation::markerOf($this->resource->loadMissing('openReservations.tenant')->openReservations);
+
+        if (! $reservation) {
+            return null;
+        }
+
+        $start = $reservation->localStart($reservation->timezone());
+
+        return [
+            'id' => $reservation->id,
+            'code' => $reservation->code,
+            'status' => $reservation->status->value,
+            'service_name' => $reservation->service_name,
+            'date' => $start->format('Y-m-d'),
+            'time' => $start->format('H:i'),
+            'starts_at' => $reservation->starts_at->toIso8601String(),
+            'party_size' => (int) $reservation->party_size,
         ];
     }
 }

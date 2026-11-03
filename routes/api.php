@@ -62,6 +62,8 @@ use App\Http\Controllers\Api\Billing\SavedCardController;
 use App\Http\Controllers\Api\BroadcastController;
 use App\Http\Controllers\Api\Catalog\OrderController as CatalogOrderController;
 use App\Http\Controllers\Api\Catalog\ProductController as CatalogProductController;
+use App\Http\Controllers\Api\Reservations\ReservableServiceController;
+use App\Http\Controllers\Api\Reservations\ReservationController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
 use App\Http\Controllers\Api\ConversationController;
@@ -380,6 +382,36 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
             Route::get('/', [CatalogOrderController::class, 'index'])->middleware('permission:orders.view')->name('index');
             Route::get('/{id}', [CatalogOrderController::class, 'show'])->whereNumber('id')->middleware('permission:orders.view')->name('show');
         });
+    });
+
+    // The reservation calendar: the services customers can book, every
+    // booking (the AI's and the team's), and the team's answer to the ones
+    // waiting on them. Behind the `reservations` plan feature — the page, the
+    // API and the node's "Take reservations" are one product. The services
+    // list is also readable with flows.update (the flow builder's picker).
+    Route::middleware('feature:'.Feature::Reservations->value)->group(function () {
+        Route::prefix('reservation-services')->name('reservation-services.')->group(function () {
+            Route::get('/', [ReservableServiceController::class, 'index'])->middleware('permission:reservations.view|reservations.manage|flows.update')->name('index');
+            Route::post('/', [ReservableServiceController::class, 'store'])->middleware('permission:reservations.manage')->name('store');
+            Route::get('/{id}', [ReservableServiceController::class, 'show'])->whereNumber('id')->middleware('permission:reservations.view|reservations.manage')->name('show');
+            Route::get('/{id}/availability', [ReservableServiceController::class, 'availability'])->whereNumber('id')->middleware('permission:reservations.view|reservations.manage|reservations.confirm')->name('availability');
+            Route::put('/{id}', [ReservableServiceController::class, 'update'])->whereNumber('id')->middleware('permission:reservations.manage')->name('update');
+            Route::delete('/{id}', [ReservableServiceController::class, 'destroy'])->whereNumber('id')->middleware('permission:reservations.manage')->name('destroy');
+        });
+
+        Route::prefix('reservations')->name('reservations.')->group(function () {
+            Route::get('/', [ReservationController::class, 'index'])->middleware('permission:reservations.view|reservations.manage')->name('index');
+            Route::get('/calendar', [ReservationController::class, 'calendar'])->middleware('permission:reservations.view|reservations.manage')->name('calendar');
+            Route::post('/', [ReservationController::class, 'store'])->middleware('permission:reservations.manage')->name('store');
+            Route::get('/{id}', [ReservationController::class, 'show'])->whereNumber('id')->middleware('permission:reservations.view|reservations.manage')->name('show');
+            Route::put('/{id}', [ReservationController::class, 'update'])->whereNumber('id')->middleware('permission:reservations.manage')->name('update');
+            Route::post('/{id}/status', [ReservationController::class, 'status'])->whereNumber('id')->middleware('permission:reservations.manage')->name('status');
+            Route::post('/{id}/decision', [ReservationController::class, 'decision'])->whereNumber('id')->middleware('permission:reservations.confirm|reservations.manage')->name('decision');
+            Route::delete('/{id}', [ReservationController::class, 'destroy'])->whereNumber('id')->middleware('permission:reservations.manage')->name('destroy');
+        });
+
+        Route::get('/conversations/{id}/reservations', [ReservationController::class, 'forConversation'])->whereNumber('id')
+            ->middleware('permission:reservations.confirm|reservations.view|reservations.manage')->name('conversations.reservations');
     });
 
     // API keys — the one credential of the public API (/v1/*). One permission

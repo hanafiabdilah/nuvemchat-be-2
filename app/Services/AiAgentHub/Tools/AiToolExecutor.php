@@ -31,7 +31,14 @@ final class AiToolExecutor
     public function __construct(
         private OrderService $orders,
         private FlowExecutor $flows,
+        private ReservationTools $reservations,
     ) {}
+
+    /** The reservation tools, run by ReservationTools. */
+    private const RESERVATION_TOOLS = [
+        'list_reservation_services', 'check_availability', 'request_reservation', 'my_reservations',
+        'accept_offered_time', 'reschedule_reservation', 'cancel_reservation',
+    ];
 
     /**
      * @param  array<string, mixed>  $arguments  already checked by AiToolArguments
@@ -45,6 +52,10 @@ final class AiToolExecutor
         FlowState $flowState,
         FlowNode $node,
     ): array {
+        if (in_array($tool, self::RESERVATION_TOOLS, true)) {
+            return $this->reservations->run($tool, $arguments, $tenant, $conversation, $flowState, $node);
+        }
+
         return match ($tool) {
             'search_products' => $this->searchProducts($tenant, (string) ($arguments['query'] ?? '')),
             'get_product' => $this->getProduct($tenant, (int) $arguments['product_id']),

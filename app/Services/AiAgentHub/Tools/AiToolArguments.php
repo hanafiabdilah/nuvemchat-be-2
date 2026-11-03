@@ -6,8 +6,8 @@ namespace App\Services\AiAgentHub\Tools;
  * Arguments the model sent, checked against the schema we gave it — before a
  * single query runs.
  *
- * Only the handful of JSON Schema keywords AiToolCatalog uses: types integer
- * and string, required, enum, minimum/maximum, maxLength, and no properties
+ * Only the handful of JSON Schema keywords AiToolCatalog uses: types integer,
+ * string and boolean, required, enum, minimum/maximum, maxLength, and no properties
  * beyond the declared ones. A model that sends `price` to `cart_add` is refused
  * here with a sentence it can read, not ignored — silently dropping a field
  * would let it believe the price was taken.
@@ -58,6 +58,13 @@ final class AiToolArguments
                     }
                     if (isset($rule['maximum']) && $int > $rule['maximum']) {
                         $problems[] = "\"{$key}\" must be at most {$rule['maximum']}.";
+                    }
+                    break;
+
+                case 'boolean':
+                    // true / false, and the spellings a model sometimes sends.
+                    if (! is_bool($value) && ! in_array($value, [0, 1, '0', '1', 'true', 'false'], true)) {
+                        $problems[] = "\"{$key}\" must be true or false.";
                     }
                     break;
 

@@ -70,7 +70,7 @@ class BroadcastController extends Controller
         $broadcast = $this->findForTenant($request, $id);
 
         $recipients = $broadcast->recipients()
-            ->with('contact.tags')
+            ->with(['contact.tags', 'contact.openReservations.tenant'])
             ->when($request->filled('status'), fn ($query) => $query->where('status', $request->string('status')))
             ->when($request->filled('search'), function ($query) use ($request) {
                 $term = '%'.$request->string('search').'%';

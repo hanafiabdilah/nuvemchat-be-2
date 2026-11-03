@@ -27,6 +27,7 @@ class FlowPayment extends Model
         'flow_state_id',
         'flow_node_id',
         'order_id',
+        'reservation_id',
         'reference',
         'provider_payment_id',
         'method',
@@ -143,5 +144,11 @@ class FlowPayment extends Model
     public function order(): \Illuminate\Database\Eloquent\Relations\BelongsTo
     {
         return $this->belongsTo(Order::class);
+    }
+
+    /** The reservation this charge holds a slot for, when the AI issued it for one. */
+    public function reservation(): \Illuminate\Database\Eloquent\Relations\BelongsTo
+    {
+        return $this->belongsTo(Reservation::class);
     }
 }

@@ -120,7 +120,9 @@ class ConversationController extends Controller
         // Not added to $messageRelations above, deliberately: MessageResource
         // builds its sender and reaction payloads by hand rather than through
         // ContactResource, so nothing there would ever read them.
-        $with = ['contact.tags', 'tags', 'agent', 'flowState.currentNode'];
+        // `contact.openReservations.tenant` for the same reason: the inbox
+        // marker ContactResource draws on every row.
+        $with = ['contact.tags', 'contact.openReservations.tenant', 'tags', 'agent', 'flowState.currentNode'];
 
         foreach (['lastMessage', 'lastInfoMessage'] as $message) {
             foreach ($messageRelations as $nested) {
@@ -485,9 +487,9 @@ class ConversationController extends Controller
         }
 
         $participants = $conversation->participants()
-            // ContactResource always serializes tags; without the load this is
-            // one query per member.
-            ->with('tags')
+            // ContactResource always serializes tags and the reservation
+            // marker; without the loads this is one query per member.
+            ->with(['tags', 'openReservations.tenant'])
             ->orderBy('name')
             ->get();
 

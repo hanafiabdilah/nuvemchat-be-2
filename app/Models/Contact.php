@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\Connection\Channel;
+use App\Enums\Reservation\ReservationStatus;
 use App\Events\ContactCreated;
 use App\Services\Media\MediaStorage;
 use Illuminate\Database\Eloquent\Model;
@@ -113,6 +114,20 @@ class Contact extends Model
     public function tags()
     {
         return $this->belongsToMany(Tag::class, 'contact_tags');
+    }
+
+    /**
+     * Reservations still in play — pending, offered, awaiting payment or
+     * confirmed, and ahead of us. What the inbox marks the person's
+     * conversations with (Reservation::markerOf), whichever thread they
+     * write from.
+     */
+    public function openReservations()
+    {
+        return $this->hasMany(Reservation::class)
+            ->whereIn('status', ReservationStatus::openValues())
+            ->where('starts_at', '>', now())
+            ->orderBy('starts_at');
     }
 
     /**

@@ -62,6 +62,14 @@ final class FlowVocabulary
             'invoice_integrations' => self::integrations($tenantId, IntegrationCategory::Invoice),
             'pixel_integrations' => self::integrations($tenantId, IntegrationCategory::Pixel),
 
+            'reservation_services' => \App\Models\ReservableService::forTenant($tenantId)
+                ->where('active', true)
+                ->orderBy('position')
+                ->orderBy('name')
+                ->get(['id', 'name'])
+                ->map(fn ($service) => ['id' => $service->id, 'name' => $service->name])
+                ->all(),
+
             'flows' => Flow::where('tenant_id', $tenantId)
                 ->when($excludeFlowId !== null, fn ($query) => $query->whereKeyNot($excludeFlowId))
                 ->orderBy('name')

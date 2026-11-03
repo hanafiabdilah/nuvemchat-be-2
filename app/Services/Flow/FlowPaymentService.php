@@ -12,6 +12,7 @@ use App\Models\FlowPayment;
 use App\Models\FlowState;
 use App\Models\Integration;
 use App\Models\Order;
+use App\Models\Reservation;
 use App\Services\Catalog\OrderService;
 use App\Services\Contact\ContactIdentity;
 use App\Services\Conversation\SystemMessage;
@@ -19,6 +20,7 @@ use App\Services\Integrations\IntegrationDrivers;
 use App\Services\Integrations\Payments\CancelsCharges;
 use App\Services\Integrations\Payments\ChargeRequest;
 use App\Services\Money\MarketMoney;
+use App\Services\Reservations\ReservationService;
 use App\Services\Sales\SalesLedger;
 use App\Support\AppTime;
 use App\Support\Errors\UpstreamError;
@@ -107,6 +109,33 @@ class FlowPaymentService
     }
 
     /**
+     * Issue the charge a reservation asks for — its deposit or its price, read
+     * from the service when the reservation was made (amount_due_cents), never
+     * from anything the model said. Through the account of the "AI agent with
+     * actions" node that took it.
+     *
+     * @param  array<string, mixed>  $config  the node's `capabilities.payment`
+     * @param  callable(string): string  $interpolate
+     */
+    public function createForReservation(FlowState $flowState, FlowNode $node, Reservation $reservation, array $config, callable $interpolate): FlowPayment
+    {
+        $amount = $reservation->amount_due_cents > 0 && $reservation->amount_due_cents <= PaymentNodes::MAX_AMOUNT_CENTS
+            ? $reservation->amount_due_cents
+            : null;
+
+        return $this->issue(
+            $flowState,
+            $node,
+            $config,
+            $amount,
+            (string) $reservation->amount_due_cents,
+            Str::limit('Reserva '.$reservation->code, 140, ''),
+            $interpolate,
+            reservation: $reservation,
+        );
+    }
+
+    /**
      * @param  array<string, mixed>  $data  integration_id, method, expires_in_minutes, payer_document, payer_email
      * @param  callable(string): string  $interpolate
      */
@@ -119,6 +148,7 @@ class FlowPaymentService
         string $description,
         callable $interpolate,
         ?Order $order = null,
+        ?Reservation $reservation = null,
     ): FlowPayment {
         $conversation = $flowState->conversation;
         $connection = $conversation->connection;
@@ -143,6 +173,7 @@ class FlowPaymentService
             'flow_state_id' => $flowState->id,
             'flow_node_id' => $node->id,
             'order_id' => $order?->id,
+            'reservation_id' => $reservation?->id,
             'reference' => 'pingly-fp-'.Str::lower((string) Str::ulid()),
             'method' => $method,
             'amount_cents' => $amountCents ?? 0,
@@ -150,7 +181,7 @@ class FlowPaymentService
             // gateway on this surface was Brazilian; Stripe is not, so a shop
             // outside Brazil was charging its customers in a currency neither
             // of them uses.
-            'currency' => $order?->currency ?? $connection->tenant?->currency() ?? MarketMoney::baseCurrency(),
+            'currency' => $order?->currency ?? $reservation?->currency ?? $connection->tenant?->currency() ?? MarketMoney::baseCurrency(),
             'description' => $description !== '' ? $description : null,
             'status' => FlowPaymentStatus::Pending,
             'expires_at' => $expiresAt,
@@ -409,6 +440,20 @@ class FlowPaymentService
                 Log::error('FlowPaymentService: could not update the order for a settled charge', [
                     'flow_payment_id' => $payment->id,
                     'order_id' => $payment->order_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        // A reservation's slot follows the money the same way: paid confirms
+        // it, unpaid frees it — and the AI tells the customer either way.
+        if ($payment->reservation_id !== null) {
+            try {
+                app(ReservationService::class)->syncFromPayment($payment);
+            } catch (\Throwable $e) {
+                Log::error('FlowPaymentService: could not update the reservation for a settled charge', [
+                    'flow_payment_id' => $payment->id,
+                    'reservation_id' => $payment->reservation_id,
                     'error' => $e->getMessage(),
                 ]);
             }

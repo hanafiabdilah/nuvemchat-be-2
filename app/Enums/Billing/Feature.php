@@ -69,6 +69,16 @@ enum Feature: string
     case Catalog = 'catalog';
 
     /**
+     * The reservation calendar: the services customers can book, every
+     * booking (the AI's and the ones the team writes down), and the "Take
+     * reservations" capability of the "AI agent with actions" node — which
+     * confirms by itself when the calendar has room and charges a deposit
+     * when the service asks for one. No plan has it until somebody ticks it in
+     * the Back Office (product decision, Nov 2026).
+     */
+    case Reservations = 'reservations';
+
+    /**
      * Publishing to, and moderating comments on, the workspace's Instagram,
      * TikTok and YouTube accounts. One key per network, so a plan can sell
      * each one on its own — and taken out of `chat`, which used to open all
@@ -121,6 +131,7 @@ enum Feature: string
             self::Statistics => 'Statistics',
             self::Mcp => 'MCP (Claude / Codex)',
             self::Catalog => 'Product catalog & AI sales',
+            self::Reservations => 'Reservations calendar',
             self::InstagramManagement => 'Instagram management',
             self::TiktokManagement => 'TikTok management',
             self::YoutubeManagement => 'YouTube management',
@@ -140,6 +151,7 @@ enum Feature: string
             self::Statistics => 'The tenant analytics pages.',
             self::Mcp => 'Lets people connect Claude, Codex or another MCP client to this workspace and work through it. Costs the platform nothing per use — the model tokens are billed to the customer\'s own AI subscription. Today it reaches the flow builder; each tool still needs the feature and the permission its own surface requires.',
             self::Catalog => 'Products, stock and orders, plus the "AI agent with actions" flow node that looks up the catalog, builds a cart and charges a Pix by itself. The node also needs `flow`.',
+            self::Reservations => 'A calendar of bookings (day, week and list), the services customers can book with their hours and capacity, and the "Take reservations" capability of the "AI agent with actions" flow node: it books free times by itself, holds them while a deposit is paid, and sends the rest to the team to confirm. The node also needs `flow`.',
             self::InstagramManagement => 'Publish and schedule posts on the workspace\'s Instagram accounts and moderate their comments. Needs `chat`.',
             self::TiktokManagement => 'Publish and schedule videos on the workspace\'s TikTok accounts and moderate their comments. Needs `chat`.',
             self::YoutubeManagement => 'Connect YouTube channels, upload and schedule videos, and moderate their comments. Needs `chat`.',

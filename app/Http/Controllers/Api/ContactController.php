@@ -32,9 +32,10 @@ class ContactController extends Controller
         // the contact book (and out of the new-conversation picker).
         $contacts = Contact::where('tenant_id', $request->user()->tenant_id)
             ->where('is_group', false)
-            // Eager-loaded because ContactResource serializes tags on every
-            // row: without it a 50-contact page is 50 extra queries.
-            ->with('tags')
+            // Eager-loaded because ContactResource serializes tags and the
+            // reservation marker on every row: without it a 50-contact page
+            // is 100 extra queries.
+            ->with(['tags', 'openReservations.tenant'])
             ->when($search, function ($query, $search) {
                 // Grouped: without the closure the OR branches escape the
                 // tenant and is_group conditions and the search returns every

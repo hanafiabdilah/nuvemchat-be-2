@@ -275,6 +275,15 @@ class FlowBlueprint
                 'capabilities.payment.expires_in_minutes' => ['nullable', 'integer', 'min:'.PaymentNodes::MIN_EXPIRES_MINUTES, 'max:'.PaymentNodes::MAX_EXPIRES_MINUTES],
                 'capabilities.payment.payer_document' => ['nullable', 'string', 'max:64'],
                 'capabilities.payment.payer_email' => ['nullable', 'string', 'max:255'],
+                // Reservations: `{enabled, service_ids}`; an empty list offers
+                // every service. The services must be this workspace's.
+                'capabilities.reservations' => ['nullable', 'array'],
+                'capabilities.reservations.enabled' => ['nullable', 'boolean'],
+                'capabilities.reservations.service_ids' => ['nullable', 'array', 'max:50'],
+                'capabilities.reservations.service_ids.*' => [
+                    'integer',
+                    Rule::exists('reservable_services', 'id')->where('tenant_id', self::tenantId()),
+                ],
                 // Follow-up when the customer goes silent. Absent = off; steps
                 // are clamped again at runtime (AiFollowUp::config).
                 'follow_up' => ['nullable', 'array'],
@@ -730,6 +739,14 @@ class FlowBlueprint
                 && empty(($data['capabilities']['payment'] ?? [])['integration_id'])) {
                 $problems[] = "Node \"{$key}\" (ai_tools) charges payments but has no capabilities.payment.integration_id from the payment integrations listed in the context.";
             }
+
+            if ($type === 'ai_tools' && (bool) (($data['capabilities']['payment'] ?? [])['enabled'] ?? false)) {
+                $caps = AiToolNodes::capabilities($data);
+
+                if (! $caps['cart'] && ! $caps['reservations']) {
+                    $problems[] = "Node \"{$key}\" (ai_tools) charges payments but has nothing to charge: enable capabilities.cart (with catalog) or capabilities.reservations.";
+                }
+            }
         }
 
         return $problems;
@@ -773,7 +790,7 @@ class FlowBlueprint
                 $shown = $value === null ? 'null' : "\"{$value}\"";
                 $list = '"'.implode('", "', $allowed).'"';
 
-                return ["Edge from ai_tools node \"{$sourceKey}\" has condition_value {$shown}; it must be one of {$list} (\"paid\" and \"payment_failed\" exist only when capabilities.payment.enabled is true)."];
+                return ["Edge from ai_tools node \"{$sourceKey}\" has condition_value {$shown}; it must be one of {$list} (\"paid\" and \"payment_failed\" exist only when capabilities.payment.enabled is true, \"reservation_confirmed\" only when capabilities.reservations.enabled is true)."];
             }
 
             return [];
@@ -1068,6 +1085,8 @@ class FlowBlueprint
         $toolsPaid = AiToolNodes::BRANCH_PAID;
         $toolsPaymentFailed = AiToolNodes::BRANCH_PAYMENT_FAILED;
         $orderVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', AiToolNodes::ORDER_VARIABLES));
+        $toolsReservationConfirmed = AiToolNodes::BRANCH_RESERVATION_CONFIRMED;
+        $reservationVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', AiToolNodes::RESERVATION_VARIABLES));
         $splitModes = self::quoted(SplitTestNodes::MODES);
         $splitRotate = SplitTestNodes::MODE_ROTATE;
         $splitSequence = SplitTestNodes::MODE_SEQUENCE;
@@ -1102,7 +1121,7 @@ class FlowBlueprint
             invoice       → "{$issued}" / "{$invoiceFailed}"
             interactive   → the id of one of that node's own options, or "{$invalidBranch}"
             split_test    → the id of one of that node's own variants
-            ai_tools      → "{$toolsHandoff}", plus "{$toolsPaid}" / "{$toolsPaymentFailed}" when it charges payments
+            ai_tools      → "{$toolsHandoff}", plus "{$toolsPaid}" / "{$toolsPaymentFailed}" when it charges payments, plus "{$toolsReservationConfirmed}" when it takes reservations
         - status and go_to_flow END the flow: no edge may leave them.
         - Lay the canvas out left to right: x grows by ~280 per step, y separates
           branches by ~180. Never stack two nodes on the same coordinates.
@@ -1272,9 +1291,17 @@ class FlowBlueprint
           All optional and off when absent.
         - `catalog`: look up the workspace's products (price, stock).
           `cart` (needs catalog): build the customer's cart.
-          `payment` (needs cart): charge the cart; `integration_id` MUST be one of
-          the payment integrations listed in the context, `method` {$paymentMethods}.
-          The amount is always the cart total — there is no amount field.
+          `reservations`: { "enabled": true, "service_ids": [] } — book the
+          workspace's reservation calendar (a table, an appointment, a court): the
+          agent checks free times, books them, and moves or cancels the customer's
+          reservations. A time the calendar has free is confirmed by itself when the
+          service says so; the rest waits for the team. `service_ids` limits it to
+          some of the reservation_services listed in the context (empty = all).
+          `payment` (needs cart or reservations): charge the cart, and the deposit or
+          price of reservations whose service asks for one; `integration_id` MUST be
+          one of the payment integrations listed in the context, `method`
+          {$paymentMethods}. The amount is always the cart total or what the
+          reservation's service asks — there is no amount field.
         - `follow_up` (optional, off when absent): the agent writes again when the
           customer stops answering. { "enabled": true, "steps": [
             { "delay_minutes": 30, "instruction": "" },
@@ -1288,11 +1315,16 @@ class FlowBlueprint
           payment nodes whenever the person wants a sales conversation that flows
           naturally.
         - OUTPUTS: "{$toolsHandoff}" (always — taken when the agent hands off, like
-          ai_agent's single output) and, only when payment is enabled, "{$toolsPaid}"
-          and "{$toolsPaymentFailed}". Every output is optional: leaving one unwired
-          means the AI keeps serving. After "{$toolsPaid}" these variables are set:
-          {$orderVariables} plus {$paymentVariables}. A typical "{$toolsPaid}" branch
-          sends a thank-you message, then invoice / pixel nodes.
+          ai_agent's single output); only when payment is enabled, "{$toolsPaid}"
+          and "{$toolsPaymentFailed}" (the cart's charge); only when reservations is
+          enabled, "{$toolsReservationConfirmed}" (taken after the agent has told the
+          customer their reservation is confirmed — by the calendar, the team, or its
+          payment). Every output is optional: leaving one unwired means the AI keeps
+          serving. After "{$toolsPaid}" these variables are set: {$orderVariables}
+          plus {$paymentVariables}; after "{$toolsReservationConfirmed}":
+          {$reservationVariables}. A typical "{$toolsPaid}" branch sends a thank-you
+          message, then invoice / pixel nodes; a typical "{$toolsReservationConfirmed}"
+          branch sends the address or what to bring.
 
         ### tagging — label the conversation or the contact
         { "action": "add", "target": "conversation", "tags": [3, 7] }

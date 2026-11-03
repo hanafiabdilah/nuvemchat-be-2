@@ -918,6 +918,7 @@ class FlowAssistantService
             'payment_integrations' => $context['payment_integrations'] ?? [],
             'invoice_integrations' => $context['invoice_integrations'] ?? [],
             'pixel_integrations' => $context['pixel_integrations'] ?? [],
+            'reservation_services' => $context['reservation_services'] ?? [],
             'flows' => $context['flows'] ?? [],
             'channels' => $context['channels'] ?? [],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);

@@ -13,6 +13,7 @@ use App\Enums\Integration\IntegrationCategory;
 use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
+use App\Enums\Reservation\ReservationStatus;
 use App\Events\ConversationHandoff;
 use App\Events\ConversationUpdated;
 use App\Events\MessageReceived;
@@ -28,6 +29,7 @@ use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowReceiptTimeout;
 use App\Jobs\RunFlowWaitResponseBuffer;
 use App\Jobs\RunFlowWaitResponseTimeout;
+use App\Jobs\RunReservationConfirmedBranch;
 use App\Jobs\SendAiFollowUp;
 use App\Jobs\SendAiHoldingMessage;
 use App\Jobs\SendPixelEvent;
@@ -49,6 +51,7 @@ use App\Models\Integration;
 use App\Models\Lead;
 use App\Models\Message;
 use App\Models\Order;
+use App\Models\Reservation;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Observers\ConversationObserver;
@@ -83,6 +86,8 @@ use App\Services\Message\Apiway\ButtonReply;
 use App\Services\Message\InteractiveDelivery;
 use App\Services\Message\MessageService;
 use App\Services\Messaging\MessagingWindow;
+use App\Services\Reservations\ReservationAnnouncement;
+use App\Services\Reservations\ReservationService;
 use App\Services\Sales\SalesLedger;
 use App\Support\Errors\TransportFailure;
 use Illuminate\Support\Carbon;
@@ -5102,7 +5107,7 @@ class FlowExecutor
                 // never looks (conversation #28295). The preamble says which
                 // source wins. Absent without tools, so a plain AI Agent
                 // node's message is exactly what it was.
-                AiToolNodes::preamble($tools).$userInput,
+                AiToolNodes::preamble($tools, $conversation->connection->tenant?->displayTimezone()).$userInput,
                 $flowState->id,
                 $node->id,
                 attachments: $attachments,
@@ -5517,6 +5522,14 @@ class FlowExecutor
      */
     public function resumeFromPayment(FlowPayment $payment): void
     {
+        // A reservation's charge: ReservationService::syncFromPayment already
+        // confirmed or released the slot, and the AI tells the customer
+        // (announceReservationDecision) — which also takes the node's
+        // "Reservation confirmed" output. Nothing is waiting here.
+        if ($payment->reservation_id !== null) {
+            return;
+        }
+
         // A cart the AI charged: its branches are the AI node's, and the turn
         // lock decides when they may be taken — see RunAiToolsPaymentBranch.
         if ($payment->order_id !== null) {
@@ -5831,6 +5844,361 @@ class FlowExecutor
         }
 
         return true;
+    }
+
+    // ──────────────────────────  Reservations  ──────────────────────────
+
+    /**
+     * Charge a reservation for what its service asks — the Payment node's
+     * steps with the reservation's amount: issue, record the variables, send
+     * the means to pay, arm the expiry, hold the slot until the charge's own
+     * deadline.
+     *
+     * Called from inside the hub's run (request_reservation) or from the
+     * announcement after the team accepted (announceReservationDecision), so
+     * the payment bubbles go out before the model's message; both tell the
+     * model they did, so it does not repeat the code.
+     *
+     * A charge that could not be created hands the reservation back to the
+     * team (ReservationService::paymentNotCreated): the customer asked and the
+     * time is held; only the money is missing.
+     */
+    public function chargeReservation(FlowState $flowState, FlowNode $node, Reservation $reservation): FlowPayment
+    {
+        $payments = new FlowPaymentService;
+        $reservations = app(ReservationService::class);
+        $config = AiToolNodes::paymentConfig($node->data ?? []);
+
+        $payment = $payments->createForReservation(
+            $flowState,
+            $node,
+            $reservation,
+            $config,
+            fn (string $template) => $this->interpolateVariables($template, $flowState),
+        );
+
+        if ($payment->status === FlowPaymentStatus::Failed) {
+            $payments->note($payment, PaymentNodes::INFO_FAILED);
+            $reservations->paymentNotCreated($reservation, (string) ($payment->failure_reason ?? 'The payment could not be created.'));
+
+            return $payment;
+        }
+
+        $reservations->holdForPayment($reservation, $payment);
+        $this->storePaymentVariables($flowState, $payment);
+        $this->storeReservationVariables($flowState, $reservation->refresh());
+
+        if ($payment->status !== FlowPaymentStatus::Pending) {
+            // Settled on creation (a gateway that confirms at once). settle()
+            // only moves a pending row, so the reservation is brought along here.
+            $payments->note($payment, $payment->status === FlowPaymentStatus::Paid ? PaymentNodes::INFO_PAID : PaymentNodes::INFO_FAILED);
+            $reservations->syncFromPayment($payment);
+
+            return $payment;
+        }
+
+        $this->sendPaymentMessages($flowState, $node, $payment, $config);
+        $payments->note($payment, PaymentNodes::INFO_CREATED);
+
+        if ($payment->expires_at) {
+            ExpireFlowPayment::dispatch($payment->id)->delay($payment->expires_at->copy()->addSeconds(30));
+        }
+
+        Log::info('FlowExecutor: AI charged a reservation', [
+            'node_id' => $node->id,
+            'conversation_id' => $flowState->conversation_id,
+            'reservation_id' => $reservation->id,
+            'flow_payment_id' => $payment->id,
+        ]);
+
+        return $payment;
+    }
+
+    /**
+     * Something the customer is waiting to hear about their reservation
+     * happened — the team answered it, or its payment arrived or ran out: the
+     * AI tells them, and a confirmation takes the node's "Reservation
+     * confirmed" output.
+     *
+     * Only while the AI still holds the conversation — the flow parked on the
+     * node that took the reservation, and nobody has taken the thread.
+     * Otherwise nobody is sent anything: the AI does not speak over a person,
+     * and the reservation tells the operator to reply (`notify_status =
+     * operator` with why). A reservation the team accepted that should now be
+     * charged is then confirmed unpaid instead — the charge can only travel in
+     * the AI's conversation, and the money becomes the team's to collect.
+     *
+     * Returns false when an AI turn holds the conversation, so the job comes
+     * back once it is done. Nothing is ever sent before that check.
+     */
+    public function announceReservationDecision(int $reservationId, string $action): bool
+    {
+        $reservation = Reservation::with(['conversation', 'tenant', 'latestPayment'])->find($reservationId);
+
+        if (! $reservation || $reservation->notify_status !== Reservation::NOTIFY_QUEUED) {
+            return true;
+        }
+
+        $reservations = app(ReservationService::class);
+        $handOver = function (string $reason) use ($reservation, $reservations): bool {
+            if ($reservation->status === ReservationStatus::AwaitingPayment && ! $reservation->latestPayment) {
+                $reservations->paymentNotCreated($reservation, 'The AI no longer holds the conversation, so the payment was not sent. Collect it from the customer.');
+            }
+
+            $reservations->markNotified($reservation, Reservation::NOTIFY_OPERATOR, $reason);
+
+            Log::info('FlowExecutor: reservation update left to the operator', [
+                'reservation_id' => $reservation->id,
+                'reason' => $reason,
+            ]);
+
+            return true;
+        };
+
+        $conversation = $reservation->conversation;
+
+        if (! $conversation) {
+            return $handOver('no_conversation');
+        }
+
+        if (! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return $handOver('conversation_with_human');
+        }
+
+        $flowState = FlowState::where('conversation_id', $conversation->id)
+            ->where('status', FlowStateStatus::Running)
+            ->latest('id')
+            ->first();
+        $node = $flowState?->currentNode;
+
+        if (! $flowState || ! $node || $node->id !== (int) $reservation->flow_node_id || ! $node->type->isAiAgent()) {
+            return $handOver('flow_moved');
+        }
+
+        // A free-form message after the window closes is accepted by WhatsApp
+        // and then fails — the thread would show an answer nobody received.
+        if (! MessagingWindow::isOpen($conversation)) {
+            return $handOver('window_closed');
+        }
+
+        $agent = AiHubAgent::find(($node->data ?? [])['ai_hub_agent_id'] ?? null);
+
+        if (! $agent) {
+            return $handOver('ai_failed');
+        }
+
+        $lock = Cache::lock($this->aiTurnLockKey($conversation->id), self::AI_TURN_LOCK_SECONDS);
+
+        if (! $lock->get()) {
+            return false;
+        }
+
+        try {
+            $flowState->refresh();
+            $reservation->refresh();
+
+            if ($reservation->notify_status !== Reservation::NOTIFY_QUEUED) {
+                return true;
+            }
+
+            if ((int) $flowState->current_node_id !== $node->id || $flowState->status !== FlowStateStatus::Running) {
+                return $handOver('flow_moved');
+            }
+
+            if (! $this->stillWithTheFlow($conversation)) {
+                return $handOver('conversation_with_human');
+            }
+
+            // The team accepted a reservation that asks for money: the charge
+            // goes out first, so the AI can say it was sent.
+            $payment = null;
+
+            if ($action === ReservationService::ACTION_CONFIRM && $reservation->status === ReservationStatus::AwaitingPayment) {
+                $payment = $reservation->latestPayment;
+
+                if (! $payment || $payment->status !== FlowPaymentStatus::Pending) {
+                    $payment = $this->chargeReservation($flowState, $node, $reservation);
+                    $reservation->refresh();
+                }
+            }
+
+            LiveActivity::aiThinking($conversation, $node);
+
+            $run = $this->aiAgentHubService->runAgent(
+                $agent,
+                $conversation,
+                ReservationAnnouncement::prompt($reservation, $action, $payment?->status === FlowPaymentStatus::Pending ? $payment : null),
+                $flowState->id,
+                $node->id,
+                metadata: ['purpose' => 'reservation_update', 'reservationId' => $reservation->id],
+            );
+
+            if (! $this->stillWithTheFlow($conversation) || ! empty(($run->metadata ?? [])['responseSuppressed'])) {
+                return $handOver('conversation_with_human');
+            }
+
+            $text = trim((string) $run->output_message);
+
+            if ($text === '') {
+                return $handOver('ai_failed');
+            }
+
+            $message = $this->messageService->sendMessage($conversation, ['message' => $text]);
+
+            if (! $message) {
+                return $handOver('ai_failed');
+            }
+
+            $this->stampAiMessage($message, $flowState, $agent, $run, ['reservation_update' => $reservation->id]);
+            $run->update(['message_id' => $message->id]);
+            $reservations->markNotified($reservation, Reservation::NOTIFY_SENT);
+            $this->storeReservationVariables($flowState, $reservation);
+
+            // A handoff the hub detected on our own synthetic prompt is not the
+            // customer asking for anything — they have not said a word.
+            if ($run->handoff_triggered) {
+                Log::info('FlowExecutor: reservation update ignored a hub handoff signal', [
+                    'reservation_id' => $reservation->id,
+                    'run_id' => $run->id,
+                ]);
+            }
+
+            Log::info('FlowExecutor: AI told the customer about their reservation', [
+                'reservation_id' => $reservation->id,
+                'conversation_id' => $conversation->id,
+                'action' => $action,
+                'run_id' => $run->id,
+            ]);
+
+            if ($reservation->status === ReservationStatus::Confirmed) {
+                $this->followReservationConfirmedEdge($flowState->refresh(), $node, $conversation, $reservation);
+            }
+        } catch (\Throwable $th) {
+            Log::warning('FlowExecutor: AI could not tell the customer about their reservation', [
+                'reservation_id' => $reservation->id,
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            return $handOver('ai_failed');
+        } finally {
+            LiveActivity::idle($conversation);
+            $lock->release();
+        }
+
+        return true;
+    }
+
+    /**
+     * A reservation confirmed during an AI turn (the calendar had room and
+     * the service confirms by itself, or the customer took the offered time):
+     * take the node's "Reservation confirmed" output, once the turn has sent
+     * its reply.
+     *
+     * Returns false while the turn still holds the conversation.
+     */
+    public function takeReservationConfirmedBranch(int $reservationId): bool
+    {
+        $reservation = Reservation::find($reservationId);
+
+        if (! $reservation || $reservation->status !== ReservationStatus::Confirmed || ! $reservation->conversation_id) {
+            return true;
+        }
+
+        $flowState = FlowState::where('conversation_id', $reservation->conversation_id)
+            ->where('status', FlowStateStatus::Running)
+            ->latest('id')
+            ->first();
+
+        if (! $flowState || (int) $flowState->current_node_id !== (int) $reservation->flow_node_id) {
+            return true;
+        }
+
+        $conversation = $flowState->conversation;
+
+        if (! $conversation || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
+            return true;
+        }
+
+        $lock = Cache::lock($this->aiTurnLockKey($conversation->id), self::AI_TURN_LOCK_SECONDS);
+
+        if (! $lock->get()) {
+            return false;
+        }
+
+        try {
+            $flowState->refresh();
+            $node = FlowNode::find($reservation->flow_node_id);
+
+            if ($flowState->status !== FlowStateStatus::Running
+                || (int) $flowState->current_node_id !== (int) $reservation->flow_node_id
+                || ! $node
+                || $node->type !== NodeType::AiTools) {
+                return true;
+            }
+
+            $this->followReservationConfirmedEdge($flowState, $node, $conversation, $reservation->refresh());
+        } finally {
+            $lock->release();
+        }
+
+        return true;
+    }
+
+    /**
+     * Leave the AI node through "Reservation confirmed", when the author drew
+     * that step. Unwired, the AI simply carries on. The caller holds the turn
+     * lock.
+     */
+    protected function followReservationConfirmedEdge(FlowState $flowState, FlowNode $node, Conversation $conversation, Reservation $reservation): void
+    {
+        if ($node->type !== NodeType::AiTools || $reservation->status !== ReservationStatus::Confirmed) {
+            return;
+        }
+
+        $edge = $node->outgoingEdges()->where('condition_value', AiToolNodes::BRANCH_RESERVATION_CONFIRMED)->first();
+
+        if (! $edge) {
+            return;
+        }
+
+        $this->storeReservationVariables($flowState, $reservation);
+
+        $this->clearAiHoldingMessage($conversation);
+        AiTypingPresence::stop($conversation);
+        LiveActivity::idle($conversation);
+        $this->releaseAiHandling($conversation);
+
+        Log::info('FlowExecutor: reservation confirmed, leaving the AI', [
+            'reservation_id' => $reservation->id,
+            'conversation_id' => $conversation->id,
+        ]);
+
+        $this->followEdge($flowState, $edge, ['branch' => AiToolNodes::BRANCH_RESERVATION_CONFIRMED]);
+    }
+
+    /**
+     * The reservation as flow variables, for the steps after "Reservation
+     * confirmed": a message that says "see you on {{reservation_date}} at
+     * {{reservation_time}}". The date is written out in the workspace's
+     * language, because it is read by the customer.
+     */
+    public function storeReservationVariables(FlowState $flowState, Reservation $reservation): void
+    {
+        $tenant = $reservation->tenant;
+        $locale = (string) ($tenant?->market?->default_locale ?? config('app.locale', 'en'));
+        $start = $reservation->localStart($reservation->timezone())->locale($locale);
+
+        $flowState->update(['state_data' => array_merge($flowState->state_data ?? [], [
+            'reservation_id' => $reservation->id,
+            'reservation_code' => $reservation->code,
+            'reservation_service' => $reservation->service_name,
+            'reservation_date' => $start->translatedFormat('l, j F Y'),
+            'reservation_time' => $start->format('H:i'),
+            'reservation_party_size' => (int) $reservation->party_size,
+            'reservation_status' => $reservation->status->value,
+            'reservation_amount' => $reservation->amount_due_cents > 0 ? $reservation->formattedAmountDue() : null,
+        ])]);
     }
 
     /**

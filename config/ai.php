@@ -562,6 +562,16 @@ return [
         'enabled' => (bool) env('AI_TOOLS_ENABLED', false),
 
         /*
+        | The seven reservation tools (AiToolCatalog::reservationTools). Off
+        | until the hub accepts their names: the hub validates the whole
+        | per-agent catalog at once, so registering one name it does not know
+        | would take the shop tools down with it. Off, the calendar and the
+        | team's work are unchanged; only the AI cannot book.
+        */
+
+        'reservations' => (bool) env('AI_RESERVATION_TOOLS_ENABLED', false),
+
+        /*
         | Name of the run field that carries the NAMES of the tools this turn
         | allows (the definitions are registered per agent — AiToolHubSync).
         | `tools` per the hub's contract (PINGLY-TOOLS-20260928.md); kept

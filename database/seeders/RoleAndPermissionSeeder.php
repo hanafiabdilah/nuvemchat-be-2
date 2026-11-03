@@ -196,6 +196,14 @@ class RoleAndPermissionSeeder extends Seeder
             'products.view',
             'products.manage',
             'orders.view',
+
+            // Reservations. `view` reads the calendar, `manage` writes
+            // bookings and edits the services a bot is offering right now,
+            // `confirm` answers a request from its conversation — every role
+            // gets that one (migration 2026_11_03_000200).
+            'reservations.view',
+            'reservations.manage',
+            'reservations.confirm',
         ];
 
         foreach ($permissions as $permission) {
