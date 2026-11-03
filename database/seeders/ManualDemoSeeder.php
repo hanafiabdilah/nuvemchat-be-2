@@ -66,6 +66,8 @@ class ManualDemoSeeder extends Seeder
         $this->seedCrm();
         $this->seedCrmFlows();
         $this->seedGalleryFolders();
+        // Last of all, so every older flow's node ids stay put.
+        $this->seedPixKeyFlow();
 
         $this->command?->info('Manual demo workspace ready — login: ' . self::OWNER_EMAIL . ' / ' . self::PASSWORD);
     }

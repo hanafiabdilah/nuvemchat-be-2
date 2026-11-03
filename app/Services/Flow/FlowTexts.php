@@ -65,6 +65,12 @@ final class FlowTexts
             'message' => 2000,
             'description' => 140,
         ],
+        // Not `key` or `merchant_name`: a key and a person's name are the same
+        // in every language.
+        'pix_key' => [
+            'message' => PixKeyNodes::MAX_MESSAGE_LENGTH,
+            'description' => PixKeyNodes::MAX_DESCRIPTION_LENGTH,
+        ],
         'invoice' => [
             'message' => 2000,
         ],

@@ -14,7 +14,9 @@ use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\ApiwaySendQueue;
 use App\Services\Message\AudioNormalizer;
+use App\Services\Flow\PixKeyNodes;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
+use App\Services\Message\Contracts\SendsPixKey;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
@@ -25,10 +27,19 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
-class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
+class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead, SendsPixKey
 {
     /** Keys that may carry the node's message id in a send response (matched case-insensitively). */
     private const ID_KEYS = ['id', 'messageid', 'message_id', 'msgid'];
+
+    /** Our key types in the core's spelling (send-pix `type`). */
+    private const PIX_KEY_TYPES = [
+        'cpf' => 'cpf',
+        'cnpj' => 'cnpj',
+        'phone' => 'telefone',
+        'email' => 'email',
+        'evp' => 'aleatoria',
+    ];
 
     /** Envelope keys worth descending into; anything else is payload, not wrapper. */
     private const ID_WRAPPERS = ['data', 'key', 'result', 'response'];
@@ -348,6 +359,78 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             ]);
 
             throw new Exception('Failed to send WhatsApp buttons', 0, $th);
+        }
+    }
+
+    /**
+     * The Pix card: POST /v1/message/send-pix.
+     *
+     * The core takes four things — the number, the receiver's name, the key
+     * and its type — and WhatsApp draws them as the card with the "Copiar
+     * chave Pix" button. There is no field for an amount or a text, so the Pix
+     * key node sends its message as a bubble of its own before this one.
+     *
+     * The key goes in the directory's spelling (PixKeyNodes::normalizeKey):
+     * it is what the button copies, and a phone key without its "+55" is one a
+     * bank app may not find. The type names are the core's documented ones.
+     *
+     * A refusal throws, like the buttons: the node has the text version to
+     * fall back on.
+     *
+     * @param  array<string, mixed>  $pix  a PixKeyNodes::resolve() result
+     */
+    public function handleSendPixKey(Conversation $conversation, array $pix): ?Message
+    {
+        $connection = $conversation->connection;
+
+        // The card has no amount, so neither does the record of it: the bubble
+        // in the panel shows what the customer saw.
+        $shown = array_merge($pix, ['amount_cents' => null]);
+
+        $payload = [
+            'phone' => $conversation->external_id,
+            'merchantName' => PixKeyNodes::merchantName($pix),
+            'pixKey' => $pix['key'],
+            'type' => self::PIX_KEY_TYPES[$pix['key_type']] ?? $pix['key_type'],
+        ];
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer ' . $connection->credentials['token'],
+            ])->post($this->base() . '/v1/message/send-pix?instanceId=' . $connection->credentials['instance_id'], $payload);
+
+            $responseArray = $response->json() ?? [];
+
+            if ($response->failed() || ($responseArray['success'] ?? true) === false) {
+                Log::error('WhatsappApiwayHandler: core refused the Pix card', [
+                    'status' => $response->status(),
+                    'response' => $responseArray ?: mb_substr($response->body(), 0, 500),
+                    'conversation_id' => $conversation->id,
+                    'connection_id' => $connection->id,
+                ]);
+
+                throw new Exception('send-pix refused (HTTP ' . $response->status() . ')');
+            }
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Interactive,
+                'body' => PixKeyNodes::summary($shown),
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'meta' => array_merge($responseArray, ['pix' => PixKeyNodes::storedMeta($shown)]),
+            ]);
+            ApiwaySendQueue::track($message, $connection);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('WhatsappApiwayHandler: Failed to send the Pix card', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send the WhatsApp Pix card', 0, $th);
         }
     }
 

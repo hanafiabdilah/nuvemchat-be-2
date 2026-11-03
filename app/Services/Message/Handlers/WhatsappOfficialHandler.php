@@ -11,21 +11,25 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Connection\Meta\GraphApi;
 use App\Services\Flow\InteractiveNodes;
+use App\Services\Flow\PixKeyNodes;
 use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\AudioNormalizer;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
+use App\Services\Message\Contracts\SendsPixKey;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
 use App\Services\Message\TemplateBody;
+use App\Support\PixBrCode;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
-class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead
+class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead, SendsPixKey
 {
     private const GRAPH_BASE = 'https://graph.facebook.com/v25.0';
 
@@ -239,6 +243,133 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
 
             throw new Exception('Failed to send WhatsApp interactive message: ' . $th->getMessage(), 0, $th);
         }
+    }
+
+    /**
+     * A Pix key, the way the Cloud API carries one: an order ("Revisar e
+     * pagar") whose payment is the Pix — the customer opens it and gets the
+     * "Copiar código Pix" button, with the key and the receiver's name on the
+     * same sheet.
+     *
+     * Meta's Pix needs a copy-and-paste code beside the key, and an order needs
+     * a total. A key typed into a flow has no gateway to issue a code, so a
+     * static one is built from the key and the amount (PixBrCode) — any bank
+     * app reads it, and it pays whoever owns the key. Without an amount there
+     * is no order, which is why the node sends text there instead.
+     *
+     * ⚠️ The Cloud API only accepts this for Brazilian numbers whose account
+     * Meta has enabled for payments. A refusal throws, and the node sends the
+     * key as text — so a number that is not enabled still reaches the customer.
+     *
+     * @param  array<string, mixed>  $pix  a PixKeyNodes::resolve() result
+     */
+    public function handleSendPixKey(Conversation $conversation, array $pix): ?Message
+    {
+        if (($pix['amount_cents'] ?? null) === null) {
+            throw new ChannelCapabilityException('No WhatsApp Oficial, a chave Pix só pode ser enviada com um valor.');
+        }
+
+        $connection = $conversation->connection;
+        $code = PixBrCode::build($pix['key'], PixKeyNodes::merchantName($pix), $pix['amount_cents']);
+        // Unique per order, as Meta requires; nothing is reconciled against it
+        // — the money goes to the key, not through us.
+        $referenceId = 'pix-' . Str::lower((string) Str::ulid());
+        $interactive = $this->buildPixOrderPayload($pix, $code, $referenceId);
+
+        try {
+            $response = GraphApi::retry(fn () => Http::withToken($connection->credentials['access_token'])
+                ->post(self::GRAPH_BASE . '/' . $connection->credentials['phone_number_id'] . '/messages', [
+                    'messaging_product' => 'whatsapp',
+                    'recipient_type' => 'individual',
+                    'to' => $conversation->external_id,
+                    'type' => 'interactive',
+                    'interactive' => $interactive,
+                ]));
+
+            $responseArray = $response->json();
+
+            if (!$response->successful()) {
+                // Verbatim: "this number is not enabled for payments" is the
+                // answer most worth finding in a log, and only Meta words it.
+                Log::error('WhatsappOfficialHandler: Meta refused the Pix order', [
+                    'response_status' => $response->status(),
+                    'response_body' => $responseArray,
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                throw new Exception($responseArray['error']['message'] ?? 'Failed to send the WhatsApp Pix order');
+            }
+
+            $summary = PixKeyNodes::summary($pix);
+
+            return $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Interactive,
+                'body' => $pix['message'] !== '' ? $pix['message'] . "\n\n" . $summary : $summary,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'meta' => array_merge($responseArray, [
+                    'interactive' => $interactive,
+                    'pix' => PixKeyNodes::storedMeta($pix, ['code' => $code, 'reference_id' => $referenceId]),
+                ]),
+            ]);
+        } catch (\Throwable $th) {
+            Log::error('WhatsappOfficialHandler: Failed to send the Pix order', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send the WhatsApp Pix order: ' . $th->getMessage(), 0, $th);
+        }
+    }
+
+    /**
+     * `order_details` with a single line — the node sells one thing, and its
+     * amount is the total. Shape from Meta's Payments API for Brazil.
+     *
+     * @param  array<string, mixed>  $pix
+     * @return array<string, mixed>
+     */
+    private function buildPixOrderPayload(array $pix, string $code, string $referenceId): array
+    {
+        $amount = ['value' => $pix['amount_cents'], 'offset' => 100];
+
+        return array_filter([
+            'type' => 'order_details',
+            'header' => $pix['image_url'] ? ['type' => 'image', 'image' => ['link' => $pix['image_url']]] : null,
+            'body' => ['text' => $pix['message'] !== '' ? $pix['message'] : PixKeyNodes::DEFAULT_ORDER_BODY],
+            'action' => [
+                'name' => 'review_and_pay',
+                'parameters' => [
+                    'reference_id' => $referenceId,
+                    'type' => 'digital-goods',
+                    'payment_type' => 'br',
+                    'payment_settings' => [[
+                        'type' => 'pix_dynamic_code',
+                        'pix_dynamic_code' => [
+                            'code' => $code,
+                            'merchant_name' => PixKeyNodes::merchantName($pix),
+                            'key' => $pix['key'],
+                            'key_type' => strtoupper($pix['key_type']),
+                        ],
+                    ]],
+                    'currency' => 'BRL',
+                    'total_amount' => $amount,
+                    'order' => [
+                        'status' => 'pending',
+                        'tax' => ['value' => 0, 'offset' => 100],
+                        'items' => [[
+                            'retailer_id' => 'pix',
+                            'name' => $pix['description'] !== '' ? $pix['description'] : PixKeyNodes::DEFAULT_DESCRIPTION,
+                            'amount' => $amount,
+                            'quantity' => 1,
+                        ]],
+                        'subtotal' => $amount,
+                    ],
+                ],
+            ],
+        ], fn ($value) => $value !== null);
     }
 
     /**

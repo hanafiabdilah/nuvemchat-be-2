@@ -358,6 +358,40 @@ trait Automation
         ]);
     }
 
+    /**
+     * The Pix key node, built after every other flow so the node ids the
+     * capture scripts address stay where they were. A sale paid to a key the
+     * store owns: the key with its copy button, then the receipt read by the AI.
+     *
+     * The key is the demo store's own e-mail — never a real CPF: the manual is
+     * read by every customer.
+     */
+    protected function seedPixKeyFlow(): void
+    {
+        $text = fn (string $body) => ['message_type' => 'text', 'body' => $body, 'delay' => 0];
+
+        $this->buildFlow('chave_pix', 'Venda por chave Pix', [
+            ['start', 'start', null, 0, 200],
+            ['chave', 'pix_key', [
+                'key_type' => 'email', 'key' => 'pix@lojaaurora.example', 'merchant_name' => 'Loja Aurora',
+                'amount' => '19,90', 'message' => 'Material enviado! Para receber o guia completo em PDF, faça o Pix de R$ 19,90 👇',
+                'image_url' => '', 'description' => 'Guia de treino em PDF',
+            ], 280, 160],
+            ['comprovante', 'receipt', [
+                'ai_hub_agent_id' => $this->ai['sofia']->id,
+                'message' => 'Assim que pagar, me manda o comprovante por aqui 📄',
+                'expected_amount' => '19,90', 'expected_recipient' => 'Loja Aurora',
+                'invalid_message' => 'Não consegui confirmar esse comprovante. Pode enviar de novo?',
+                'max_attempts' => 2, 'timeout_seconds' => 0, 'pixel_integration_ids' => [],
+            ], 640, 160],
+            ['obrigada', 'message', ['messages' => [$text('Pagamento confirmado! Aqui está o seu guia 💙')]], 1000, 80],
+            ['humano', 'action', ['type' => 'transfer_human', 'parameters' => []], 1000, 340],
+        ], [
+            ['start', 'chave', null], ['chave', 'comprovante', null],
+            ['comprovante', 'obrigada', 'approved'], ['comprovante', 'humano', 'rejected'],
+        ], 2);
+    }
+
     /** The assistant's blueprint format for a flow as it is now (key = node id). */
     private function blueprintOf(Flow $flow): array
     {

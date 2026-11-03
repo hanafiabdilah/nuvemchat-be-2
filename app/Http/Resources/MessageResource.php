@@ -255,6 +255,15 @@ class MessageResource extends JsonResource
             $meta = array_merge($meta ?? [], ['view_once' => true]);
         }
 
+        // A Pix key sent as WhatsApp's own card (PixKeyNodes). Both WhatsApp
+        // channels record it the same way, so it is read out here rather than
+        // in each channel's branch.
+        $pix = $this->getPixMeta();
+
+        if ($pix !== null) {
+            $meta = array_merge($meta ?? [], $pix);
+        }
+
         // A tap on a button another system sent (ExternalAutomationReply).
         // Only the fact travels — the dashboard stays quiet about it and says
         // on the bubble who handled it; the prefix and id are for the log.
@@ -272,6 +281,28 @@ class MessageResource extends JsonResource
         }
 
         return $meta;
+    }
+
+    /**
+     * What the customer's Pix card showed. The copy-and-paste code built for
+     * WhatsApp Official and the order reference stay on the server — the
+     * bubble draws the key, the name and the amount.
+     */
+    private function getPixMeta(): ?array
+    {
+        $pix = $this->meta['pix'] ?? null;
+
+        if ($this->message_type !== MessageType::Interactive || ! is_array($pix) || ! is_string($pix['key'] ?? null)) {
+            return null;
+        }
+
+        return ['pix' => [
+            'key_type' => $pix['key_type'] ?? null,
+            'key' => $pix['key'],
+            'merchant_name' => $pix['merchant_name'] ?? null,
+            'amount_cents' => isset($pix['amount_cents']) ? (int) $pix['amount_cents'] : null,
+            'currency' => $pix['currency'] ?? 'BRL',
+        ]];
     }
 
     /**

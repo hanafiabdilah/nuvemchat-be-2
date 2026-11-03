@@ -362,6 +362,30 @@ enum Channel: string
     }
 
     /**
+     * Whether a Pix key can go out as WhatsApp's own Pix card — the one with
+     * the "Copiar chave Pix" button — instead of as text.
+     *
+     * Both WhatsApp channels, by different means: API Way through the core's
+     * `send-pix`, WhatsApp Official as an order with the Pix inside it (which
+     * also needs an amount — see PixKeyNodes::nativeOn()). Everywhere else the
+     * Pix key node sends the same key as text.
+     *
+     * `APIWAY_PIX_ENABLED=false` takes the card away from API Way without a
+     * deploy, like its buttons: it comes from an unofficial client, and
+     * WhatsApp has stopped drawing those before.
+     *
+     * Mirrored in `lib/channelCapabilities.ts`.
+     */
+    public function supportsPixKey(): bool
+    {
+        return match (true) {
+            $this === self::WhatsappOfficial => true,
+            $this === self::WhatsappApiway => (bool) config('services.apiway.pix', true),
+            default => false,
+        };
+    }
+
+    /**
      * The audio format to ask the AI hub for, so the reply arrives as the
      * right *kind* of message here.
      *

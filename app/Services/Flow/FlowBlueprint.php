@@ -41,7 +41,7 @@ class FlowBlueprint
     public const NODE_TYPES = [
         'start', 'message', 'interval', 'response', 'wait_response', 'status',
         'tagging', 'condition', 'action', 'ai_agent', 'ai_tools', 'http_request',
-        'interactive', 'payment', 'invoice', 'pixel', 'receipt', 'ai_media', 'go_to_flow',
+        'interactive', 'payment', 'pix_key', 'invoice', 'pixel', 'receipt', 'ai_media', 'go_to_flow',
         'split_test',
     ];
 
@@ -468,6 +468,19 @@ class FlowBlueprint
                 // offer or an upsell, and which offer. Unset = unclassified.
                 'sale_kind' => ['nullable', 'string', Rule::in(Sale::KINDS)],
                 'sale_offer' => ['nullable', 'string', 'max:120'],
+            ],
+            // Lenient like the rest: a node saves half-built, and at runtime one
+            // whose key cannot be a key of its type sends nothing and steps
+            // aside (PixKeyNodes::resolve). The key is not checked here because
+            // it is usually a {{variable}} until the flow runs.
+            'pix_key' => [
+                'key_type' => ['nullable', 'string', Rule::in(PixKeyNodes::KEY_TYPES)],
+                'key' => ['nullable', 'string', 'max:255'],
+                'merchant_name' => ['nullable', 'string', 'max:'.PixKeyNodes::MAX_MERCHANT_LENGTH],
+                'amount' => ['nullable', 'string', 'max:64'],
+                'message' => ['nullable', 'string', 'max:'.PixKeyNodes::MAX_MESSAGE_LENGTH],
+                'image_url' => ['nullable', 'string', 'max:2000'],
+                'description' => ['nullable', 'string', 'max:'.PixKeyNodes::MAX_DESCRIPTION_LENGTH],
             ],
             'go_to_flow' => [
                 'flow_id' => ['nullable', 'integer', Rule::exists('flows', 'id')->where('tenant_id', self::tenantId())],
@@ -1037,6 +1050,8 @@ class FlowBlueprint
         $minExpiry = PaymentNodes::MIN_EXPIRES_MINUTES;
         $maxExpiry = PaymentNodes::MAX_EXPIRES_MINUTES;
         $pixelEvents = self::quoted(PixelEvents::EVENTS);
+        $pixKeyTypes = self::quoted(PixKeyNodes::KEY_TYPES);
+        $pixMessageMax = PixKeyNodes::MAX_MESSAGE_LENGTH;
         $receiptAttempts = ReceiptNodes::MAX_ATTEMPTS;
         $receiptVariables = '{{receipt_status}}, {{receipt_reason}}, {{receipt_amount}} (e.g. "49,90"), {{receipt_value}} (e.g. "49.90"), {{receipt_payer}}, {{receipt_recipient}}, {{receipt_date}}, {{receipt_id}}';
         $paymentVariables = implode(', ', array_map(fn (string $key) => '{{'.$key.'}}', PaymentNodes::VARIABLES));
@@ -1413,6 +1428,24 @@ class FlowBlueprint
           `timeout_seconds` > 0).
         - It reads a picture; it does not confirm money in a bank. Never use it
           where a payment node (a real gateway charge) is possible.
+
+        ### pix_key — send the business's own Pix key, with a copy button
+        { "key_type": "cpf", "key": "53215633817", "merchant_name": "Mônica Esteves", "amount": "19,90", "message": "Faça o Pix de R$ 19,90 para receber o material:", "image_url": "", "description": "" }
+        - For sales paid by a Pix key the business owns, with no gateway. On
+          WhatsApp the customer gets WhatsApp's own Pix card with a "copy" button;
+          on other channels the same key goes out as text, the key alone in its
+          last message so it can be copied.
+        - `key_type`: {$pixKeyTypes} ("evp" is the random key). `key` accepts
+          {{variable}}; CPF/CNPJ/phone may be typed with or without punctuation.
+        - `merchant_name`: who receives the money (shown on the card).
+        - `amount` (accepts {{variable}}): REQUIRED for the card on WhatsApp
+          Official — without it that channel gets the text version. WhatsApp
+          API Way's card cannot show an amount, so put it in `message` too.
+        - `message` (max {$pixMessageMax} characters): sent with the key.
+          `image_url` and `description` only affect WhatsApp Official.
+        - Never waits and never confirms a payment. ONE output. To check that the
+          customer paid, follow it with a receipt node (or use a payment node,
+          which charges through a gateway, when the person has one).
 
         ### pixel — report a conversion to an ad or analytics account
         { "integration_ids": [7], "event": "purchase", "value": "{{payment_value}}", "currency": "BRL" }

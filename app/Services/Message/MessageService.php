@@ -7,6 +7,7 @@ use App\Exceptions\ChannelCapabilityException;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
+use App\Services\Message\Contracts\SendsPixKey;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
 use App\Support\Errors\HasUserSafeMessage;
@@ -64,6 +65,29 @@ class MessageService
             }
 
             return $handler->handleSendInteractive($conversation, $data);
+        });
+    }
+
+    /**
+     * Send a Pix key as the channel's own Pix card.
+     *
+     * Asked of the channel first, like sendInteractive(): API Way can have the
+     * card switched off, and every other channel has none — the Pix key node
+     * checks the same thing and sends text instead, so reaching the exception
+     * here means a caller skipped that check.
+     *
+     * @param  array<string, mixed>  $pix  a PixKeyNodes::resolve() result
+     */
+    public function sendPixKey(Conversation $conversation, array $pix): ?Message
+    {
+        return $this->guard($conversation, 'send a Pix key', function () use ($conversation, $pix) {
+            $handler = MessageFactory::make($conversation->connection->channel);
+
+            if (! $conversation->connection->channel->supportsPixKey() || ! $handler instanceof SendsPixKey) {
+                throw new ChannelCapabilityException('A chave Pix com botão de copiar só pode ser enviada em conexões WhatsApp.');
+            }
+
+            return $handler->handleSendPixKey($conversation, $pix);
         });
     }
 

@@ -25,6 +25,13 @@ enum NodeType: string
     case HttpRequest = 'http_request';
     case Interactive = 'interactive';
     case Payment = 'payment';
+
+    /**
+     * Sends the business's own Pix key as WhatsApp's Pix card (copy button
+     * included) and moves on — no gateway, nothing waited for. See
+     * App\Services\Flow\PixKeyNodes.
+     */
+    case PixKey = 'pix_key';
     case Invoice = 'invoice';
     case Pixel = 'pixel';
     case Receipt = 'receipt';
@@ -187,6 +194,9 @@ enum NodeType: string
                 'payer_email' => '', // optional, supports {{variable}}
                 'payer_document' => '', // optional CPF/CNPJ, supports {{variable}}
             ],
+            // One output: sends the key (a Pix card on WhatsApp, text elsewhere)
+            // and carries on.
+            self::PixKey => \App\Services\Flow\PixKeyNodes::defaults(),
             // Asks the workspace's own nota fiscal platform for an invoice and
             // waits for the authority to authorize it. Two outputs: `issued`
             // (the document went to the customer) and `failed`. See

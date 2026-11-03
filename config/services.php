@@ -58,6 +58,9 @@ return [
         // node goes back to its numbered text menu on this channel, and the
         // chat composer sends plain text.
         'buttons' => (bool) env('APIWAY_BUTTONS_ENABLED', true),
+        // The Pix card through the core's send-pix. Off = the Pix key node
+        // sends the key as text on this channel.
+        'pix' => (bool) env('APIWAY_PIX_ENABLED', true),
     ],
 
     'billing' => [

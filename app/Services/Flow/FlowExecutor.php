@@ -358,6 +358,10 @@ class FlowExecutor
                 $this->executePaymentNode($flowState, $node);
                 break;
 
+            case NodeType::PixKey:
+                $this->executePixKeyNode($flowState, $node);
+                break;
+
             case NodeType::Invoice:
                 $this->executeInvoiceNode($flowState, $node);
                 break;
@@ -1455,6 +1459,149 @@ class FlowExecutor
                         $data['sections'][$si]['rows'][$ri][$key] = $this->interpolateVariables($row[$key], $flowState);
                     }
                 }
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Execute a Pix key node — send the key, then move on.
+     *
+     * The card where the channel can draw one (see PixKeyNodes), the same
+     * information as text where it cannot, and the text as well when the
+     * channel refused the card. That last fall back follows the button rule
+     * (InteractiveDelivery): only when nothing can have reached the customer,
+     * or they get the key twice.
+     *
+     * A node whose key is missing or cannot be a key of its type sends
+     * nothing and steps aside: a key that does not exist is worse than no key,
+     * because the customer would copy it and fail at the bank.
+     *
+     * When nothing at all went out the flow stays here, like an interactive
+     * node: the next message from the customer runs the node again, which is
+     * better than carrying on to "send me the receipt" for a key they never got.
+     */
+    protected function executePixKeyNode(FlowState $flowState, FlowNode $node): void
+    {
+        $conversation = $flowState->conversation;
+        $pix = PixKeyNodes::resolve($this->interpolatePixKeyData($node->data ?? [], $flowState));
+
+        if ($pix === null) {
+            Log::warning('FlowExecutor: Pix key node has no usable key, skipping', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'key_type' => PixKeyNodes::keyType($node->data ?? []),
+            ]);
+
+            $this->moveToNextNode($flowState, $node);
+
+            return;
+        }
+
+        try {
+            $channel = $conversation->connection->channel;
+            $native = PixKeyNodes::nativeOn($channel, $pix);
+            $sent = null;
+
+            if ($native) {
+                // API Way's card carries no text, so the message is its own
+                // bubble — before the card, the order it is read in. The Cloud
+                // API's order holds the message itself.
+                if ($channel !== Channel::WhatsappOfficial && $pix['message'] !== '') {
+                    $this->sendFlowText($flowState, $conversation, $pix['message']);
+                }
+
+                try {
+                    $sent = $this->messageService->sendPixKey($conversation, $pix);
+                } catch (\Throwable $th) {
+                    if (! InteractiveDelivery::canFallBack($th)) {
+                        throw $th;
+                    }
+
+                    Log::warning('FlowExecutor: Pix card refused, sending the key as text', [
+                        'node_id' => $node->id,
+                        'conversation_id' => $conversation->id,
+                        'channel' => $channel->value,
+                        'error' => $th->getMessage(),
+                    ]);
+
+                    // The message already went out ahead of the card on API Way;
+                    // saying it twice is the one thing the fall back must not do.
+                    if ($channel !== Channel::WhatsappOfficial) {
+                        $pix['message'] = '';
+                    }
+
+                    $native = false;
+                }
+            }
+
+            if ($native && $sent) {
+                $sent->update(['sent_by_flow_id' => $flowState->flow_id]);
+                broadcast(new MessageReceived($sent));
+            }
+
+            if (! $native) {
+                $sent = null;
+
+                foreach (PixKeyNodes::textBubbles($pix) as $bubble) {
+                    $sent = $this->sendFlowText($flowState, $conversation, $bubble) ?? $sent;
+                }
+            }
+
+            if (! $sent) {
+                Log::error('FlowExecutor: Failed to send the Pix key', [
+                    'node_id' => $node->id,
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                return;
+            }
+
+            Log::info('FlowExecutor: Pix key sent', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'key_type' => $pix['key_type'],
+                'as_card' => $native,
+            ]);
+        } catch (\Throwable $th) {
+            Log::error('FlowExecutor: Error executing Pix key node', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'error' => $th->getMessage(),
+            ]);
+
+            return;
+        }
+
+        $this->moveToNextNode($flowState, $node);
+    }
+
+    /**
+     * One text bubble from a flow: stamped as the flow's and announced to the
+     * panel. Null when the channel did not take it.
+     *
+     * $text arrives already interpolated — a second pass would re-read {{…}}
+     * that a customer's own answer had put into it.
+     */
+    protected function sendFlowText(FlowState $flowState, Conversation $conversation, string $text): ?Message
+    {
+        $message = $this->messageService->sendMessage($conversation, ['message' => $text]);
+
+        if ($message) {
+            $message->update(['sent_by_flow_id' => $flowState->flow_id]);
+            broadcast(new MessageReceived($message));
+        }
+
+        return $message;
+    }
+
+    /** {{variable}} in every field of a Pix key node that reaches the customer. */
+    protected function interpolatePixKeyData(array $data, FlowState $flowState): array
+    {
+        foreach (['key', 'merchant_name', 'amount', 'message', 'image_url', 'description'] as $field) {
+            if (isset($data[$field]) && is_string($data[$field])) {
+                $data[$field] = $this->interpolateVariables($data[$field], $flowState);
             }
         }
 
