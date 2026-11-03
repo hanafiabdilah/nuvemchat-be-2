@@ -42,7 +42,7 @@ class FlowBlueprint
         'start', 'message', 'interval', 'response', 'wait_response', 'status',
         'tagging', 'condition', 'action', 'ai_agent', 'ai_tools', 'http_request',
         'interactive', 'payment', 'pix_key', 'invoice', 'pixel', 'receipt', 'ai_media', 'go_to_flow',
-        'split_test',
+        'split_test', 'call',
     ];
 
     /**
@@ -136,6 +136,13 @@ class FlowBlueprint
                 'seconds' => ['nullable', 'integer', 'min:0', 'max:'.IntervalNodes::MAX_SECONDS],
                 'unit' => ['nullable', 'string', Rule::in(array_keys(IntervalNodes::UNITS))],
                 'presence' => ['nullable', 'boolean'],
+            ],
+            // Rings the customer (API Way) and carries on once the call ends.
+            // The recording is a URL, possibly with {{variables}}, so it is
+            // checked as text here and resolved when the node runs.
+            'call' => [
+                'ring_seconds' => ['nullable', 'integer', 'min:'.CallNodes::MIN_RING_SECONDS, 'max:'.CallNodes::MAX_RING_SECONDS],
+                'audio_url' => ['nullable', 'string', 'max:'.CallNodes::MAX_AUDIO_URL_LENGTH],
             ],
             'response' => [
                 'body' => ['required', 'string'],
@@ -1042,6 +1049,11 @@ class FlowBlueprint
         $maxItems = MessageNodes::MAX_ITEMS;
         $maxDelay = MessageNodes::MAX_DELAY_SECONDS;
         $maxInterval = IntervalNodes::MAX_SECONDS;
+        $minRing = CallNodes::MIN_RING_SECONDS;
+        $maxRing = CallNodes::MAX_RING_SECONDS;
+        $defaultRing = CallNodes::DEFAULT_RING_SECONDS;
+        $callVariable = CallNodes::VARIABLE;
+        $callStatuses = self::quoted(array_values(array_diff(CallNodes::STATUSES, [CallNodes::STATUS_RINGING])));
         $maxWaitSeconds = WaitResponseNodes::MAX_TIMEOUT_SECONDS;
         $maxWaitDays = intdiv(WaitResponseNodes::MAX_TIMEOUT_SECONDS, 86400);
         $maxBuffer = WaitResponseNodes::MAX_BUFFER_SECONDS;
@@ -1174,6 +1186,28 @@ class FlowBlueprint
           unless the interval is short and a message follows straight after — on a
           long one it hurries a customer who was being given room.
         - Sends nothing. One output.
+
+        ### call — ring the customer's WhatsApp, then carry on
+        {
+          "ring_seconds": {$defaultRing},
+          "audio_url": null
+        }
+        - Calls the contact's number from the business's WhatsApp. Works only on
+          WhatsApp API Way connections; on any other channel the node is skipped
+          and the flow continues.
+        - `ring_seconds`: {$minRing}–{$maxRing}. How long it rings before hanging up.
+        - `audio_url` (optional): an MP3/OGG/M4A/WAV URL (may use {{variables}})
+          played when the customer answers; the call ends when it finishes. Null =
+          the call only rings. Never invent a URL — leave it null unless the
+          person gave you one or picked a file.
+        - The flow waits for the call to end, then follows the one output. A message
+          from the customer during the call does not move it.
+        - Sets `{{{$callVariable}}}` to one of {$callStatuses}. To act on whether the
+          customer picked up, follow this node with a condition on
+          `variable.{$callVariable}`.
+        - Use it as a nudge right before a message ("acabei de te ligar…"), not as
+          a way to talk: nothing the customer says on the call reaches the flow.
+          Calling many leads automatically can lead WhatsApp to restrict the number.
 
         ### response — ask a question and store a valid answer
         {

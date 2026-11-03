@@ -61,6 +61,10 @@ return [
         // The Pix card through the core's send-pix. Off = the Pix key node
         // sends the key as text on this channel.
         'pix' => (bool) env('APIWAY_PIX_ENABLED', true),
+        // Calls through the core's call/make (the flow's Call node). Off until
+        // the core ships the endpoint: the node is hidden from the builder and
+        // a saved one is stepped over.
+        'calls' => (bool) env('APIWAY_CALLS_ENABLED', false),
     ],
 
     'billing' => [

@@ -24,6 +24,7 @@ use App\Jobs\GenerateFlowMedia;
 use App\Jobs\ReleaseFlowInvoice;
 use App\Jobs\RunAiAgentTurn;
 use App\Jobs\RunAiToolsPaymentBranch;
+use App\Jobs\RunFlowCallNode;
 use App\Jobs\RunFlowIntervalNode;
 use App\Jobs\RunFlowMessageNode;
 use App\Jobs\RunFlowReceiptTimeout;
@@ -75,6 +76,7 @@ use App\Services\BusinessHours;
 use App\Services\Catalog\OrderService;
 use App\Services\Contact\ContactIdentity;
 use App\Services\Contact\ContactTags;
+use App\Services\Conversation\CallLog;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Crm\CrmSubjects;
 use App\Services\Crm\CrmTimeline;
@@ -317,6 +319,10 @@ class FlowExecutor
 
             case NodeType::Interval:
                 $this->executeIntervalNode($flowState, $node);
+                break;
+
+            case NodeType::Call:
+                $this->executeCallNode($flowState, $node);
                 break;
 
             case NodeType::Response:
@@ -1078,6 +1084,241 @@ class FlowExecutor
 
         unset($stateData[IntervalNodes::claimKey($nodeId)]);
         $flowState->update(['state_data' => $stateData]);
+    }
+
+    /**
+     * Execute a Call node — ring the customer, wait for the call to end, carry on.
+     *
+     * The API Way core places the call and answers straight away with its id
+     * and how long it can last; the flow parks here, like an interval, until
+     * the core reports the end (CallResult, or whatsmeow's own terminate) —
+     * or, failing that, until the longest the call could have run.
+     *
+     * Never stalls a funnel: a channel that cannot call, or a core that
+     * refuses, steps over the node with {{call_status}} saying why. The call
+     * is a nudge before the next message, not a gate in front of it.
+     */
+    protected function executeCallNode(FlowState $flowState, FlowNode $node): void
+    {
+        $data = $node->data ?? [];
+        $conversation = $flowState->conversation;
+
+        if ($this->callToken($flowState, $node->id) !== null) {
+            // Already ringing. Running the node again would ring the customer
+            // a second time.
+            Log::info('FlowExecutor: Call already in progress, leaving it alone', [
+                'node_id' => $node->id,
+                'conversation_id' => $flowState->conversation_id,
+            ]);
+
+            return;
+        }
+
+        if (! $conversation->connection?->channel->supportsCalls()) {
+            Log::info('FlowExecutor: Call node skipped, this connection cannot place calls', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'channel' => $conversation->connection?->channel->value,
+            ]);
+
+            $this->setCallStatus($flowState, CallNodes::STATUS_UNAVAILABLE);
+            $this->finishCallNode($flowState, $node);
+
+            return;
+        }
+
+        $ringSeconds = CallNodes::ringSeconds($data);
+        $audioUrl = CallNodes::audioUrl($data);
+        $audioUrl = $audioUrl !== null ? trim($this->interpolateVariables($audioUrl, $flowState)) : null;
+        $audioUrl = $audioUrl === '' ? null : $audioUrl;
+
+        try {
+            $placed = (new MessageService)->placeCall($conversation, $ringSeconds, $audioUrl);
+        } catch (\Throwable $th) {
+            // Already our own copy: MessageService::guard() translated
+            // whatever the core said before it got here.
+            $reason = trim($th->getMessage());
+
+            Log::warning('FlowExecutor: Call node could not place the call', [
+                'node_id' => $node->id,
+                'conversation_id' => $conversation->id,
+                'reason' => $reason,
+            ]);
+
+            SystemMessage::info(
+                $conversation,
+                $reason !== '' ? "The flow could not call the customer. {$reason}" : 'The flow could not call the customer.',
+                $reason !== '' ? 'flow_call_failed_reason' : 'flow_call_failed',
+                array_filter(['reason' => $reason]),
+            );
+
+            $this->setCallStatus($flowState, CallNodes::STATUS_FAILED);
+            $this->finishCallNode($flowState, $node);
+
+            return;
+        }
+
+        CallLog::outgoing($conversation, $placed['call_id'], array_filter([
+            'ring_seconds' => $ringSeconds,
+            'audio' => $placed['audio'] ?: null,
+        ]));
+
+        $wait = CallNodes::waitSeconds($ringSeconds, $placed['max_seconds'], $placed['audio']);
+        $token = (string) Str::uuid();
+        $stateData = $flowState->state_data ?? [];
+
+        $stateData[CallNodes::VARIABLE] = CallNodes::STATUS_RINGING;
+        $stateData[CallNodes::claimKey($node->id)] = [
+            'token' => $token,
+            'call_id' => $placed['call_id'],
+            'resume_at' => now()->addSeconds($wait)->timestamp,
+            'expires_at' => now()->addSeconds($wait + CallNodes::CLAIM_GRACE_SECONDS)->timestamp,
+        ];
+
+        $flowState->update(['state_data' => $stateData]);
+
+        RunFlowCallNode::dispatch($flowState->id, $node->id, $token)
+            ->delay(now()->addSeconds($wait));
+
+        LiveActivity::flowCall($conversation, $node, $wait);
+
+        Log::info('FlowExecutor: Call placed', [
+            'node_id' => $node->id,
+            'conversation_id' => $conversation->id,
+            'call_id' => $placed['call_id'],
+            'ring_seconds' => $ringSeconds,
+            'audio' => $placed['audio'],
+            'wait_seconds' => $wait,
+        ]);
+    }
+
+    /**
+     * The call the flow is waiting on ended — the API Way webhook says so.
+     *
+     * Moves the flow on now rather than when the timer fires, and with the
+     * real outcome in {{call_status}}. A call nobody is waiting on any more
+     * (the timer won, a person took the conversation) only has its note
+     * updated, which the webhook already did.
+     */
+    public function callEnded(Conversation $conversation, string $callId, string $status): void
+    {
+        $flowState = FlowState::where('conversation_id', $conversation->id)->first();
+        $nodeId = (int) ($flowState?->current_node_id ?? 0);
+
+        if (! $flowState || $nodeId === 0) {
+            return;
+        }
+
+        $claim = ($flowState->state_data ?? [])[CallNodes::claimKey($nodeId)] ?? null;
+
+        if (! is_array($claim) || ($claim['call_id'] ?? null) !== $callId || ! is_string($claim['token'] ?? null)) {
+            return;
+        }
+
+        $this->runCallFinished($flowState->id, $nodeId, $claim['token'], $status);
+    }
+
+    /**
+     * The flow's wait on a call is over: the call ended (with $status), or the
+     * timer ran out (no status).
+     *
+     * Two paths reach this for the same call — the webhook and the timer — so
+     * the claim is taken under a lock and only the first moves the flow; the
+     * other finds the token gone. The move itself happens outside the lock,
+     * since the next node may take a while.
+     */
+    public function runCallFinished(int $flowStateId, int $nodeId, string $token, ?string $status = null): void
+    {
+        try {
+            $advance = Cache::lock("flow-call:{$flowStateId}:{$nodeId}", 30)->block(10, function () use ($flowStateId, $nodeId, $token, $status) {
+                $flowState = FlowState::find($flowStateId);
+
+                if (! $flowState || $this->callToken($flowState, $nodeId) !== $token) {
+                    return null;
+                }
+
+                $node = FlowNode::find($nodeId);
+                $conversation = $flowState->conversation;
+                $stateData = $flowState->state_data ?? [];
+
+                unset($stateData[CallNodes::claimKey($nodeId)]);
+
+                // Recorded even when the flow is no longer here to read it: the
+                // variable is the conversation's record of how the call went.
+                $stateData[CallNodes::VARIABLE] = $status
+                    ?? (($stateData[CallNodes::VARIABLE] ?? null) === CallNodes::STATUS_RINGING
+                        ? CallNodes::STATUS_UNKNOWN
+                        : ($stateData[CallNodes::VARIABLE] ?? CallNodes::STATUS_UNKNOWN));
+
+                $flowState->update(['state_data' => $stateData]);
+
+                $stillOurs = $flowState->status === FlowStateStatus::Running
+                    && $flowState->current_node_id === $nodeId
+                    && $node
+                    && $node->type === NodeType::Call
+                    && $conversation
+                    && in_array($conversation->status, ConversationStatus::flowEligible(), true);
+
+                return $stillOurs ? [$flowState, $node] : null;
+            });
+        } catch (\Illuminate\Contracts\Cache\LockTimeoutException) {
+            // The other path holds it, and it is the one moving the flow.
+            Log::info('FlowExecutor: Call end already being handled', [
+                'flow_state_id' => $flowStateId,
+                'node_id' => $nodeId,
+            ]);
+
+            return;
+        }
+
+        if ($advance === null) {
+            return;
+        }
+
+        [$flowState, $node] = $advance;
+
+        $this->finishCallNode($flowState, $node);
+    }
+
+    /** Leave the Call node: on to the next one, or the end of the flow. */
+    protected function finishCallNode(FlowState $flowState, FlowNode $node): void
+    {
+        if (! $node->outgoingEdges()->exists()) {
+            Log::info('FlowExecutor: Flow completed after its last call', [
+                'flow_state_id' => $flowState->id,
+                'node_id' => $node->id,
+            ]);
+
+            $this->endFlowHere($flowState, FlowStateStatus::Completed);
+
+            return;
+        }
+
+        $this->moveToNextNode($flowState, $node);
+    }
+
+    protected function setCallStatus(FlowState $flowState, string $status): void
+    {
+        $stateData = $flowState->state_data ?? [];
+        $stateData[CallNodes::VARIABLE] = $status;
+        $flowState->update(['state_data' => $stateData]);
+    }
+
+    /**
+     * The token of the run currently waiting on this node's call, if it is
+     * still within its expiry.
+     */
+    protected function callToken(FlowState $flowState, int $nodeId): ?string
+    {
+        $claim = ($flowState->state_data ?? [])[CallNodes::claimKey($nodeId)] ?? null;
+
+        if (! is_array($claim) || (int) ($claim['expires_at'] ?? 0) < now()->timestamp) {
+            return null;
+        }
+
+        $token = $claim['token'] ?? null;
+
+        return is_string($token) ? $token : null;
     }
 
     /**
@@ -2675,6 +2916,21 @@ class FlowExecutor
             return true;
         }
 
+        if ($node->type === NodeType::Call) {
+            // Never dial again: the call happened before the pause, whatever
+            // came of it, and ringing somebody twice is not resuming.
+            unset($stateData[CallNodes::claimKey($node->id)]);
+
+            if (($stateData[CallNodes::VARIABLE] ?? null) === CallNodes::STATUS_RINGING) {
+                $stateData[CallNodes::VARIABLE] = CallNodes::STATUS_UNKNOWN;
+            }
+
+            $flowState->update(['state_data' => $stateData]);
+            $this->finishCallNode($flowState, $node);
+
+            return true;
+        }
+
         if ($node->type === NodeType::WaitResponse
             && array_key_exists(WaitResponseNodes::parkedKey($node->id), $stateData)) {
             $this->armWaitResponseTimeout($flowState, $node);
@@ -3259,6 +3515,18 @@ class FlowExecutor
         // be able to end the wait.
         if ($currentNode->type === NodeType::Interval && $this->intervalToken($flowState, $currentNode->id) !== null) {
             Log::info('FlowExecutor: Customer wrote during an interval, still waiting on the clock', [
+                'conversation_id' => $conversation->id,
+                'node_id' => $currentNode->id,
+            ]);
+
+            return;
+        }
+
+        // A call is the same: the end of the call moves it. Re-running the node
+        // here would ring the customer a second time — and somebody who writes
+        // "alô?" while it rings is answering the call, not the flow.
+        if ($currentNode->type === NodeType::Call && $this->callToken($flowState, $currentNode->id) !== null) {
+            Log::info('FlowExecutor: Customer wrote during a call, still waiting on it', [
                 'conversation_id' => $conversation->id,
                 'node_id' => $currentNode->id,
             ]);

@@ -78,6 +78,66 @@ class CallLog
     private const PREFIX = 'call:';
 
     /**
+     * A call the flow placed (the Call node), as opposed to one the customer
+     * made. Kept in `meta.call.direction`, and it changes the note's code —
+     * `call_out_*` instead of `call_*` — because "Missed call" over a call the
+     * customer never answered says the opposite of what happened.
+     */
+    public const OUTGOING = 'outgoing';
+
+    /**
+     * The note for a call the flow placed, written in the flow's conversation
+     * as soon as the core accepts it. The core's events for the same call id
+     * then rewrite it like any other call note.
+     *
+     * @param  array<string, mixed>  $detail
+     */
+    public static function outgoing(Conversation $conversation, string $callId, array $detail = []): Message
+    {
+        $code = self::RINGING;
+
+        return SystemMessage::info(
+            $conversation,
+            self::body($code, null, true),
+            self::codeFor($code, true),
+            [],
+            [
+                'external_id' => self::PREFIX.$callId,
+                'meta' => ['call' => self::detail($callId, $code, null, array_merge($detail, ['direction' => self::OUTGOING]))],
+            ],
+        );
+    }
+
+    /** Whether this note stands for a call the flow placed. */
+    public static function isOutgoing(Message $note): bool
+    {
+        return data_get($note->meta, 'call.direction') === self::OUTGOING;
+    }
+
+    /**
+     * Move a note we already have on to a later state — for events that find
+     * the note by its call id rather than through a phone number.
+     *
+     * @param  array<string, mixed>  $detail
+     */
+    public static function progress(Message $note, string $code, ?int $seconds = null, array $detail = []): ?Message
+    {
+        if (! array_key_exists($code, self::RANK)) {
+            Log::warning('CallLog: unknown call state', ['code' => $code, 'message_id' => $note->id]);
+
+            return null;
+        }
+
+        return self::advance($note, $code, $seconds, $detail);
+    }
+
+    /** The code a note carries: the call's state, or its outgoing twin. */
+    private static function codeFor(string $state, bool $outgoing): string
+    {
+        return $outgoing ? 'call_out_'.substr($state, strlen('call_')) : $state;
+    }
+
+    /**
      * The note standing for this call on this connection, if we have one.
      *
      * Scoped to the connection rather than to a conversation, exactly like the
@@ -197,7 +257,10 @@ class CallLog
     /** A later event for a call we already have a note for. */
     private static function advance(Message $message, string $code, ?int $seconds, array $detail): ?Message
     {
-        $current = data_get($message->meta, 'info.code', self::RINGING);
+        // The state, not the code: an outgoing note's code is `call_out_*`,
+        // which RANK does not know.
+        $current = data_get($message->meta, 'call.state', data_get($message->meta, 'info.code', self::RINGING));
+        $outgoing = self::isOutgoing($message);
 
         if ((self::RANK[$code] ?? 0) < (self::RANK[$current] ?? 0)) {
             Log::info('CallLog: stale call event ignored', [
@@ -216,14 +279,14 @@ class CallLog
         // later by the terminate that has to work out how long the call ran.
         $meta['call'] = self::detail($call['id'] ?? null, $code, $seconds, array_merge($call, $detail));
         $meta['info'] = array_filter([
-            'code' => $code,
+            'code' => self::codeFor($code, $outgoing),
             'params' => self::params($seconds) ?: null,
         ]);
 
         // sent_at is left alone on purpose: the note belongs where the call
         // started in the timeline, not where it ended.
         $message->update([
-            'body' => self::body($code, $seconds),
+            'body' => self::body($code, $seconds, $outgoing),
             'meta' => $meta,
         ]);
 
@@ -240,8 +303,19 @@ class CallLog
      * (lib/infoMessage.ts) and only falls back to this, so it has to read as a
      * finished sentence on its own.
      */
-    private static function body(string $code, ?int $seconds): string
+    private static function body(string $code, ?int $seconds, bool $outgoing = false): string
     {
+        if ($outgoing) {
+            return match ($code) {
+                self::RINGING => 'The flow is calling the customer.',
+                self::ONGOING => 'The customer answered the flow\'s call.',
+                self::ANSWERED => 'The customer answered the flow\'s call · '.self::humanDuration($seconds ?? 0),
+                self::ENDED => 'The flow\'s call ended.',
+                self::DECLINED => 'The customer declined the flow\'s call.',
+                default => 'The customer did not answer the flow\'s call.',
+            };
+        }
+
         return match ($code) {
             self::RINGING => 'Incoming call.',
             self::ONGOING => 'Call in progress.',

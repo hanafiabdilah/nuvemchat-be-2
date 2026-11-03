@@ -44,6 +44,13 @@ enum NodeType: string
      */
     case SplitTest = 'split_test';
 
+    /**
+     * Rings the customer's WhatsApp from the business's number (API Way
+     * only), optionally playing a recording when they answer, and moves on
+     * once the call is over. See App\Services\Flow\CallNodes.
+     */
+    case Call = 'call';
+
     public function data(): array
     {
         return match($this) {
@@ -197,6 +204,9 @@ enum NodeType: string
             // One output: sends the key (a Pix card on WhatsApp, text elsewhere)
             // and carries on.
             self::PixKey => \App\Services\Flow\PixKeyNodes::defaults(),
+            // One output: rings the customer (API Way only), waits for the call
+            // to end, carries on. Skipped on channels that cannot call.
+            self::Call => \App\Services\Flow\CallNodes::defaults(),
             // Asks the workspace's own nota fiscal platform for an invoice and
             // waits for the authority to authorize it. Two outputs: `issued`
             // (the document went to the customer) and `failed`. See

@@ -16,6 +16,7 @@ use App\Services\Message\ApiwaySendQueue;
 use App\Services\Message\AudioNormalizer;
 use App\Services\Flow\PixKeyNodes;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
+use App\Services\Message\Contracts\PlacesCalls;
 use App\Services\Message\Contracts\SendsPixKey;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
@@ -27,7 +28,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
-class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead, SendsPixKey
+class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead, SendsPixKey, PlacesCalls
 {
     /** Keys that may carry the node's message id in a send response (matched case-insensitively). */
     private const ID_KEYS = ['id', 'messageid', 'message_id', 'msgid'];
@@ -432,6 +433,86 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
 
             throw new Exception('Failed to send the WhatsApp Pix card', 0, $th);
         }
+    }
+
+    /**
+     * The core's codes for "the call is fine, the recording is not". Answered
+     * by placing the call again without it: the ring is the part the flow is
+     * there for, and a funnel should not lose it to a format problem.
+     */
+    private const CALL_AUDIO_REFUSALS = ['call_audio_not_supported', 'audio_not_supported', 'invalid_audio', 'audio_unavailable'];
+
+    /**
+     * Ring the customer: POST /v1/call/make.
+     *
+     * The core accepts the call and returns at once — it rings for
+     * `ringSeconds`, plays `audioUrl` if the customer answers, and hangs up —
+     * so what comes back is the call's id (the same `CallID` its events carry)
+     * and how long the call can last at most. How it ended arrives later as a
+     * `CallResult` webhook event. The contract is written up in
+     * `apiway-call-endpoint.md` at the root of the monorepo.
+     *
+     * @return array{call_id: string, max_seconds: int|null, audio: bool}
+     */
+    public function handlePlaceCall(Conversation $conversation, int $ringSeconds, ?string $audioUrl): array
+    {
+        $connection = $conversation->connection;
+
+        $response = $this->requestCall($conversation, $ringSeconds, $audioUrl);
+        $audio = $audioUrl !== null;
+
+        if ($audio && $response->failed()
+            && in_array(strtolower((string) $response->json('error')), self::CALL_AUDIO_REFUSALS, true)) {
+            Log::warning('WhatsappApiwayHandler: core refused the call recording, calling without it', [
+                'status' => $response->status(),
+                'response' => $response->json() ?: mb_substr($response->body(), 0, 500),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            $response = $this->requestCall($conversation, $ringSeconds, null);
+            $audio = false;
+        }
+
+        $data = $response->json('data');
+        $data = is_array($data) ? $data : [];
+        $callId = $data['callId'] ?? $data['call_id'] ?? $data['id'] ?? data_get($data, 'call.id');
+
+        if ($response->failed() || $response->json('success') === false || ! is_string($callId) || $callId === '') {
+            Log::error('WhatsappApiwayHandler: core refused the call', [
+                'status' => $response->status(),
+                'response' => $response->json() ?: mb_substr($response->body(), 0, 500),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('call/make refused (HTTP ' . $response->status() . ')');
+        }
+
+        $maxSeconds = $data['maxDurationSeconds'] ?? $data['max_duration_seconds'] ?? null;
+
+        return [
+            'call_id' => $callId,
+            'max_seconds' => is_numeric($maxSeconds) ? (int) $maxSeconds : null,
+            'audio' => $audio,
+        ];
+    }
+
+    private function requestCall(Conversation $conversation, int $ringSeconds, ?string $audioUrl): \Illuminate\Http\Client\Response
+    {
+        $connection = $conversation->connection;
+
+        return Http::withHeaders([
+            'Authorization' => 'Bearer ' . $connection->credentials['token'],
+        ])
+            // The core answers once the call is accepted, not when it ends; a
+            // recording it has to fetch first is the slow part.
+            ->timeout(30)
+            ->post($this->base() . '/v1/call/make?instanceId=' . $connection->credentials['instance_id'], array_filter([
+                'phone' => $conversation->external_id,
+                'ringSeconds' => $ringSeconds,
+                'audioUrl' => $audioUrl,
+            ], fn ($value) => $value !== null));
     }
 
     public function handleSendImage(Conversation $conversation, array $data): ?Message

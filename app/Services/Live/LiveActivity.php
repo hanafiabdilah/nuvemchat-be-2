@@ -140,6 +140,20 @@ final class LiveActivity
     }
 
     /**
+     * A Call node ringing the customer. A delay like the interval's — the flow
+     * is waiting on a clock, not on a reply — marked so the panel can say what
+     * it is waiting for.
+     */
+    public static function flowCall(Conversation $conversation, FlowNode $node, int $seconds): void
+    {
+        self::emit($conversation, self::FLOW_DELAY, $node, [
+            'resume_at' => now()->addSeconds($seconds)->timestamp,
+            'seconds' => $seconds,
+            'call' => true,
+        ], $seconds + 5);
+    }
+
+    /**
      * @param  int|null  $timeoutSeconds  0/null when the author wired no
      *                                    no-reply branch — the node then waits
      *                                    indefinitely and there is no clock to

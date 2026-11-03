@@ -22,6 +22,8 @@ use App\Services\Contact\Photo\ContactPhotoSyncer;
 use App\Services\Conversation\CallLog;
 use App\Services\Conversation\GroupConversationService;
 use App\Services\Conversation\LastAgentRouter;
+use App\Services\Flow\CallNodes;
+use App\Services\Flow\FlowExecutor;
 use App\Services\Flow\FlowRunner;
 use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
@@ -812,10 +814,13 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
     /**
      * One step of a call, as whatsmeow reports it.
      *
-     * Only inbound calls reach this: `CallOffer` is emitted when the linked
-     * account *receives* a call, and dialling is not implemented at all, so
-     * there is no outbound case to tell apart. Ringing, accepted and ended all
-     * rewrite the one note CallLog keys on `CallID`.
+     * Mostly inbound calls: `CallOffer` is emitted when the linked account
+     * *receives* a call. The exception is a call the flow placed (the Call
+     * node): its note is written when the core accepts the call, so an event
+     * whose `CallID` already has an outgoing note is that call answering,
+     * declining or ending — and it is read as such, not as a customer ringing.
+     * Ringing, accepted and ended all rewrite the one note CallLog keys on
+     * `CallID`.
      */
     private function handleCallEvent(Connection $connection, string $type, array $event): void
     {
@@ -823,6 +828,23 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         // in a thread, and are matched here only to keep them out of the
         // unhandled-event log.
         if (in_array($type, ['CallPreAccept', 'CallTransport', 'CallRelayLatency', 'UnknownCallEvent'], true)) {
+            return;
+        }
+
+        // A call the flow placed. Found by its id, not through a phone number:
+        // on these events `From` may be either end of the line.
+        $callId = $event['CallID'] ?? $event['callId'] ?? null;
+        $note = is_string($callId) && $callId !== '' ? CallLog::find($connection, $callId) : null;
+
+        if ($type === 'CallResult') {
+            $this->outgoingCallResult($connection, (string) $callId, $note, $event);
+
+            return;
+        }
+
+        if ($note && CallLog::isOutgoing($note)) {
+            $this->outgoingCallEvent($note, $type, $event);
+
             return;
         }
 
@@ -837,7 +859,6 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
             return;
         }
 
-        $callId = $event['CallID'] ?? null;
         $phone = $this->resolvePhoneFromJids($connection, [
             $event['From'] ?? null,
             $event['CallCreator'] ?? null,
@@ -911,6 +932,115 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
         CallLog::record($connection, $phone, null, $callId, $code, $at, $seconds, array_filter([
             'reason' => $reason ?: null,
         ]));
+    }
+
+    /**
+     * whatsmeow's own events for a call the flow placed: the customer picking
+     * up, declining, or the line closing.
+     *
+     * From this end a rejection is the customer declining, not a caller giving
+     * up — the opposite of what the same event means on an incoming call.
+     */
+    private function outgoingCallEvent(Message $note, string $type, array $event): void
+    {
+        $at = $this->parseTimestamp($event['Timestamp'] ?? null);
+
+        $code = match ($type) {
+            'CallAccept' => CallLog::ONGOING,
+            'CallReject' => CallLog::DECLINED,
+            'CallTerminate' => null,
+            // Offers and notices are our own call ringing out — nothing new.
+            default => false,
+        };
+
+        if ($code === false) {
+            return;
+        }
+
+        if ($code === CallLog::ONGOING) {
+            CallLog::progress($note, $code, null, ['accepted_at' => $at->toIso8601String()]);
+
+            return;
+        }
+
+        $seconds = null;
+
+        if ($code === null) {
+            $reason = strtolower((string) ($event['Reason'] ?? ''));
+            $acceptedAt = data_get($note->meta, 'call.accepted_at');
+            $seconds = $acceptedAt ? (int) abs(Carbon::parse($acceptedAt)->diffInSeconds($at)) : null;
+
+            $code = match (true) {
+                $seconds !== null => CallLog::ANSWERED,
+                str_contains($reason, 'reject') => CallLog::DECLINED,
+                $reason === 'accepted_elsewhere' => CallLog::ENDED,
+                default => CallLog::MISSED,
+            };
+        }
+
+        CallLog::progress($note, $code, $seconds);
+
+        // The call is over: the flow that is waiting on it can move on now.
+        $this->callEnded($note, self::callStatusFor($code));
+    }
+
+    /**
+     * The core's own word on how a call it placed ended — the event its
+     * `call/make` contract promises (see apiway-call-endpoint.md). The one
+     * event that ends the flow's wait when whatsmeow's do not reach us.
+     */
+    private function outgoingCallResult(Connection $connection, string $callId, ?Message $note, array $event): void
+    {
+        if (! $note || ! CallLog::isOutgoing($note)) {
+            // A call placed from somewhere else on the same number.
+            Log::info('WhatsappApiwayHandler: result for a call no flow placed', [
+                'connection_id' => $connection->id,
+                'call_id' => $callId,
+            ]);
+
+            return;
+        }
+
+        $status = CallNodes::statusFromCore($event['Status'] ?? $event['status'] ?? null);
+        $talk = $event['TalkSeconds'] ?? $event['talkSeconds'] ?? null;
+        $seconds = is_numeric($talk) ? max(0, (int) $talk) : null;
+
+        $code = match ($status) {
+            // Answered, but without a length to show: the same note an
+            // incoming call answered elsewhere gets.
+            CallNodes::STATUS_ANSWERED => $seconds !== null ? CallLog::ANSWERED : CallLog::ENDED,
+            CallNodes::STATUS_REJECTED => CallLog::DECLINED,
+            default => CallLog::MISSED,
+        };
+
+        CallLog::progress($note, $code, $seconds, array_filter([
+            'result' => $status,
+            'audio_played' => isset($event['AudioPlayed']) ? (bool) $event['AudioPlayed'] : null,
+        ], fn ($value) => $value !== null));
+
+        $this->callEnded($note, $status);
+    }
+
+    /** Hand the end of the call to the flow waiting on it, if one still is. */
+    private function callEnded(Message $note, string $status): void
+    {
+        $callId = (string) data_get($note->meta, 'call.id', '');
+
+        if ($callId === '' || ! $note->conversation) {
+            return;
+        }
+
+        (new FlowExecutor)->callEnded($note->conversation, $callId, $status);
+    }
+
+    /** What a final note state means for {{call_status}}. */
+    private static function callStatusFor(string $code): string
+    {
+        return match ($code) {
+            CallLog::ANSWERED, CallLog::ENDED => CallNodes::STATUS_ANSWERED,
+            CallLog::DECLINED => CallNodes::STATUS_REJECTED,
+            default => CallNodes::STATUS_NO_ANSWER,
+        };
     }
 
     /**

@@ -386,6 +386,22 @@ enum Channel: string
     }
 
     /**
+     * Whether the flow's Call node can ring a customer on this channel.
+     *
+     * API Way only, through the core's `call/make`, and only while
+     * `APIWAY_CALLS_ENABLED` is on. WhatsApp Official can only call a customer
+     * who granted permission first, with a real-time media stack behind the
+     * call — not a ring the flow fires off. Everywhere else the node is
+     * stepped over.
+     *
+     * Mirrored in `lib/channelCapabilities.ts`.
+     */
+    public function supportsCalls(): bool
+    {
+        return $this === self::WhatsappApiway && (bool) config('services.apiway.calls', false);
+    }
+
+    /**
      * The audio format to ask the AI hub for, so the reply arrives as the
      * right *kind* of message here.
      *

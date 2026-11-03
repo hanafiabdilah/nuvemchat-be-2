@@ -82,6 +82,10 @@ class UserController extends Controller
             'ai_reservation_tools' => \App\Services\Flow\AiToolNodes::reservationsEnabled(),
             // Whether the AI Hub can generate media yet (config ai.media.enabled).
             'ai_media' => (bool) config('ai.media.enabled', false),
+            // Whether the API Way core places calls yet (config
+            // services.apiway.calls). While it does not, the builder hides the
+            // Call node; a saved one is stepped over.
+            'apiway_calls' => (bool) config('services.apiway.calls', false),
             // TikTok, YouTube and Instagram comments, each off until its
             // platform approves the app (config/social.php).
             ...SocialFeatures::flags(),

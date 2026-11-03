@@ -7,6 +7,7 @@ use App\Exceptions\ChannelCapabilityException;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
+use App\Services\Message\Contracts\PlacesCalls;
 use App\Services\Message\Contracts\SendsPixKey;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
@@ -88,6 +89,29 @@ class MessageService
             }
 
             return $handler->handleSendPixKey($conversation, $pix);
+        });
+    }
+
+    /**
+     * Ring the customer from the business's number (the flow's Call node).
+     *
+     * Asked of the channel first, like sendPixKey(): only API Way places calls,
+     * and only while calls are switched on. The Call node checks the same
+     * thing and steps over itself instead, so reaching the exception here
+     * means a caller skipped that check.
+     *
+     * @return array{call_id: string, max_seconds: int|null, audio: bool}
+     */
+    public function placeCall(Conversation $conversation, int $ringSeconds, ?string $audioUrl): array
+    {
+        return $this->guard($conversation, 'place a call', function () use ($conversation, $ringSeconds, $audioUrl) {
+            $handler = MessageFactory::make($conversation->connection->channel);
+
+            if (! $conversation->connection->channel->supportsCalls() || ! $handler instanceof PlacesCalls) {
+                throw new ChannelCapabilityException('Ligações só podem ser feitas em conexões WhatsApp API Way.');
+            }
+
+            return $handler->handlePlaceCall($conversation, $ringSeconds, $audioUrl);
         });
     }
 
