@@ -392,6 +392,56 @@ trait Automation
         ], 2);
     }
 
+    /**
+     * The split test and the DDI/DDD router, after the Pix key flow for the
+     * same reason it comes last. The split test's numbers are not seeded:
+     * they would need sales, and sales would change the Statistics pictures —
+     * the capture script answers the results request instead.
+     */
+    protected function seedRoutingFlows(): void
+    {
+        $text = fn (string $body) => ['message_type' => 'text', 'body' => $body, 'delay' => 0];
+
+        $this->buildFlow('teste_ab', 'Anúncio de inverno — teste A/B', [
+            ['start', 'start', null, 0, 200],
+            ['split', 'split_test', [
+                'mode' => 'rotate',
+                'variants' => [
+                    ['id' => 'variant_video', 'label' => 'Vídeo do produto', 'weight' => 1, 'limit' => null],
+                    ['id' => 'variant_audio', 'label' => 'Áudio da vendedora', 'weight' => 1, 'limit' => null],
+                ],
+                'started_at' => null,
+            ], 280, 150],
+            ['video', 'message', ['messages' => [$text('Oi, {{contact.name}}! Veja em 30 segundos como fica o conjunto Aurora Fit 🎥')]], 700, 20],
+            ['audio', 'message', ['messages' => [$text('Oi, {{contact.name}}! A Juliana gravou um áudio explicando o conjunto Aurora Fit 🎧')]], 700, 330],
+            ['pix_video', 'go_to_flow', ['flow_id' => $this->flows['pix']->id, 'carry_variables' => true], 1060, 20],
+            ['pix_audio', 'go_to_flow', ['flow_id' => $this->flows['pix']->id, 'carry_variables' => true], 1060, 330],
+        ], [
+            ['start', 'split', null],
+            ['split', 'video', 'variant_video'], ['split', 'audio', 'variant_audio'],
+            ['video', 'pix_video', null], ['audio', 'pix_audio', null],
+        ], 6);
+
+        $this->buildFlow('regiao', 'Atendimento por região', [
+            ['start', 'start', null, 0, 520],
+            ['rotas', 'phone_router', ['routes' => [
+                ['id' => 'route_sp', 'label' => 'São Paulo', 'ddi' => ['55'], 'ddd' => ['11', '12', '13', '14', '15', '16', '17', '18', '19']],
+                ['id' => 'route_br', 'label' => 'Brasil', 'ddi' => ['55'], 'ddd' => []],
+                ['id' => 'route_pt', 'label' => 'Portugal', 'ddi' => ['351'], 'ddd' => []],
+                ['id' => 'route_latam', 'label' => 'América Latina', 'ddi' => ['52', '502', '503', '504', '505', '506', '507', '53', '57', '58', '593', '51', '591', '56', '54', '595', '598'], 'ddd' => []],
+            ]], 280, 420],
+            ['loja_sp', 'action', ['type' => 'assign_agent', 'parameters' => ['agent_id' => $this->users['rafael']->id, 'when_unavailable' => 'queue']], 720, 0],
+            ['brasil', 'go_to_flow', ['flow_id' => $this->flows['inicial']->id, 'carry_variables' => true], 720, 200],
+            ['portugal', 'message', ['messages' => [$text('Olá! Enviamos para Portugal em até 10 dias úteis, com portes grátis acima de 60 €.')]], 720, 480],
+            ['latam', 'message', ['messages' => [$text('¡Hola! Gracias por escribir a Loja Aurora. ¿Qué producto te interesa?')]], 720, 740],
+            ['outros', 'message', ['messages' => [$text('Hi! Thanks for writing to Loja Aurora. Which product are you looking for?')]], 720, 1000],
+        ], [
+            ['start', 'rotas', null],
+            ['rotas', 'loja_sp', 'route_sp'], ['rotas', 'brasil', 'route_br'], ['rotas', 'portugal', 'route_pt'],
+            ['rotas', 'latam', 'route_latam'], ['rotas', 'outros', 'other'],
+        ], 3);
+    }
+
     /** The assistant's blueprint format for a flow as it is now (key = node id). */
     private function blueprintOf(Flow $flow): array
     {

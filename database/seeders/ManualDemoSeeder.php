@@ -68,6 +68,7 @@ class ManualDemoSeeder extends Seeder
         $this->seedGalleryFolders();
         // Last of all, so every older flow's node ids stay put.
         $this->seedPixKeyFlow();
+        $this->seedRoutingFlows();
 
         $this->command?->info('Manual demo workspace ready — login: ' . self::OWNER_EMAIL . ' / ' . self::PASSWORD);
     }
