@@ -50,6 +50,8 @@ class Heartbeat
         'gallery:renew' => ['Gallery storage renewal', 90000, 'Charges rented library space. Silently free storage if it stops.'],
         'flow-payments:sync' => ['Flow payment sync', 180, 'Confirms Pix payments whose webhook never arrived and expires unpaid ones. Without it a flow can wait on a payment forever.'],
         'flow-invoices:sync' => ['Flow invoice sync', 180, 'Confirms notas fiscais whose webhook never arrived and releases flows past their deadline. Without it a flow can wait on an invoice forever.'],
+        // Runs on the VPS host (backup-offsite.sh via cron), reported through `php artisan ops:heartbeat`.
+        'db-backup:offsite' => ['Database backup (off-site)', 90000, 'Daily database dump copied off this server. Without it every copy lives on the same disk as the database.'],
     ];
 
     /**
