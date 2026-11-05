@@ -198,6 +198,37 @@ chat.pingly.com.br {
     encode gzip
     import security_headers
 
+    # One JSON line per request, with its duration. Without it there is no way
+    # to tell which endpoint is slow: on 4 Nov 2026 PHP-FPM ran out of workers
+    # and nothing on the server could say which requests were holding them.
+    # Read it with:
+    #   docker compose exec caddy sh -c "cat /data/access.log" \
+    #     | jq -c 'select(.duration > 1) | {u: .request.uri, d: .duration, s: .status}'
+    #
+    # Headers are dropped (size, and cookies/tokens have no business in a log
+    # file), and the two credentials that travel in a URL are masked: the
+    # signature of a private media link and the per-connection secret at the
+    # end of /webhook/chat/{id}/{secret}. Rolled at 50 MB, a week at most.
+    log {
+        output file /data/access.log {
+            roll_size 50MiB
+            roll_keep 5
+            roll_keep_for 168h
+        }
+        format filter {
+            wrap json
+            fields {
+                request>headers delete
+                request>tls delete
+                resp_headers delete
+                request>uri multi_regexp {
+                    regexp "signature=[^&]+" "signature=REDACTED"
+                    regexp "^/webhook/chat/([0-9]+)/[^/?]+" "/webhook/chat/$1/REDACTED"
+                }
+            }
+        }
+    }
+
     # The embeddable chat widget, pasted into sites we do not own. Two files
     # with opposite caching, which is the whole reason they are two files:
     # /widget.js is the address written into other people's HTML and can never
