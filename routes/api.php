@@ -233,6 +233,7 @@ Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 
     // is well above that because agents keep several tabs open and the throttle
     // counts per user — it is here to bound abuse, not to pace the SPA.
     Route::post('/user/heartbeat', [UserController::class, 'heartbeat'])->middleware('throttle:30,1');
+    Route::put('/user/presence', [UserController::class, 'updatePresence'])->middleware('throttle:30,1,user-presence');
 
     // Billing (tenant-side). Exempt from the subscription.active gate so a
     // suspended tenant can still load the page and pay (see EnsureSubscriptionActive).

@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\Connection\Channel;
+use App\Enums\Connection\HumanAvailability;
 use App\Enums\Connection\Status;
 use App\Enums\Connection\SyncStatus;
 use App\Services\Webhook\ExternalAutomationReply;
@@ -37,6 +38,7 @@ class Connection extends Model
         'return_to_last_agent_require_online',
         'ignored_button_prefixes',
         'service_hours',
+        'human_availability',
         'ai_suggest_agent_id',
     ];
 
@@ -106,6 +108,17 @@ class Connection extends Model
     public function requiresOnlineAgentToReturn(): bool
     {
         return (bool) ($this->return_to_last_agent_require_online ?? true);
+    }
+
+    /**
+     * What decides whether a customer of this connection can be handed to a
+     * person (HumanAvailabilityGate). Anything unrecognised — a row loaded
+     * before the column existed, a freshly built model — reads as the service
+     * hours, the rule every connection ran under before this was a choice.
+     */
+    public function humanAvailability(): HumanAvailability
+    {
+        return HumanAvailability::tryFrom((string) $this->human_availability) ?? HumanAvailability::ServiceHours;
     }
 
     /**

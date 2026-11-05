@@ -61,6 +61,7 @@ class User extends Authenticatable
             'ui_preferences' => 'array',
             'notification_preferences' => 'array',
             'last_seen_at' => 'datetime',
+            'offline_since' => 'datetime',
         ];
     }
 
@@ -145,27 +146,78 @@ class User extends Authenticatable
     }
 
     /**
-     * Whether this agent's dashboard has reported in recently enough to treat
-     * them as available for work being routed to them automatically.
+     * Whether this agent counts as available for work being routed to them
+     * automatically: their own switch says Online *and* their dashboard has
+     * reported in recently.
      *
-     * Never-seen reads as offline, which is the safe direction: the only
-     * caller (see LastAgentRouter) falls back to the normal queue, so a
-     * deployment whose frontend has not shipped the heartbeat yet keeps
-     * behaving exactly as it did before.
+     * Both halves are needed. The switch is the agent saying "not now"; the
+     * heartbeat is the machine saying the agent is still there — an agent who
+     * closes the laptop without flipping the switch must not keep customers
+     * queueing for an empty chair.
+     *
+     * Never-seen reads as offline, which is the safe direction: the readers
+     * (LastAgentRouter, the assign-to-agent action, HumanAvailabilityGate) fall
+     * back to the normal queue or to the AI, so a deployment whose frontend has
+     * not shipped the heartbeat yet keeps behaving exactly as it did before.
      */
     public function isOnline(): bool
     {
-        if ($this->last_seen_at === null) {
+        if ($this->offline_since !== null || $this->last_seen_at === null) {
             return false;
         }
 
-        return $this->last_seen_at->gt(now()->subSeconds((int) config('presence.online_seconds', 150)));
+        return $this->last_seen_at->gte(self::onlineSince());
+    }
+
+    /**
+     * isOnline() as a query, for the questions asked of everybody at once
+     * ("is anybody online on this connection?").
+     */
+    public function scopeOnline($query)
+    {
+        return $query->whereNull($query->qualifyColumn('offline_since'))
+            ->where($query->qualifyColumn('last_seen_at'), '>=', self::onlineSince());
+    }
+
+    /** The oldest heartbeat that still counts as being at the desk. */
+    public static function onlineSince(): \Illuminate\Support\Carbon
+    {
+        return now()->subSeconds((int) config('presence.online_seconds', 150));
+    }
+
+    /** The agent's own switch: what the dashboard shows and offers to flip. */
+    public function presenceStatus(): string
+    {
+        return $this->offline_since === null ? 'online' : 'offline';
+    }
+
+    /**
+     * Flip the agent's own switch. Returns whether anything changed, so a
+     * second click on the status already shown does not announce itself.
+     *
+     * Written without touching `updated_at` for the same reason as markSeen().
+     */
+    public function setPresence(bool $online): bool
+    {
+        if ($online === ($this->offline_since === null)) {
+            return false;
+        }
+
+        static::withoutTimestamps(function () use ($online) {
+            $this->forceFill(['offline_since' => $online ? null : now()])->saveQuietly();
+        });
+
+        return true;
     }
 
     /**
      * Record a heartbeat. Written without touching `updated_at`: presence is
      * not a change to the user, and moving `updated_at` once a minute per
      * signed-in agent would make that column useless for anything else.
+     *
+     * Deliberately leaves the switch alone: a heartbeat says the dashboard is
+     * open, not that the agent wants work. Reloading the page keeps Offline;
+     * only signing in again turns it back on (AuthController::grant).
      */
     public function markSeen(): void
     {

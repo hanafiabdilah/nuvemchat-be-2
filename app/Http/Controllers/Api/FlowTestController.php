@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\Connection\HumanAvailability;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Api\AiHub\Concerns\ResolvesAiHubTenant;
@@ -14,6 +15,7 @@ use App\Services\AiAgentHub\AiConversationContext;
 use App\Services\AiAgentHub\AiFirstMessage;
 use App\Services\BusinessHours;
 use App\Services\Flow\HttpRequestNodes;
+use App\Services\HumanAvailabilityGate;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -68,6 +70,13 @@ class FlowTestController extends Controller
                 'ai_turn_delay_seconds' => (int) config('ai.turn_delay_seconds', 8),
                 'max_turn_delay_seconds' => (int) config('ai.max_turn_delay_seconds', 300),
                 'service_hours_open' => $connection ? BusinessHours::isOpen($connection) : true,
+                // What a handoff asks on that connection, and whether anybody is
+                // online there now — the second only decides a handoff when the
+                // first is `online_agents`.
+                'human_availability' => $connection
+                    ? $connection->humanAvailability()->value
+                    : HumanAvailability::ServiceHours->value,
+                'agent_online' => $connection ? HumanAvailabilityGate::onlineAgents($connection)->exists() : true,
                 'away_message' => $connection ? BusinessHours::awayMessage($connection) : null,
                 'connection' => $connection ? [
                     'name' => $connection->name,

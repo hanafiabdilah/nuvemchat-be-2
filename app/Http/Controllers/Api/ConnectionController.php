@@ -6,6 +6,7 @@ use App\Enums\Billing\Addon;
 use App\Enums\Billing\Quota;
 use App\Services\Billing\SubscriptionAddons;
 use App\Enums\Connection\Channel;
+use App\Enums\Connection\HumanAvailability;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Connection\SyncStatus;
 use App\Events\ConnectionUpdated;
@@ -19,6 +20,7 @@ use App\Models\Connection;
 use App\Models\Conversation;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
+use App\Services\HumanAvailabilityGate;
 use App\Services\Connection\Channels\EmailChannel;
 use App\Services\Connection\Channels\WhatsappApiwayChannel;
 use App\Services\Connection\ConnectionActivity;
@@ -182,6 +184,7 @@ class ConnectionController extends Controller
             'return_to_last_agent_require_online' => $connection->requiresOnlineAgentToReturn(),
             'ignored_button_prefixes' => $connection->ignoredButtonPrefixes() ?: null,
             'service_hours' => $connection->service_hours,
+            'human_availability' => $connection->humanAvailability()->value,
             'ai_suggest_agent_id' => $connection->ai_suggest_agent_id,
         ]);
 
@@ -1106,6 +1109,12 @@ class ConnectionController extends Controller
     /**
      * Return the connection's service hours (falling back to a sensible default
      * when nothing has been configured yet) plus the live open/closed state.
+     *
+     * Also carries what decides a handoff on this connection
+     * (`human_availability`) and how many people could take one right now —
+     * the form puts the choice next to the schedule it can replace, and the
+     * count is what tells somebody choosing "an agent is online" whether that
+     * is true at this moment.
      */
     public function serviceHours(int $id)
     {
@@ -1120,6 +1129,8 @@ class ConnectionController extends Controller
         return response()->json([
             'data' => array_merge($config, [
                 'is_open_now' => BusinessHours::isOpen($connection),
+                'human_availability' => $connection->humanAvailability()->value,
+                'online_agents_now' => HumanAvailabilityGate::onlineAgents($connection)->count(),
             ]),
         ], 200);
     }
@@ -1140,6 +1151,9 @@ class ConnectionController extends Controller
             'days.*' => ['array'],
             'days.*.*.open' => ['required', 'date_format:H:i'],
             'days.*.*.close' => ['required', 'date_format:H:i'],
+            // `sometimes`: a client that predates the choice must not reset it
+            // by not knowing it exists.
+            'human_availability' => ['sometimes', Rule::enum(HumanAvailability::class)],
         ]);
 
         // Keep only the recognised day keys, in canonical order.
@@ -1155,7 +1169,9 @@ class ConnectionController extends Controller
                 'days' => $days,
                 'away_message' => $validated['away_message'] ?? '',
             ],
-        ]);
+        ] + (isset($validated['human_availability'])
+            ? ['human_availability' => $validated['human_availability']]
+            : []));
 
         broadcast(new ConnectionUpdated($connection));
 

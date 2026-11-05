@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Api\Onboarding\OnboardingController;
 use App\Http\Controllers\Controller;
+use App\Events\UserPresenceUpdated;
 use App\Http\Resources\MarketResource;
 use App\Http\Resources\UserResource;
 use App\Models\Connection;
@@ -18,6 +19,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class UserController extends Controller
 {
@@ -307,8 +309,62 @@ class UserController extends Controller
      */
     public function heartbeat(Request $request)
     {
-        $request->user()->markSeen();
+        // A Back Office operator looking at the workspace through impersonation
+        // is not somebody at the desk. Presence now decides whether customers
+        // are handed to a person at all (HumanAvailabilityGate), so counting the
+        // operator would queue customers for nobody.
+        if (! $this->isImpersonating($request)) {
+            $request->user()->markSeen();
+        }
 
         return response()->noContent();
+    }
+
+    /**
+     * The agent's own Online/Offline switch.
+     *
+     * Offline takes the agent out of everything that routes work to a person
+     * automatically: returning a customer to their last agent, the flow's
+     * assign-to-agent action, and — on connections set to "an agent is
+     * online" — whether a customer can reach a person at all. Signing in turns
+     * it back on; reloading the page does not.
+     */
+    public function updatePresence(Request $request)
+    {
+        $validated = $request->validate([
+            'status' => ['required', Rule::in(['online', 'offline'])],
+        ]);
+
+        if ($this->isImpersonating($request)) {
+            return response()->json([
+                'message' => __('Only the agent can change their own status.'),
+                'code' => 'impersonation_read_only',
+            ], 403);
+        }
+
+        $user = $request->user();
+
+        if ($user->setPresence($validated['status'] === 'online')) {
+            // Signalled after the write, so a tab that refetches on the event
+            // reads the new value.
+            broadcast(new UserPresenceUpdated($user->id, $user->presenceStatus()));
+        }
+
+        // Going Online is also proof somebody is at the desk right now, so the
+        // switch takes effect from this second instead of from the next ping.
+        if ($validated['status'] === 'online') {
+            $user->markSeen();
+        }
+
+        return response()->json([
+            'presence' => $user->presenceStatus(),
+        ]);
+    }
+
+    private function isImpersonating(Request $request): bool
+    {
+        $token = $request->user()?->currentAccessToken();
+
+        return $token instanceof PersonalAccessToken && $token->name === 'impersonation';
     }
 }

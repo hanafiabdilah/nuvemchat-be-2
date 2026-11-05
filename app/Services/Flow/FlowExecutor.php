@@ -73,6 +73,7 @@ use App\Services\AiAgentHub\Tools\AiToolCatalog;
 use App\Services\AiAgentHub\Tools\AiToolHubSync;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
+use App\Services\HumanAvailabilityGate;
 use App\Services\Catalog\OrderService;
 use App\Services\Contact\ContactIdentity;
 use App\Services\Contact\ContactTags;
@@ -3068,10 +3069,11 @@ class FlowExecutor
 
     /**
      * Route an AIAgent-node handoff. Unless the node is in `always_ai` mode, the
-     * conversation is handed to the unassigned human queue — but only within the
-     * tenant's service hours. Outside those hours fall back to the flow's next
-     * node; for an AI-initiated request the AI keeps handling and sends the away
-     * message.
+     * conversation is handed to the unassigned human queue — but only while the
+     * connection has a person to give it to (HumanAvailabilityGate: its service
+     * hours, or an agent online, whichever the connection chose). Otherwise fall
+     * back to the flow's next node; for an AI-initiated request the AI keeps
+     * handling and sends the away message.
      *
      * @param  bool  $aiCanContinue  true only for the hub's intentional handoff
      *                               request. Failure paths (no agent / error / max turns) cannot stay
@@ -3089,13 +3091,14 @@ class FlowExecutor
 
         $connection = $flowState->conversation->connection;
 
-        if (BusinessHours::isOpen($connection)) {
+        if (HumanAvailabilityGate::isAvailable($connection)) {
             $this->transferToHuman($flowState, $reason);
 
             return;
         }
 
-        // Outside service hours: no human available.
+        // Nobody to hand to: outside service hours, or nobody online — the
+        // connection decides which of the two it is asking.
         if ($aiCanContinue) {
             $this->sendAwayMessageOnce($flowState, $connection);
 
@@ -3141,8 +3144,9 @@ class FlowExecutor
      * handoff asked for over the callback and one asked for inside a run are the
      * same event, so they route the same way. That means the node's
      * `service_hours_behavior` still decides — a flow set to `always_ai` moves
-     * on instead of queueing, and outside service hours the customer gets the
-     * away message rather than a queue nobody is watching.
+     * on instead of queueing, and when the connection has nobody to hand to
+     * (outside its hours, or nobody online) the customer gets the away message
+     * rather than a queue nobody is watching.
      *
      * `$aiCanContinue: true` for the same reason it is true in the run path:
      * this is the hub's intentional request, not a failure it cannot recover

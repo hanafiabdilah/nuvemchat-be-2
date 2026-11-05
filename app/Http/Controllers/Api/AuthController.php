@@ -221,7 +221,10 @@ class AuthController extends Controller
 
         // Present from this second rather than from the first heartbeat a
         // minute later — signing in is the clearest statement there is that
-        // someone is at their desk.
+        // someone is at their desk. It is also the one moment the agent's
+        // Offline switch goes back to Online: a reload keeps it, a new sign-in
+        // does not.
+        $user->setPresence(true);
         $user->markSeen();
 
         return response()->json([

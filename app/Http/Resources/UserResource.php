@@ -43,6 +43,10 @@ class UserResource extends JsonResource
             // first message it receives, and a missing key there would mean
             // duplicating the "notify unless told otherwise" default client-side.
             'notification_preferences' => $this->notificationSettings(),
+            // The agent's own Online/Offline switch — what they chose, not
+            // whether their dashboard is open (that is `last_seen_at`, and it
+            // stays server-side). Online unless they flipped it.
+            'presence' => $this->presenceStatus(),
             'roles' => $this->whenLoaded('roles', function() {
                 return $this->roles->pluck('name');
             }),

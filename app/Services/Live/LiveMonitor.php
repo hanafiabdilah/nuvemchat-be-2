@@ -677,13 +677,15 @@ final class LiveMonitor
     public function agents(bool $onlineOnly = false, int $limit = 100): array
     {
         return $this->cached('agents.'.(int) $onlineOnly.'.'.$limit, function () use ($onlineOnly, $limit) {
-            $onlineSince = now()->subSeconds((int) config('presence.online_seconds', 150));
+            $onlineSince = User::onlineSince();
 
             $users = DB::table('users')
                 ->when($this->tenantId, fn ($q) => $q->where('users.tenant_id', $this->tenantId))
                 ->whereNotNull('users.tenant_id')
-                ->when($onlineOnly, fn ($q) => $q->where('users.last_seen_at', '>=', $onlineSince))
-                ->select(['users.id', 'users.name', 'users.email', 'users.tenant_id', 'users.last_seen_at'])
+                // Same rule as User::isOnline(): an agent who switched to
+                // Offline is offline here too, even with the dashboard open.
+                ->when($onlineOnly, fn ($q) => $q->where('users.last_seen_at', '>=', $onlineSince)->whereNull('users.offline_since'))
+                ->select(['users.id', 'users.name', 'users.email', 'users.tenant_id', 'users.last_seen_at', 'users.offline_since'])
                 ->orderByDesc('users.last_seen_at')
                 ->limit($limit)
                 ->get();
@@ -705,7 +707,7 @@ final class LiveMonitor
 
             return $users->map(function ($user) use ($onlineSince, $open, $handling) {
                 $lastSeen = $user->last_seen_at ? Carbon::parse($user->last_seen_at) : null;
-                $online = $lastSeen !== null && $lastSeen->gte($onlineSince);
+                $online = $lastSeen !== null && $lastSeen->gte($onlineSince) && $user->offline_since === null;
                 $recent = $handling[$user->id] ?? null;
 
                 $sentSecondsAgo = $recent

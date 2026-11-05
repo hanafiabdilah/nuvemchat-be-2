@@ -70,6 +70,9 @@ class ConnectionResource extends JsonResource
                 'tolerance_minutes' => (int) $this->return_to_last_agent_minutes,
                 'require_online' => $this->requiresOnlineAgentToReturn(),
             ],
+            // What decides whether a customer can be handed to a person here:
+            // the service hours, or an agent being online.
+            'human_availability' => $this->humanAvailability()->value,
             // Button-id prefixes owned by another system on this number: their
             // taps are kept in the history but run no flow and open no queue
             // thread (ExternalAutomationReply).
