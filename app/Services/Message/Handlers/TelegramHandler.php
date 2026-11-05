@@ -12,9 +12,11 @@ use App\Models\Message;
 use App\Services\Media\MediaFilename;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\AudioNormalizer;
+use App\Services\Message\Contracts\SendsStickers;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
+use App\Services\Message\StickerMedia;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Http\UploadedFile;
@@ -22,7 +24,7 @@ use Illuminate\Support\Facades\Log;
 use Telegram\Bot\Api;
 use Telegram\Bot\HttpClients\HttpClientInterface;
 
-class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
+class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator, SendsStickers
 {
     public function getMessageId(array $payload): string
     {
@@ -486,6 +488,82 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator
             ]);
 
             throw new Exception('Failed to send Telegram video message', 0, $th);
+        }
+    }
+
+    /**
+     * sendSticker. Telegram fetches a sticker by URL only when it is a
+     * `.webp`, and StickerMedia only leaves the URL in place when it is one —
+     * so the URL road is taken exactly when Telegram will accept it, and
+     * anything else is uploaded as the WebP it was made into.
+     */
+    public function handleSendSticker(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'sticker' => 'required_without:media_url|file',
+            'media_url' => 'required_without:sticker|url',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
+        ])->validate();
+
+        $connection = $conversation->connection;
+        $media = StickerMedia::prepare(OutboundMedia::fromData($data, 'sticker'));
+
+        if ($media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl($conversation, $data, 'sticker', 'sendSticker', MessageType::Sticker, $media->url);
+            } catch (\Throwable $th) {
+                Log::warning('TelegramHandler: URL sticker send failed, falling back to upload', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                $file = $media->toUploadedFile();
+                if (! $file) {
+                    throw new Exception('Failed to send Telegram sticker by URL and download fallback failed', 0, $th);
+                }
+                $media = OutboundMedia::fromFile($file);
+            }
+        }
+
+        $file = $media->file;
+
+        try {
+            $payload = [
+                'chat_id' => $conversation->external_id,
+                'sticker' => fopen($file->getRealPath(), 'r'),
+            ];
+
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+            if ($repliedMessageExternalId) {
+                $payload['reply_to_message_id'] = (int) $repliedMessageExternalId;
+            }
+
+            $responseArray = $this->api($connection)->sendSticker($payload)->toArray();
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Sticker,
+                'body' => null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'delivery_at' => $this->getMessageSentAt($responseArray),
+                'meta' => $responseArray,
+            ]);
+
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $file->getClientOriginalName(), 'webp');
+            MediaStorage::disk()->put($mediaPath, file_get_contents($file->getRealPath()));
+            $message->update(['attachment' => $mediaPath]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('TelegramHandler: Failed to send sticker', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send Telegram sticker', 0, $th);
         }
     }
 

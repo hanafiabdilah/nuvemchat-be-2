@@ -7065,9 +7065,13 @@ class FlowExecutor
     {
         $data = $node->data ?? [];
         $request = $generation->request ?? [];
+        $asSticker = $generation->type === 'image' && AiMediaNodes::sendsAsSticker($data);
 
         try {
-            $message = $this->sendByMessageType($flowState->conversation, [
+            $message = $this->sendByMessageType($flowState->conversation, $asSticker ? [
+                'message_type' => 'sticker',
+                'attachment_url' => MediaStorage::publishedUrl($generation->path),
+            ] : [
                 'message_type' => $generation->type,
                 'attachment_url' => MediaStorage::publishedUrl($generation->path),
                 // A generation from before captions travelled with it falls
@@ -8005,6 +8009,9 @@ class FlowExecutor
             'document' => $this->messageService->sendDocument($conversation, [
                 'media_url' => $attachmentUrl,
                 'message' => $body,
+            ]),
+            'sticker' => $this->messageService->sendSticker($conversation, [
+                'media_url' => $attachmentUrl,
             ]),
             default => $this->messageService->sendMessage($conversation, [
                 'message' => $body,

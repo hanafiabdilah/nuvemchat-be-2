@@ -300,6 +300,22 @@ enum Channel: string
     }
 
     /**
+     * Whether a sticker goes out as a sticker here. WhatsApp — Cloud API and
+     * API Way alike — and Telegram. Discord has stickers, but a bot can only
+     * send ones Discord already knows by id, never a file of ours; every other
+     * channel has none. Where this is false the same picture is sent as an
+     * image instead (MessageService::sendSticker). Mirrored by the dashboard in
+     * lib/channelCapabilities.ts.
+     */
+    public function supportsStickers(): bool
+    {
+        return match ($this) {
+            self::WhatsappOfficial, self::WhatsappApiway, self::Telegram => true,
+            default => false,
+        };
+    }
+
+    /**
      * Whether an AI agent can answer here with a voice note.
      *
      * Every channel below already sends agent-recorded audio, so this asks a

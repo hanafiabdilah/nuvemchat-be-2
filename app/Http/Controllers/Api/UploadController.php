@@ -7,9 +7,12 @@ use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Media\UploadConflict;
 use App\Exceptions\Media\FileAlreadyExistsException;
 use App\Services\Media\PublishedUpload;
+use App\Services\Media\StickerImage;
 use App\Services\Media\UploadPolicy;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class UploadController extends Controller
 {
@@ -45,16 +48,24 @@ class UploadController extends Controller
             // What the file is for — only to label its gallery tile. Absent
             // means an older client; the file is still listed, as "other".
             'purpose' => ['sometimes', 'nullable', Rule::in(AssetOrigin::uploadPurposes())],
+            // A picture for a sticker bubble: stored as the finished sticker.
+            'sticker' => ['sometimes', 'boolean'],
         ], [
             'file.mimes' => UploadPolicy::message(),
         ]);
+
+        $file = $request->file('file');
+
+        if ($request->boolean('sticker')) {
+            $file = $this->asSticker($file);
+        }
 
         $onConflict = UploadConflict::tryFrom((string) ($validated['on_conflict'] ?? ''))
             ?? UploadConflict::Cancel;
 
         try {
             return response()->json(PublishedUpload::store(
-                $request->file('file'),
+                $file,
                 $request->user()->tenant,
                 $onConflict,
                 AssetOrigin::tryFrom((string) ($validated['purpose'] ?? '')) ?? AssetOrigin::Upload,
@@ -66,5 +77,34 @@ class UploadController extends Controller
             // that means replace it, keep both, or stop.
             return response()->json($e->payload(), 409);
         }
+    }
+
+    /**
+     * The upload made into the sticker it will be sent as (see StickerImage),
+     * so the file a flow keeps sending for months is already the WebP the
+     * channel wants — sent by URL, never converted again — and the name it is
+     * stored under ends in what it is.
+     */
+    private function asSticker(UploadedFile $file): UploadedFile
+    {
+        $bytes = (string) @file_get_contents($file->getRealPath());
+        $webp = $bytes === '' ? null : StickerImage::toWebp($bytes);
+
+        if ($webp === null) {
+            throw ValidationException::withMessages([
+                'file' => 'Este arquivo não pode ser enviado como figurinha. Use uma imagem PNG, JPG ou WebP.',
+            ]);
+        }
+
+        if ($webp === $bytes && StickerImage::isWebp($bytes)) {
+            return $file;
+        }
+
+        $path = tempnam(sys_get_temp_dir(), 'sticker_');
+        file_put_contents($path, $webp);
+
+        $name = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME) ?: 'sticker';
+
+        return new UploadedFile($path, $name.'.webp', 'image/webp', null, true);
     }
 }

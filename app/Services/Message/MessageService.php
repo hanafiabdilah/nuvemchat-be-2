@@ -9,6 +9,7 @@ use App\Models\Message;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\PlacesCalls;
 use App\Services\Message\Contracts\SendsPixKey;
+use App\Services\Message\Contracts\SendsStickers;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\Handlers\WhatsappOfficialHandler;
 use App\Support\Errors\HasUserSafeMessage;
@@ -234,6 +235,29 @@ class MessageService
         }
 
         return $message;
+    }
+
+    /**
+     * Send a sticker (`media_url`, or an uploaded `sticker` file).
+     *
+     * Where the channel has stickers the file is made into one first — see
+     * StickerMedia. Where it has none, the same picture goes out as an image:
+     * the customer still gets what the author meant to show them, and a flow
+     * written for WhatsApp keeps running on the Instagram inbox it also serves.
+     * The row is then an image too, because that is what was delivered.
+     */
+    public function sendSticker(Conversation $conversation, array $data): ?Message
+    {
+        return $this->guard($conversation, 'send a sticker', function () use ($conversation, $data) {
+            $channel = $conversation->connection->channel;
+            $handler = MessageFactory::make($channel, $data);
+
+            if ($channel->supportsStickers() && $handler instanceof SendsStickers) {
+                return $handler->handleSendSticker($conversation, $data);
+            }
+
+            return $handler->handleSendImage($conversation, StickerMedia::asImageData($data, $channel));
+        });
     }
 
     public function sendDocument(Conversation $conversation, array $data): ?Message

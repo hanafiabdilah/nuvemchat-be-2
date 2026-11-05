@@ -17,9 +17,11 @@ use App\Services\Media\MediaStorage;
 use App\Services\Message\AudioNormalizer;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\SendsPixKey;
+use App\Services\Message\Contracts\SendsStickers;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
+use App\Services\Message\StickerMedia;
 use App\Services\Message\TemplateBody;
 use App\Support\PixBrCode;
 use Carbon\Carbon;
@@ -29,7 +31,7 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
-class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead, SendsPixKey
+class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead, SendsPixKey, SendsStickers
 {
     private const GRAPH_BASE = 'https://graph.facebook.com/v25.0';
 
@@ -730,6 +732,30 @@ class WhatsappOfficialHandler implements MessageHandlerInterface, SendsTypingInd
             MessageType::Video,
             ['caption' => $data['message'] ?? null],
             $data['message'] ?? null,
+        );
+    }
+
+    /**
+     * `type: sticker` with the file by `link`, or uploaded and sent by `id`.
+     * Meta only takes `image/webp` here, so the upload declares it outright
+     * rather than trusting a sniffer — StickerMedia has already made sure
+     * that is what the bytes are.
+     */
+    public function handleSendSticker(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'sticker' => 'required_without:media_url|file',
+            'media_url' => 'required_without:sticker|url',
+        ])->validate();
+
+        return $this->sendMedia(
+            $conversation,
+            StickerMedia::prepare(OutboundMedia::fromData($data, 'sticker')),
+            'sticker',
+            MessageType::Sticker,
+            [],
+            null,
+            mimeType: 'image/webp',
         );
     }
 

@@ -399,3 +399,37 @@ test('a node parked on a single generation before the list existed still finishe
     expect(mediaSent($conversation))->toContain('image:Aqui está!')
         ->and($flowState->fresh()->state_data['ai_media_status'])->toBe('generated');
 });
+
+test('a generated picture can go out as a WhatsApp sticker, without its caption', function () {
+    [$conversation] = mediaFlow(['as_sticker' => true]);
+
+    $image = imagecreatetruecolor(1024, 1024);
+    ob_start();
+    imagepng($image);
+    $png = (string) ob_get_clean();
+
+    $queue = [mediaDone()];
+    Http::fake([
+        'graph.facebook.com/*/media' => Http::response(['id' => 'media-sticker']),
+        'graph.facebook.com/*' => fn () => Http::response(['messages' => [['id' => 'wamid.OUT'.uniqid()]]]),
+        'api-ia.ipbr.pro/files/*' => Http::response($png, 200, ['Content-Type' => 'image/png']),
+        'api-ia.ipbr.pro/*' => function (HubRequest $request) use (&$queue) {
+            if (str_contains($request->url(), '/files/')) {
+                return null;
+            }
+
+            return Http::response(array_merge(['id' => 'gen_1', 'provider' => 'OPENAI', 'model' => 'gpt-image-1'], array_shift($queue) ?? ['status' => 'RUNNING']));
+        },
+        // The sticker is read back from our own published disk before it goes out.
+        '*/storage/*' => Http::response($png, 200, ['Content-Type' => 'image/png']),
+    ]);
+
+    AiAgentFixtures::openWithWelcome($conversation);
+
+    expect(mediaSent($conversation))->toBe(['text:Criando sua figurinha…', 'sticker:', 'text:Gostou?']);
+
+    $sticker = collect(Http::recorded())->map(fn (array $pair) => $pair[0])
+        ->first(fn (HubRequest $request) => str_ends_with($request->url(), '/messages') && ($request->data()['type'] ?? null) === 'sticker');
+
+    expect($sticker->data()['sticker'])->toBe(['id' => 'media-sticker']);
+});

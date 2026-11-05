@@ -41,7 +41,12 @@ class MessageNodes
      */
     public const MAX_DELAY_SECONDS = 300;
 
-    public const MESSAGE_TYPES = ['text', 'image', 'audio', 'video', 'document'];
+    /**
+     * `sticker` is a picture the channel draws as a sticker — WhatsApp and
+     * Telegram — and as a plain image everywhere else. It never has a caption:
+     * no channel puts one on a sticker. See MessageService::sendSticker().
+     */
+    public const MESSAGE_TYPES = ['text', 'image', 'audio', 'video', 'document', 'sticker'];
 
     /**
      * The bubbles this node sends, in order, each as
@@ -100,9 +105,14 @@ class MessageNodes
         $type = (string) ($entry['message_type'] ?? 'text');
         $url = $entry['attachment_url'] ?? null;
 
+        $type = in_array($type, self::MESSAGE_TYPES, true) ? $type : 'text';
+
         return [
-            'message_type' => in_array($type, self::MESSAGE_TYPES, true) ? $type : 'text',
-            'body' => (string) ($entry['body'] ?? ''),
+            'message_type' => $type,
+            // A sticker carries no words. A caption left over from the type
+            // the bubble used to be would otherwise go out as a text message
+            // the moment the file went missing.
+            'body' => $type === 'sticker' ? '' : (string) ($entry['body'] ?? ''),
             'attachment_url' => is_string($url) && trim($url) !== '' ? $url : null,
             'delay' => self::clampDelay($entry['delay'] ?? 0),
             'presence' => self::presenceEnabled($entry),

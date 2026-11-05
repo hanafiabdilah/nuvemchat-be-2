@@ -18,9 +18,11 @@ use App\Services\Flow\PixKeyNodes;
 use App\Services\Message\Contracts\MarksMessagesAsRead;
 use App\Services\Message\Contracts\PlacesCalls;
 use App\Services\Message\Contracts\SendsPixKey;
+use App\Services\Message\Contracts\SendsStickers;
 use App\Services\Message\Contracts\SendsTypingIndicator;
 use App\Services\Message\MessageHandlerInterface;
 use App\Services\Message\OutboundMedia;
+use App\Services\Message\StickerMedia;
 use App\Services\Message\ViewOnce;
 use Carbon\Carbon;
 use Exception;
@@ -28,7 +30,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
-class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead, SendsPixKey, PlacesCalls
+class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndicator, MarksMessagesAsRead, SendsPixKey, PlacesCalls, SendsStickers
 {
     /** Keys that may carry the node's message id in a send response (matched case-insensitively). */
     private const ID_KEYS = ['id', 'messageid', 'message_id', 'msgid'];
@@ -614,6 +616,93 @@ class WhatsappApiwayHandler implements MessageHandlerInterface, SendsTypingIndic
             ]);
 
             throw new Exception('Failed to send WhatsApp image message', 0, $th);
+        }
+    }
+
+    /**
+     * The core's `POST /v1/message/send-sticker` (`{phone, sticker}`), with the
+     * sticker as a URL or a `data:image/webp;base64,…` URI — the same two
+     * shapes every other send-* endpoint takes. StickerMedia leaves the URL in
+     * place only when it already is a WhatsApp sticker, so the core is never
+     * asked to fetch a PNG and call it one.
+     */
+    public function handleSendSticker(Conversation $conversation, array $data): ?Message
+    {
+        validator($data, [
+            'sticker' => 'required_without:media_url|file',
+            'media_url' => 'required_without:sticker|url',
+            'replied_message_id' => 'nullable|integer|exists:messages,id',
+        ])->validate();
+
+        $connection = $conversation->connection;
+        $media = StickerMedia::prepare(OutboundMedia::fromData($data, 'sticker'));
+
+        if ($media->isUrl()) {
+            try {
+                return $this->sendMediaByUrl($conversation, $data, 'sticker', 'sticker', MessageType::Sticker, $media->url);
+            } catch (\Throwable $th) {
+                Log::warning('WhatsappApiwayHandler: URL sticker send failed, falling back to download', [
+                    'error' => $th->getMessage(),
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                $file = $media->toUploadedFile();
+                if (! $file) {
+                    throw new Exception('Failed to send WhatsApp sticker by URL and download fallback failed', 0, $th);
+                }
+                $media = OutboundMedia::fromFile($file);
+            }
+        }
+
+        $file = $media->file;
+
+        try {
+            $content = file_get_contents($file->getRealPath());
+
+            $payload = [
+                'phone' => $conversation->external_id,
+                'sticker' => 'data:image/webp;base64,'.base64_encode($content),
+            ];
+
+            $repliedMessageExternalId = $this->getRepliedMessageExternalId($conversation, $data['replied_message_id'] ?? null);
+            if ($repliedMessageExternalId) {
+                $payload['messageId'] = $repliedMessageExternalId;
+            }
+
+            $response = Http::withHeaders([
+                'Authorization' => 'Bearer '.$connection->credentials['token'],
+            ])->post($this->base().'/v1/message/send-sticker?instanceId='.$connection->credentials['instance_id'], $payload);
+
+            if (! $response->successful()) {
+                throw new Exception('API Way rejected the sticker: '.$response->body());
+            }
+
+            $responseArray = $response->json() ?? [];
+
+            $message = $conversation->messages()->create([
+                'external_id' => $this->getMessageId($responseArray) ?: uniqid('apiway_', true),
+                'sender_type' => SenderType::Outgoing,
+                'message_type' => MessageType::Sticker,
+                'body' => null,
+                'replied_message_id' => $data['replied_message_id'] ?? null,
+                'sent_at' => $this->getMessageSentAt($responseArray),
+                'meta' => $responseArray,
+            ]);
+            ApiwaySendQueue::track($message, $connection);
+
+            $mediaPath = MediaFilename::path('media', (string) $message->id, $file->getClientOriginalName(), 'webp');
+            MediaStorage::disk()->put($mediaPath, $content);
+            $message->update(['attachment' => $mediaPath]);
+
+            return $message;
+        } catch (\Throwable $th) {
+            Log::error('WhatsappApiwayHandler: Failed to send sticker', [
+                'error' => $th->getMessage(),
+                'conversation_id' => $conversation->id,
+                'connection_id' => $connection->id,
+            ]);
+
+            throw new Exception('Failed to send WhatsApp sticker', 0, $th);
         }
     }
 

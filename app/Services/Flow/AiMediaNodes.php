@@ -72,6 +72,7 @@ final class AiMediaNodes
             'caption' => '',
             'send_to_customer' => true,
             'view_once' => false,
+            'as_sticker' => false,
         ];
     }
 
@@ -165,6 +166,18 @@ final class AiMediaNodes
     public static function sendsToCustomer(array $data): bool
     {
         return (bool) ($data['send_to_customer'] ?? true);
+    }
+
+    /**
+     * Whether a generated picture goes out as a sticker (WhatsApp, Telegram)
+     * instead of a photo. Images only — and then without a caption, which no
+     * channel puts on a sticker. See MessageService::sendSticker().
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public static function sendsAsSticker(array $data): bool
+    {
+        return self::type($data) === 'image' && (bool) ($data['as_sticker'] ?? false);
     }
 
     /**

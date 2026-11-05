@@ -464,6 +464,7 @@ class FlowBlueprint
                 'caption' => ['nullable', 'string', 'max:1024'],
                 'send_to_customer' => ['nullable', 'boolean'],
                 'view_once' => ['nullable', 'boolean'],
+                'as_sticker' => ['nullable', 'boolean'],
             ],
             // Lenient like payment: a half-built node saves, and at runtime one
             // with no AI agent leaves through `rejected` without asking the
@@ -1230,6 +1231,10 @@ class FlowBlueprint
         - `presence` (per bubble, default true): show "digitando…" — or "gravando
           áudio…" before an audio bubble — for that bubble's pause. Only set it to
           false where the silence is deliberate.
+        - "sticker": `attachment_url` is a picture (PNG, JPG or WebP); it is made
+          into a WhatsApp sticker on send and goes out as a sticker on WhatsApp and
+          Telegram, as a plain picture on other channels. No caption — `body` is
+          ignored. Use it only when the user asks for a sticker (figurinha).
         - `view_once` (per image or video bubble, default false): the customer can
           open it a single time. Only WhatsApp connected through API Way honours
           it; other channels send the file normally. Set it only when asked.
