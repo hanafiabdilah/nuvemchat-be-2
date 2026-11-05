@@ -156,6 +156,63 @@ class AppServiceProvider extends ServiceProvider
         });
 
         $this->registerWidgetLimiters();
+        $this->registerDashboardLimiter();
+    }
+
+    /**
+     * One budget per signed-in person for the whole dashboard API
+     * (config/api_limits.php). The platform decides how much any client may
+     * cost it — our SPA, a second tab, or a script inside the page holding the
+     * same session all draw from the same bucket.
+     *
+     * Two windows because they stop different things: per second flattens a
+     * burst that would take every PHP worker at once, per minute bounds a loop
+     * that stays just under the burst ceiling.
+     *
+     * The refusal carries `code: rate_limited` and Retry-After, and the SPA
+     * retries exactly that answer (it is given before any controller runs, so
+     * a retried POST cannot happen twice). Each person reaching the ceiling is
+     * logged at most once a minute, so the platform sees who and where without
+     * a log line per refused request.
+     */
+    private function registerDashboardLimiter(): void
+    {
+        RateLimiter::for('dashboard', function (Request $request) {
+            $user = $request->user();
+            $key = $user ? 'user:'.$user->getAuthIdentifier() : 'ip:'.$request->ip();
+
+            $refuse = function (Request $request, array $headers) use ($user, $key) {
+                if (\Illuminate\Support\Facades\Cache::add('dashboard-limit-logged:'.$key, true, 60)) {
+                    \Illuminate\Support\Facades\Log::warning('Dashboard API rate limit reached', [
+                        'user_id' => $user?->getAuthIdentifier(),
+                        'tenant_id' => $user->tenant_id ?? null,
+                        'method' => $request->method(),
+                        'path' => $request->path(),
+                    ]);
+                }
+
+                return response()->json([
+                    'message' => 'Too many requests. Please wait a moment and try again.',
+                    'code' => 'rate_limited',
+                ], 429, $headers);
+            };
+
+            $limits = [];
+
+            $perSecond = (int) config('api_limits.dashboard.per_second', 0);
+            if ($perSecond > 0) {
+                $limits[] = Limit::perSecond($perSecond)->by('dashboard-s:'.$key)->response($refuse);
+            }
+
+            // ⚠️ Each limit needs its own key: two limits sharing one would be
+            // counted in the same bucket and the tighter window would win both.
+            $perMinute = (int) config('api_limits.dashboard.per_minute', 0);
+            if ($perMinute > 0) {
+                $limits[] = Limit::perMinute($perMinute)->by('dashboard-m:'.$key)->response($refuse);
+            }
+
+            return $limits === [] ? Limit::none() : $limits;
+        });
     }
 
     /**

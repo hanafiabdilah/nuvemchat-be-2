@@ -198,7 +198,9 @@ Route::middleware('auth:sanctum')->prefix('auth/otp')->group(function () {
 
 // onboarding.completed before subscription.active: a workspace that has not
 // chosen how to start is told so, not that a plan it never had is suspended.
-Route::middleware(['auth:sanctum', 'whatsapp.verified', 'onboarding.completed', 'subscription.active'])->group(function () {
+// throttle:dashboard right after auth, so a refused request costs nothing
+// beyond the token lookup (config/api_limits.php).
+Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'onboarding.completed', 'subscription.active'])->group(function () {
     Route::post('/uploads', [UploadController::class, 'store']);
 
     Route::get('/user', [UserController::class, 'index']);
