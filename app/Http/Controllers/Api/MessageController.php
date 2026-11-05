@@ -7,6 +7,7 @@ use App\Http\Resources\MessageResource;
 use App\Models\Message;
 use App\Services\Message\MessageSearch;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 
 class MessageController extends Controller
@@ -28,11 +29,30 @@ class MessageController extends Controller
 
     public function index(Request $request)
     {
-        $since = $request->input('since');
+        // Parsed to a UTC datetime, never bound as the ISO-8601 string the
+        // client echoes back (`2026-11-05T10:15:18+00:00`). MariaDB cannot turn
+        // that literal into a range on messages_updated_at, so it walked the
+        // whole table by primary key instead: 186k rows and 2.5 s for a delta
+        // that returned nothing, on every dashboard boot and every reconnect —
+        // enough to fill PHP-FPM on 4 Nov 2026. In SQLite the same string is
+        // compared as text and never matches a same-day row.
+        $since = rescue(
+            fn () => filled($request->input('since'))
+                ? Carbon::parse($request->input('since'))->utc()->format('Y-m-d H:i:s')
+                : null,
+            null,
+            report: false,
+        );
         $before = $request->input('before');
         $connectionId = $request->input('connection_id');
         $limit = (int) $request->input('limit', 100);
         $limit = max(1, min($limit, 500));
+
+        // Stamped before the query runs, not after: a message that changes while
+        // this request is being served then falls after the cursor and comes in
+        // the next delta instead of being skipped (a re-sent row is harmless —
+        // the client upserts). Same rule as ConversationController::index.
+        $serverTime = now()->toIso8601String();
 
         $user = Auth::user();
 
@@ -55,7 +75,7 @@ class MessageController extends Controller
             })->orderBy('id', 'DESC');
 
         // Delta sync: only messages touched since the last sync (edits, new).
-        if ($since !== null && $since !== '') {
+        if ($since !== null) {
             $query->where('updated_at', '>', $since);
         }
 
@@ -74,7 +94,7 @@ class MessageController extends Controller
             'data' => MessageResource::collection($messages),
             'has_more' => $hasMore,
             'next_before' => $hasMore ? $messages->last()?->id : null,
-            'server_time' => now()->toIso8601String(),
+            'server_time' => $serverTime,
         ]);
     }
 
