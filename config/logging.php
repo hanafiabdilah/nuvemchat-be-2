@@ -52,10 +52,19 @@ return [
 
     'channels' => [
 
+        // ⚠️ `ignore_exceptions` must stay true. With it false, a log file the
+        // app cannot write makes every Log::info() throw, and the request that
+        // was logging dies with it. On 4 Nov 2026 the day's file in one PHP-FPM
+        // container had been created by root (`docker compose exec app php
+        // artisan …` runs as root and wrote the first line of the day), so
+        // about half of all flows stopped right after their FlowState was
+        // created: no greeting, no failure note, until midnight. A line that
+        // cannot be written is lost diagnostics; it must never cost a reply.
+        // The other channels in the stack (stderr) still receive the record.
         'stack' => [
             'driver' => 'stack',
             'channels' => explode(',', (string) env('LOG_STACK', 'single')),
-            'ignore_exceptions' => false,
+            'ignore_exceptions' => true,
         ],
 
         'single' => [
