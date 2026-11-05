@@ -126,6 +126,9 @@ class AdminSettingsController extends Controller
                     // permissions — on only once TikTok has granted them to the
                     // app, or the consent screen breaks for the inbox too.
                     'posts_enabled' => TikTokConfig::postsEnabled(),
+                    // Same rule for direct messages: on only once TikTok's
+                    // data security review has granted Business Messaging.
+                    'messaging_enabled' => TikTokConfig::messagingEnabled(),
                     'app_secret_set' => ! empty($ttSecret),
                     'app_secret_preview' => $this->mask($ttSecret),
                 ],
@@ -264,6 +267,7 @@ class AdminSettingsController extends Controller
             'tiktok.redirect_uri' => ['nullable', 'url', 'max:255'],
             'tiktok.app_secret' => ['nullable', 'string', 'max:512'],
             'tiktok.posts_enabled' => ['sometimes', 'boolean'],
+            'tiktok.messaging_enabled' => ['sometimes', 'boolean'],
 
             'youtube' => ['sometimes', 'array'],
             'youtube.client_id' => ['nullable', 'string', 'max:255'],
@@ -462,6 +466,10 @@ class AdminSettingsController extends Controller
 
             if (array_key_exists('posts_enabled', $tt)) {
                 Setting::set(TikTokConfig::KEY_POSTS_ENABLED, $tt['posts_enabled'] ? '1' : null);
+            }
+
+            if (array_key_exists('messaging_enabled', $tt)) {
+                Setting::set(TikTokConfig::KEY_MESSAGING_ENABLED, $tt['messaging_enabled'] ? '1' : null);
             }
         }
 

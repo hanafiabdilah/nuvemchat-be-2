@@ -913,6 +913,16 @@ class ConnectionController extends Controller
             return SocialFeatures::refusal(SocialFeatures::TIKTOK);
         }
 
+        // With neither direct messages nor posts switched on in the Back
+        // Office, TikTok would only hand over the profile: a connection that
+        // looks done and does nothing.
+        if ($connection->channel === Channel::TikTok && ! TikTokAuthClient::hasAnythingToRequest()) {
+            return response()->json([
+                'message' => 'TikTok is not available on this platform yet.',
+                'code' => 'tiktok_not_configured',
+            ], 422);
+        }
+
         // Instagram, Messenger and TikTok use OAuth URL generation (WhatsApp uses embedded signup in frontend)
         $oauthUrl = match ($connection->channel) {
             Channel::Instagram => $this->instagramOauth($connection),

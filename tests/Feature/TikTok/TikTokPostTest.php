@@ -310,6 +310,7 @@ test('TikTok\'s failure reason becomes a sentence the customer can act on', func
 test('connect asks for the post permissions only once the Back Office turns them on', function () {
     Setting::set(TikTokConfig::KEY_APP_ID, 'app-1');
     Setting::set(TikTokConfig::KEY_REDIRECT_URI, 'https://chat.example/oauth/tiktok/callback');
+    Setting::set(TikTokConfig::KEY_MESSAGING_ENABLED, '1');
 
     expect(TikTokAuthClient::authorizeUrl('state'))->not->toContain('video.publish');
 
@@ -319,4 +320,104 @@ test('connect asks for the post permissions only once the Back Office turns them
         ->toContain('video.publish')
         ->toContain('comment.list.manage')
         ->toContain('message.list.send');
+});
+
+test('connect never asks for direct messages until the Back Office says TikTok granted them', function () {
+    Setting::set(TikTokConfig::KEY_APP_ID, 'app-1');
+    Setting::set(TikTokConfig::KEY_REDIRECT_URI, 'https://chat.example/oauth/tiktok/callback');
+    Setting::set(TikTokConfig::KEY_POSTS_ENABLED, '1');
+
+    // An app approved for "TikTok accounts" only: one message scope and TikTok
+    // refuses the whole consent screen, posts included.
+    $url = urldecode(TikTokAuthClient::authorizeUrl('state'));
+
+    expect($url)->toContain('video.publish')
+        ->toContain('comment.list.manage')
+        ->toContain('user.info.basic')
+        ->not->toContain('message.list');
+
+    expect(TikTokAuthClient::requiredScopes())->toBe(TikTokAuthClient::ACCOUNT_SCOPES);
+});
+
+test('a posts-only account connects without granting messages and without the DM webhook', function () {
+    config(['social.tiktok' => true]);
+    Setting::set(TikTokConfig::KEY_APP_ID, 'app-1');
+    Setting::set(TikTokConfig::KEY_APP_SECRET, 'secret-1');
+    Setting::set(TikTokConfig::KEY_REDIRECT_URI, 'https://chat.example/oauth/tiktok/callback');
+    Setting::set(TikTokConfig::KEY_POSTS_ENABLED, '1');
+
+    $user = TikTokFixtures::user();
+    $connection = TikTokFixtures::connection($user, overrides: [
+        'status' => \App\Enums\Connection\Status::Pending,
+        'credentials' => null,
+    ]);
+
+    TikTokFixtures::fake([
+        '/tt_user/oauth2/token/' => TikTokFixtures::ok([
+            'access_token' => 'new-token',
+            'refresh_token' => 'new-refresh',
+            'expires_in' => 86400,
+            'refresh_token_expires_in' => 2592000,
+            'open_id' => 'open-id-posts',
+            'scope' => implode(',', [...TikTokAuthClient::ACCOUNT_SCOPES, ...TikTokAuthClient::POST_SCOPES]),
+        ]),
+        '/business/get/' => TikTokFixtures::ok(['username' => 'lojaaurora', 'display_name' => 'Loja Aurora']),
+    ]);
+
+    $state = base64_encode(json_encode(['connection_id' => $connection->id, 'timestamp' => time()]));
+
+    $this->get('/oauth/tiktok/callback?code=abc&state='.urlencode($state))
+        ->assertRedirect()
+        ->assertRedirectContains('status=success');
+
+    $connection->refresh();
+
+    expect($connection->status)->toBe(\App\Enums\Connection\Status::Active)
+        ->and($connection->credentials['business_id'])->toBe('open-id-posts');
+
+    Http::assertNotSent(fn ($request) => str_contains($request->url(), '/business/webhook/update/'));
+});
+
+test('once direct messages are switched on, a consent without them is still refused', function () {
+    config(['social.tiktok' => true]);
+    Setting::set(TikTokConfig::KEY_APP_ID, 'app-1');
+    Setting::set(TikTokConfig::KEY_APP_SECRET, 'secret-1');
+    Setting::set(TikTokConfig::KEY_REDIRECT_URI, 'https://chat.example/oauth/tiktok/callback');
+    Setting::set(TikTokConfig::KEY_MESSAGING_ENABLED, '1');
+
+    $user = TikTokFixtures::user();
+    $connection = TikTokFixtures::connection($user, overrides: [
+        'status' => \App\Enums\Connection\Status::Pending,
+        'credentials' => null,
+    ]);
+
+    TikTokFixtures::fake([
+        '/tt_user/oauth2/token/' => TikTokFixtures::ok([
+            'access_token' => 'new-token',
+            'refresh_token' => 'new-refresh',
+            'expires_in' => 86400,
+            'open_id' => 'open-id-partial',
+            'scope' => implode(',', TikTokAuthClient::ACCOUNT_SCOPES),
+        ]),
+    ]);
+
+    $state = base64_encode(json_encode(['connection_id' => $connection->id, 'timestamp' => time()]));
+
+    $this->get('/oauth/tiktok/callback?code=abc&state='.urlencode($state))
+        ->assertRedirectContains('status=error');
+
+    expect($connection->fresh()->status)->toBe(\App\Enums\Connection\Status::Pending);
+});
+
+test('connect is refused while the Back Office has switched neither messages nor posts on', function () {
+    config(['social.tiktok' => true]);
+
+    $user = TikTokFixtures::user();
+    $user->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate('connections.oauth', 'web'));
+    $connection = TikTokFixtures::connection($user);
+
+    $this->actingAs($user)
+        ->getJson("/api/connections/{$connection->id}/oauth")
+        ->assertStatus(422)
+        ->assertJsonPath('code', 'tiktok_not_configured');
 });

@@ -5,9 +5,10 @@ namespace App\Services\Connection\TikTok;
 use App\Models\Setting;
 
 /**
- * Single source of truth for TikTok Business Messaging credentials.
- * Stored in the `settings` table (DB-only), managed by super-admin in the
- * Back Office → Integrations — not in .env.
+ * Single source of truth for the TikTok for Business app: its credentials and
+ * which of TikTok's permissions it holds. Stored in the `settings` table
+ * (DB-only), managed by super-admin in the Back Office → Integrations — not in
+ * .env.
  */
 class TikTokConfig
 {
@@ -28,6 +29,17 @@ class TikTokConfig
      * inbox — so it is turned on in the Back Office once TikTok has approved it.
      */
     public const KEY_POSTS_ENABLED = 'tiktok.posts_enabled';
+
+    /**
+     * Whether Connect also asks for the direct message permissions.
+     *
+     * The Business Messaging scopes are not in the app's scope picker: TikTok
+     * grants them after its data security & privacy review, separately from
+     * the Accounts API that carries posts and comments. Until then asking for
+     * them breaks the consent screen for every connection, so a workspace that
+     * only wants posts could not connect at all. Off until TikTok says yes.
+     */
+    public const KEY_MESSAGING_ENABLED = 'tiktok.messaging_enabled';
 
     /**
      * The URL prefix TikTok has verified as ours (JSON: url, status,
@@ -54,6 +66,11 @@ class TikTokConfig
     public static function postsEnabled(): bool
     {
         return (bool) Setting::get(self::KEY_POSTS_ENABLED);
+    }
+
+    public static function messagingEnabled(): bool
+    {
+        return (bool) Setting::get(self::KEY_MESSAGING_ENABLED);
     }
 
     /** @return array{url?: string, status?: int, file_name?: string, verified_at?: string}|null */

@@ -7,19 +7,31 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Thin client over the TikTok Business Messaging OAuth + webhook endpoints.
+ * Thin client over the TikTok account-holder OAuth + webhook endpoints.
  * Every response uses the { code, message, data } envelope where code 0 means
  * success — non-zero codes arrive with HTTP 200, so both must be checked.
  */
 class TikTokAuthClient
 {
-    public const REQUIRED_SCOPES = [
+    /**
+     * The account itself: who it is. Part of the Accounts API, so granted to
+     * every app approved for "TikTok accounts", and always asked for.
+     */
+    public const ACCOUNT_SCOPES = [
         'user.info.basic',
         'user.info.username',
         'user.info.stats',
         'user.info.profile',
         'user.account.type',
         'user.insights',
+    ];
+
+    /**
+     * Direct messages (Business Messaging). Requested only when the Back
+     * Office says TikTok has granted them (TikTokConfig::messagingEnabled):
+     * they come from a separate review, not from the scope picker.
+     */
+    public const MESSAGE_SCOPES = [
         'message.list.read',
         'message.list.send',
         'message.list.manage',
@@ -53,12 +65,38 @@ class TikTokAuthClient
         return 'https://www.tiktok.com/v2/auth/authorize?' . $query;
     }
 
-    /** @return list<string> */
+    /**
+     * What Connect asks TikTok for: only what the app holds. One scope the app
+     * was never granted and TikTok refuses the whole consent screen.
+     *
+     * @return list<string>
+     */
     public static function requestedScopes(): array
     {
-        return TikTokConfig::postsEnabled()
-            ? array_values(array_unique([...self::REQUIRED_SCOPES, ...self::POST_SCOPES]))
-            : self::REQUIRED_SCOPES;
+        return array_values(array_unique([
+            ...self::requiredScopes(),
+            ...(TikTokConfig::postsEnabled() ? self::POST_SCOPES : []),
+        ]));
+    }
+
+    /**
+     * What the account must grant for the connection to be accepted. Post
+     * scopes are not here (see POST_SCOPES); message scopes are, once asked
+     * for — an inbox without them fails at every send and every webhook.
+     *
+     * @return list<string>
+     */
+    public static function requiredScopes(): array
+    {
+        return TikTokConfig::messagingEnabled()
+            ? [...self::ACCOUNT_SCOPES, ...self::MESSAGE_SCOPES]
+            : self::ACCOUNT_SCOPES;
+    }
+
+    /** Whether Connect currently gives an account anything to do here. */
+    public static function hasAnythingToRequest(): bool
+    {
+        return TikTokConfig::messagingEnabled() || TikTokConfig::postsEnabled();
     }
 
     /**

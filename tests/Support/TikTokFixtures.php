@@ -46,9 +46,8 @@ class TikTokFixtures
     /** A connected TikTok account the user may reach, granted the post scopes unless told otherwise. */
     public static function connection(User $user, bool $postScopes = true, array $overrides = []): Connection
     {
-        $scopes = $postScopes
-            ? [...TikTokAuthClient::REQUIRED_SCOPES, ...TikTokAuthClient::POST_SCOPES]
-            : TikTokAuthClient::REQUIRED_SCOPES;
+        $inbox = [...TikTokAuthClient::ACCOUNT_SCOPES, ...TikTokAuthClient::MESSAGE_SCOPES];
+        $scopes = $postScopes ? [...$inbox, ...TikTokAuthClient::POST_SCOPES] : $inbox;
 
         $connection = Connection::create(array_merge([
             'tenant_id' => $user->tenant_id,

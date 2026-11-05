@@ -216,8 +216,9 @@ class ConnectionController extends Controller
 
             // Reject partial consent up-front: a missing message.* scope would
             // otherwise only surface later as failing sends or silent webhooks.
+            // Only what Connect asked for can be missing (see requiredScopes).
             $granted = array_filter(explode(',', (string) ($tokens['scope'] ?? '')));
-            $missing = array_diff(TikTokAuthClient::REQUIRED_SCOPES, $granted);
+            $missing = array_diff(TikTokAuthClient::requiredScopes(), $granted);
             if (! empty($missing)) {
                 throw new \Exception('User did not grant all required TikTok permissions: '.implode(', ', $missing));
             }

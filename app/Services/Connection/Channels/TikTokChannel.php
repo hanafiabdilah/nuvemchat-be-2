@@ -8,6 +8,7 @@ use App\Exceptions\ConnectionException;
 use App\Models\Connection;
 use App\Services\Connection\ChannelInterface;
 use App\Services\Connection\TikTok\TikTokAuthClient;
+use App\Services\Connection\TikTok\TikTokConfig;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\Log;
@@ -56,7 +57,12 @@ class TikTokChannel implements ChannelInterface
                 ],
             ]);
 
-            $this->registerWebhook($connection);
+            // The DIRECT_MESSAGE webhook belongs to Business Messaging: an app
+            // TikTok has not granted it to is refused, and a posts-only
+            // account has no message to deliver anyway.
+            if (TikTokConfig::messagingEnabled()) {
+                $this->registerWebhook($connection);
+            }
         } catch (ValidationException $th) {
             throw $th;
         } catch (\Throwable $th) {
