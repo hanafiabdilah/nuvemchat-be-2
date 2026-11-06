@@ -25,9 +25,9 @@ use Illuminate\Validation\ValidationException;
  * acknowledged without being written again, and a piece that arrives early is
  * answered with the index the server expects, so the browser can resume.
  *
- * Used by the YouTube and TikTok composers; each says where the assembled file
- * goes (a private disk for YouTube, which receives bytes; the published disk
- * for TikTok, which fetches from a URL).
+ * Used by the YouTube and TikTok composers, the chat composer's videos (held on
+ * the staging disk until they are compressed and sent) and the gallery; each
+ * says where the assembled file goes.
  */
 final class ChunkedUpload
 {
@@ -40,7 +40,12 @@ final class ChunkedUpload
     /**
      * @param  string  $scope  Keeps one feature's half-sent files apart from another's.
      * @param  list<string>  $extensions  Accepted extensions, by the name the browser gave.
-     * @param  string  $mimePrefix  What the assembled content must sniff as (`video/`).
+     * @param  string  $mimePrefix  What the assembled content must sniff as (`video/`;
+     *                              empty for any type — the caller then judges the
+     *                              assembled file itself, as the gallery does).
+     * @param  string|null  $typeRefusal  The sentence for a file of the wrong kind.
+     *                                   Null keeps the video wording the social
+     *                                   composers were written with.
      */
     public function __construct(
         private readonly string $scope,
@@ -48,6 +53,7 @@ final class ChunkedUpload
         private readonly int $maxBytes,
         private readonly FilesystemAdapter $disk,
         private readonly string $mimePrefix = 'video/',
+        private readonly ?string $typeRefusal = null,
     ) {}
 
     /**
@@ -60,7 +66,7 @@ final class ChunkedUpload
         $extension = strtolower(pathinfo($name, PATHINFO_EXTENSION));
 
         if (! in_array($extension, $this->extensions, true)) {
-            throw ValidationException::withMessages(['name' => 'Choose a video file ('.strtoupper(implode(', ', array_slice($this->extensions, 0, 3))).'…).']);
+            throw ValidationException::withMessages(['name' => $this->typeRefusal ?? 'Choose a video file ('.strtoupper(implode(', ', array_slice($this->extensions, 0, 3))).'…).']);
         }
 
         if ($size > $this->maxBytes) {
@@ -138,7 +144,7 @@ final class ChunkedUpload
         if (! $mime || ! str_starts_with($mime, $this->mimePrefix)) {
             @unlink($part);
 
-            throw ValidationException::withMessages(['name' => 'This file is not a video that can be posted.']);
+            throw ValidationException::withMessages(['name' => $this->typeRefusal ?? 'This file is not a video that can be posted.']);
         }
 
         $path = MediaFilename::path($directory, MediaFilename::token(), $name, $extension);

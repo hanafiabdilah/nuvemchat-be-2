@@ -289,6 +289,46 @@ enum Channel: string
     }
 
     /**
+     * The biggest video file this channel takes, in bytes. Null where the
+     * channel sends no video at all (TikTok DMs carry text and images only).
+     *
+     * One number, two readers: every handler's `max:` rule on an uploaded
+     * video, and VideoCompressor, which shrinks a bigger file to fit before
+     * it is sent. Keeping them apart is how a video passed our validation and
+     * was then refused by the channel.
+     *
+     *  - WhatsApp Official: 16 MB, Meta's documented ceiling for video. The
+     *    rule used to say 25 MB, so a 20 MB file was accepted here and then
+     *    rejected by the Cloud API with an error the agent could not act on.
+     *  - API Way: 50 MB, what the handler has always accepted. The core's own
+     *    ceiling is not documented.
+     *  - Telegram: 50 MB, the Bot API's multipart upload limit.
+     *  - Instagram, Messenger: 25 MB, Meta's attachment limit.
+     *  - E-mail: 25 MB, the same cap the e-mail composer puts on an attachment
+     *    — a bigger mail is refused by most providers anyway.
+     *  - Discord: 10 MB, a bot's upload limit without boosts.
+     *  - Live Chat Widget: 50 MB, our own storage; the visitor downloads it.
+     */
+    public function videoMaxBytes(): ?int
+    {
+        $mb = 1024 * 1024;
+
+        return match ($this) {
+            self::WhatsappOfficial => 16 * $mb,
+            self::WhatsappApiway, self::Telegram, self::LiveChatWidget => 50 * $mb,
+            self::Instagram, self::Messenger, self::Email => 25 * $mb,
+            self::Discord => 10 * $mb,
+            self::TikTok => null,
+        };
+    }
+
+    /** videoMaxBytes() in the unit Laravel's `max:` rule reads for a file. */
+    public function videoMaxKilobytes(): int
+    {
+        return intdiv($this->videoMaxBytes() ?? 0, 1024);
+    }
+
+    /**
      * Whether media can be sent as "view once" — opened a single time on the
      * recipient's phone. WhatsApp through API Way only: the Cloud API has no
      * such option, and no other channel has the concept. Mirrored by the

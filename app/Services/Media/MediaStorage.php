@@ -83,6 +83,18 @@ final class MediaStorage
         return $name === '' || $name === self::diskName() ? null : Storage::disk($name);
     }
 
+    /**
+     * Videos waiting to be compressed and sent (SendCompressedVideo).
+     *
+     * ⚠️ Always a local disk, never the media bucket, whatever MEDIA_DISK says:
+     * ffmpeg needs a path, the file lives minutes, and round-tripping 200 MB
+     * through object storage to read it back on the same server buys nothing.
+     */
+    public static function staging(): FilesystemAdapter
+    {
+        return Storage::disk((string) config('media.video.staging_disk', 'outbound-staging'));
+    }
+
     /** Copies a channel fetches while we send. */
     public static function outbound(): FilesystemAdapter
     {

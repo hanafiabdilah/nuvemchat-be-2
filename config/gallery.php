@@ -21,9 +21,14 @@ return [
     | images at 5 MB and video at 16), because the gallery is a library first:
     | a master file kept here can still be too big to send, and refusing the
     | upload for that reason would be this feature deciding what a workspace is
-    | allowed to keep.
+    | allowed to keep. A video over its channel's limit is compressed when it
+    | is sent from the composer (ComposerVideo), so a big one is still usable.
+    |
+    | Larger than PHP takes in one request (64 MB): files over that arrive in
+    | 8 MB pieces (POST /gallery/uploads/chunks), so raising this needs no
+    | change to upload_max_filesize.
     */
-    'max_upload_mb' => (int) env('GALLERY_MAX_UPLOAD_MB', 64),
+    'max_upload_mb' => (int) env('GALLERY_MAX_UPLOAD_MB', 200),
 
     /*
     | Extensions refused outright, whatever MIME type the browser claims.

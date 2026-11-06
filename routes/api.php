@@ -350,6 +350,8 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
 
         Route::get('/', [GalleryAssetController::class, 'index'])->middleware('permission:gallery.view')->name('index');
         Route::post('/', [GalleryAssetController::class, 'store'])->middleware('permission:gallery.manage')->name('store');
+        // Files over PHP's one-request limit (64 MB), up to gallery.max_upload_mb, in pieces.
+        Route::post('/uploads/chunks', [GalleryAssetController::class, 'uploadChunk'])->middleware('permission:gallery.manage')->name('upload-chunk');
         Route::put('/{id}', [GalleryAssetController::class, 'update'])->whereNumber('id')->middleware('permission:gallery.manage')->name('update');
         Route::delete('/{id}', [GalleryAssetController::class, 'destroy'])->whereNumber('id')->middleware('permission:gallery.manage')->name('destroy');
         Route::post('/{id}/keep', [GalleryAssetController::class, 'keep'])->whereNumber('id')->middleware('permission:gallery.manage')->name('keep');
@@ -479,6 +481,9 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
             Route::post('/conversations/{id}/send-image', [ConversationController::class, 'sendImage']);
             Route::post('/conversations/{id}/send-audio', [ConversationController::class, 'sendAudio']);
             Route::post('/conversations/{id}/send-video', [ConversationController::class, 'sendVideo']);
+            // A video bigger than PHP takes in one request (up to 200 MB),
+            // uploaded in pieces before the send that names it. See ComposerVideo.
+            Route::post('/conversations/{id}/video-upload', [ConversationController::class, 'uploadVideoChunk']);
             Route::post('/conversations/{id}/send-document', [ConversationController::class, 'sendDocument']);
             Route::post('/conversations/{id}/send-interactive', [ConversationController::class, 'sendInteractive']);
         });

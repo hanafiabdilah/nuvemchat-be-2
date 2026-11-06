@@ -12,7 +12,11 @@ use App\Models\GalleryFolder;
 use App\Services\Gallery\GalleryFolderService;
 use App\Services\Gallery\GalleryService;
 use App\Services\Gallery\GalleryStorage;
+use App\Services\Media\ChunkedUpload;
+use App\Services\Media\MediaStorage;
 use App\Services\Media\UploadPolicy;
+use App\Services\Message\StagedVideoUploads;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -90,9 +94,91 @@ class GalleryAssetController extends Controller
      */
     public function store(Request $request)
     {
-        $maxKb = max(1, (int) config('gallery.max_upload_mb', 64)) * 1024;
+        return $this->accept($request, $request->file('file'), $request->input('name'));
+    }
 
-        $file = $request->file('file');
+    /**
+     * One piece of a file too big for one request (see ChunkedUpload).
+     *
+     * The library takes files up to `gallery.max_upload_mb` (200 MB) and PHP
+     * at most 64 MB per request, so the browser sends anything large in 8 MB
+     * pieces. The last piece is judged exactly like a normal upload — same
+     * blocked types, same allow-list, same quota — because it then *is* one.
+     */
+    public function uploadChunk(Request $request)
+    {
+        $piece = $request->validate([
+            'upload_id' => ['required', 'string', 'regex:/^[A-Za-z0-9-]{16,64}$/'],
+            'index' => ['required', 'integer', 'min:0'],
+            'total' => ['required', 'integer', 'min:1', 'max:100000'],
+            'size' => ['required', 'integer', 'min:1'],
+            'name' => ['required', 'string', 'max:255'],
+            'chunk' => ['required', 'file', 'max:'.(intdiv(ChunkedUpload::CHUNK_BYTES, 1024) + 64)],
+            'folder_id' => ['nullable', 'integer', $this->ownFolder($request)],
+        ]);
+
+        $tenant = $request->user()->tenant;
+
+        // Before the first byte: no point carrying 200 MB up to be told at the
+        // end that there was never room for it.
+        if ((int) $piece['index'] === 0 && ! $this->storage->canStore($tenant, (int) $piece['size'])) {
+            return $this->quotaExceeded(new GalleryQuotaExceededException(
+                $this->storage->usedBytes($tenant),
+                $this->storage->limitBytes($tenant),
+                (int) $piece['size'],
+            ));
+        }
+
+        $result = (new ChunkedUpload(
+            'gallery',
+            UploadPolicy::EXTENSIONS,
+            $this->maxBytes(),
+            MediaStorage::staging(),
+            '',
+            UploadPolicy::message(),
+        ))->receive(
+            (int) $tenant->id,
+            'gallery-upload/'.$tenant->id,
+            $piece['upload_id'],
+            (int) $piece['index'],
+            (int) $piece['total'],
+            (int) $piece['size'],
+            $piece['name'],
+            $request->file('chunk'),
+        );
+
+        if (! $result['done']) {
+            return response()->json(['data' => ['done' => false, 'next_index' => $result['next_index']]]);
+        }
+
+        $path = $result['file']['path'];
+        $file = new UploadedFile(MediaStorage::staging()->path($path), $piece['name'], null, null, true);
+
+        try {
+            $response = $this->accept($request, $file, null);
+        } finally {
+            StagedVideoUploads::delete($path);
+        }
+
+        // Shaped for the browser's piece uploader, which reads `data.done`.
+        $body = $response->getData(true);
+
+        return response()->json(
+            $response->isSuccessful()
+                ? ['data' => ['done' => true, 'asset' => $body['data'], 'duplicate' => $body['duplicate'] ?? false, 'storage' => $body['storage'] ?? null]]
+                : $body,
+            $response->getStatusCode(),
+        );
+    }
+
+    private function maxBytes(): int
+    {
+        return max(1, (int) config('gallery.max_upload_mb', 200)) * 1024 * 1024;
+    }
+
+    private function accept(Request $request, ?UploadedFile $file, ?string $name)
+    {
+        $maxKb = intdiv($this->maxBytes(), 1024);
 
         // Checked ahead of validation so the named types keep their own,
         // more specific refusal — the allow-list below would otherwise answer
@@ -119,14 +205,18 @@ class GalleryAssetController extends Controller
         // the file's content rather than on its name. A gallery asset is served
         // from our own domain, so an HTML or SVG file here became a live page on
         // the origin that also serves the dashboard and /webmin. See UploadPolicy.
-        $request->validate([
+        validator([
+            'file' => $file,
+            'name' => $name,
+            'folder_id' => $request->input('folder_id'),
+        ], [
             'file' => UploadPolicy::rules($maxKb),
             'name' => ['nullable', 'string', 'max:250'],
             // The folder the person is looking at when they drop the file.
             'folder_id' => ['nullable', 'integer', $this->ownFolder($request)],
         ], [
             'file.mimes' => UploadPolicy::message(),
-        ]);
+        ])->validate();
 
         $tenant = $request->user()->tenant;
 
@@ -135,7 +225,7 @@ class GalleryAssetController extends Controller
                 $tenant,
                 $file,
                 $request->user(),
-                $request->input('name'),
+                $name,
                 $request->filled('folder_id') ? (int) $request->input('folder_id') : null,
             );
         } catch (GalleryQuotaExceededException $e) {

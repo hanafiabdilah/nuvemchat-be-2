@@ -97,6 +97,44 @@ return [
     'ffmpeg_path' => env('FFMPEG_PATH', 'ffmpeg'),
 
     /*
+    | ffprobe, ffmpeg's sibling: reads a video's duration and dimensions before
+    | it is compressed. Same image, same package, so the same PATH rule.
+    */
+    'ffprobe_path' => env('FFPROBE_PATH', 'ffprobe'),
+
+    /*
+    | Videos an agent sends from the composer (App\Services\Media\VideoCompressor,
+    | App\Jobs\SendCompressedVideo).
+    |
+    | `max_upload_mb` is what the composer accepts — not what any channel
+    | accepts. A file over its channel's own limit (Channel::videoMaxBytes(),
+    | 10–50 MB) is compressed to fit before it is sent, on a queue: a long
+    | video takes minutes of ffmpeg, which is no thing to hold a PHP worker
+    | and the agent's request open for.
+    |
+    | The upload itself arrives in 8 MB pieces (ChunkedUpload), so this number
+    | is independent of PHP's upload_max_filesize and of any proxy in front.
+    |
+    | `queue`: ⚠️ compressing is the heaviest thing this platform runs, and it
+    | runs one at a time per worker. On `media` (the default, no deployment
+    | step) a long video holds back inbound media downloads while it encodes;
+    | give it its own worker and set VIDEO_COMPRESS_QUEUE once that matters.
+    |
+    | `timeout_seconds` bounds one ffmpeg run. The job's own timeout is this
+    | plus a margin for the download and the send (see the job).
+    |
+    | `threads` keeps one encode from taking every core the dashboard and the
+    | webhooks also need; ffmpeg also runs under `nice` where it exists.
+    */
+    'video' => [
+        'max_upload_mb' => (int) env('VIDEO_MAX_UPLOAD_MB', 200),
+        'queue' => env('VIDEO_COMPRESS_QUEUE', env('MEDIA_QUEUE', 'default')),
+        'timeout_seconds' => (int) env('VIDEO_COMPRESS_TIMEOUT', 900),
+        'threads' => (int) env('VIDEO_COMPRESS_THREADS', 2),
+        'staging_disk' => env('VIDEO_STAGING_DISK', 'outbound-staging'),
+    ],
+
+    /*
     | poppler's pdftoppm, which turns the first page of a PDF receipt into a
     | picture a vision model can read (App\Services\Media\PdfPreview). Without
     | it a PDF sent to a Receipt node is answered as unreadable.

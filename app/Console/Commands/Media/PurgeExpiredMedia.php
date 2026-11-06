@@ -8,6 +8,7 @@ use App\Models\Message;
 use App\Services\Gallery\GalleryLibrary;
 use App\Services\Media\MediaRetention;
 use App\Services\Media\MediaStorage;
+use App\Services\Message\StagedVideoUploads;
 use App\Support\Heartbeat;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
@@ -49,6 +50,13 @@ class PurgeExpiredMedia extends Command
     public function handle(): int
     {
         Heartbeat::ping('media:purge');
+
+        // Videos uploaded for the composer that were never sent, or whose
+        // compression job died before cleaning up. Not retention: they are
+        // never media of any message, so this runs whatever retention says.
+        if (! $this->option('dry-run') && ($staged = StagedVideoUploads::sweep()) > 0) {
+            $this->line("Removed {$staged} staged video(s) nobody sent.");
+        }
 
         if (! MediaRetention::enabled()) {
             $this->warn('Media retention is disabled (MEDIA_RETENTION_ENABLED=false) — nothing to do.');

@@ -95,7 +95,7 @@ class LiveChatWidgetHandler implements MessageHandlerInterface, SendsTypingIndic
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         return $this->handleSendMedia($conversation, $data, MessageType::Video, [
-            'video' => 'required_without:media_url|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'video' => 'required_without:media_url|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:'.\App\Enums\Connection\Channel::LiveChatWidget->videoMaxKilobytes(),
             'media_url' => 'required_without:video|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',

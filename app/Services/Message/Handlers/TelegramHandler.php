@@ -417,7 +417,7 @@ class TelegramHandler implements MessageHandlerInterface, SendsTypingIndicator, 
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'video' => 'required_without:media_url|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'video' => 'required_without:media_url|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:'.\App\Enums\Connection\Channel::Telegram->videoMaxKilobytes(),
             'media_url' => 'required_without:video|url',
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',

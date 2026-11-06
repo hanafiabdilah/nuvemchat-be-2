@@ -85,7 +85,7 @@ class EmailHandler implements MessageHandlerInterface, MarksMessagesAsRead
         $this->rejectRemoteAttachment($data);
 
         validator($data, [
-            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:51200',
+            'video' => 'required|file|mimes:mp4,avi,mov,wmv,flv,webm,mkv|max:'.\App\Enums\Connection\Channel::Email->videoMaxKilobytes(),
             'message' => 'nullable|string',
             'replied_message_id' => 'nullable|integer|exists:messages,id',
         ])->validate();

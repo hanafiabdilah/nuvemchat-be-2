@@ -35,7 +35,9 @@ use App\Services\Conversation\SystemMessage;
 use App\Services\Gallery\GalleryMediaResolver;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\Handlers\EmailHandler;
+use App\Services\Message\ComposerVideo;
 use App\Services\Message\MessageService;
+use App\Services\Message\StagedVideoUploads;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -971,6 +973,44 @@ class ConversationController extends Controller
         }
     }
 
+    /**
+     * One piece of a video the composer is uploading for this thread.
+     *
+     * Videos go up to `media.video.max_upload_mb` (200 MB) — more than PHP
+     * takes in one request — so they arrive in 8 MB pieces (ChunkedUpload).
+     * The last piece answers with an `upload_token` that send-video names
+     * instead of the file. See ComposerVideo.
+     */
+    public function uploadVideoChunk(Request $request, int $id)
+    {
+        $conversation = Conversation::visibleTo(Auth::user())->with('connection')->findOrFail($id);
+
+        if (! $conversation->isAccessibleBy(Auth::user())) {
+            return response()->json([
+                'message' => 'Unauthorized',
+            ], 403);
+        }
+
+        if ($conversation->status !== Status::Active) {
+            return response()->json([
+                'message' => 'Conversation is not active',
+            ], 400);
+        }
+
+        $piece = $request->validate([
+            'upload_id' => ['required', 'string', 'regex:/^[A-Za-z0-9-]{16,64}$/'],
+            'index' => ['required', 'integer', 'min:0'],
+            'total' => ['required', 'integer', 'min:1', 'max:100000'],
+            'size' => ['required', 'integer', 'min:1'],
+            'name' => ['required', 'string', 'max:255'],
+            'chunk' => ['required', 'file', 'max:'.(intdiv(\App\Services\Media\ChunkedUpload::CHUNK_BYTES, 1024) + 64)],
+        ]);
+
+        $result = app(ComposerVideo::class)->receivePiece($conversation, $request->user(), $piece, $request->file('chunk'));
+
+        return response()->json(['data' => $result], $result['done'] ? 201 : 200);
+    }
+
     public function sendVideo(Request $request, int $id)
     {
         $conversation = Conversation::visibleTo(Auth::user())->findOrFail($id);
@@ -987,11 +1027,28 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        // Bigger than this channel takes: compressed and sent from the queue,
+        // and the composer keeps a "being prepared" bubble until then. See
+        // ComposerVideo and SendCompressedVideo.
+        $prepared = app(ComposerVideo::class)->prepare($conversation, $request->user(), $request);
+
+        if ($prepared['queued']) {
+            return response()->json([
+                'message' => 'O vídeo está sendo otimizado para este canal e será enviado em instantes.',
+                'data' => [
+                    'status' => 'processing',
+                    'client_ref' => $prepared['client_ref'],
+                    'original_bytes' => $prepared['original_bytes'],
+                    'limit_bytes' => $prepared['limit_bytes'],
+                ],
+            ], 202);
+        }
+
         // A file picked from the library arrives as an id, not a URL: the
         // ownership check and the URL signing both belong on this side. See
         // GalleryMediaResolver.
         $data = app(GalleryMediaResolver::class)->apply(
-            $request->all(),
+            $prepared['data'],
             $request->user()->tenant,
             AssetType::Video,
         );
@@ -1026,6 +1083,12 @@ class ConversationController extends Controller
             return response()->json([
                 'message' => 'Não foi possível enviar o vídeo. Tente novamente em instantes.',
             ], 500);
+        } finally {
+            // A video that came in pieces and fitted: the channel has its copy
+            // (or refused it), and the staged one is not needed either way.
+            if ($prepared['staged_path']) {
+                StagedVideoUploads::delete($prepared['staged_path']);
+            }
         }
     }
 

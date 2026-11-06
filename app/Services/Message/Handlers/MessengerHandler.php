@@ -113,7 +113,7 @@ class MessengerHandler implements MessageHandlerInterface, SendsTypingIndicator,
     public function handleSendVideo(Conversation $conversation, array $data): ?Message
     {
         validator($data, [
-            'video' => 'required_without:media_url|file|mimes:mp4,ogg,avi,mov,webm|max:25600',
+            'video' => 'required_without:media_url|file|mimes:mp4,ogg,avi,mov,webm|max:'.\App\Enums\Connection\Channel::Messenger->videoMaxKilobytes(),
             'media_url' => 'required_without:video|url',
         ])->validate();
 

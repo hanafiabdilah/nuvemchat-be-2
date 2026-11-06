@@ -280,6 +280,15 @@ class MessageResource extends JsonResource
             $meta = array_merge($meta ?? [], $sendQueue);
         }
 
+        // The composer's own reference for a video it handed to the queue to
+        // be compressed (SendCompressedVideo): how it knows which "being
+        // prepared" bubble this message replaces. Any channel can carry one.
+        $clientRef = $this->meta['client_ref'] ?? null;
+
+        if (is_string($clientRef) && $clientRef !== '') {
+            $meta = array_merge($meta ?? [], ['client_ref' => $clientRef]);
+        }
+
         return $meta;
     }
 

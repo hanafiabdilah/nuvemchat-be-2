@@ -51,6 +51,19 @@ return [
             'report' => false,
         ],
 
+        // A video the agent sent that is bigger than its channel accepts, held
+        // between the upload and the queued job that compresses and sends it.
+        // ⚠️ Must stay a local disk under storage/app: ffmpeg reads the file by
+        // path, and the queue worker that does it is a different container —
+        // storage/app is the volume they all share. See MediaStorage::staging().
+        'outbound-staging' => [
+            'driver' => 'local',
+            'root' => storage_path('app/outbound-staging'),
+            'serve' => false,
+            'throw' => false,
+            'report' => false,
+        ],
+
         's3' => [
             'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),
