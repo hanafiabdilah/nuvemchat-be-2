@@ -9,10 +9,13 @@ class Flow extends Model
     protected $fillable = [
         'tenant_id',
         'name',
+        'translate_to_customer',
+        'language',
         'last_updated_at',
     ];
 
     protected $casts = [
+        'translate_to_customer' => 'boolean',
         'last_updated_at' => 'timestamp',
     ];
 

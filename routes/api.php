@@ -1008,10 +1008,11 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
             Route::delete('/flows/{id}/assistant/messages', [FlowAssistantController::class, 'clear']);
         });
 
-        // A translated copy. `flows.create` rather than `flows.update`: the
-        // flow named in the URL is only read, and what gets written is new.
-        Route::post('/flows/{id}/translate', [FlowAssistantController::class, 'translate'])
-            ->middleware(['feature:flow_assistant', 'permission:flows.create', 'throttle:6,1']);
+        // Answer each customer in their own language (FlowLocalization). The
+        // translation runs on the workspace's flow-assistant key, so it shares
+        // that plan feature.
+        Route::put('/flows/{id}/translation', [FlowController::class, 'updateTranslation'])
+            ->middleware(['feature:flow_assistant', 'permission:flows.update']);
 
         // The builder's test panel. The test itself runs in the browser and
         // touches nothing; these are only the steps it cannot pretend — an AI

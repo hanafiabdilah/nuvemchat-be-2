@@ -29,6 +29,11 @@ class ContactResource extends JsonResource
             // to show a contact honestly.
             'external_id' => $this->external_id,
             'broadcast_opted_out' => $this->broadcast_opted_out_at !== null,
+            // What a flow set to answer in the customer's language speaks to
+            // them in. `detected` from what they wrote, `manual` when an agent
+            // set it (and then the detector leaves it alone).
+            'language' => $this->language,
+            'language_source' => $this->language_source,
             // Always present, never `whenLoaded`. This resource is nested in
             // every conversation the panel renders and in ~15 broadcast paths
             // that build a ConversationResource from a freshly loaded model,

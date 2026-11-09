@@ -11,8 +11,10 @@ use App\Models\FlowEdge;
 use App\Models\FlowNode;
 use App\Services\Flow\FlowBlueprint;
 use App\Services\Flow\FlowGraph;
+use App\Services\Flow\FlowLanguages;
 use App\Services\Flow\LegacyWaitUpgrade;
 use App\Services\Flow\RetiredNodes;
+use App\Services\FlowAssistant\FlowAssistantService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -121,6 +123,61 @@ class FlowController extends Controller
         ]);
 
         $flow->update($validated);
+
+        return response()->json([
+            'message' => 'Flow updated successfully',
+            'data' => new FlowResource($flow->fresh()),
+        ]);
+    }
+
+    /**
+     * Turn "answer in the customer's language" on or off, and say which
+     * language the flow is written in.
+     *
+     * Turning it on needs the workspace's flow-assistant key — the AI the
+     * translation runs on — and answers 409 with the code the builder opens
+     * its key setup on, rather than saving a switch that would do nothing.
+     * Turning it off never needs anything.
+     */
+    public function updateTranslation(int $id, Request $request, FlowAssistantService $assistant): JsonResponse
+    {
+        $flow = Flow::where('tenant_id', auth()->user()->tenant_id)->findOrFail($id);
+
+        $validated = $request->validate([
+            'translate_to_customer' => ['required', 'boolean'],
+            'language' => ['nullable', 'string', 'max:16'],
+        ]);
+
+        $language = null;
+
+        if (($validated['language'] ?? null) !== null) {
+            $language = FlowLanguages::normalize($validated['language']);
+
+            if ($language === null) {
+                throw ValidationException::withMessages(['language' => 'This is not a language code.']);
+            }
+        }
+
+        if ($validated['translate_to_customer']) {
+            if (! FlowAssistantService::available()) {
+                return response()->json([
+                    'message' => 'Translation is not available on this platform yet.',
+                    'code' => 'flow_assistant_unavailable',
+                ], 422);
+            }
+
+            if (! $assistant->settingFor($flow->tenant)?->isConfigured()) {
+                return response()->json([
+                    'message' => 'Choose which AI key translates the flow before turning this on.',
+                    'code' => FlowAssistantService::SETUP_REQUIRED,
+                ], 409);
+            }
+        }
+
+        $flow->update([
+            'translate_to_customer' => $validated['translate_to_customer'],
+            'language' => $language,
+        ]);
 
         return response()->json([
             'message' => 'Flow updated successfully',

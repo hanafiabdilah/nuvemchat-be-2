@@ -277,6 +277,15 @@ class FlowExecutor
     }
 
     /**
+     * Swap a node's texts for the customer's language, when its flow is set
+     * to answer that way. No-op otherwise, and safe to call more than once.
+     */
+    protected function localize(FlowState $flowState, ?FlowNode $node): void
+    {
+        app(FlowLocalization::class)->localize($flowState, $node);
+    }
+
+    /**
      * Execute flow from a specific node
      */
     protected function executeFromNode(FlowState $flowState, FlowNode $node): void
@@ -299,6 +308,12 @@ class FlowExecutor
             'node_id' => $node->id,
             'node_type' => $node->type->value,
         ]);
+
+        // A flow set to answer in the customer's language speaks this node's
+        // texts in it. Every node passes through here, so this one call covers
+        // the first run of every type; the paths that come back to a parked
+        // node later (a timer, a job, the next message) call it themselves.
+        $this->localize($flowState, $node);
 
         // Every node passes through here, so one emit covers every type.
         // Most of them finish in under a millisecond and are superseded almost
@@ -775,6 +790,7 @@ class FlowExecutor
 
         $node = FlowNode::find($nodeId);
         $conversation = $flowState->conversation;
+        $this->localize($flowState, $node);
 
         $stillOurs = $flowState->status === FlowStateStatus::Running
             && $flowState->current_node_id === $nodeId
@@ -1516,6 +1532,14 @@ class FlowExecutor
         $data = $this->interpolateInteractiveData($node->data ?? [], $flowState);
         $replyId = $this->latestInteractiveReplyId($flowState->conversation);
         $optionId = InteractiveNodes::matchOption($data, $replyId, $userInput);
+
+        // Translated for this customer, who may still type an option the way
+        // the author wrote it. Same ids either way, so whichever matches is
+        // the same branch.
+        if ($optionId === null && FlowLocalization::isLocalized($node)) {
+            $original = $this->interpolateInteractiveData($node->getOriginal('data') ?? [], $flowState);
+            $optionId = InteractiveNodes::matchOption($original, $replyId, $userInput);
+        }
 
         if ($optionId === null) {
             $this->handleInteractiveMiss($flowState, $node, $data, $replyId, $userInput);
@@ -2874,6 +2898,7 @@ class FlowExecutor
         }
 
         $node = $flowState->currentNode;
+        $this->localize($flowState, $node);
 
         if (! $node) {
             // The step it was paused on was deleted from the flow meanwhile.
@@ -3399,6 +3424,7 @@ class FlowExecutor
         }
 
         $currentNode = $flowState->currentNode;
+        $this->localize($flowState, $currentNode);
 
         if (! $currentNode) {
             Log::error('FlowExecutor: Current node not found (flow state preserved)', [
@@ -3940,6 +3966,8 @@ class FlowExecutor
             return null;
         }
 
+        $this->localize($flowState, $node);
+
         $conversation = $flowState->conversation;
 
         if (! $conversation || ! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
@@ -4258,6 +4286,8 @@ class FlowExecutor
             return true;
         }
 
+        $this->localize($flowState, $node);
+
         $conversation = $flowState->conversation;
 
         // Between the arming and now, an agent may have taken the conversation.
@@ -4465,6 +4495,8 @@ class FlowExecutor
 
             return;
         }
+
+        $this->localize($flowState, $node);
 
         if (! in_array($conversation->status, ConversationStatus::flowEligible(), true)) {
             $skip('somebody took the conversation');
@@ -5088,6 +5120,7 @@ class FlowExecutor
         }
 
         $node = $flowState->currentNode;
+        $this->localize($flowState, $node);
 
         // A receipt node holding out for this very file: it is here (or it
         // failed to arrive, which the check reports as unreadable).
@@ -6619,6 +6652,8 @@ class FlowExecutor
             return;
         }
 
+        $this->localize($flowState, $node);
+
         $issued = ! $released && $invoice->status === FlowInvoiceStatus::Issued;
 
         $stateData = $flowState->state_data ?? [];
@@ -6865,6 +6900,10 @@ class FlowExecutor
 
         $flowState = FlowState::find($generation->flow_state_id);
         $node = $flowState ? FlowNode::find($generation->flow_node_id) : null;
+
+        if ($flowState) {
+            $this->localize($flowState, $node);
+        }
 
         // The flow left this node, or somebody took the conversation. Nothing
         // more is asked of the hub, and nothing is sent over a person.
@@ -7716,6 +7755,7 @@ class FlowExecutor
         }
 
         $node = FlowNode::find($nodeId);
+        $this->localize($flowState, $node);
 
         if (! $node || $node->type !== NodeType::Receipt) {
             return null;

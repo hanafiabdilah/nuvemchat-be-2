@@ -5,21 +5,25 @@ namespace App\Services\Flow;
 /**
  * The words a flow says to a customer, and nothing else.
  *
- * Translating a flow means rewriting these and leaving every other byte of
- * the graph alone — ids, branches, variables, URLs, the note an agent reads,
- * the instruction an AI follows. So the list of what counts as customer-facing
- * text lives here, by node type, and both halves of a translation read it:
- * what is pulled out to be translated and where each result is put back.
+ * A flow that answers each customer in their own language (FlowLocalization)
+ * rewrites these and leaves every other byte of the node alone — ids,
+ * branches, variables, URLs, the note an agent reads, the instruction an AI
+ * follows. So the list of what counts as customer-facing text lives here, by
+ * node type, and both halves of a translation read it: what is pulled out to
+ * be translated and where each result is put back.
  *
  * Each path carries the length the field accepts where it has one (the
  * interactive limits are WhatsApp's), because a translation is usually longer
- * than its source and a button that no longer fits is a flow that will not
- * save.
+ * than its source and a button that no longer fits is a button the channel
+ * refuses.
  *
  * Deliberately absent: a condition's `value` (it is compared against what the
  * customer types, so translating it changes which branch is taken), an
  * invoice's `description` (a fiscal document, not a message), and an action's
  * `note` (read by the team).
+ *
+ * ⚠️ A new node type with text for the customer has to be listed here, or that
+ * text silently goes out untranslated.
  */
 final class FlowTexts
 {
@@ -102,18 +106,41 @@ final class FlowTexts
                 continue;
             }
 
-            foreach (self::PATHS[$node['type'] ?? ''] ?? [] as $pattern => $max) {
-                foreach (self::expand($data, explode('.', $pattern)) as $path) {
-                    $text = data_get($data, $path);
+            foreach (self::ofNode((string) ($node['type'] ?? ''), $data) as $text) {
+                $found[] = ['node' => $index] + $text;
+            }
+        }
 
-                    if (is_string($text) && trim($text) !== '') {
-                        $found[] = ['node' => $index, 'path' => $path, 'text' => $text, 'max' => $max];
-                    }
+        return $found;
+    }
+
+    /**
+     * The customer-facing strings of one node.
+     *
+     * @param  array<string, mixed>  $data
+     * @return list<array{path: string, text: string, max: int|null}>
+     */
+    public static function ofNode(string $type, array $data): array
+    {
+        $found = [];
+
+        foreach (self::PATHS[$type] ?? [] as $pattern => $max) {
+            foreach (self::expand($data, explode('.', $pattern)) as $path) {
+                $text = data_get($data, $path);
+
+                if (is_string($text) && trim($text) !== '') {
+                    $found[] = ['path' => $path, 'text' => $text, 'max' => $max];
                 }
             }
         }
 
         return $found;
+    }
+
+    /** Whether a node of this type says anything to the customer. */
+    public static function speaks(string $type): bool
+    {
+        return isset(self::PATHS[$type]);
     }
 
     /**

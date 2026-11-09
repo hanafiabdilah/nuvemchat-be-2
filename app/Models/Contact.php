@@ -20,6 +20,8 @@ class Contact extends Model
         'name_locked',
         'is_group',
         'username',
+        'language',
+        'language_source',
         'profile_synced_at',
         'photo_profile',
         'photo_synced_at',

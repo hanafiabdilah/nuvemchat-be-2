@@ -6,7 +6,6 @@ use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\UpstreamServiceException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\AiHubProviderCredentialResource;
-use App\Http\Resources\FlowSummaryResource;
 use App\Models\AiHubProviderCredential;
 use App\Models\Flow;
 use App\Models\FlowAssistantMessage;
@@ -24,7 +23,6 @@ use App\Services\Flow\FlowBlueprint;
 use App\Services\Flow\FlowVocabulary;
 use App\Services\FlowAssistant\FlowAssistantConfig;
 use App\Services\FlowAssistant\FlowAssistantService;
-use App\Services\FlowAssistant\FlowTranslator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -282,45 +280,6 @@ class FlowAssistantController extends Controller
      * the way it does. An agent opening a flow a colleague built with the
      * assistant last week gets the reasoning, not an empty box.
      */
-    /**
-     * Create a copy of a flow in another language. The flow itself is not
-     * changed, and the copy is attached to nothing until somebody chooses it.
-     */
-    public function translate(int $id, Request $request, FlowTranslator $translator): JsonResponse
-    {
-        $validated = $request->validate([
-            'language' => ['required', 'string', Rule::in(array_keys(FlowTranslator::LANGUAGES))],
-        ]);
-
-        $flow = Flow::where('tenant_id', $request->user()->tenant_id)->findOrFail($id);
-
-        // Before the first batch: a translation is several runs, and finding
-        // out halfway that there is no key, or no balance, would throw away
-        // the batches already paid for.
-        try {
-            $this->assistant->assertReady($request->user()->tenant);
-        } catch (CreditExhaustedException $e) {
-            return $this->creditExhausted($e);
-        }
-
-        // Several model calls on a long flow, one after the other.
-        set_time_limit(300);
-
-        $result = $translator->translate($flow, $validated['language']);
-
-        $copy = $result['flow']->loadCount('nodes')->load([
-            'nodes' => fn ($query) => $query->select(['id', 'flow_id', 'type', 'position_x', 'position_y']),
-            'edges',
-        ]);
-
-        return response()->json([
-            'data' => new FlowSummaryResource($copy),
-            'translated' => $result['translated'],
-            'kept' => $result['kept'],
-            'notes' => (object) $result['notes'],
-        ], 201);
-    }
-
     public function messages(int $id): JsonResponse
     {
         $flow = $this->flow($id);

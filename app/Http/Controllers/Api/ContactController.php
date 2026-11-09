@@ -11,6 +11,8 @@ use App\Services\Contact\ContactService;
 use App\Services\Contact\ContactTags;
 use App\Services\Crm\CustomerFilter;
 use App\Services\Crm\CustomerService;
+use App\Services\Flow\FlowLanguages;
+use App\Services\Flow\FlowLocalization;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -132,7 +134,24 @@ class ContactController extends Controller
             // (see OptOutDetector), but an agent has to be able to record a
             // request that came in by phone, and to undo a false positive.
             'broadcast_opted_out' => ['sometimes', 'boolean'],
+            // The language a flow set to "answer in the customer's language"
+            // speaks to them in (FlowLocalization). Normally detected from what
+            // they write; set here when the detector got it wrong, and then
+            // never overwritten by it. Null clears it, so the next flow
+            // message detects again.
+            'language' => ['sometimes', 'nullable', 'string', 'max:16'],
         ]);
+
+        if (array_key_exists('language', $validated)) {
+            $language = $validated['language'] === null ? null : FlowLanguages::normalize($validated['language']);
+
+            if ($validated['language'] !== null && $language === null) {
+                throw ValidationException::withMessages(['language' => 'This is not a language code.']);
+            }
+
+            $validated['language'] = $language;
+            $validated['language_source'] = $language === null ? null : FlowLocalization::SOURCE_MANUAL;
+        }
 
         $contact = Contact::where('id', $id)
             ->where('tenant_id', $request->user()->tenant_id)

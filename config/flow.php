@@ -102,4 +102,31 @@ return [
 
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Answering each customer in their own language
+    |--------------------------------------------------------------------------
+    |
+    | A flow with "translate to the customer" on swaps its texts, as each node
+    | speaks, for the language the customer writes in (FlowLocalization). It
+    | runs on the workspace's own flow-assistant AI key.
+    |
+    | `enabled` is the platform kill switch: off, every flow speaks as written,
+    | whatever its own switch says.
+    |
+    | The two timeouts are how long a customer may wait on the AI — once per
+    | contact to detect the language, once per untranslated node. Past either,
+    | the original text goes out and translation pauses for the workspace for
+    | a few minutes.
+    |
+    | `warm`: on the first miss in a language, queue the rest of the flow for
+    | translation in the background, so the next node is already there.
+    */
+    'translation' => [
+        'enabled' => (bool) env('FLOW_TRANSLATION_ENABLED', true),
+        'detect_timeout' => (int) env('FLOW_TRANSLATION_DETECT_TIMEOUT', 15),
+        'timeout' => (int) env('FLOW_TRANSLATION_TIMEOUT', 20),
+        'warm' => (bool) env('FLOW_TRANSLATION_WARM', true),
+    ],
+
 ];
