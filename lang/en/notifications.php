@@ -62,6 +62,7 @@ return [
     'alert_receipt_rejected' => '❌ {{name}}, receipt rejected from *{{contact}}* ({{connection}}): {{reason}}.',
 
     'alert_lead_summary' => '📊 {{name}}, {{period}}: *{{leads}}* new leads.{{details}}',
+    'alert_ads_summary' => '📈 {{name}}, {{period}}: *{{spend}}* spent on ads, *{{leads}}* leads, *{{sales}}* sales ({{revenue}}). ROAS: *{{roas}}*.{{details}}',
 
     'alert_test' => '✅ {{name}}, all set: Pingly alerts will reach this number.',
 

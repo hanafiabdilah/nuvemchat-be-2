@@ -63,6 +63,7 @@ return [
     'alert_receipt_rejected' => '❌ {{name}}, bukti bayar dari *{{contact}}* ditolak ({{connection}}): {{reason}}.',
 
     'alert_lead_summary' => '📊 {{name}}, {{period}}: *{{leads}}* lead baru.{{details}}',
+    'alert_ads_summary' => '📈 {{name}}, {{period}}: biaya iklan *{{spend}}*, *{{leads}}* lead, *{{sales}}* penjualan ({{revenue}}). ROAS: *{{roas}}*.{{details}}',
 
     'alert_test' => '✅ {{name}}, berhasil: alert Pingly akan dikirim ke nomor ini.',
 

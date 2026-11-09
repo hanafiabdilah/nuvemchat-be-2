@@ -21,6 +21,7 @@ use App\Support\Heartbeat;
 use App\Support\PlatformUrl;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use App\Models\MetaAdAccount;
 
 /**
  * Back Office: is the machinery running?
@@ -57,6 +58,7 @@ class AdminHealthController extends Controller
                 $this->productionSettings(),
                 $this->platformUrl(),
                 $this->mobilePush(),
+                $this->metaAdAccounts(),
             ],
         );
 
@@ -761,6 +763,62 @@ class AdminHealthController extends Controller
             (string) FirebaseConfig::projectId(),
             "{$devices} phone(s) registered.",
             ['devices' => $devices],
+        );
+    }
+
+    /**
+     * Meta ad accounts whose costs stopped arriving.
+     *
+     * `reauth_required` only the workspace can fix (a new Facebook login); the
+     * rows name the workspaces, because an operator cannot act on a number.
+     * Quiet (`ok`) on a platform where nobody connected an ad account.
+     */
+    private function metaAdAccounts(): array
+    {
+        if (! \App\Services\MetaAds\MetaAdsService::enabled()) {
+            return $this->check(
+                'meta-ads:accounts',
+                'Integrations',
+                'Meta ad accounts',
+                'ok',
+                'Off',
+                'Switched off (META_ADS_ENABLED=false): the dashboard shows it as coming soon and nothing is read.',
+            );
+        }
+
+        $failing = MetaAdAccount::query()
+            ->where('enabled', true)
+            ->whereIn('status', [MetaAdAccount::STATUS_REAUTH, MetaAdAccount::STATUS_ERROR])
+            ->with('tenant.user:id,name')
+            ->get();
+
+        if ($failing->isEmpty()) {
+            return $this->check(
+                'meta-ads:accounts',
+                'Integrations',
+                'Meta ad accounts',
+                'ok',
+                (string) MetaAdAccount::where('enabled', true)->count(),
+                'Connected ad accounts whose costs are being read.',
+            );
+        }
+
+        $reauth = $failing->where('status', MetaAdAccount::STATUS_REAUTH)->count();
+
+        return $this->check(
+            'meta-ads:accounts',
+            'Integrations',
+            'Meta ad accounts',
+            'warn',
+            "{$failing->count()} failing",
+            "{$reauth} need a new Facebook login from the workspace; the rest failed on the last read and are retried every hour.",
+            ['rows' => $failing->take(20)->map(fn (MetaAdAccount $account) => [
+                'tenant_id' => $account->tenant_id,
+                'tenant' => $account->tenant?->user?->name,
+                'account' => $account->name ?: $account->account_id,
+                'status' => $account->status,
+                'error' => $account->last_error,
+            ])->values()->all()],
         );
     }
 

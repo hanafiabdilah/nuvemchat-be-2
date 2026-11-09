@@ -89,6 +89,9 @@ class UserController extends Controller
             // services.apiway.calls). While it does not, the builder hides the
             // Call node; a saved one is stepped over.
             'apiway_calls' => (bool) config('services.apiway.calls', false),
+            // Meta Ads metrics (config meta_ads.enabled). Off, the Integrations
+            // card reads "coming soon" and nothing else about it shows.
+            'meta_ads' => \App\Services\MetaAds\MetaAdsService::enabled(),
             // TikTok, YouTube and Instagram comments, each off until its
             // platform approves the app (config/social.php).
             ...SocialFeatures::flags(),
@@ -265,6 +268,7 @@ class UserController extends Controller
             'whatsapp_alerts.receipt_approved' => ['sometimes', 'boolean'],
             'whatsapp_alerts.receipt_rejected' => ['sometimes', 'boolean'],
             'whatsapp_alerts.lead_summary' => ['sometimes', 'string', Rule::in(WhatsappAlerts::SUMMARY_MODES)],
+            'whatsapp_alerts.ads_summary' => ['sometimes', 'string', Rule::in(WhatsappAlerts::ADS_SUMMARY_MODES)],
         ]);
 
         // Merged into what is stored, so flipping one alert never resets the others.

@@ -110,6 +110,7 @@ use App\Http\Controllers\Api\Youtube\YoutubeAccountController;
 use App\Http\Controllers\Api\Youtube\YoutubeCommentController;
 use App\Http\Controllers\Api\Youtube\YoutubePostController;
 use App\Http\Controllers\Api\IntegrationController;
+use App\Http\Controllers\Api\MetaAdsController;
 use App\Http\Controllers\Api\LiveController;
 use App\Http\Controllers\Api\Mcp\AuthorizeController as McpAuthorizeController;
 use App\Http\Controllers\Api\Mcp\ConnectionController as McpConnectionController;
@@ -371,6 +372,17 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
         Route::delete('/{id}', [IntegrationController::class, 'destroy'])->whereNumber('id')->middleware('permission:integrations.manage')->name('destroy');
         Route::get('/{id}/payments', [IntegrationController::class, 'payments'])->whereNumber('id')->middleware('permission:integrations.view')->name('payments');
         Route::get('/{id}/invoices', [IntegrationController::class, 'invoices'])->whereNumber('id')->middleware('permission:integrations.view')->name('invoices');
+    });
+
+    // The workspace's Meta ad accounts (ad spend per ad, for cost per lead and
+    // ROAS in Statistics → Sales). Connected through a Facebook popup — see
+    // MetaAdsService; the popup lands on /oauth/facebook/callback.
+    Route::prefix('meta-ads')->name('meta-ads.')->middleware('feature:'.Feature::MetaAds->value)->group(function () {
+        Route::get('/', [MetaAdsController::class, 'index'])->middleware('permission:integrations.view')->name('index');
+        Route::post('/oauth', [MetaAdsController::class, 'oauth'])->middleware(['permission:integrations.manage', 'throttle:20,1'])->name('oauth');
+        Route::post('/sync', [MetaAdsController::class, 'sync'])->middleware(['permission:integrations.manage', 'throttle:6,1'])->name('sync');
+        Route::put('/accounts/{id}', [MetaAdsController::class, 'update'])->whereNumber('id')->middleware('permission:integrations.manage')->name('update');
+        Route::delete('/', [MetaAdsController::class, 'destroy'])->middleware('permission:integrations.manage')->name('destroy');
     });
 
     // The product catalog the "Agente IA com ações" node sells from, and the

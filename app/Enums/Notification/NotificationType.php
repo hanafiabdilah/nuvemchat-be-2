@@ -96,6 +96,9 @@ enum NotificationType: string
     /** How many leads came in over the last hour or the last day. */
     case AlertLeadSummary = 'alert_lead_summary';
 
+    /** Ad spend, leads, sales and ROAS for yesterday or last week (Meta Ads). */
+    case AlertAdsSummary = 'alert_ads_summary';
+
     /** Sent from the settings page, so a person sees alerts reach the number. */
     case AlertTest = 'alert_test';
 
@@ -128,6 +131,7 @@ enum NotificationType: string
             self::AlertReceiptApproved => 'Alert: payment receipt approved',
             self::AlertReceiptRejected => 'Alert: payment receipt rejected',
             self::AlertLeadSummary => 'Alert: new leads summary',
+            self::AlertAdsSummary => 'Alert: ads summary (spend, leads, sales, ROAS)',
             self::AlertTest => 'Alert: test message',
         };
     }
@@ -217,6 +221,7 @@ enum NotificationType: string
             self::AlertReceiptApproved => ['name', 'contact', 'amount', 'connection'],
             self::AlertReceiptRejected => ['name', 'contact', 'reason', 'connection'],
             self::AlertLeadSummary => ['name', 'period', 'leads', 'details'],
+            self::AlertAdsSummary => ['name', 'period', 'spend', 'leads', 'sales', 'revenue', 'roas', 'details'],
             self::AlertTest => ['name'],
         };
     }

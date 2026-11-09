@@ -3,6 +3,8 @@
 namespace App\Services\Statistics;
 
 use App\Models\Tenant;
+use App\Services\MetaAds\AdSpend;
+use App\Services\MetaAds\MetaAdsService;
 use Illuminate\Database\Query\Builder;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -15,8 +17,10 @@ use Illuminate\Support\Facades\DB;
  * across currencies is not a number, and showing one is worse than leaving the
  * strangers out.
  *
- * Ad spend is deliberately not here. It lives in the ad account, not in this
- * platform, so there is no ROAS on this page until that account is connected.
+ * Ad spend comes from the workspace's connected Meta ad accounts
+ * (App\Services\MetaAds). Without one, `ads.spend` is null and the page says
+ * where to connect it: the cost of an ad lives in the ad account, and there is
+ * no ROAS without it.
  */
 final class SalesStats
 {
@@ -35,6 +39,8 @@ final class SalesStats
     {
         $current = $this->totals($this->scope->from, $this->scope->to);
         $referrals = $this->referrals($this->scope->from, $this->scope->to);
+        $spend = $this->spend($this->scope->from, $this->scope->to);
+        $leads = (int) $referrals->sum('leads');
 
         return [
             'currency' => $this->currency,
@@ -44,9 +50,10 @@ final class SalesStats
             'by_offer' => $this->byOffer(),
             'daily' => $this->daily(),
             'ads' => [
-                'leads' => (int) $referrals->sum('leads'),
+                'leads' => $leads,
                 'leads_previous' => (int) $this->referrals($this->scope->previousFrom, $this->scope->previousTo)->sum('leads'),
-                'rows' => $this->byAd($referrals),
+                'spend' => $this->spendSummary($spend, $leads),
+                'rows' => $this->byAd($referrals, $spend),
             ],
             'goal' => self::goal($this->tenant, $this->scope->timezone),
         ];
@@ -148,7 +155,7 @@ final class SalesStats
      * *confirmed* in it. On a long enough range they converge; on one day they
      * need not.
      */
-    private function byAd($referrals): array
+    private function byAd($referrals, ?array $spend): array
     {
         $sales = $this->sales($this->scope->from, $this->scope->to)
             ->whereNotNull('ad_id')
@@ -159,20 +166,103 @@ final class SalesStats
 
         $leads = $referrals->whereNotNull('ad_id')->keyBy('ad_id');
 
-        return $leads->keys()->merge($sales->keys())->unique()->map(function ($adId) use ($leads, $sales) {
+        $costs = $spend['by_ad'] ?? [];
+
+        // With an ad account connected, an ad that cost money and brought
+        // nothing is exactly the row somebody needs to see — so ads with spend
+        // only are listed too, and the most expensive come first.
+        $ids = $leads->keys()->merge($sales->keys())->merge(array_keys($costs))->map(fn ($id) => (string) $id)->unique();
+
+        $rows = $ids->map(function (string $adId) use ($leads, $sales, $costs, $spend) {
             $leadCount = (int) ($leads[$adId]->leads ?? 0);
             $saleCount = (int) ($sales[$adId]->sales ?? 0);
+            $revenue = (int) ($sales[$adId]->revenue ?? 0);
+            $cost = $spend === null ? null : (int) ($costs[$adId]['spend_cents'] ?? 0);
 
             return [
-                'ad_id' => (string) $adId,
-                'title' => $leads[$adId]->title ?? null,
+                'ad_id' => $adId,
+                // Meta's own name for the ad when it is known: the referral
+                // title is the card the customer clicked, often shared by
+                // several ads.
+                'title' => $costs[$adId]['name'] ?? $leads[$adId]->title ?? null,
+                'campaign' => $costs[$adId]['campaign'] ?? null,
                 'source_url' => $leads[$adId]->source_url ?? null,
                 'leads' => $leadCount,
                 'sales' => $saleCount,
-                'revenue_cents' => (int) ($sales[$adId]->revenue ?? 0),
+                'revenue_cents' => $revenue,
                 'conversion_pct' => $leadCount > 0 ? round($saleCount / $leadCount * 100, 1) : null,
+                'spend_cents' => $cost,
+                'cost_per_lead_cents' => $cost !== null && $leadCount > 0 ? (int) round($cost / $leadCount) : null,
+                'roas' => $cost !== null ? AdSpend::roas($revenue, $cost) : null,
             ];
-        })->sortByDesc(fn (array $row) => [$row['revenue_cents'], $row['leads']])->values()->take(50)->all();
+        });
+
+        $rows = $spend === null
+            ? $rows->sortByDesc(fn (array $row) => [$row['revenue_cents'], $row['leads']])
+            : $rows->sortByDesc(fn (array $row) => [$row['spend_cents'], $row['revenue_cents'], $row['leads']]);
+
+        return $rows->values()->take(50)->all();
+    }
+
+    /**
+     * What the connected ad accounts spent in the period (null when none is
+     * connected, or the plan does not include Meta Ads).
+     */
+    private function spend(Carbon $from, Carbon $to): ?array
+    {
+        if (! app(MetaAdsService::class)->inPlan($this->tenant)) {
+            return null;
+        }
+
+        $spend = AdSpend::between(
+            $this->tenant,
+            $from->copy()->setTimezone($this->scope->timezone)->toDateString(),
+            $to->copy()->setTimezone($this->scope->timezone)->toDateString(),
+            $this->currency,
+        );
+
+        return $spend['connected'] ? $spend : null;
+    }
+
+    /**
+     * Spend against what the ads brought in.
+     *
+     * Revenue here is only what is attributed to an ad (`sales.ad_id`), the
+     * same money the per-ad table adds up — ROAS against all revenue would
+     * credit the ads with sales that came from somewhere else.
+     *
+     * `filtered`: the connection and channel filters narrow leads and sales,
+     * but an ad's cost belongs to the ad account, not to a connection — so
+     * with a filter on, spend is still the whole account's, and the page says so.
+     */
+    private function spendSummary(?array $spend, int $leads): ?array
+    {
+        if ($spend === null) {
+            return null;
+        }
+
+        $attributed = $this->sales($this->scope->from, $this->scope->to)
+            ->whereNotNull('ad_id')
+            ->selectRaw('COALESCE(SUM(amount_cents), 0) as revenue, COUNT(*) as sales')
+            ->first();
+
+        $revenue = (int) $attributed->revenue;
+        $sales = (int) $attributed->sales;
+        $total = $spend['total_cents'];
+        $previous = $this->spend($this->scope->previousFrom, $this->scope->previousTo);
+
+        return [
+            'total_cents' => $total,
+            'previous_cents' => $previous['total_cents'] ?? 0,
+            'revenue_cents' => $revenue,
+            'sales' => $sales,
+            'cost_per_lead_cents' => $leads > 0 ? (int) round($total / $leads) : null,
+            'cost_per_sale_cents' => $sales > 0 ? (int) round($total / $sales) : null,
+            'roas' => AdSpend::roas($revenue, $total),
+            'unconverted_currencies' => $spend['unconverted'],
+            'synced_at' => $spend['synced_at']?->toIso8601String(),
+            'filtered' => $this->scope->connectionIds !== [] || $this->scope->channels !== [],
+        ];
     }
 
     /**

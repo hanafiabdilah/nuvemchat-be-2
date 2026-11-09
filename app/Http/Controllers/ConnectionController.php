@@ -22,6 +22,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Services\MetaAds\MetaAdsException;
+use App\Services\MetaAds\MetaAdsService;
 
 class ConnectionController extends Controller
 {
@@ -534,6 +536,12 @@ class ConnectionController extends Controller
             if (($stateData['channel'] ?? null) === Channel::Messenger->value) {
                 return $this->messengerCallback($request, $stateData);
             }
+
+            // Meta Ads metrics: the workspace's ad accounts, connected from
+            // the Integrations page. Same redirect URI, its own login config.
+            if (($stateData['channel'] ?? null) === MetaAdsService::STATE_CHANNEL) {
+                return $this->metaAdsCallback($request, $stateData);
+            }
         }
 
         $error = $request->input('error');
@@ -866,6 +874,47 @@ class ConnectionController extends Controller
             ]);
 
             throw $th;
+        }
+    }
+
+    /**
+     * Meta Ads leg of the shared /oauth/facebook/callback route: a popup like
+     * Messenger's, so every outcome lands on the SPA's /oauth/result page.
+     */
+    private function metaAdsCallback(Request $request, array $stateData)
+    {
+        $resultUrl = config('app.frontend_url').'/oauth/result';
+
+        if ($error = $request->input('error')) {
+            Log::info('Meta Ads login not completed', [
+                'error' => $error,
+                'error_reason' => $request->input('error_reason'),
+            ]);
+
+            return redirect($resultUrl.'?status=error&message='.urlencode('The Facebook window was closed before the ad accounts were shared.'));
+        }
+
+        try {
+            $accounts = app(MetaAdsService::class)->completeLogin($stateData['nonce'] ?? null, $request->input('code'));
+
+            // Fixed sentences: the result page translates the message it is
+            // given, and a sentence with a number in it would never match.
+            return redirect($resultUrl.'?status=success&message='.urlencode(
+                count($accounts) === 1 ? 'Ad account connected.' : 'Ad accounts connected.'
+            ));
+        } catch (MetaAdsException $e) {
+            Log::warning('Meta Ads login failed', ['error' => $e->getMessage()]);
+
+            // Our own sentences pass through; Meta's go to the log.
+            $message = $e->fromMeta
+                ? 'Meta did not accept the connection. Please try again.'
+                : $e->getMessage();
+
+            return redirect($resultUrl.'?status=error&message='.urlencode($message));
+        } catch (\Throwable $th) {
+            Log::error('Meta Ads login failed', ['error' => $th->getMessage()]);
+
+            return redirect($resultUrl.'?status=error&message='.urlencode('Meta did not accept the connection. Please try again.'));
         }
     }
 

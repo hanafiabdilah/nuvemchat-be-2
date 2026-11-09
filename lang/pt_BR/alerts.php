@@ -32,4 +32,9 @@ return [
     'period_day' => 'ontem (:date)',
     'details_connection' => '• :connection: :count',
     'details_sales' => 'Vendas: :count (:amount)',
+    'period_week' => 'na semana passada (:from–:to)',
+    'details_cost_per_lead' => 'Custo por lead: :amount',
+    'details_cost_per_sale' => 'Custo por venda: :amount',
+    'details_top_ad' => 'Anúncio com mais investimento: :ad (:spend, ROAS :roas)',
+    'details_unconverted' => 'Contas em :currencies ficaram de fora (sem câmbio cadastrado).',
 ];

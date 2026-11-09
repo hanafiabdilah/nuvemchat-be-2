@@ -114,6 +114,7 @@ class AdminSettingsController extends Controller
                     'app_id' => FacebookConfig::appId(),
                     'config_id' => FacebookConfig::configId(),
                     'messenger_config_id' => FacebookConfig::messengerConfigId(),
+                    'ads_config_id' => FacebookConfig::adsConfigId(),
                     'app_secret_set' => ! empty($fbSecret),
                     'app_secret_preview' => $this->mask($fbSecret),
                     'webhook_verify_token_set' => ! empty($fbVerify),
@@ -259,6 +260,7 @@ class AdminSettingsController extends Controller
             'facebook.app_id' => ['nullable', 'string', 'max:255'],
             'facebook.config_id' => ['nullable', 'string', 'max:255'],
             'facebook.messenger_config_id' => ['nullable', 'string', 'max:255'],
+            'facebook.ads_config_id' => ['nullable', 'string', 'max:255'],
             'facebook.app_secret' => ['nullable', 'string', 'max:512'],
             'facebook.webhook_verify_token' => ['nullable', 'string', 'max:255'],
 
@@ -442,6 +444,11 @@ class AdminSettingsController extends Controller
             Setting::set(FacebookConfig::KEY_APP_ID, $fb['app_id'] ?? null);
             Setting::set(FacebookConfig::KEY_CONFIG_ID, $fb['config_id'] ?? null);
             Setting::set(FacebookConfig::KEY_MESSENGER_CONFIG_ID, $fb['messenger_config_id'] ?? null);
+            // Only when sent: an older Back Office build that does not know
+            // the field must not clear it by saving the Facebook tab.
+            if (array_key_exists('ads_config_id', $fb)) {
+                Setting::set(FacebookConfig::KEY_ADS_CONFIG_ID, $fb['ads_config_id']);
+            }
 
             // Secrets: only replaced when a new value is supplied.
             if (! empty($fb['app_secret'])) {

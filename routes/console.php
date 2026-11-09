@@ -176,6 +176,21 @@ Schedule::command('alerts:lead-summary')
     ->withoutOverlapping(30)
     ->onFailure(fn () => logger()->error('Lead summary alerts failed'));
 
+// What each connected Meta ad account spent per ad per day (Statistics →
+// Sales: ad spend, cost per lead, ROAS). Hourly over the last three days —
+// Meta keeps adjusting recent costs — at :40, clear of the other hourly runs.
+Schedule::command('meta-ads:sync')
+    ->hourlyAt(40)
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->error('Meta Ads sync failed'));
+
+// The operation summary (ad spend, leads, sales, ROAS) people asked for on
+// their own WhatsApp: daily at 08:00 workspace time, weekly on Mondays.
+Schedule::command('alerts:ads-summary')
+    ->hourlyAt(5)
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->error('Ads summary alerts failed'));
+
 // Messages the API Way core held in its anti-ban queue (a 202 instead of a
 // WhatsApp id): read its send log and tell the thread whether they went out.
 // Capped at 5 minutes like the other per-minute passes, so a run killed

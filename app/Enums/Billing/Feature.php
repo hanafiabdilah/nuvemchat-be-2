@@ -102,6 +102,14 @@ enum Feature: string
     case Campaigns = 'campaigns';
 
     /**
+     * Connect Meta ad accounts and read their cost per ad, so the Sales tab
+     * can show ad spend, cost per lead and ROAS next to the sales each ad
+     * brought in — and the operation summary on WhatsApp can report them.
+     * Needs `statistics` to be of any use.
+     */
+    case MetaAds = 'meta_ads';
+
+    /**
      * The add-ons that used to come with `chat` and were split out of it. A
      * plan that has `chat` keeps all of them unless someone turns one off —
      * the migration that introduced them granted them that way.
@@ -136,6 +144,7 @@ enum Feature: string
             self::TiktokManagement => 'TikTok management',
             self::YoutubeManagement => 'YouTube management',
             self::Campaigns => 'Campaigns',
+            self::MetaAds => 'Meta Ads metrics',
         };
     }
 
@@ -156,6 +165,7 @@ enum Feature: string
             self::TiktokManagement => 'Publish and schedule videos on the workspace\'s TikTok accounts and moderate their comments. Needs `chat`.',
             self::YoutubeManagement => 'Connect YouTube channels, upload and schedule videos, and moderate their comments. Needs `chat`.',
             self::Campaigns => 'Broadcast campaigns, and sending one message to conversations picked in the inbox. Needs `chat`.',
+            self::MetaAds => 'Connects the workspace\'s Meta ad accounts and reads the cost of each ad, for ad spend, cost per lead and ROAS in Statistics → Sales and in the operation summary on WhatsApp. Needs `statistics`.',
         };
     }
 }

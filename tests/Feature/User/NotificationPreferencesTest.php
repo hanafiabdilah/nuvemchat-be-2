@@ -85,6 +85,7 @@ it('merges a partial update instead of dropping the other switch', function () {
                 'receipt_approved' => false,
                 'receipt_rejected' => false,
                 'lead_summary' => 'off',
+                'ads_summary' => 'off',
             ],
         ]);
 });

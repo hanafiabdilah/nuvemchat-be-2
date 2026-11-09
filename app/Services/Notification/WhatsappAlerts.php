@@ -42,6 +42,14 @@ final class WhatsappAlerts
 
     public const LEAD_SUMMARY = 'lead_summary';
 
+    /** Ad spend, leads, sales and ROAS — needs a connected Meta ad account. */
+    public const ADS_SUMMARY = 'ads_summary';
+
+    public const SUMMARY_WEEKLY = 'weekly';
+
+    /** Daily for the day before, or on Mondays for the week before. */
+    public const ADS_SUMMARY_MODES = [self::SUMMARY_OFF, self::SUMMARY_DAILY, self::SUMMARY_WEEKLY];
+
     /** The on/off alerts. */
     public const TOGGLES = [self::CONNECTION_DOWN, self::FLOW_FAILED, self::RECEIPT_APPROVED, self::RECEIPT_REJECTED];
 
@@ -71,7 +79,7 @@ final class WhatsappAlerts
      * these go to a phone, and nobody signed up for messages they never asked for.
      *
      * @param  array<string, mixed>  $stored
-     * @return array{connection_down: bool, flow_failed: bool, receipt_approved: bool, receipt_rejected: bool, lead_summary: string}
+     * @return array{connection_down: bool, flow_failed: bool, receipt_approved: bool, receipt_rejected: bool, lead_summary: string, ads_summary: string}
      */
     public static function settings(array $stored): array
     {
@@ -83,6 +91,9 @@ final class WhatsappAlerts
 
         $mode = $stored[self::LEAD_SUMMARY] ?? self::SUMMARY_OFF;
         $settings[self::LEAD_SUMMARY] = in_array($mode, self::SUMMARY_MODES, true) ? $mode : self::SUMMARY_OFF;
+
+        $mode = $stored[self::ADS_SUMMARY] ?? self::SUMMARY_OFF;
+        $settings[self::ADS_SUMMARY] = in_array($mode, self::ADS_SUMMARY_MODES, true) ? $mode : self::SUMMARY_OFF;
 
         return $settings;
     }
@@ -96,7 +107,7 @@ final class WhatsappAlerts
 
         $value = $user->notificationSettings()['whatsapp_alerts'][$alert] ?? false;
 
-        return $alert === self::LEAD_SUMMARY ? $value !== self::SUMMARY_OFF : $value === true;
+        return in_array($alert, [self::LEAD_SUMMARY, self::ADS_SUMMARY], true) ? $value !== self::SUMMARY_OFF : $value === true;
     }
 
     /**

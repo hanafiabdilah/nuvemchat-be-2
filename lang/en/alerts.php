@@ -32,4 +32,9 @@ return [
     'period_day' => 'yesterday (:date)',
     'details_connection' => '• :connection: :count',
     'details_sales' => 'Sales: :count (:amount)',
+    'period_week' => 'last week (:from–:to)',
+    'details_cost_per_lead' => 'Cost per lead: :amount',
+    'details_cost_per_sale' => 'Cost per sale: :amount',
+    'details_top_ad' => 'Highest-spending ad: :ad (:spend, ROAS :roas)',
+    'details_unconverted' => 'Accounts in :currencies were left out (no exchange rate set).',
 ];

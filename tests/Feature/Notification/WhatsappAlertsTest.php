@@ -112,6 +112,7 @@ test('every alert is off until the person turns it on, and turning one on leaves
         'receipt_approved' => false,
         'receipt_rejected' => false,
         'lead_summary' => 'off',
+        'ads_summary' => 'off',
     ]);
 
     $this->actingAs($owner, 'sanctum')
@@ -126,6 +127,17 @@ test('every alert is off until the person turns it on, and turning one on leaves
 
     $this->actingAs($owner, 'sanctum')
         ->putJson('/api/user/notification-preferences', ['whatsapp_alerts' => ['lead_summary' => 'weekly']])
+        ->assertUnprocessable();
+
+    // The ads summary has a weekly mode and no hourly one.
+    $this->actingAs($owner, 'sanctum')
+        ->putJson('/api/user/notification-preferences', ['whatsapp_alerts' => ['ads_summary' => 'weekly']])
+        ->assertOk()
+        ->assertJsonPath('notification_preferences.whatsapp_alerts.ads_summary', 'weekly')
+        ->assertJsonPath('notification_preferences.whatsapp_alerts.lead_summary', 'daily');
+
+    $this->actingAs($owner, 'sanctum')
+        ->putJson('/api/user/notification-preferences', ['whatsapp_alerts' => ['ads_summary' => 'hourly']])
         ->assertUnprocessable();
 });
 

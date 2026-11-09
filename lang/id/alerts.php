@@ -32,4 +32,9 @@ return [
     'period_day' => 'kemarin (:date)',
     'details_connection' => '• :connection: :count',
     'details_sales' => 'Penjualan: :count (:amount)',
+    'period_week' => 'minggu lalu (:from–:to)',
+    'details_cost_per_lead' => 'Biaya per lead: :amount',
+    'details_cost_per_sale' => 'Biaya per penjualan: :amount',
+    'details_top_ad' => 'Iklan dengan biaya tertinggi: :ad (:spend, ROAS :roas)',
+    'details_unconverted' => 'Akun dalam :currencies tidak dihitung (kurs belum diatur).',
 ];

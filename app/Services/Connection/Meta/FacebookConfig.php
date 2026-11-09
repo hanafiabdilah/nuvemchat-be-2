@@ -16,6 +16,7 @@ class FacebookConfig
     public const KEY_WEBHOOK_VERIFY_TOKEN = 'facebook.webhook_verify_token';
     public const KEY_CONFIG_ID = 'facebook.config_id';
     public const KEY_MESSENGER_CONFIG_ID = 'facebook.messenger_config_id';
+    public const KEY_ADS_CONFIG_ID = 'facebook.ads_config_id';
 
     /**
      * Graph/SDK version the whole product speaks — the browser SDK reads this
@@ -60,6 +61,21 @@ class FacebookConfig
     public static function messengerConfigId(): ?string
     {
         return Setting::get(self::KEY_MESSENGER_CONFIG_ID);
+    }
+
+    /**
+     * Facebook Login for Business configuration for connecting a workspace's
+     * ad accounts (Meta Ads metrics). Its own configuration, like Messenger's:
+     * it grants `ads_read` over the ad accounts the person picks, and a
+     * WhatsApp or Messenger login must not start asking for ad permissions.
+     *
+     * ⚠️ Create it with the *System user access token* type — the same lesson
+     * as Messenger: a user-token configuration cannot select assets, and the
+     * ad account list then comes back empty.
+     */
+    public static function adsConfigId(): ?string
+    {
+        return Setting::get(self::KEY_ADS_CONFIG_ID);
     }
 
     /**
