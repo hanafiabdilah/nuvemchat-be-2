@@ -3,9 +3,12 @@
 namespace App\Services\Messaging;
 
 use App\Enums\Connection\Channel;
+use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Conversation;
+use App\Models\Message;
 use App\Services\Connection\TikTok\TikTokReplyWindow;
+use App\Services\Conversation\CallLog;
 use Carbon\Carbon;
 
 /**
@@ -94,7 +97,21 @@ class MessagingWindow
         return self::lastInboundAt($conversation)?->copy()->addHours($hours);
     }
 
-    /** When the customer last wrote, whatever they wrote. */
+    /**
+     * When the customer last reached out: wrote anything, or called.
+     *
+     * A call counts because Meta counts it — a customer calling the business,
+     * answered or not, opens the same customer service window a message does.
+     * Leaving calls out made the platform refuse what WhatsApp accepts: the
+     * recording notice of the first recorded call was never sent to a
+     * customer who had called but not written, and neither could the agent
+     * reply after hanging up.
+     *
+     * The call is its thread note (CallLog): an Info row keyed `call:{id}`,
+     * written Outgoing so it stays out of the unread badge — which is why it
+     * needs looking for separately. Calls the flow placed do not count; the
+     * customer reached out to nobody.
+     */
     public static function lastInboundAt(Conversation $conversation): ?Carbon
     {
         $lastInbound = $conversation->messages()
@@ -103,14 +120,32 @@ class MessagingWindow
             ->orderByDesc('id')
             ->first();
 
-        if (! $lastInbound) {
+        $lastCall = $conversation->messages()
+            ->where('message_type', MessageType::Info)
+            ->where('external_id', 'like', 'call:%')
+            ->where(fn ($query) => $query->whereNull('meta->call->direction')
+                ->orWhere('meta->call->direction', '!=', CallLog::OUTGOING))
+            ->orderByDesc('sent_at')
+            ->orderByDesc('id')
+            ->first();
+
+        $stamps = array_filter([self::stampOf($lastInbound), self::stampOf($lastCall)]);
+
+        return $stamps === [] ? null : max($stamps);
+    }
+
+    /**
+     * sent_at is cast to a unix timestamp on read; a row a handler never
+     * stamped still tells us when it landed.
+     */
+    private static function stampOf(?Message $message): ?Carbon
+    {
+        if (! $message) {
             return null;
         }
 
-        // sent_at is cast to a unix timestamp on read; a row a handler never
-        // stamped still tells us when it landed.
-        return $lastInbound->sent_at !== null
-            ? Carbon::createFromTimestamp($lastInbound->sent_at)
-            : $lastInbound->created_at;
+        return $message->sent_at !== null
+            ? Carbon::createFromTimestamp($message->sent_at)
+            : $message->created_at;
     }
 }

@@ -950,3 +950,44 @@ test('a real browser recording is re-encoded to an m4a with its duration', funct
     $probe = shell_exec(sprintf('ffprobe -v error -show_entries format=duration -of csv=p=0 %s', escapeshellarg($stored)));
     expect((float) $probe)->toBeGreaterThan(2.5);
 })->skip(fn () => trim((string) shell_exec('command -v ffmpeg')) === '', 'ffmpeg is not installed');
+
+test('a customer who only called, never wrote, still gets the recording notice', function () {
+    // The second production test: the customer rang without writing first,
+    // the reply window was read from messages only, and the notice was
+    // skipped. Meta opens the window for a user-initiated call.
+    Event::fake([IncomingCall::class, CallUpdated::class]);
+    wcGraph();
+    [$connection] = wcWorkspace(['call_recording' => true, 'call_recording_notice' => 'Esta ligação está sendo gravada.']);
+    $agent = wcAgent($connection);
+
+    $call = wcConnect($connection);
+    Sanctum::actingAs($agent);
+    wcAnswer($this, $call);
+    $this->postJson("/api/calls/{$call->id}/accept")->assertOk();
+
+    Http::assertSent(fn (HttpRequest $request) => str_ends_with($request->url(), '/messages')
+        && str_contains(json_encode($request->data()), 'sendo gravada'));
+
+    // And the agent may write to them after the call.
+    expect(\App\Services\Messaging\MessagingWindow::isOpen($call->conversation->fresh()))->toBeTrue();
+});
+
+test('a call the flow placed does not open the reply window', function () {
+    [$connection] = wcWorkspace();
+    $contact = Contact::create([
+        'tenant_id' => $connection->tenant_id,
+        'external_id' => WC_CUSTOMER,
+        'name' => 'Carla',
+        'channel' => $connection->channel,
+    ]);
+    $thread = Conversation::create([
+        'contact_id' => $contact->id,
+        'connection_id' => $connection->id,
+        'external_id' => WC_CUSTOMER,
+        'status' => ConversationStatus::Pending,
+    ]);
+
+    \App\Services\Conversation\CallLog::outgoing($thread, 'wacid.OUT');
+
+    expect(\App\Services\Messaging\MessagingWindow::isOpen($thread->fresh()))->toBeFalse();
+});
