@@ -11,6 +11,7 @@ use App\Services\Integrations\Payments\MercadoPagoGateway;
 use App\Services\Integrations\Payments\OpenPixGateway;
 use App\Services\Integrations\Payments\PaymentGateway;
 use App\Services\Integrations\Payments\StripeGateway;
+use App\Services\Integrations\Payments\XPagGateway;
 use App\Services\Integrations\Pixels\GoogleAnalyticsDriver;
 use App\Services\Integrations\Pixels\MetaPixelDriver;
 use App\Services\Integrations\Pixels\PixelDriver;
@@ -29,6 +30,7 @@ final class IntegrationDrivers
             IntegrationProvider::MercadoPago => new MercadoPagoGateway($integration),
             IntegrationProvider::Asaas => new AsaasGateway($integration),
             IntegrationProvider::Stripe => new StripeGateway($integration),
+            IntegrationProvider::XPag => new XPagGateway($integration),
             IntegrationProvider::Spedy => new SpedyIssuer($integration),
             IntegrationProvider::MetaPixel => new MetaPixelDriver($integration),
             IntegrationProvider::GoogleAnalytics => new GoogleAnalyticsDriver($integration),

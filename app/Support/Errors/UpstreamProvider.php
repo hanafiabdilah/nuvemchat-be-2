@@ -70,6 +70,8 @@ enum UpstreamProvider: string
 
     case Stripe = 'stripe';
 
+    case XPag = 'xpag';
+
     case Spedy = 'spedy';
 
     case MetaPixel = 'meta_pixel';
@@ -122,6 +124,7 @@ enum UpstreamProvider: string
             self::MercadoPago => 'o Mercado Pago',
             self::Asaas => 'o Asaas',
             self::Stripe => 'a Stripe',
+            self::XPag => 'a XPag',
             self::Spedy => 'a Spedy',
             self::MetaPixel => 'o Pixel da Meta',
             self::GoogleAnalytics => 'o Google Analytics',

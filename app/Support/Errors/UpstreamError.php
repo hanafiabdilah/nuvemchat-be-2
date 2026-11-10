@@ -178,6 +178,7 @@ final class UpstreamError
         'api.asaas.com',
         'api-sandbox.asaas.com',
         'api.stripe.com',
+        'api.xpag.global',
         'api.spedy.com.br',
         'sandbox-api.spedy.com.br',
         'google-analytics.com',
@@ -230,6 +231,7 @@ final class UpstreamError
             UpstreamProvider::MercadoPago => self::mercadoPago($needle, $code),
             UpstreamProvider::Asaas => self::asaas($needle, $code),
             UpstreamProvider::Stripe => self::stripe($needle, $code),
+            UpstreamProvider::XPag => self::xpag($needle, $code),
             UpstreamProvider::Spedy => self::invoicePlatform('A Spedy', $needle, $code),
             UpstreamProvider::MetaPixel => self::metaPixel($needle, $code),
             UpstreamProvider::GoogleAnalytics => self::googleAnalytics($needle, $code),
@@ -263,7 +265,7 @@ final class UpstreamError
                 // configuration on our side, and sending someone back to
                 // re-check a card that was fine is the worst of both.
                 UpstreamProvider::PaymentService => 'Não foi possível concluir este pagamento. Tente novamente ou use outro meio de pagamento.',
-                UpstreamProvider::OpenPix, UpstreamProvider::MercadoPago, UpstreamProvider::Asaas, UpstreamProvider::Stripe => 'A cobrança não foi aceita pelo provedor de pagamento. Revise o valor e a configuração da integração.',
+                UpstreamProvider::OpenPix, UpstreamProvider::MercadoPago, UpstreamProvider::Asaas, UpstreamProvider::Stripe, UpstreamProvider::XPag => 'A cobrança não foi aceita pelo provedor de pagamento. Revise o valor e a configuração da integração.',
                 UpstreamProvider::Spedy => 'A nota fiscal não foi aceita pelo emissor. Revise os dados do cliente, o valor e a configuração fiscal da integração.',
                 UpstreamProvider::MetaPixel, UpstreamProvider::GoogleAnalytics => 'O evento não foi aceito. Revise a configuração da integração e do nó de Pixel.',
                 UpstreamProvider::Youtube => 'O YouTube não aceitou esta operação. Revise os dados do vídeo e tente novamente.',
@@ -276,6 +278,7 @@ final class UpstreamError
             UpstreamProvider::MercadoPago => 'Não foi possível falar com o Mercado Pago agora. Tente novamente em instantes.',
             UpstreamProvider::Asaas => 'Não foi possível falar com o Asaas agora. Tente novamente em instantes.',
             UpstreamProvider::Stripe => 'Não foi possível falar com a Stripe agora. Tente novamente em instantes.',
+            UpstreamProvider::XPag => 'Não foi possível falar com a XPag agora. Tente novamente em instantes.',
             UpstreamProvider::Spedy => 'Não foi possível falar com a Spedy agora. Tente novamente em instantes.',
             UpstreamProvider::MetaPixel => 'Não foi possível enviar o evento para a Meta agora. Tente novamente em instantes.',
             UpstreamProvider::GoogleAnalytics => 'Não foi possível enviar o evento para o Google Analytics agora. Tente novamente em instantes.',
@@ -1225,6 +1228,90 @@ final class UpstreamError
                 422,
             ],
             default => null,
+        };
+    }
+
+    /**
+     * XPag answers every refusal with a stable `error_code`, and its docs say
+     * to branch on that rather than on the sentence. The gateway driver puts
+     * the code into the raw text as well (`[permission_denied]`), because for
+     * 401/403/429 CallsProvider replaces the code with the status — and a
+     * 403 here means two different things: a key that is switched off, and a
+     * key that is fine but was not given the cash-in permission.
+     *
+     * @return array{0: string, 1: string, 2?: int}|null
+     */
+    private static function xpag(string $m, string $code): ?array
+    {
+        $is = fn (string $xpagCode) => $code === $xpagCode || str_contains($m, '['.$xpagCode.']');
+
+        return match (true) {
+            $is('permission_denied') => [
+                'integration_permission_missing',
+                'A chave da XPag não tem a permissão necessária. Em Integrações → API, ative a permissão de cash-in na chave e tente novamente.',
+                422,
+            ],
+            $is('key_inactive') => [
+                'integration_credentials_invalid',
+                'A chave da XPag está desativada. Ative-a ou gere uma nova em Integrações → API e atualize a integração.',
+                422,
+            ],
+            $is('missing_credentials'),
+            $is('invalid_credentials') => [
+                'integration_credentials_invalid',
+                'A XPag recusou o Client ID e o Client secret cadastrados. Confira os dois em Integrações → API e atualize a integração.',
+                422,
+            ],
+            // Refused here before any call: Pix only exists in reais.
+            $is('pix_requires_brl') => [
+                'payment_currency_unsupported',
+                'A XPag só gera Pix em reais, e este workspace cobra em outra moeda.',
+                422,
+            ],
+            $is('currency_not_supported'),
+            $is('currency_not_enabled') => [
+                'payment_currency_unsupported',
+                'Sua conta da XPag não está habilitada para receber Pix em reais. Ative a moeda BRL no painel da XPag.',
+                422,
+            ],
+            $is('kyc_required') => [
+                'payment_account_not_ready',
+                'Sua conta da XPag ainda não pode receber cobranças. Conclua a verificação de identidade (KYC) no painel da XPag.',
+                422,
+            ],
+            $is('amount_below_min') => [
+                'payment_amount_invalid',
+                'O valor desta cobrança está abaixo do mínimo aceito pela XPag. Confira o valor configurado no fluxo.',
+                422,
+            ],
+            $is('amount_above_limit') => [
+                'payment_amount_invalid',
+                'O valor desta cobrança está acima do limite da sua conta na XPag. Confira o valor configurado no fluxo ou o limite no painel da XPag.',
+                422,
+            ],
+            $is('invalid_amount') => [
+                'payment_amount_invalid',
+                'A XPag não aceitou o valor desta cobrança. Confira o valor configurado no fluxo.',
+                422,
+            ],
+            $is('too_many_pending') => [
+                'payment_too_many_pending',
+                'A XPag atingiu o limite de cobranças pendentes nesta conta. Aguarde algumas serem pagas ou vencerem e tente novamente.',
+                422,
+            ],
+            str_contains($m, 'document'),
+            str_contains($m, 'cpf'),
+            str_contains($m, 'cnpj') => [
+                'payment_payer_document_invalid',
+                'A XPag recusou o CPF/CNPJ do pagador. Confira a variável usada no nó de pagamento.',
+                422,
+            ],
+            $is('rate_limited') => [
+                'integration_rate_limited',
+                'A XPag está limitando as requisições agora. Tente novamente em instantes.',
+                429,
+            ],
+            default => self::connectedAccount('A XPag', $m, $code),
         };
     }
 

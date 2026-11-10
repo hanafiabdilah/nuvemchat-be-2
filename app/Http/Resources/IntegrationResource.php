@@ -64,7 +64,7 @@ class IntegrationResource extends JsonResource
      *
      * `account` mode is OpenPix, Asaas, Stripe and the invoice platforms: one
      * URL registered on the account, which either worked or did not.
-     * `per_payment` is Mercado Pago: each charge carries the URL itself, so
+     * `per_payment` is Mercado Pago and XPag: each charge carries the URL itself, so
      * there is nothing to register — only the platform's own address has to be
      * https for it to be sent at all.
      *

@@ -56,6 +56,8 @@ enum MarketCapability: string
         'openpix' => 'BR',
         'mercadopago' => 'BR',
         'asaas' => 'BR',
+        // XPag works in several currencies, but only its Pix is implemented.
+        'xpag' => 'BR',
         'spedy' => 'BR',
     ];
 

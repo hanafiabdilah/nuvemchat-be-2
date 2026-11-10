@@ -23,6 +23,7 @@ enum IntegrationProvider: string
     case MercadoPago = 'mercadopago';
     case Asaas = 'asaas';
     case Stripe = 'stripe';
+    case XPag = 'xpag';
     case Spedy = 'spedy';
     case MetaPixel = 'meta_pixel';
     case GoogleAnalytics = 'google_analytics';
@@ -30,7 +31,7 @@ enum IntegrationProvider: string
     public function category(): IntegrationCategory
     {
         return match ($this) {
-            self::OpenPix, self::MercadoPago, self::Asaas, self::Stripe => IntegrationCategory::Payment,
+            self::OpenPix, self::MercadoPago, self::Asaas, self::Stripe, self::XPag => IntegrationCategory::Payment,
             self::Spedy => IntegrationCategory::Invoice,
             self::MetaPixel, self::GoogleAnalytics => IntegrationCategory::Pixel,
         };
@@ -44,6 +45,7 @@ enum IntegrationProvider: string
             self::MercadoPago => 'Mercado Pago',
             self::Asaas => 'Asaas',
             self::Stripe => 'Stripe',
+            self::XPag => 'XPag',
             self::Spedy => 'Spedy',
             self::MetaPixel => 'Meta Pixel',
             self::GoogleAnalytics => 'Google Analytics 4',
@@ -57,6 +59,7 @@ enum IntegrationProvider: string
             self::MercadoPago => 'Pix charges or a checkout link that also takes cards and boleto.',
             self::Asaas => 'Pix charges or a payment link that also takes boleto and card. Needs the customer\'s CPF/CNPJ.',
             self::Stripe => 'A Stripe Checkout link for card payments — and Pix, when it is enabled on your Stripe account.',
+            self::XPag => 'Pix charges with QR code and copy-and-paste code. Every Pix stays open for 24 hours.',
             self::Spedy => 'Issues an NFS-e through your company on Spedy and sends the customer the PDF once the prefeitura authorizes it.',
             self::MetaPixel => 'Sends conversions to your pixel through the Conversions API, for Facebook and Instagram ads.',
             self::GoogleAnalytics => 'Sends events to a GA4 property through the Measurement Protocol, for reports and Google Ads.',
@@ -70,6 +73,7 @@ enum IntegrationProvider: string
             self::MercadoPago => 'https://www.mercadopago.com.br/developers/pt/docs/your-integrations/credentials',
             self::Asaas => 'https://docs.asaas.com/docs/chaves-de-api',
             self::Stripe => 'https://docs.stripe.com/keys',
+            self::XPag => 'https://xpag.global/docs/authentication',
             self::Spedy => 'https://docs.spedy.com.br/start/autenticacao',
             self::MetaPixel => 'https://developers.facebook.com/docs/marketing-api/conversions-api/get-started',
             self::GoogleAnalytics => 'https://developers.google.com/analytics/devguides/collection/protocols/ga4',
@@ -80,15 +84,15 @@ enum IntegrationProvider: string
      * Which charge shapes a payment provider issues.
      *
      * `pix` is a Pix charge (QR image + copy-and-paste code); `checkout` is a
-     * hosted page that also takes cards and boleto. OpenPix only does Pix;
-     * Stripe only the page (see StripeGateway for why).
+     * hosted page that also takes cards and boleto. OpenPix and XPag only do
+     * Pix; Stripe only the page (see StripeGateway for why).
      *
      * @return list<string>
      */
     public function paymentMethods(): array
     {
         return match ($this) {
-            self::OpenPix => ['pix'],
+            self::OpenPix, self::XPag => ['pix'],
             self::MercadoPago, self::Asaas => ['pix', 'checkout'],
             self::Stripe => ['checkout'],
             default => [],
@@ -107,14 +111,14 @@ enum IntegrationProvider: string
     /**
      * How the provider tells us something moved. `account`: one webhook
      * registered on the account, which worked or did not. `per_request`: every
-     * charge carries the URL itself (Mercado Pago), so there is nothing to
-     * register. `none`: nobody calls back (pixels).
+     * charge carries the URL itself (Mercado Pago, XPag), so there is nothing
+     * to register. `none`: nobody calls back (pixels).
      */
     public function webhookMode(): string
     {
         return match (true) {
             ! $this->category()->receivesWebhooks() => 'none',
-            $this === self::MercadoPago => 'per_request',
+            $this === self::MercadoPago, $this === self::XPag => 'per_request',
             default => 'account',
         };
     }
@@ -124,6 +128,11 @@ enum IntegrationProvider: string
      * minutes, when it narrows the node's own range. The gateway driver clamps
      * the node's deadline into it, and the builder warns before that happens.
      *
+     * XPag's is one value, not a range: its Pix lasts 24 hours, there is no
+     * field to change that and no route to close one early. A shorter node
+     * deadline would tell the customer "the time is up" while the QR still
+     * takes their money for the rest of the day — see XPagGateway.
+     *
      * @return array{0: int, 1: int}|null
      */
     public function chargeWindowMinutes(string $method): ?array
@@ -131,6 +140,7 @@ enum IntegrationProvider: string
         return match (true) {
             $this === self::MercadoPago && $method === 'pix' => [30, 43200],
             $this === self::Stripe => [30, 1440],
+            $this === self::XPag && $method === 'pix' => [1440, 1440],
             default => null,
         };
     }
@@ -218,6 +228,26 @@ enum IntegrationProvider: string
                     'placeholder' => 'https://suaempresa.com.br/obrigado',
                     'help' => 'Where the customer lands after paying. Leave blank for a simple "payment sent, go back to the chat" page.',
                     'rules' => ['url', 'max:500', 'regex:/^https?:\/\//'],
+                ],
+            ],
+            self::XPag => [
+                [
+                    'key' => 'client_id',
+                    'label' => 'Client ID',
+                    'type' => 'secret',
+                    'required' => true,
+                    'secret' => true,
+                    'help' => 'In XPag, open Integrations → API and create a key. A Client ID starting with xpagsandbox_ belongs to the sandbox and creates test charges.',
+                    'rules' => ['string', 'min:6', 'max:200'],
+                ],
+                [
+                    'key' => 'client_secret',
+                    'label' => 'Client secret',
+                    'type' => 'secret',
+                    'required' => true,
+                    'secret' => true,
+                    'help' => 'Shown with the Client ID. The key needs the cash-in permission to create charges.',
+                    'rules' => ['string', 'min:8', 'max:500'],
                 ],
             ],
             self::Spedy => [
@@ -350,6 +380,7 @@ enum IntegrationProvider: string
             self::MercadoPago => UpstreamProvider::MercadoPago,
             self::Asaas => UpstreamProvider::Asaas,
             self::Stripe => UpstreamProvider::Stripe,
+            self::XPag => UpstreamProvider::XPag,
             self::Spedy => UpstreamProvider::Spedy,
             self::MetaPixel => UpstreamProvider::MetaPixel,
             self::GoogleAnalytics => UpstreamProvider::GoogleAnalytics,
