@@ -11,8 +11,11 @@ use App\Jobs\PublishInstagramPost;
 use App\Models\InstagramPost;
 use App\Services\Instagram\InstagramGraphClientFactory;
 use App\Services\Instagram\InstagramMediaPreparer;
+use App\Services\Media\ChunkedUpload;
 use App\Services\Media\MediaStorage;
+use App\Services\Message\StagedVideoUploads;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
@@ -130,9 +133,10 @@ class InstagramPostController extends Controller
         $connection = $this->instagramConnection($request, $connectionId);
 
         $request->validate([
-            // 100 MB: Instagram's own video ceiling is higher, but anything
-            // larger is a reel that will not survive its own upload anyway.
-            'file' => ['required', 'file', 'max:102400'],
+            // See InstagramMediaPreparer::MAX_VIDEO_BYTES. A file this big only
+            // fits in one request up to PHP's 64 MB; larger videos come through
+            // uploadChunk() instead.
+            'file' => ['required', 'file', 'max:'.intdiv(InstagramMediaPreparer::MAX_VIDEO_BYTES, 1024)],
             'fit' => ['nullable', Rule::in([InstagramMediaPreparer::FIT_CROP, InstagramMediaPreparer::FIT_PAD])],
         ]);
 
@@ -143,6 +147,67 @@ class InstagramPostController extends Controller
                 $request->string('fit')->toString() ?: InstagramMediaPreparer::FIT_CROP,
             ),
         ], 201);
+    }
+
+    /**
+     * One piece of a video too big for one request (see ChunkedUpload).
+     *
+     * Videos go up to InstagramMediaPreparer::MAX_VIDEO_BYTES (100 MB) and PHP
+     * takes at most 64 MB per request, so the composer sends anything large in
+     * 8 MB pieces — the same way the TikTok and YouTube composers do. The last
+     * piece goes through exactly the same preparation as a normal upload.
+     */
+    public function uploadChunk(Request $request, string $connectionId)
+    {
+        $connection = $this->instagramConnection($request, $connectionId);
+
+        $piece = $request->validate([
+            'upload_id' => ['required', 'string', 'regex:/^[A-Za-z0-9-]{16,64}$/'],
+            'index' => ['required', 'integer', 'min:0'],
+            'total' => ['required', 'integer', 'min:1', 'max:100000'],
+            'size' => ['required', 'integer', 'min:1'],
+            'name' => ['required', 'string', 'max:255'],
+            'chunk' => ['required', 'file', 'max:'.(intdiv(ChunkedUpload::CHUNK_BYTES, 1024) + 64)],
+            'fit' => ['nullable', Rule::in([InstagramMediaPreparer::FIT_CROP, InstagramMediaPreparer::FIT_PAD])],
+        ]);
+
+        $tenantId = (int) $connection->tenant_id;
+
+        $result = (new ChunkedUpload(
+            'instagram',
+            InstagramMediaPreparer::VIDEO_EXTENSIONS,
+            InstagramMediaPreparer::MAX_VIDEO_BYTES,
+            MediaStorage::staging(),
+            'video/',
+            'Instagram accepts MP4 and MOV video.',
+        ))->receive(
+            $tenantId,
+            'instagram-upload/'.$tenantId,
+            $piece['upload_id'],
+            (int) $piece['index'],
+            (int) $piece['total'],
+            (int) $piece['size'],
+            $piece['name'],
+            $request->file('chunk'),
+        );
+
+        if (! $result['done']) {
+            return response()->json(['data' => ['done' => false, 'next_index' => $result['next_index']]]);
+        }
+
+        $path = $result['file']['path'];
+
+        try {
+            $prepared = $this->media->store(
+                new UploadedFile(MediaStorage::staging()->path($path), $piece['name'], null, null, true),
+                $tenantId,
+                $request->string('fit')->toString() ?: InstagramMediaPreparer::FIT_CROP,
+            );
+        } finally {
+            StagedVideoUploads::delete($path);
+        }
+
+        return response()->json(['data' => ['done' => true] + $prepared], 201);
     }
 
     /**

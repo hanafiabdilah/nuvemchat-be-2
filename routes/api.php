@@ -790,6 +790,8 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
             // Media has to exist at a public URL before a post can reference it
             // — Meta fetches images, it does not accept them.
             Route::post('/accounts/{connection}/uploads', [InstagramPostController::class, 'upload'])->middleware('permission:instagram-posts.create');
+            // Videos over PHP's one-request limit (64 MB), up to 100 MB, in 8 MB pieces.
+            Route::post('/accounts/{connection}/uploads/chunks', [InstagramPostController::class, 'uploadChunk'])->middleware(['permission:instagram-posts.create', 'throttle:600,1']);
 
             Route::get('/posts/{post}', [InstagramPostController::class, 'show'])->middleware('permission:instagram-posts.view');
             Route::put('/posts/{post}', [InstagramPostController::class, 'update'])->middleware('permission:instagram-posts.create');

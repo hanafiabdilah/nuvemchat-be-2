@@ -34,10 +34,12 @@ class InstagramMediaPreparer
 
     /** Meta's feed window, as width ÷ height. */
     public const MIN_RATIO = 4 / 5;
+
     public const MAX_RATIO = 1.91;
 
     /** Meta scales anything smaller up, and anything larger down; do it here. */
     public const MIN_EDGE = 320;
+
     public const MAX_EDGE = 1920;
 
     /**
@@ -49,8 +51,20 @@ class InstagramMediaPreparer
 
     public const VIDEO_MIMES = ['video/mp4', 'video/quicktime'];
 
+    /**
+     * 100 MB: Instagram's own video ceiling is higher, but anything larger is
+     * a reel that will not survive its own upload anyway. Read by the one-request
+     * upload and by the piece-by-piece one (anything over PHP's 64 MB request
+     * limit has to arrive that way).
+     */
+    public const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+
+    /** By the name the browser gave; the assembled content must then sniff as one of VIDEO_MIMES. */
+    public const VIDEO_EXTENSIONS = ['mp4', 'mov'];
+
     /** Cropping matches what the Instagram app does to an odd-shaped photo. */
     public const FIT_CROP = 'crop';
+
     public const FIT_PAD = 'pad';
 
     /**
@@ -258,6 +272,6 @@ class InstagramMediaPreparer
 
     private function directory(int $tenantId): string
     {
-        return "instagram/{$tenantId}/" . now()->format('Y/m');
+        return "instagram/{$tenantId}/".now()->format('Y/m');
     }
 }
