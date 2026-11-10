@@ -68,6 +68,13 @@ Schedule::command('email:fetch')
 // unpaid ones. Every minute because somebody may be sitting in the chat having
 // just paid — each pass is capped, and one that finds nothing is two indexed
 // queries. Without it a flow can wait on a payment forever.
+// WhatsApp calls answered in the dashboard: closes the ones a lost webhook or
+// a closed tab left open, so nobody is shown "on a call" forever.
+Schedule::command('calls:sweep')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('Call sweep failed'));
+
 Schedule::command('flow-payments:sync')
     ->everyMinute()
     ->withoutOverlapping(5)

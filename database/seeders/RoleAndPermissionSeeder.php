@@ -63,6 +63,8 @@ class RoleAndPermissionSeeder extends Seeder
             'conversations.take-over',
             // Start, pause and resume a flow in one conversation by hand.
             'conversations.manage-flow',
+            // Being rung for and answering WhatsApp calls in the dashboard.
+            'calls.answer',
 
             // Connections
             'connections.create',

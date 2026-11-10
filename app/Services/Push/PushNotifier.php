@@ -325,6 +325,17 @@ class PushNotifier
         return $name ?: $this->text('a_contact', $locale);
     }
 
+    /**
+     * One line of push copy in this phone's language — for senders that build
+     * their own payload (the call ring) instead of going through fanOut().
+     *
+     * @param  array<string, string>  $params
+     */
+    public function lineFor(DeviceToken $device, string $key, array $params = []): string
+    {
+        return $this->text($key, $this->localeFor($device), $params);
+    }
+
     private function localeFor(DeviceToken $device): string
     {
         $locales = array_keys(config('markets.locales', []));

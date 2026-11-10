@@ -260,6 +260,7 @@ class UserController extends Controller
 
         $validated = $request->validate([
             'incoming_messages' => ['sometimes', 'boolean'],
+            'calls' => ['sometimes', 'boolean'],
             'muted_connection_ids' => ['sometimes', 'array'],
             'muted_connection_ids.*' => ['integer'],
             'whatsapp_alerts' => ['sometimes', 'array'],

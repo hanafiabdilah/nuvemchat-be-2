@@ -179,6 +179,7 @@ class ConnectionController extends Controller
             'status' => ConnectionStatus::Inactive,
             'accept_message' => $connection->accept_message,
             'closing_message' => $connection->closing_message,
+            'call_busy_message' => $connection->call_busy_message,
             'return_to_last_agent' => $connection->return_to_last_agent,
             'return_to_last_agent_minutes' => $connection->return_to_last_agent_minutes,
             'return_to_last_agent_require_online' => $connection->requiresOnlineAgentToReturn(),

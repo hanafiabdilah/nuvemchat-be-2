@@ -73,6 +73,11 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
 
+        // An SDP (a WhatsApp call answer, CallController::answer) must end in
+        // CRLF — RFC 8866 — and trimming it hands Meta an answer it may refuse
+        // as malformed.
+        $middleware->trimStrings(except: ['sdp']);
+
         $middleware->web(append: [
             HandleAppearance::class,
             HandleInertiaRequests::class,

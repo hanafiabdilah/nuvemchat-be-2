@@ -18,4 +18,10 @@ return [
     'crm_automation' => '{{message}}',
     'test_title' => 'Pingly',
     'test_body' => 'As notificações estão funcionando neste aparelho.',
+    // Voice calls (WhatsApp Cloud API): the ring, and the line that
+    // replaces it once somebody answered or it is over.
+    'incoming_call' => 'Ligação do WhatsApp',
+    'call_answered_by' => '{{agent}} atendeu esta ligação',
+    'call_missed' => 'Ligação perdida',
+    'call_ended' => 'A ligação terminou',
 ];

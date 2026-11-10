@@ -36,3 +36,7 @@ Settings → Notifications. The customer's message is never in the payload.
 - Dead tokens (`UNREGISTERED`) are deleted automatically.
 
 Tests: `tests/Feature/Push/MobilePushTest.php`.
+
+## WhatsApp calls
+
+Incoming calls ring the app with an `incoming_call` push and stop with `call_cancelled`. The full contract (payloads, bridge methods, WebView permissions) is in `docs/whatsapp-calling.md`.

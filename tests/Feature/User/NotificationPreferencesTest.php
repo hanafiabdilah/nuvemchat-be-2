@@ -78,6 +78,7 @@ it('merges a partial update instead of dropping the other switch', function () {
         ->toBe([
             'incoming_messages' => false,
             'muted_connection_ids' => [$connection->id],
+            'calls' => true,
             // Untouched by this update, and off until chosen.
             'whatsapp_alerts' => [
                 'connection_down' => false,

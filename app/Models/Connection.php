@@ -33,6 +33,7 @@ class Connection extends Model
         'sync_started_at',
         'accept_message',
         'closing_message',
+        'call_busy_message',
         'return_to_last_agent',
         'return_to_last_agent_minutes',
         'return_to_last_agent_require_online',

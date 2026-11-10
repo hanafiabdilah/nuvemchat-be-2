@@ -138,6 +138,11 @@ class User extends Authenticatable
         return [
             'incoming_messages' => (bool) ($stored['incoming_messages'] ?? true),
             'muted_connection_ids' => array_values(array_unique(array_map('intval', $muted))),
+            // Being rung for WhatsApp calls. On unless switched off: calls ring
+            // everyone who can answer, and this is how one person says "not me"
+            // (no headset, front desk) without an owner editing their role.
+            // Enforced server-side — CallService decides who is rung.
+            'calls' => (bool) ($stored['calls'] ?? true),
             // Alerts sent to this person's own WhatsApp — all off until chosen.
             'whatsapp_alerts' => \App\Services\Notification\WhatsappAlerts::settings(
                 is_array($stored['whatsapp_alerts'] ?? null) ? $stored['whatsapp_alerts'] : []

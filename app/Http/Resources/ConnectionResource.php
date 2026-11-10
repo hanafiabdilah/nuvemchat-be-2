@@ -62,6 +62,12 @@ class ConnectionResource extends JsonResource
                 'accept_message' => $this->accept_message,
                 'closing_message' => $this->closing_message,
             ],
+            // WhatsApp calls answered from the dashboard. Whether calling is
+            // switched on is Meta's to say (GET /connections/{id}/calling);
+            // what the customer is told when nobody can answer is ours.
+            'calling' => [
+                'busy_message' => $this->call_busy_message,
+            ],
             // Routing, not a message: a contact who comes back inside the
             // tolerance goes to the agent who last served them instead of
             // through the flow and the queue.

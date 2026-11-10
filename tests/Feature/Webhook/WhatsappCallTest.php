@@ -90,6 +90,9 @@ function callNote(): ?Message
 
 test('an incoming Cloud API call opens a thread and lands as a ringing note', function () {
     Event::fake();
+    // The note on its own: with answering on and nobody to ring, the call
+    // would be refused at once (tests/Feature/Calls/WhatsappCallingTest.php).
+    config(['calls.enabled' => false]);
     $connection = callConnection();
 
     (new WhatsappCallHandler)->handleChange($connection, callsChange([

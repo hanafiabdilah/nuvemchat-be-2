@@ -66,6 +66,8 @@ use App\Http\Controllers\Api\Reservations\ReservableServiceController;
 use App\Http\Controllers\Api\Reservations\ReservationController;
 use App\Http\Controllers\Api\ConnectionController;
 use App\Http\Controllers\Api\ContactController;
+use App\Http\Controllers\Api\CallController;
+use App\Http\Controllers\Api\ConnectionCallingController;
 use App\Http\Controllers\Api\ConversationController;
 use App\Http\Controllers\Api\ConversationFlowController;
 use App\Http\Controllers\Api\ConversationNoteController;
@@ -520,6 +522,21 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
         Route::post('/conversations/{id}/exclusive', [ConversationController::class, 'makeExclusive']);
         Route::delete('/conversations/{id}/exclusive', [ConversationController::class, 'removeExclusive']);
 
+        // WhatsApp calls answered in the dashboard (CallService). Seeing who is
+        // on the phone is open to everyone on the connection; being rung for
+        // and answering a call is `calls.answer`. Heartbeat runs every few
+        // seconds per call, hence its own, looser throttle.
+        Route::get('/calls/active', [CallController::class, 'active']);
+        Route::get('/calls/{id}', [CallController::class, 'show'])->whereNumber('id');
+        Route::middleware('permission:calls.answer')->group(function () {
+            Route::post('/calls/{id}/claim', [CallController::class, 'claim'])->whereNumber('id');
+            Route::post('/calls/{id}/answer', [CallController::class, 'answer'])->whereNumber('id');
+            Route::post('/calls/{id}/accept', [CallController::class, 'accept'])->whereNumber('id');
+            Route::post('/calls/{id}/decline', [CallController::class, 'decline'])->whereNumber('id');
+            Route::post('/calls/{id}/hangup', [CallController::class, 'hangup'])->whereNumber('id');
+            Route::post('/calls/{id}/heartbeat', [CallController::class, 'heartbeat'])->whereNumber('id')->middleware('throttle:30,1,call-heartbeat');
+        });
+
         // Removing a group drops its inbound messages at ingest; the group's
         // contact (name, photo) carries on being maintained either way.
         Route::get('/groups/removed', [GroupController::class, 'removed']);
@@ -927,6 +944,12 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     Route::get('/connections/{id}/oauth', [ConnectionController::class, 'oauth'])->middleware('permission:connections.oauth');
     Route::get('/connections/{id}/business-profile', [ConnectionController::class, 'businessProfile']);
     Route::put('/connections/{id}/business-profile', [ConnectionController::class, 'updateBusinessProfile'])->middleware('permission:connections.update');
+    // WhatsApp calls on the number: Meta's on/off switch (read live) and the
+    // busy message. Part of the chat feature, like answering them.
+    Route::middleware('feature:'.Feature::Chat->value)->group(function () {
+        Route::get('/connections/{id}/calling', [ConnectionCallingController::class, 'show']);
+        Route::put('/connections/{id}/calling', [ConnectionCallingController::class, 'update'])->middleware('permission:connections.update');
+    });
     // Bringing a number in from another BSP: claim → send code → verify.
     // Gated on connections.connect, same as any other act of attaching a
     // number to a connection.

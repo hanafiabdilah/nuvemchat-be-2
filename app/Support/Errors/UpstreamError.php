@@ -496,6 +496,49 @@ final class UpstreamError
         $numeric = $code !== '' ? $code : (preg_match('/\(#(\d{2,6})\)/', $m, $hit) ? $hit[1] : '');
 
         return match (true) {
+            // Calling (Cloud API). First, because two of these share words
+            // with the messaging entries below ("not enabled", "limit").
+            $numeric === '138000',
+            str_contains($m, 'calling not enabled') => [
+                'calling_not_enabled',
+                'As ligações não estão ativadas neste número do WhatsApp. Ative-as nos detalhes da conexão.',
+                422,
+            ],
+            $numeric === '138015' => [
+                'calling_tier_too_low',
+                'O WhatsApp só libera ligações para números com limite de envio de 2.000 conversas por dia ou mais. Este número ainda não chegou lá.',
+                422,
+            ],
+            $numeric === '138018' => [
+                'calling_webhook_missing',
+                'O WhatsApp ainda não está enviando os eventos de ligação para a Pingly. Estamos com um problema na configuração; fale com o suporte.',
+                502,
+            ],
+            $numeric === '138014' => [
+                'calling_temporarily_disabled',
+                'O WhatsApp pausou as ligações deste número por um tempo, por causa da qualidade das chamadas. Tente novamente mais tarde.',
+                422,
+            ],
+            $numeric === '131055' => [
+                'calling_uses_sip',
+                'Este número recebe ligações por um servidor SIP, então elas não podem ser atendidas pelo painel.',
+                422,
+            ],
+            in_array($numeric, ['138004', '138007'], true) => [
+                'call_connect_failed',
+                'Não foi possível conectar a ligação. Verifique o microfone e a internet e tente atender de novo.',
+                502,
+            ],
+            str_contains($m, 'invalid call-id'),
+            str_contains($m, 'invalid call id'),
+            str_contains($m, 'already in progress'),
+            str_contains($m, 'already completed'),
+            str_contains($m, 'already failed') => [
+                'call_unavailable',
+                'Esta ligação já terminou ou não está mais disponível.',
+                409,
+            ],
+
             $numeric === '131047',
             str_contains($m, 're-engagement message'),
             str_contains($m, 'outside the allowed window'),

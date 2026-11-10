@@ -2,7 +2,9 @@
 
 namespace App\Services\Webhook\Handlers\Chat;
 
+use App\Models\Call;
 use App\Models\Connection;
+use App\Services\Calls\CallService;
 use App\Services\Conversation\CallLog;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -25,6 +27,11 @@ use Illuminate\Support\Facades\Log;
 class WhatsappCallHandler
 {
     public const FIELDS = ['calls'];
+
+    public function __construct(private ?CallService $calls = null)
+    {
+        $this->calls ??= app(CallService::class);
+    }
 
     /** Entry point from the webhook controller: one change (field + value). */
     public function handleChange(Connection $connection, array $change): void
@@ -87,16 +94,7 @@ class WhatsappCallHandler
         $event = strtolower((string) ($call['event'] ?? ''));
 
         match ($event) {
-            'connect' => CallLog::record(
-                $connection,
-                $phone,
-                $name,
-                $callId,
-                CallLog::RINGING,
-                $this->timestamp($call['timestamp'] ?? $call['start_time'] ?? null),
-                null,
-                ['direction' => $direction],
-            ),
+            'connect' => $this->connected($connection, $call, $phone, $name, $callId, $direction),
             'terminate' => $this->terminated($connection, $call, $phone, $name, $callId, $direction),
             default => Log::info('WhatsappCallHandler: unhandled call event', [
                 'connection_id' => $connection->id,
@@ -104,6 +102,35 @@ class WhatsappCallHandler
                 'event' => $call['event'] ?? null,
             ]),
         };
+    }
+
+    /**
+     * The customer is ringing. The note goes into the thread first — it is the
+     * record whatever happens next — and then the agents are rung
+     * (CallService), which answers or refuses the call with Meta.
+     */
+    private function connected(
+        Connection $connection,
+        array $call,
+        string $phone,
+        ?string $name,
+        string $callId,
+        string $direction,
+    ): void {
+        $note = CallLog::record(
+            $connection,
+            $phone,
+            $name,
+            $callId,
+            CallLog::RINGING,
+            $this->timestamp($call['timestamp'] ?? $call['start_time'] ?? null),
+            null,
+            ['direction' => $direction],
+        );
+
+        if ($note) {
+            $this->calls->incoming($connection, $note, $callId, $call['session']['sdp'] ?? null);
+        }
     }
 
     /**
@@ -122,6 +149,18 @@ class WhatsappCallHandler
         $status = strtoupper((string) ($call['status'] ?? ''));
         $seconds = isset($call['duration']) ? (int) $call['duration'] : null;
         $answered = ($seconds ?? 0) > 0;
+
+        // A call that was offered to the dashboard: CallService knows where it
+        // got to (answered here, refused for lack of an agent, rang out) and
+        // writes the note to match. Meta's own status alone would call a
+        // refused call merely "missed".
+        $live = Call::query()->where('connection_id', $connection->id)->where('external_id', $callId)->first();
+
+        if ($live) {
+            $this->calls->terminated($live, $seconds, $status);
+
+            return;
+        }
 
         $code = match (true) {
             $status === 'REJECTED' => CallLog::DECLINED,

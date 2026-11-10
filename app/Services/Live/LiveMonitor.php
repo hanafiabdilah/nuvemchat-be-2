@@ -705,7 +705,18 @@ final class LiveMonitor
 
             $handling = $this->lastSentPerAgent($ids);
 
-            return $users->map(function ($user) use ($onlineSince, $open, $handling) {
+            // Who is on a WhatsApp call right now (connecting or talking). Its
+            // own field rather than a fourth presence value: the Back Office
+            // reads `presence` too, and a value it does not know would render
+            // as nothing there.
+            $onCall = DB::table('calls')
+                ->whereIn('answered_by_user_id', $ids)
+                ->whereIn('status', \App\Enums\Call\CallStatus::occupyingValues())
+                ->select(['answered_by_user_id', 'conversation_id', 'status', 'answered_at', 'claimed_at'])
+                ->get()
+                ->keyBy('answered_by_user_id');
+
+            return $users->map(function ($user) use ($onlineSince, $open, $handling, $onCall) {
                 $lastSeen = $user->last_seen_at ? Carbon::parse($user->last_seen_at) : null;
                 $online = $lastSeen !== null && $lastSeen->gte($onlineSince) && $user->offline_since === null;
                 $recent = $handling[$user->id] ?? null;
@@ -727,6 +738,11 @@ final class LiveMonitor
                     'last_seen_seconds' => $lastSeen ? (int) now()->diffInSeconds($lastSeen, absolute: true) : null,
                     'open_conversations' => (int) ($open[$user->id] ?? 0),
                     'last_sent_seconds' => $sentSecondsAgo,
+                    'on_call' => ($call = $onCall[$user->id] ?? null) ? [
+                        'conversation_id' => $call->conversation_id ? (int) $call->conversation_id : null,
+                        'status' => $call->status,
+                        'since' => ($call->answered_at ?? $call->claimed_at) ? Carbon::parse($call->answered_at ?? $call->claimed_at)->timestamp : null,
+                    ] : null,
                     'handling' => $recent ? [
                         'conversation_id' => (int) $recent->conversation_id,
                         'contact' => $this->contactLabel($recent),

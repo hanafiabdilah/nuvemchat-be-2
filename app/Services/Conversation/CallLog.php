@@ -54,6 +54,21 @@ class CallLog
     public const DECLINED = 'call_declined';
 
     /**
+     * Refused by us: nobody was free to answer it from the dashboard (or
+     * everybody rung declined). Its own state rather than MISSED, because the
+     * customer was told something different — the call was turned away, not
+     * left to ring out — and a reader scanning the thread should know which.
+     */
+    public const BUSY = 'call_busy';
+
+    /**
+     * The states that name the agent on the call when one is known — the
+     * difference between "Call answered" and "Ana answered the call", which is
+     * the line the next agent opening the thread is looking for.
+     */
+    private const AGENT_STATES = ['call_ongoing', 'call_answered', 'call_ended'];
+
+    /**
      * How much each state is worth knowing. An event may only rewrite the note
      * with a state at least as final as the one already there, which is what
      * keeps a re-delivered offer from turning a finished call back into a
@@ -66,6 +81,7 @@ class CallLog
         self::ONGOING => 1,
         self::MISSED => 2,
         self::DECLINED => 2,
+        self::BUSY => 2,
         self::ENDED => 3,
         self::ANSWERED => 4,
     ];
@@ -131,10 +147,20 @@ class CallLog
         return self::advance($note, $code, $seconds, $detail);
     }
 
-    /** The code a note carries: the call's state, or its outgoing twin. */
-    private static function codeFor(string $state, bool $outgoing): string
+    /**
+     * The code a note carries: the call's state, its outgoing twin, or — for a
+     * call answered from the dashboard — the `_by` variant that names the
+     * agent. Two codes rather than one with an optional name, the same rule as
+     * the status notes: "the call was answered" and "Ana answered the call"
+     * are two sentences, not one with a hole in it.
+     */
+    private static function codeFor(string $state, bool $outgoing, ?string $agent = null): string
     {
-        return $outgoing ? 'call_out_'.substr($state, strlen('call_')) : $state;
+        if ($outgoing) {
+            return 'call_out_'.substr($state, strlen('call_'));
+        }
+
+        return $agent && in_array($state, self::AGENT_STATES, true) ? $state.'_by' : $state;
     }
 
     /**
@@ -278,15 +304,16 @@ class CallLog
         // The accept time is set once, by the event that saw it, and read much
         // later by the terminate that has to work out how long the call ran.
         $meta['call'] = self::detail($call['id'] ?? null, $code, $seconds, array_merge($call, $detail));
+        $agent = $outgoing ? null : ($meta['call']['agent'] ?? null);
         $meta['info'] = array_filter([
-            'code' => self::codeFor($code, $outgoing),
-            'params' => self::params($seconds) ?: null,
+            'code' => self::codeFor($code, $outgoing, $agent),
+            'params' => self::params($seconds, $agent) ?: null,
         ]);
 
         // sent_at is left alone on purpose: the note belongs where the call
         // started in the timeline, not where it ended.
         $message->update([
-            'body' => self::body($code, $seconds, $outgoing),
+            'body' => self::body($code, $seconds, $outgoing, $agent),
             'meta' => $meta,
         ]);
 
@@ -303,8 +330,16 @@ class CallLog
      * (lib/infoMessage.ts) and only falls back to this, so it has to read as a
      * finished sentence on its own.
      */
-    private static function body(string $code, ?int $seconds, bool $outgoing = false): string
+    private static function body(string $code, ?int $seconds, bool $outgoing = false, ?string $agent = null): string
     {
+        if (! $outgoing && $agent && in_array($code, self::AGENT_STATES, true)) {
+            return match ($code) {
+                self::ONGOING => "{$agent} is on the call.",
+                self::ANSWERED => "{$agent} answered the call · ".self::humanDuration($seconds ?? 0),
+                default => "{$agent} answered the call.",
+            };
+        }
+
         if ($outgoing) {
             return match ($code) {
                 self::RINGING => 'The flow is calling the customer.',
@@ -322,14 +357,18 @@ class CallLog
             self::ANSWERED => 'Call answered · '.self::humanDuration($seconds ?? 0),
             self::ENDED => 'Call ended.',
             self::DECLINED => 'Call declined.',
+            self::BUSY => 'Missed call: no agent was available to answer.',
             default => 'Missed call.',
         };
     }
 
     /** @return array<string, mixed> */
-    private static function params(?int $seconds): array
+    private static function params(?int $seconds, ?string $agent = null): array
     {
-        return $seconds === null ? [] : ['seconds' => $seconds];
+        return array_filter([
+            'seconds' => $seconds,
+            'agent' => $agent,
+        ], fn ($value) => $value !== null);
     }
 
     /** @return array<string, mixed> */
