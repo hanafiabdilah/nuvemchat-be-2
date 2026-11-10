@@ -63,8 +63,27 @@ class Call extends Model
         'ended_at',
         'last_heartbeat_at',
         'duration_seconds',
+        'recording_status',
+        'recording_mime',
+        'recording_parts',
         'meta',
     ];
+
+    /** Being captured by the answering browser right now. */
+    public const RECORDING = 'recording';
+
+    /** The browser finished; the pieces are being joined. */
+    public const RECORDING_PROCESSING = 'processing';
+
+    /** The file is on the note; the AI is transcribing and summarising it. */
+    public const RECORDING_TRANSCRIBING = 'transcribing';
+
+    public const RECORDING_READY = 'ready';
+
+    /** Recording was on, but not a single piece ever arrived. */
+    public const RECORDING_EMPTY = 'empty';
+
+    public const RECORDING_FAILED = 'failed';
 
     /** The SDPs are setup material, never something a resource should echo. */
     protected $hidden = ['offer_sdp', 'answer_sdp'];
@@ -82,6 +101,7 @@ class Call extends Model
             'ended_at' => 'datetime',
             'last_heartbeat_at' => 'datetime',
             'meta' => 'array',
+            'recording_parts' => 'integer',
         ];
     }
 

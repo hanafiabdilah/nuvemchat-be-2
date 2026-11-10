@@ -41,4 +41,11 @@ return [
     // presence worker rather than the default queue, where an AI turn can sit
     // in front of it for a minute.
     'push_queue' => env('CALLS_PUSH_QUEUE', env('AI_PRESENCE_QUEUE', 'default')),
+
+    'recording' => [
+        // Above this the transcription model refuses the file (OpenAI's limit
+        // is 25 MB; 24 MB of 48 kbps mono AAC is over an hour). The recording
+        // is still kept; the note says it was too long to transcribe.
+        'max_ai_bytes' => (int) env('CALLS_RECORDING_MAX_AI_BYTES', 24 * 1024 * 1024),
+    ],
 ];

@@ -180,6 +180,8 @@ class ConnectionController extends Controller
             'accept_message' => $connection->accept_message,
             'closing_message' => $connection->closing_message,
             'call_busy_message' => $connection->call_busy_message,
+            'call_recording' => (bool) $connection->call_recording,
+            'call_recording_notice' => $connection->call_recording_notice,
             'return_to_last_agent' => $connection->return_to_last_agent,
             'return_to_last_agent_minutes' => $connection->return_to_last_agent_minutes,
             'return_to_last_agent_require_online' => $connection->requiresOnlineAgentToReturn(),

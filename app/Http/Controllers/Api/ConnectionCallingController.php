@@ -35,11 +35,19 @@ class ConnectionCallingController extends Controller
         $validated = $request->validate([
             'enabled' => ['sometimes', 'boolean'],
             'busy_message' => ['sometimes', 'nullable', 'string', 'max:1000'],
+            'recording' => ['sometimes', 'boolean'],
+            'recording_notice' => ['sometimes', 'nullable', 'string', 'max:1000'],
         ]);
 
-        if (array_key_exists('busy_message', $validated)) {
-            $text = trim((string) $validated['busy_message']);
-            $connection->forceFill(['call_busy_message' => $text === '' ? null : $text])->save();
+        foreach (['busy_message' => 'call_busy_message', 'recording_notice' => 'call_recording_notice'] as $field => $column) {
+            if (array_key_exists($field, $validated)) {
+                $text = trim((string) $validated[$field]);
+                $connection->forceFill([$column => $text === '' ? null : $text])->save();
+            }
+        }
+
+        if (array_key_exists('recording', $validated)) {
+            $connection->forceFill(['call_recording' => (bool) $validated['recording']])->save();
         }
 
         if (array_key_exists('enabled', $validated)) {
@@ -65,6 +73,14 @@ class ConnectionCallingController extends Controller
             'status' => null,
             'restrictions' => [],
             'busy_message' => $connection->call_busy_message,
+            'recording' => (bool) $connection->call_recording,
+            'recording_notice' => $connection->call_recording_notice,
+            // Transcripts and summaries run on the AI agent picked for
+            // "Respond with AI" on this connection; without one, a call is
+            // still recorded but nothing reads it.
+            'ai_agent' => $connection->aiSuggestAgent
+                ? ['id' => $connection->aiSuggestAgent->id, 'name' => $connection->aiSuggestAgent->name]
+                : null,
             'error' => null,
         ];
 

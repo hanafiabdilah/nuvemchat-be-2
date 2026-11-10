@@ -297,6 +297,8 @@ class CallService
             throw $e;
         }
 
+        $recording = CallRecordingService::enabledFor($call);
+
         $call->forceFill([
             'status' => CallStatus::Ongoing,
             'answered_at' => now(),
@@ -304,7 +306,15 @@ class CallService
             // Setup material; the answer is kept only as long as an accept
             // might have to repeat it.
             'offer_sdp' => null,
+            // The browser starts capturing when it reads this back.
+            'recording_status' => $recording ? Call::RECORDING : null,
         ])->save();
+
+        // Told in the chat as the call connects, so the customer has it in
+        // writing — the agent is also reminded on screen to say it.
+        if ($recording) {
+            $this->sendToCustomer($call, (string) $call->connection?->call_recording_notice, 'recording_notice_sent');
+        }
 
         $call->load(['agent', 'contact']);
 
@@ -573,6 +583,8 @@ class CallService
         if ($wasRinging) {
             $this->pushStop($call, 'call_missed');
         }
+
+        app(CallRecordingService::class)->scheduleFallback($call);
     }
 
     /** @return Call The row, locked to this agent's claim. */
@@ -684,12 +696,23 @@ class CallService
      */
     private function sendBusyMessage(Call $call): void
     {
+        $this->sendToCustomer($call, (string) $call->connection?->call_busy_message, 'busy_message_sent');
+    }
+
+    /**
+     * One of the workspace's own lines about this call, sent in the chat:
+     * once per call (`$flag` on the row), only when the connection has the
+     * line, and only inside the reply window — outside it Cloud API refuses
+     * free text, and a template is not ours to pick.
+     */
+    private function sendToCustomer(Call $call, string $line, string $flag): void
+    {
         try {
-            if (data_get($call->meta, 'busy_message_sent')) {
+            if (data_get($call->meta, $flag)) {
                 return;
             }
 
-            $text = trim((string) $call->connection?->call_busy_message);
+            $text = trim($line);
             $conversation = $call->conversation()->with(['connection', 'contact'])->first();
 
             if ($text === '' || ! $conversation || $conversation->status === Status::Resolved) {
@@ -697,12 +720,12 @@ class CallService
             }
 
             if (! MessagingWindow::isOpen($conversation)) {
-                Log::info('Call: busy message not sent, reply window closed', ['call_id' => $call->id]);
+                Log::info('Call: line not sent to the customer, reply window closed', ['call_id' => $call->id, 'line' => $flag]);
 
                 return;
             }
 
-            $call->forceFill(['meta' => array_merge($call->meta ?? [], ['busy_message_sent' => true])])->save();
+            $call->forceFill(['meta' => array_merge($call->meta ?? [], [$flag => true])])->save();
 
             $message = (new MessageService)->sendMessage($conversation, ['message' => $text]);
 
@@ -711,9 +734,9 @@ class CallService
                 broadcast(new ConversationUpdated($message->conversation));
             }
         } catch (Throwable $e) {
-            // The refusal already happened; failing to explain it is not worth
-            // failing the webhook over.
-            Log::warning('Call: busy message failed', ['call_id' => $call->id, 'error' => $e->getMessage()]);
+            // The call already happened; failing to say something about it is
+            // not worth failing the request over.
+            Log::warning('Call: line to the customer failed', ['call_id' => $call->id, 'line' => $flag, 'error' => $e->getMessage()]);
         }
     }
 

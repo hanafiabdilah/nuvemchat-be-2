@@ -735,3 +735,218 @@ test('the browser answer reaches Meta with its final CRLF, and a setup failure i
         ->assertOk()
         ->assertJsonPath('data.status', 'ringing');
 });
+
+// ---------------------------------------------------------------- recording
+
+/** The connection's "Respond with AI" agent, which reads recorded calls. */
+function wcAiAgent(Connection $connection): \App\Models\AiHubAgent
+{
+    $hubTenant = \App\Models\AiHubTenant::create([
+        'tenant_id' => $connection->tenant_id,
+        'hub_tenant_id' => 'hub-tenant-wc',
+        'external_id' => 'Pingly_wc',
+        'name' => 'Pingly_wc',
+        'status' => 'ACTIVE',
+    ]);
+
+    \App\Models\Setting::set(\App\Services\AiAgentHub\AiAgentHubConfig::KEY_TENANT_TOKEN, 'platform-hub-token');
+
+    $agent = \App\Models\AiHubAgent::create([
+        'ai_hub_tenant_id' => $hubTenant->id,
+        'hub_agent_id' => 'hub-agent-wc',
+        'external_id' => 'agente_ligacoes',
+        'name' => 'Atendimento',
+        'model' => 'gpt-4o-mini',
+        'status' => 'ACTIVE',
+    ]);
+
+    $connection->forceFill(['ai_suggest_agent_id' => $agent->id])->save();
+
+    return $agent;
+}
+
+function wcAnswer(object $test, Call $call): void
+{
+    $test->postJson("/api/calls/{$call->id}/claim")->assertOk();
+    $test->postJson("/api/calls/{$call->id}/answer", ['sdp' => WC_ANSWER])->assertOk();
+}
+
+test('a recorded call tells the customer, uploads in pieces, and lands in the thread with a transcript and a summary', function () {
+    config(['services.billing.enforce' => false]);
+    \Illuminate\Support\Facades\Storage::fake(\App\Services\Media\MediaStorage::diskName());
+    Event::fake([IncomingCall::class, CallUpdated::class]);
+    wcGraph(['api-ia.ipbr.pro/*' => Http::response([
+        'id' => 'run_call',
+        'status' => 'COMPLETED',
+        'output' => [
+            'message' => 'Cliente quer trocar o plano. Combinado: enviar link hoje.',
+            'handoff' => false,
+            'inputAudio' => ['items' => [['text' => 'Oi, eu queria trocar meu plano...']]],
+        ],
+    ])]);
+    [$connection] = wcWorkspace(['call_recording' => true, 'call_recording_notice' => 'Esta ligação está sendo gravada.']);
+    wcAiAgent($connection);
+    $agent = wcAgent($connection);
+    wcOpenThread($connection);
+
+    $call = wcConnect($connection);
+    Sanctum::actingAs($agent);
+    wcAnswer($this, $call);
+
+    $this->postJson("/api/calls/{$call->id}/accept")
+        ->assertOk()
+        ->assertJsonPath('data.recording', 'recording');
+
+    // The customer is told in the chat as the call connects.
+    Http::assertSent(fn (HttpRequest $request) => str_ends_with($request->url(), '/messages')
+        && str_contains(json_encode($request->data()), 'sendo gravada'));
+
+    foreach ([0, 1] as $index) {
+        $this->post("/api/calls/{$call->id}/recording", [
+            'chunk' => \Illuminate\Http\UploadedFile::fake()->createWithContent("p{$index}.webm", "piece-{$index}"),
+            'index' => $index,
+            'mime' => 'audio/webm;codecs=opus',
+        ], ['Accept' => 'application/json'])->assertNoContent();
+    }
+
+    $this->postJson("/api/calls/{$call->id}/hangup")->assertOk();
+    $this->postJson("/api/calls/{$call->id}/recording/complete")->assertNoContent();
+
+    $note = wcNote()->fresh();
+    expect($note->attachment)->toStartWith("media/calls/{$call->id}/")
+        ->and($note->meta['call']['recording']['status'])->toBe('ready')
+        ->and($note->meta['call']['recording']['transcript'])->toBe('Oi, eu queria trocar meu plano...')
+        ->and($note->meta['call']['recording']['summary'])->toBe('Cliente quer trocar o plano. Combinado: enviar link hoje.')
+        ->and($call->fresh()->recording_status)->toBe('ready');
+
+    \Illuminate\Support\Facades\Storage::disk(\App\Services\Media\MediaStorage::diskName())->assertExists($note->attachment);
+    // The pieces are gone once joined.
+    expect(\Illuminate\Support\Facades\Storage::disk(\App\Services\Media\MediaStorage::diskName())->files("call-recordings/{$call->id}"))->toBe([]);
+
+    // The hub was handed the recording to listen to, in its own conversation.
+    $run = Http::recorded()->first(fn ($pair) => str_ends_with(parse_url($pair[0]->url(), PHP_URL_PATH) ?: '', '/runs'))[0]->data();
+    expect($run['message']['attachments'][0]['type'])->toBe('audio')
+        ->and($run)->toHaveKey('inputAudio')
+        ->and($run['conversation']['externalId'])->toBe('call-summary:'.$call->id);
+
+    // The thread renders it from the note.
+    $resource = (new \App\Http\Resources\MessageResource($note->load('conversation.connection')))->toArray(request());
+    expect($resource['meta']['call_recording']['summary'])->toContain('trocar o plano')
+        ->and($resource['attachment_url'])->not->toBeNull();
+});
+
+test('without recording switched on, nothing is recorded and the customer is told nothing', function () {
+    Event::fake([IncomingCall::class, CallUpdated::class]);
+    wcGraph();
+    [$connection] = wcWorkspace(['call_recording_notice' => 'Esta ligação está sendo gravada.']);
+    $agent = wcAgent($connection);
+    wcOpenThread($connection);
+
+    $call = wcConnect($connection);
+    Sanctum::actingAs($agent);
+    wcAnswer($this, $call);
+
+    $this->postJson("/api/calls/{$call->id}/accept")->assertOk()->assertJsonPath('data.recording', null);
+
+    Http::assertNotSent(fn (HttpRequest $request) => str_ends_with($request->url(), '/messages'));
+
+    $this->post("/api/calls/{$call->id}/recording", [
+        'chunk' => \Illuminate\Http\UploadedFile::fake()->createWithContent('p0.webm', 'x'),
+        'index' => 0,
+        'mime' => 'audio/webm',
+    ], ['Accept' => 'application/json'])->assertStatus(409)->assertJsonPath('code', 'call_not_recording');
+});
+
+test('a recording with no AI agent on the connection is kept, and says why there is no transcript', function () {
+    \Illuminate\Support\Facades\Storage::fake(\App\Services\Media\MediaStorage::diskName());
+    Event::fake([IncomingCall::class, CallUpdated::class]);
+    wcGraph();
+    [$connection] = wcWorkspace(['call_recording' => true]);
+    $agent = wcAgent($connection);
+
+    $call = wcConnect($connection);
+    Sanctum::actingAs($agent);
+    wcAnswer($this, $call);
+    $this->postJson("/api/calls/{$call->id}/accept")->assertOk();
+
+    $this->post("/api/calls/{$call->id}/recording", [
+        'chunk' => \Illuminate\Http\UploadedFile::fake()->createWithContent('p0.webm', 'x'),
+        'index' => 0,
+        'mime' => 'audio/webm',
+    ], ['Accept' => 'application/json'])->assertNoContent();
+
+    $this->postJson("/api/calls/{$call->id}/recording/complete")->assertNoContent();
+
+    $note = wcNote()->fresh();
+    expect($note->attachment)->not->toBeNull()
+        ->and($note->meta['call']['recording'])->toMatchArray(['status' => 'ready', 'reason' => 'no_ai_agent']);
+});
+
+test('only the agent on the call can upload its recording', function () {
+    Event::fake([IncomingCall::class, CallUpdated::class]);
+    wcGraph();
+    [$connection] = wcWorkspace(['call_recording' => true]);
+    $agent = wcAgent($connection);
+    $colleague = wcAgent($connection);
+
+    $call = wcConnect($connection);
+    Sanctum::actingAs($agent);
+    wcAnswer($this, $call);
+    $this->postJson("/api/calls/{$call->id}/accept")->assertOk();
+
+    Sanctum::actingAs($colleague);
+    $this->post("/api/calls/{$call->id}/recording", [
+        'chunk' => \Illuminate\Http\UploadedFile::fake()->createWithContent('p0.webm', 'x'),
+        'index' => 0,
+        'mime' => 'audio/webm',
+    ], ['Accept' => 'application/json'])->assertForbidden();
+});
+
+test('recording settings are saved on the connection', function () {
+    wcGraph();
+    [$connection, $owner] = wcWorkspace();
+    $owner->givePermissionTo(\Spatie\Permission\Models\Permission::findOrCreate('connections.update', 'web'));
+    Sanctum::actingAs($owner);
+
+    $this->putJson("/api/connections/{$connection->id}/calling", [
+        'recording' => true,
+        'recording_notice' => ' Esta ligação está sendo gravada. ',
+    ])->assertOk()
+        ->assertJsonPath('data.recording', true)
+        ->assertJsonPath('data.recording_notice', 'Esta ligação está sendo gravada.')
+        ->assertJsonPath('data.ai_agent', null);
+
+    expect($connection->fresh()->call_recording)->toBeTrue();
+});
+
+test('a real browser recording is re-encoded to an m4a with its duration', function () {
+    \Illuminate\Support\Facades\Storage::fake(\App\Services\Media\MediaStorage::diskName());
+    Event::fake([IncomingCall::class, CallUpdated::class]);
+    wcGraph();
+    [$connection] = wcWorkspace(['call_recording' => true]);
+    $agent = wcAgent($connection);
+
+    // Three seconds of Opus in WebM — what Chrome's MediaRecorder produces.
+    $source = tempnam(sys_get_temp_dir(), 'wc_').'.webm';
+    exec(sprintf('ffmpeg -hide_banner -loglevel error -y -f lavfi -i sine=frequency=440:duration=3 -c:a libopus %s', escapeshellarg($source)));
+
+    $call = wcConnect($connection);
+    Sanctum::actingAs($agent);
+    wcAnswer($this, $call);
+    $this->postJson("/api/calls/{$call->id}/accept")->assertOk();
+
+    $this->post("/api/calls/{$call->id}/recording", [
+        'chunk' => new \Illuminate\Http\UploadedFile($source, 'p0.webm', 'audio/webm', null, true),
+        'index' => 0,
+        'mime' => 'audio/webm;codecs=opus',
+    ], ['Accept' => 'application/json'])->assertNoContent();
+
+    $this->postJson("/api/calls/{$call->id}/recording/complete")->assertNoContent();
+
+    $note = wcNote()->fresh();
+    expect($note->attachment)->toEndWith('.m4a');
+
+    $stored = \Illuminate\Support\Facades\Storage::disk(\App\Services\Media\MediaStorage::diskName())->path($note->attachment);
+    $probe = shell_exec(sprintf('ffprobe -v error -show_entries format=duration -of csv=p=0 %s', escapeshellarg($stored)));
+    expect((float) $probe)->toBeGreaterThan(2.5);
+})->skip(fn () => trim((string) shell_exec('command -v ffmpeg')) === '', 'ffmpeg is not installed');

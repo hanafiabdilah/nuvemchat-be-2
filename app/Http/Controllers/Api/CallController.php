@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\CallResource;
 use App\Models\Call;
+use App\Services\Calls\CallRecordingService;
 use App\Services\Calls\CallService;
 use Illuminate\Http\Request;
 
@@ -98,6 +99,32 @@ class CallController extends Controller
         $call = $this->calls->heartbeat($this->find($request, $id), $request->user());
 
         return response()->json(['status' => $call->status->value]);
+    }
+
+    /**
+     * One piece of the recording, from the browser on the call. Pieces are a
+     * few seconds each and arrive in order; the server only stores them.
+     */
+    public function recordingPiece(Request $request, int $id, CallRecordingService $recordings)
+    {
+        $validated = $request->validate([
+            // Ten seconds of 32 kbps audio is ~40 KB; the ceiling only stops
+            // something that is not a piece of a recording.
+            'chunk' => ['required', 'file', 'max:5120'],
+            'index' => ['required', 'integer', 'min:0', 'max:100000'],
+            'mime' => ['required', 'string', 'max:64'],
+        ]);
+
+        $recordings->storePiece($this->find($request, $id), $request->user(), $validated['chunk'], (int) $validated['index'], $validated['mime']);
+
+        return response()->noContent();
+    }
+
+    public function recordingComplete(Request $request, int $id, CallRecordingService $recordings)
+    {
+        $recordings->complete($this->find($request, $id), $request->user());
+
+        return response()->noContent();
     }
 
     private function find(Request $request, int $id): Call

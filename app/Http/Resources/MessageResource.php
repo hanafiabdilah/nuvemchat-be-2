@@ -212,8 +212,18 @@ class MessageResource extends JsonResource
         // params travel the same way on every connection.
         if ($this->message_type === MessageType::Info) {
             $info = $this->meta['info'] ?? null;
+            $out = is_array($info) ? ['info' => $info] : [];
 
-            return is_array($info) ? ['info' => $info] : null;
+            // A recorded call: its file is this note's attachment, and what
+            // the AI made of it rides here (CallRecordingService).
+            $recording = $this->meta['call']['recording'] ?? null;
+            if (is_array($recording)) {
+                $out['call_recording'] = array_intersect_key($recording, array_flip([
+                    'status', 'duration_seconds', 'transcript', 'summary', 'reason',
+                ]));
+            }
+
+            return $out ?: null;
         }
 
         $channel = $this->conversation->connection->channel ?? null;

@@ -45,6 +45,10 @@ class CallResource extends JsonResource
             'answered_at' => $call->answered_at?->timestamp,
             'ended_at' => $call->ended_at?->timestamp,
             'duration_seconds' => $call->duration_seconds,
+            // 'recording' while the answering browser is capturing it — what
+            // puts the "recording" mark on everybody's screen and tells the
+            // browser to start.
+            'recording' => $call->recording_status,
             // Only meaningful over HTTP, where we know who is asking; the
             // broadcast copy goes to everybody and leaves it out.
             'ringing_me' => $user ? $call->isRinging($user) : null,

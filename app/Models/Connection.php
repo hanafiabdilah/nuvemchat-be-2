@@ -34,6 +34,8 @@ class Connection extends Model
         'accept_message',
         'closing_message',
         'call_busy_message',
+        'call_recording',
+        'call_recording_notice',
         'return_to_last_agent',
         'return_to_last_agent_minutes',
         'return_to_last_agent_require_online',
@@ -44,6 +46,7 @@ class Connection extends Model
     ];
 
     protected $casts = [
+        'call_recording' => 'boolean',
         'channel' => Channel::class,
         'status' => Status::class,
         // Not 'array', and not 'encrypted:array' either — the secret

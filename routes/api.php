@@ -535,6 +535,9 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
             Route::post('/calls/{id}/decline', [CallController::class, 'decline'])->whereNumber('id');
             Route::post('/calls/{id}/hangup', [CallController::class, 'hangup'])->whereNumber('id');
             Route::post('/calls/{id}/heartbeat', [CallController::class, 'heartbeat'])->whereNumber('id')->middleware('throttle:30,1,call-heartbeat');
+            // The recording, uploaded in pieces by the browser on the call.
+            Route::post('/calls/{id}/recording', [CallController::class, 'recordingPiece'])->whereNumber('id')->middleware('throttle:60,1,call-recording');
+            Route::post('/calls/{id}/recording/complete', [CallController::class, 'recordingComplete'])->whereNumber('id');
         });
 
         // Removing a group drops its inbound messages at ingest; the group's

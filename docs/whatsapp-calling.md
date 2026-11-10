@@ -56,6 +56,38 @@ CRLF.
 the strip in the chat room with a timer, the Live board (`agents[].on_call`).
 `call-incoming` (user channel) rings the agent. Cold load: `GET /calls/active`.
 
+## Recording, transcript and summary
+
+Per connection, off by default (Connections → the number → WhatsApp calls →
+**Record calls**). When on:
+
+- On accept the call gets `recording_status = recording` and the connection's
+  **recording notice** is sent in the chat (inside the 24 h window only). The
+  agent sees a "Recording · let the customer know" reminder on the call bar;
+  colleagues see a red "Recording" mark on the thread.
+- The answering browser mixes both voices (Web Audio) and uploads a piece every
+  10 s: `POST /calls/{id}/recording` (`chunk`, `index`, `mime`), then
+  `POST /calls/{id}/recording/complete` when the call ends. Pieces wait in
+  `call-recordings/{call}/` on the media disk.
+- `FinalizeCallRecording` (media queue) joins the pieces, re-encodes to mono
+  AAC `.m4a` with ffmpeg (falls back to the raw WebM/MP4 if ffmpeg fails), and
+  **attaches it to the call's note** (`media/calls/{call}/…`). That puts it
+  under normal media retention: signed URLs, `media:purge` after 90 days, the
+  "expired" state. A fallback finalize is queued 60 s after the call ends for a
+  browser that closed before saying "complete".
+- `TranscribeCallRecording` runs one hub run on the connection's **"Respond with
+  AI" agent** (`connections.ai_suggest_agent_id`) with the file as an audio
+  attachment + `inputAudio`: the transcript comes back in
+  `output.inputAudio.items[0].text`, the summary is the model's reply. Its own
+  hub conversation (`call-summary:{id}`), never retried (second charge),
+  billed like any run (own key or balance). No agent / no AI plan / no balance /
+  file over `CALLS_RECORDING_MAX_AI_BYTES` (24 MB) → recording kept, note says
+  why there is no transcript.
+- Transcript and summary live in the note's `meta.call.recording` (exposed as
+  `meta.call_recording` by MessageResource) and outlive the audio.
+
+Ops: needs ffmpeg in the image (already there) and the `queue-media` worker.
+
 ## Keeping it honest
 
 `calls:sweep` (every minute, health check "WhatsApp call sweep") ends: ringing
