@@ -36,47 +36,70 @@ trait CallsProvider
      */
     protected function call(callable $call, string $action): array
     {
-        $integration = $this->integration();
-        $context = [
-            'integration_id' => $integration->id,
-            'tenant_id' => $integration->tenant_id,
-            'action' => $action,
-        ];
-
-        try {
-            $response = $call($this->request());
-        } catch (ConnectionException $e) {
-            throw UpstreamError::exception(
-                $integration->provider->upstream(),
-                $e->getMessage(),
-                status: 504,
-                context: $context,
-                previous: $e,
-            );
-        }
+        $response = $this->attempt($call, $action);
 
         if ($response->failed()) {
-            [$message, $code] = $this->errorFrom($response);
-            $status = $response->status();
-
-            // The status wins over the vendor's own code for the three
-            // outcomes every vendor agrees on, so the dictionaries can match
-            // "the key was refused" without learning four dialects of it.
-            $code = in_array($status, [401, 403, 429], true)
-                ? (string) $status
-                : ($code ?? (string) $status);
-
-            throw UpstreamError::exception(
-                $integration->provider->upstream(),
-                $message ?: $response->body(),
-                $code,
-                $status,
-                $context,
-            );
+            $this->refuse($response, $action);
         }
 
         $json = $response->json();
 
         return is_array($json) ? $json : [];
+    }
+
+    /**
+     * The request, with only the network failing it: a provider's refusal comes
+     * back as the response, for a driver that has to read it before deciding
+     * whether it is one. Everything else should use call().
+     *
+     * @param  callable(PendingRequest): Response  $call
+     */
+    protected function attempt(callable $call, string $action): Response
+    {
+        try {
+            return $call($this->request());
+        } catch (ConnectionException $e) {
+            throw UpstreamError::exception(
+                $this->integration()->provider->upstream(),
+                $e->getMessage(),
+                status: 504,
+                context: $this->callContext($action),
+                previous: $e,
+            );
+        }
+    }
+
+    /** A failed response, translated: what call() throws when the provider refuses. */
+    protected function refuse(Response $response, string $action): never
+    {
+        [$message, $code] = $this->errorFrom($response);
+        $status = $response->status();
+
+        // The status wins over the vendor's own code for the three
+        // outcomes every vendor agrees on, so the dictionaries can match
+        // "the key was refused" without learning four dialects of it.
+        $code = in_array($status, [401, 403, 429], true)
+            ? (string) $status
+            : ($code ?? (string) $status);
+
+        throw UpstreamError::exception(
+            $this->integration()->provider->upstream(),
+            $message ?: $response->body(),
+            $code,
+            $status,
+            $this->callContext($action),
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function callContext(string $action): array
+    {
+        $integration = $this->integration();
+
+        return [
+            'integration_id' => $integration->id,
+            'tenant_id' => $integration->tenant_id,
+            'action' => $action,
+        ];
     }
 }

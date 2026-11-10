@@ -1152,6 +1152,15 @@ final class UpstreamError
                 'O Pixel informado não existe ou o token não tem acesso a ele. Confira o ID do Pixel e o token na integração.',
                 422,
             ],
+            // "(#100) Missing Permission", singular and with no subcode: the
+            // pixel exists, the token is valid, and it is not allowed this
+            // call. Before this arm it fell to code 100 below and told the
+            // customer to fix an event that had not been sent.
+            str_contains($m, 'missing permission') => [
+                'pixel_permission_missing',
+                'O token não tem permissão para usar este Pixel. Gere um novo em Gerenciador de Eventos → seu Pixel → Configurações → API de Conversões e atualize a integração.',
+                422,
+            ],
             // Graph's catch-all for a field it did not like — here, almost
             // always an event name or parameter the author typed.
             $code === '100' => [
