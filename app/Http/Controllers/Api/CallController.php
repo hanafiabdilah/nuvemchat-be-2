@@ -84,7 +84,11 @@ class CallController extends Controller
 
     public function hangup(Request $request, int $id)
     {
-        $call = $this->calls->hangup($this->find($request, $id), $request->user());
+        $validated = $request->validate([
+            'error' => ['sometimes', 'nullable', 'string', 'max:500'],
+        ]);
+
+        $call = $this->calls->hangup($this->find($request, $id), $request->user(), $validated['error'] ?? null);
 
         return response()->json(['data' => new CallResource($call->load(['agent', 'contact']))]);
     }

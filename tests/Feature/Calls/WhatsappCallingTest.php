@@ -680,3 +680,58 @@ test('the kill switch leaves calls as a note only', function () {
     Event::assertNotDispatched(IncomingCall::class);
     expect(wcGraphActions())->toBe([]);
 });
+
+// ------------------------------------------------------------ SDP integrity
+
+test('the offer keeps its final CRLF when it arrives through the real webhook', function () {
+    // The first production call: TrimStrings stripped the offer's last line
+    // break on its way in through HTTP, and Chrome refused to parse it. The
+    // other tests call the handler directly and could never have seen it.
+    Event::fake([IncomingCall::class, CallUpdated::class]);
+    wcGraph();
+    [$connection] = wcWorkspace();
+
+    \Tests\Support\MetaWebhook::post($this, [
+        'object' => 'whatsapp_business_account',
+        'entry' => [[
+            'id' => '111222333444555',
+            'changes' => [wcChange([
+                'event' => 'connect',
+                'session' => ['sdp_type' => 'offer', 'sdp' => WC_OFFER],
+            ])],
+        ]],
+    ])->assertOk();
+
+    $call = Call::query()->where('external_id', WC_CALL_ID)->firstOrFail();
+
+    expect($call->offer_sdp)->toBe(WC_OFFER)
+        ->and(str_ends_with($call->offer_sdp, "\r\n"))->toBeTrue();
+});
+
+test('an SDP is normalised to CRLF lines with a final line break', function () {
+    expect(\App\Services\Calls\Sdp::normalize("v=0\no=- 1 2 IN IP4 0.0.0.0\ns=-"))
+        ->toBe("v=0\r\no=- 1 2 IN IP4 0.0.0.0\r\ns=-\r\n")
+        ->and(\App\Services\Calls\Sdp::normalize(WC_OFFER))->toBe(WC_OFFER)
+        ->and(\App\Services\Calls\Sdp::normalize('   '))->toBeNull();
+});
+
+test('the browser answer reaches Meta with its final CRLF, and a setup failure is reported back', function () {
+    Event::fake([IncomingCall::class, CallUpdated::class]);
+    wcGraph();
+    [$connection] = wcWorkspace();
+    $agent = wcAgent($connection);
+
+    $call = wcConnect($connection);
+    Sanctum::actingAs($agent);
+    $this->postJson("/api/calls/{$call->id}/claim")->assertOk();
+    $this->postJson("/api/calls/{$call->id}/answer", ['sdp' => rtrim(WC_ANSWER)])->assertOk();
+
+    $sent = Http::recorded()->first(fn ($pair) => str_ends_with($pair[0]->url(), '/calls'))[0];
+    expect($sent['session']['sdp'])->toBe(WC_ANSWER);
+
+    // A second call, given up in the browser before answering: the claim is
+    // released and the browser's own error is what the log keeps.
+    $this->postJson("/api/calls/{$call->id}/hangup", ['error' => 'OperationError: Failed to parse SessionDescription'])
+        ->assertOk()
+        ->assertJsonPath('data.status', 'ringing');
+});

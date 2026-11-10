@@ -73,10 +73,13 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
 
-        // An SDP (a WhatsApp call answer, CallController::answer) must end in
-        // CRLF — RFC 8866 — and trimming it hands Meta an answer it may refuse
-        // as malformed.
-        $middleware->trimStrings(except: ['sdp']);
+        // An SDP must end in CRLF (RFC 8866), and a trimmed one is refused by
+        // the browser that has to answer it. Two patterns because the rule is
+        // matched against the full dotted key: `sdp` is the answer the browser
+        // posts (CallController::answer), `*.sdp` the offer nested in Meta's
+        // webhook (…calls.0.session.sdp) — the one the first live call lost.
+        // CallService normalises both anyway (App\Services\Calls\Sdp).
+        $middleware->trimStrings(except: ['sdp', '*.sdp']);
 
         $middleware->web(append: [
             HandleAppearance::class,

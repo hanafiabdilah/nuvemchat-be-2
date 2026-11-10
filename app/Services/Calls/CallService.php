@@ -109,7 +109,7 @@ class CallService
                 'external_id' => $callId,
                 'direction' => 'incoming',
                 'status' => CallStatus::Ringing,
-                'offer_sdp' => $offerSdp,
+                'offer_sdp' => Sdp::normalize($offerSdp),
                 'ringing_at' => now(),
             ]);
         } catch (QueryException $e) {
@@ -260,6 +260,7 @@ class CallService
     public function answer(Call $call, User $user, string $sdp): Call
     {
         $call = $this->ownConnecting($call, $user);
+        $sdp = Sdp::normalize($sdp) ?? $sdp;
         $call->forceFill(['answer_sdp' => $sdp])->save();
 
         try {
@@ -359,10 +360,24 @@ class CallService
         return $call->refresh();
     }
 
-    /** The agent on the call hangs up (or gives up while it is connecting). */
-    public function hangup(Call $call, User $user): Call
+    /**
+     * The agent on the call hangs up (or gives up while it is connecting).
+     *
+     * `$browserError` is what the answering browser hit when it gives up
+     * mid-setup — the only trace of a WebRTC failure the server ever gets.
+     */
+    public function hangup(Call $call, User $user, ?string $browserError = null): Call
     {
         $call->refresh();
+
+        if ($browserError !== null && $browserError !== '') {
+            Log::warning('Call: the answering browser could not set the call up', [
+                'call_id' => $call->id,
+                'user_id' => $user->id,
+                'status' => $call->status->value,
+                'error' => mb_substr($browserError, 0, 500),
+            ]);
+        }
 
         if (! $call->status->occupiesAgent()) {
             return $call;
