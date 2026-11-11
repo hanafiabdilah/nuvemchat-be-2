@@ -3,11 +3,14 @@
 namespace App\Services\Otp;
 
 use App\Enums\Notification\NotificationType;
+use App\Exceptions\Auth\AuthRefusedException;
 use App\Models\Otp;
 use App\Models\User;
 use App\Models\WhatsappMessageLog;
 use App\Services\Notification\NotificationConfig;
 use App\Services\Notification\NotificationService;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -114,9 +117,14 @@ class OtpService
             ]);
         }
 
+        // A code that no longer works does not hold the next one back. In the
+        // normal course that changes nothing (a code outlives the cooldown by
+        // minutes); it is what lets a corrected number get its code at once,
+        // because replaceUnverifiedNumber() expires the code sent to the wrong one.
         $recent = Otp::where('user_id', $user->id)
             ->where('purpose', $purpose)
             ->whereNull('verified_at')
+            ->where('expires_at', '>', now())
             ->latest('id')
             ->first();
 
@@ -143,6 +151,70 @@ class OtpService
         $this->dispatch($otp, $user);
 
         return $otp;
+    }
+
+    /**
+     * Swap a number that was never verified for the one the person meant, and
+     * send the signup code there.
+     *
+     * Only for an unverified number: until the code is confirmed nothing has
+     * been proven about the old one, and the account cannot get past the
+     * verification screen with it (EnsureWhatsAppVerified) — so the number
+     * typed at signup is replaced outright. A verified number is changed with
+     * PURPOSE_WHATSAPP_CHANGE instead, which keeps the old one until the new
+     * one is confirmed.
+     *
+     * The codes already sent to the old number are expired, not left pending:
+     * the newest pending code is the one verify() checks, and the number it was
+     * sent to is the number verification stamps on the account — so a code
+     * still alive on the wrong phone could put that phone back.
+     *
+     * A verification block still holds: a new number is not a new allowance of
+     * guesses.
+     */
+    public function replaceUnverifiedNumber(User $user, string $number): Otp
+    {
+        $number = self::normalizeNumber($number);
+
+        $this->guard->assertNotBlocked(self::PURPOSE_WHATSAPP, OtpGuard::identityFor($user, self::PURPOSE_WHATSAPP));
+
+        $previous = self::normalizeNumber((string) $user->whatsapp_number);
+
+        DB::transaction(function () use ($user, $number) {
+            $locked = User::query()->whereKey($user->id)->lockForUpdate()->first();
+
+            // Checked again under the lock: a code confirmed in another tab a
+            // moment ago means there is no unverified number left to replace.
+            if ($locked === null || $locked->whatsapp_verified_at !== null) {
+                throw new AuthRefusedException(
+                    'Your WhatsApp number is already verified. Change it in Settings → Notifications.',
+                    'whatsapp_already_verified',
+                    'whatsapp_number',
+                );
+            }
+
+            $locked->forceFill(['whatsapp_number' => $number])->save();
+
+            Otp::where('user_id', $user->id)
+                ->where('purpose', self::PURPOSE_WHATSAPP)
+                ->whereNull('verified_at')
+                ->where('expires_at', '>', now())
+                ->update(['expires_at' => now()]);
+        });
+
+        $user->forceFill(['whatsapp_number' => $number]);
+        $user->syncOriginalAttribute('whatsapp_number');
+
+        // Ids and the last digits only: the log outlives the account's interest
+        // in either number.
+        Log::info('OtpService: unverified WhatsApp number replaced', [
+            'user_id' => $user->id,
+            'tenant_id' => $user->tenant_id,
+            'from_last4' => substr($previous, -4),
+            'to_last4' => substr($number, -4),
+        ]);
+
+        return $this->request($user, self::PURPOSE_WHATSAPP);
     }
 
     /**

@@ -197,6 +197,10 @@ Route::middleware('auth:sanctum')->prefix('auth/otp')->group(function () {
     Route::get('/status', [OtpController::class, 'status']);
     Route::post('/send', [OtpController::class, 'send']);
     Route::post('/verify', [OtpController::class, 'verify']);
+    // The number typed at signup was wrong. Here, not with the Settings change
+    // flow, because that one sits behind whatsapp.verified — the gate this
+    // account cannot pass with a number it cannot receive codes on.
+    Route::post('/number', [OtpController::class, 'changeNumber'])->middleware('throttle:otp-number');
 });
 
 // onboarding.completed before subscription.active: a workspace that has not

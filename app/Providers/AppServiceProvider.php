@@ -151,6 +151,20 @@ class AppServiceProvider extends ServiceProvider
             ];
         });
 
+        // Correcting the number on the verification screen sends a WhatsApp
+        // message to whatever number is typed, and each change releases the
+        // resend cooldown (the old code is expired). Bounded per account and
+        // per destination, so it is a way to fix a typo, not a way to have the
+        // platform message a list of numbers.
+        RateLimiter::for('otp-number', function (Request $request) {
+            $number = preg_replace('/\D+/', '', (string) $request->input('whatsapp_number')) ?: 'none';
+
+            return [
+                Limit::perHour(10)->by('otp-number-user:'.($request->user()?->id ?? $request->ip())),
+                Limit::perHour(5)->by('otp-number-dest:'.$number),
+            ];
+        });
+
         RateLimiter::for('webhook-inbound', function (Request $request) {
             return Limit::perMinute(120)->by('webhook-inbound:'.$request->ip());
         });
