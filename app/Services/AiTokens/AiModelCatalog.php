@@ -134,9 +134,8 @@ class AiModelCatalog
         try {
             $raw = $this->tenantService->listModels();
         } catch (\Throwable $e) {
-            // Not fatal: the forms fall back to a free-text field, which is
-            // where they started. Losing the dropdown is worse than losing the
-            // page.
+            // Not fatal: our own list is still served whole, so every form
+            // keeps a complete dropdown — the hub only ever adds to it.
             Log::warning('AiModelCatalog: could not list models from the hub', ['error' => $e->getMessage()]);
 
             return [[], false];

@@ -22,12 +22,13 @@ namespace App\Services\AiTokens;
  * what counts. The point is not to be right forever — it is that nobody should
  * be typing four decimal numbers copied from a pricing page.
  *
- * ⚠️ And it **will** fall behind. A model released tomorrow is not in here, and
- * "wait for this file to be edited" is not an acceptable answer to "we want to
- * sell the new one". That is what the picker's *Other model* option is for: any
- * id can be typed and priced the day it ships, and the row that gets saved works
- * exactly like one seeded from here. Adding it to this list later only saves the
- * next person the lookup.
+ * ⚠️ And it is now **the only way a model reaches a dropdown** besides the
+ * hub reporting it. Every picker used to end in "Other model (type the id)",
+ * and that box was where `gpt-4o-mini ` with a trailing space and ids no
+ * provider serves came from — found only when a customer's agent failed to
+ * run. It is gone (Nov 2026), so a model released tomorrow is sold the day
+ * somebody adds one line here, or the day the hub starts listing it. Keep the
+ * list current; a stale one is now a model nobody can choose.
  */
 class KnownModelPrices
 {
@@ -41,36 +42,68 @@ class KnownModelPrices
      * @var array<string, array<string, array{0: string, 1: float, 2: float}>>
      */
     private const CATALOG = [
+        // Checked against developers.openai.com/api/docs/pricing on
+        // 12 Nov 2026, standard tier, short context. `-pro` variants are left
+        // out on purpose: ten times the price of their base model for a chat
+        // reply is never what someone picking from a list meant.
         'OPENAI' => [
+            'gpt-6.1-sol' => ['GPT-6.1 Sol', 2.00, 10.00],
+            'gpt-6.1-terra' => ['GPT-6.1 Terra', 1.00, 5.00],
+            'gpt-6-astra' => ['GPT-6 Astra', 10.00, 50.00],
+            'gpt-6-sol' => ['GPT-6 Sol', 2.00, 10.00],
+            'gpt-6-luna' => ['GPT-6 Luna', 0.10, 0.50],
+            'gpt-5.6-sol' => ['GPT-5.6 Sol', 4.00, 20.00],
+            'gpt-5.6-terra' => ['GPT-5.6 Terra', 2.00, 12.00],
+            'gpt-5.6-luna' => ['GPT-5.6 Luna', 0.20, 1.20],
+            'gpt-5.5' => ['GPT-5.5', 5.00, 30.00],
+            'gpt-5.4' => ['GPT-5.4', 2.50, 15.00],
+            'gpt-5.4-mini' => ['GPT-5.4 mini', 0.75, 4.50],
+            'gpt-5.4-nano' => ['GPT-5.4 nano', 0.20, 1.25],
+            'gpt-5.2' => ['GPT-5.2', 1.75, 14.00],
             'gpt-5.1' => ['GPT-5.1', 1.25, 10.00],
             'gpt-5' => ['GPT-5', 1.25, 10.00],
             'gpt-5-mini' => ['GPT-5 mini', 0.25, 2.00],
             'gpt-5-nano' => ['GPT-5 nano', 0.05, 0.40],
             'gpt-4.1' => ['GPT-4.1', 2.00, 8.00],
             'gpt-4.1-mini' => ['GPT-4.1 mini', 0.40, 1.60],
+            // Gone from OpenAI's price page, still served by the hub.
             'gpt-4.1-nano' => ['GPT-4.1 nano', 0.10, 0.40],
             'gpt-4o' => ['GPT-4o', 2.50, 10.00],
             'gpt-4o-mini' => ['GPT-4o mini', 0.15, 0.60],
             'o3' => ['o3', 2.00, 8.00],
-            'o3-mini' => ['o3-mini', 1.10, 4.40],
-            'o4-mini' => ['o4-mini', 1.10, 4.40],
         ],
+        // Anthropic's current models, same date. Mythos is left out: it is
+        // sold to verified organisations only, so a workspace picking it from
+        // a list would be picking something its key cannot run.
         'ANTHROPIC' => [
-            'claude-opus-4-5' => ['Claude Opus 4.5', 5.00, 25.00],
-            'claude-opus-4-1' => ['Claude Opus 4.1', 15.00, 75.00],
-            'claude-sonnet-4-5' => ['Claude Sonnet 4.5', 3.00, 15.00],
+            'claude-fable-5-2' => ['Claude Fable 5.2', 8.00, 40.00],
+            'claude-fable-5-1' => ['Claude Fable 5.1', 10.00, 50.00],
+            'claude-fable-5' => ['Claude Fable 5', 10.00, 50.00],
+            'claude-opus-5-5' => ['Claude Opus 5.5', 4.00, 20.00],
+            'claude-opus-5' => ['Claude Opus 5', 5.00, 25.00],
+            'claude-opus-4-8' => ['Claude Opus 4.8', 5.00, 25.00],
+            'claude-opus-4-7' => ['Claude Opus 4.7', 5.00, 25.00],
+            'claude-opus-4-6' => ['Claude Opus 4.6', 5.00, 25.00],
+            'claude-sonnet-5-5' => ['Claude Sonnet 5.5', 2.00, 10.00],
+            'claude-sonnet-5' => ['Claude Sonnet 5', 2.00, 10.00],
+            'claude-sonnet-4-6' => ['Claude Sonnet 4.6', 3.00, 15.00],
+            'claude-haiku-5-5' => ['Claude Haiku 5.5', 0.10, 0.50],
             'claude-haiku-4-5' => ['Claude Haiku 4.5', 1.00, 5.00],
-            'claude-opus-4' => ['Claude Opus 4', 15.00, 75.00],
-            'claude-sonnet-4' => ['Claude Sonnet 4', 3.00, 15.00],
-            'claude-3-5-sonnet' => ['Claude 3.5 Sonnet', 3.00, 15.00],
-            'claude-3-5-haiku' => ['Claude 3.5 Haiku', 0.80, 4.00],
         ],
+        // aistudio.google.com/docs/pricing, same date, paid tier, prompts up
+        // to 200K. ⚠️ Gemini 4's price doubles on 1 Dec 2026 — the Back
+        // Office already marks these as a reference to confirm. Gemini 2.5
+        // Pro and Flash are left out: deprecated, and rerouted on that date.
         'GEMINI' => [
-            'gemini-3-pro' => ['Gemini 3 Pro', 2.00, 12.00],
-            'gemini-2.5-pro' => ['Gemini 2.5 Pro', 1.25, 10.00],
-            'gemini-2.5-flash' => ['Gemini 2.5 Flash', 0.30, 2.50],
-            'gemini-2.5-flash-lite' => ['Gemini 2.5 Flash Lite', 0.10, 0.40],
-            'gemini-2.0-flash' => ['Gemini 2.0 Flash', 0.10, 0.40],
+            'gemini-4-carbon' => ['Gemini 4 Carbon', 2.00, 10.00],
+            'gemini-4-argon' => ['Gemini 4 Argon', 2.00, 10.00],
+            'gemini-3.8-flash' => ['Gemini 3.8 Flash', 0.75, 3.75],
+            'gemini-3.6-flash' => ['Gemini 3.6 Flash', 0.75, 3.75],
+            'gemini-3.5-flash-lite' => ['Gemini 3.5 Flash-Lite', 0.30, 2.50],
+            'gemini-3.1-pro-preview' => ['Gemini 3.1 Pro (preview)', 2.00, 12.00],
+            'gemini-3.1-flash-lite' => ['Gemini 3.1 Flash-Lite', 0.25, 1.50],
+            'gemini-3-flash-preview' => ['Gemini 3 Flash (preview)', 0.50, 3.00],
+            'gemini-2.5-flash-lite' => ['Gemini 2.5 Flash-Lite', 0.10, 0.40],
         ],
     ];
 

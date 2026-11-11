@@ -209,7 +209,7 @@ class FlowAssistantController extends Controller
             'credential' => $configured ? new AiHubProviderCredentialResource($setting->providerCredential) : null,
             'default_model' => FlowAssistantConfig::DEFAULT_MODEL,
             // Own keys: the agent-capable providers we know, and their models
-            // for the picker — which also takes a typed id for anything newer.
+            // for the picker. The list is the whole choice — no typed ids.
             'providers' => KnownModelPrices::providers(),
             'models' => array_map(fn (array $model) => [
                 'provider' => $model['provider'],

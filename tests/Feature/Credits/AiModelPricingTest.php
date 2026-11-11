@@ -159,8 +159,11 @@ it('resolves a dated model snapshot to its base price, not a costlier neighbour'
     // this must not land on `gpt-5` — eight times the input price.
     expect(\App\Services\AiTokens\KnownModelPrices::for('OPENAI', 'gpt-5-mini-2025-08-07'))
         ->toBe(['input' => 0.25, 'output' => 2.00])
-        ->and(\App\Services\AiTokens\KnownModelPrices::for('ANTHROPIC', 'claude-sonnet-4-5-20250929'))
-        ->toBe(['input' => 3.00, 'output' => 15.00]);
+        ->and(\App\Services\AiTokens\KnownModelPrices::for('ANTHROPIC', 'claude-haiku-4-5-20251001'))
+        ->toBe(['input' => 1.00, 'output' => 5.00])
+        // `claude-opus-5-5` must win over `claude-opus-5`, its own prefix.
+        ->and(\App\Services\AiTokens\KnownModelPrices::for('ANTHROPIC', 'claude-opus-5-5'))
+        ->toBe(['input' => 4.00, 'output' => 20.00]);
 });
 
 it('says it does not know a model rather than guessing a price for it', function () {
