@@ -11,7 +11,8 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *
  * Expects the Tenant to be loaded with its `user` (owner) relation and
  * the `users_count`, `connections_count`, `contacts_count`,
- * `conversations_count` aggregates (via withCount).
+ * `conversations_count` aggregates (via withCount). `currentSubscription.plan`
+ * is optional and adds the `subscription` line.
  */
 class CustomerResource extends JsonResource
 {
@@ -38,6 +39,14 @@ class CustomerResource extends JsonResource
                 // What this workspace's country accepts; empty = it asks for none.
                 'document_types' => MarketDocuments::forMarket($this->market_code),
             ],
+            // The current subscription in one line — plan and whether it is
+            // being paid. Null = no subscription at all; absent when the
+            // relation was not loaded (the create/update responses).
+            'subscription' => $this->whenLoaded('currentSubscription', fn () => $this->currentSubscription ? [
+                'status' => $this->currentSubscription->status?->value,
+                'plan_name' => $this->currentSubscription->plan?->name,
+                'current_period_end' => $this->currentSubscription->current_period_end,
+            ] : null),
             'counts' => [
                 'users' => $this->users_count ?? 0,
                 'connections' => $this->connections_count ?? 0,

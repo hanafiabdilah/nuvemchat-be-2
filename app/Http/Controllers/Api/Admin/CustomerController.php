@@ -33,7 +33,9 @@ class CustomerController extends Controller
         $sort = $request->query('sort', 'newest');
 
         $customers = Tenant::query()
-            ->with('user')
+            // The plan and whether it is being paid is the first thing an
+            // operator reads in this list, before any count.
+            ->with(['user', 'currentSubscription.plan:id,name'])
             ->withCount(['users', 'connections', 'contacts', 'conversations'])
             ->when($search !== '', function ($query) use ($search) {
                 // Numbers are stored as bare digits, so a search typed with spaces,
@@ -60,7 +62,7 @@ class CustomerController extends Controller
      */
     public function show(Tenant $tenant)
     {
-        $tenant->load('user')
+        $tenant->load(['user', 'currentSubscription.plan:id,name'])
             ->loadCount(['users', 'connections', 'contacts', 'conversations']);
 
         return new CustomerResource($tenant);
@@ -255,7 +257,9 @@ class CustomerController extends Controller
             ]));
         }
 
-        $tenant->load('user')->loadCount(['users', 'connections', 'contacts', 'conversations']);
+        // Same shape as show(): the detail page swaps its copy for this one.
+        $tenant->load(['user', 'currentSubscription.plan:id,name'])
+            ->loadCount(['users', 'connections', 'contacts', 'conversations']);
 
         return (new CustomerResource($tenant))->response();
     }
