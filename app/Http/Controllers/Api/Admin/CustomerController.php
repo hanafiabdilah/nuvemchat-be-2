@@ -35,7 +35,7 @@ class CustomerController extends Controller
         $customers = Tenant::query()
             // The plan and whether it is being paid is the first thing an
             // operator reads in this list, before any count.
-            ->with(['user', 'currentSubscription.plan:id,name'])
+            ->with($this->relations($request))
             ->withCount(['users', 'connections', 'contacts', 'conversations'])
             ->when($search !== '', function ($query) use ($search) {
                 // Numbers are stored as bare digits, so a search typed with spaces,
@@ -62,7 +62,7 @@ class CustomerController extends Controller
      */
     public function show(Tenant $tenant)
     {
-        $tenant->load(['user', 'currentSubscription.plan:id,name'])
+        $tenant->load($this->relations(request()))
             ->loadCount(['users', 'connections', 'contacts', 'conversations']);
 
         return new CustomerResource($tenant);
@@ -258,10 +258,28 @@ class CustomerController extends Controller
         }
 
         // Same shape as show(): the detail page swaps its copy for this one.
-        $tenant->load(['user', 'currentSubscription.plan:id,name'])
+        $tenant->load($this->relations(request()))
             ->loadCount(['users', 'connections', 'contacts', 'conversations']);
 
         return (new CustomerResource($tenant))->response();
+    }
+
+    /**
+     * What a customer row is loaded with. The balance is money held for the
+     * customer, so it only comes along for roles that manage balances — the
+     * same gate as the Balance tab it links to.
+     *
+     * @return list<string>
+     */
+    private function relations(Request $request): array
+    {
+        $relations = ['user', 'currentSubscription.plan:id,name'];
+
+        if ($request->user()?->checkPermissionTo('bo.credits.manage')) {
+            $relations[] = 'creditWallet';
+        }
+
+        return $relations;
     }
 
     private function fieldError(string $field, string $message): JsonResponse

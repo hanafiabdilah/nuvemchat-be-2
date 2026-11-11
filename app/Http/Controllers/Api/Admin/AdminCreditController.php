@@ -118,6 +118,35 @@ class AdminCreditController extends Controller
     }
 
     /**
+     * Balance held for customers across the platform, one line per currency.
+     *
+     * Held money is a liability — service paid for and not yet delivered —
+     * and reais plus rupiah is not an amount, so it is never added across
+     * currencies. Only positive balances count: a wallet below zero owes the
+     * platform, it does not hold anything.
+     */
+    public function summary(): JsonResponse
+    {
+        $held = CreditWallet::query()
+            ->where('balance_cents', '>', 0)
+            ->selectRaw('currency, SUM(balance_cents) as held, COUNT(*) as wallets')
+            ->groupBy('currency')
+            ->orderBy('currency')
+            ->get();
+
+        return response()->json([
+            'data' => [
+                'base_currency' => MarketMoney::baseCurrency(),
+                'held' => $held->map(fn ($row) => [
+                    'currency' => $row->currency,
+                    'cents' => (int) $row->held,
+                    'wallets' => (int) $row->wallets,
+                ])->values(),
+            ],
+        ]);
+    }
+
+    /**
      * Base units per one unit of `$currency`, through USD like every other
      * conversion. Null when either side has no rate.
      */

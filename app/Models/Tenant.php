@@ -248,6 +248,12 @@ class Tenant extends Model
         return $this->belongsTo(Subscription::class, 'current_subscription_id');
     }
 
+    /** The prepaid balance. Absent until something first credits or debits it. */
+    public function creditWallet()
+    {
+        return $this->hasOne(CreditWallet::class);
+    }
+
     public function invoices()
     {
         return $this->hasMany(Invoice::class);

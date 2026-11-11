@@ -1404,6 +1404,8 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         // balance without holding the keys.
         Route::middleware('permission:bo.credits.manage')->group(function () {
             Route::get('/credits', [AdminCreditController::class, 'index']);
+            // Held balance per currency, for the dashboard card.
+            Route::get('/credits/summary', [AdminCreditController::class, 'summary']);
             // The top-up floor and the low-balance warning of one market, in
             // that market's own money.
             Route::put('/credits/balance-settings', [AdminCreditController::class, 'updateBalanceSettings']);

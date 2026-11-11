@@ -47,6 +47,12 @@ class CustomerResource extends JsonResource
                 'plan_name' => $this->currentSubscription->plan?->name,
                 'current_period_end' => $this->currentSubscription->current_period_end,
             ] : null),
+            // The prepaid balance, in the wallet's own money. Null = no wallet
+            // yet; absent for roles that do not manage balances.
+            'balance' => $this->whenLoaded('creditWallet', fn () => $this->creditWallet ? [
+                'cents' => (int) $this->creditWallet->balance_cents,
+                'currency' => $this->creditWallet->currency,
+            ] : null),
             'counts' => [
                 'users' => $this->users_count ?? 0,
                 'connections' => $this->connections_count ?? 0,
