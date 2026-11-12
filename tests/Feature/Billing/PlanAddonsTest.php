@@ -527,3 +527,59 @@ it('prices the public plans\' extras from the landing page, by price rather than
         ->and($elite->fresh()->addonUnitPrices('BR', 'yearly'))->toBe(['agents' => 47904, 'whatsapp_connections' => 86304])
         ->and($other->fresh()->addonUnitPrices('BR'))->toBe([]);
 });
+
+// --- Gallery storage, sold per plan (Nov 2026) ----------------------------------
+
+it('sells gallery storage per plan even when the plan includes none', function () {
+    // Absent gallery storage is zero, not unlimited — so there is always
+    // something to add to, unlike an agent limit the plan does not set.
+    $plan = addonPlan('One', 14990, 2, 1, 5990, null);
+    $plan->marketPrices()->first()->update(['addon_cents' => ['agents' => 5990, 'gallery_storage_gb' => 190]]);
+
+    expect($plan->fresh()->addonUnitPrices('BR'))->toBe(['agents' => 5990, 'gallery_storage_gb' => 190])
+        ->and(PlanChange::includedFor($plan->fresh(), ['gallery_storage_gb']))->toBe(['gallery_storage_gb' => 0]);
+});
+
+it('adds the gigabytes bought with the plan to the gallery limit', function () {
+    $tenant = addonTenant();
+    $plan = addonPlan('One', 14990, 2, 1, 5990, null);
+    $plan->forceFill(['quotas' => ['max_agents' => 2, 'max_whatsapp_connections' => 1, 'gallery_storage_gb' => 2]])->save();
+    $plan->marketPrices()->first()->update(['addon_cents' => ['gallery_storage_gb' => 190]]);
+
+    addonActive($tenant, $plan->fresh(), attributes: [
+        'addons' => ['gallery_storage_gb' => 3],
+        'addon_unit_cents' => ['gallery_storage_gb' => 190],
+    ]);
+    app(SubscriptionGate::class)->forget($tenant);
+
+    $storage = app(\App\Services\Gallery\GalleryStorage::class);
+    $summary = $storage->summary($tenant->fresh());
+
+    // 2 GB in the plan + 3 GB bought on top, all from the subscription.
+    expect($summary['plan_gb'])->toBe(5)
+        ->and($summary['extra_gb'])->toBe(3)
+        ->and($summary['rented_gb'])->toBe(0)
+        ->and($storage->limitBytes($tenant->fresh()))->toBe(5 * \App\Services\Gallery\GalleryStorage::BYTES_PER_GB);
+});
+
+it('refuses to drop storage below what the gallery already uses', function () {
+    $tenant = addonTenant();
+    $plan = addonPlan('One', 14990, 2, 1, 5990, null);
+    $plan->forceFill(['quotas' => ['max_agents' => 2, 'max_whatsapp_connections' => 1, 'gallery_storage_gb' => 1]])->save();
+    $plan->marketPrices()->first()->update(['addon_cents' => ['gallery_storage_gb' => 190]]);
+
+    addonActive($tenant, $plan->fresh(), attributes: [
+        'addons' => ['gallery_storage_gb' => 3],
+        'addon_unit_cents' => ['gallery_storage_gb' => 190],
+    ]);
+
+    // 2,5 GB kept in the gallery: 3 GB are needed, the plan gives 1.
+    \Tests\Support\GalleryFixtures::asset($tenant, (int) (2.5 * \App\Services\Gallery\GalleryStorage::BYTES_PER_GB));
+
+    expect(fn () => app(SubscriptionAddons::class)->quote($tenant->fresh(), ['gallery_storage_gb' => 1]))
+        ->toThrow(ValidationException::class);
+
+    // Two extra gigabytes still hold it.
+    expect(app(SubscriptionAddons::class)->quote($tenant->fresh(), ['gallery_storage_gb' => 2])['decreases'])
+        ->toHaveCount(1);
+});

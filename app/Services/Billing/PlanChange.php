@@ -184,7 +184,7 @@ class PlanChange
         $included = [];
 
         foreach ($keys as $key) {
-            $included[$key] = (int) ($quotas[Addon::from($key)->quota()->value] ?? 0);
+            $included[$key] = Addon::from($key)->included($quotas) ?? 0;
         }
 
         return $included;
@@ -212,14 +212,16 @@ class PlanChange
         $units = [];
 
         foreach (array_keys($unitPrices) as $key) {
-            $quota = Addon::from($key)->quota()->value;
+            $addon = Addon::from($key);
+            $have = $addon->included($held);
+            $base = $addon->included($included);
 
             // Only from a limit: an unlimited allowance has no number to keep.
-            if (! isset($held[$quota], $included[$quota])) {
+            if ($have === null || $base === null) {
                 continue;
             }
 
-            $units[$key] = max(0, (int) $held[$quota] - (int) $included[$quota]);
+            $units[$key] = max(0, $have - $base);
         }
 
         return array_filter($units);

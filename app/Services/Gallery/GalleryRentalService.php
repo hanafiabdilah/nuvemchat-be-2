@@ -18,6 +18,11 @@ use Illuminate\Validation\ValidationException;
 /**
  * Renting extra gallery space, month by month, out of the prepaid balance.
  *
+ * ⚠️ **No longer sold (Nov 2026).** Extra storage is now an add-on of the
+ * plan (Addon::GalleryStorage), priced per plan like extra agents and billed
+ * with the plan's own renewal. A rental that exists keeps renewing and can
+ * still be shrunk or cancelled; nobody can start one or grow one any more.
+ *
  * The whole object turns on one asymmetry: **going up is immediate, going down
  * is not**. An increase is charged pro rata on the spot, because the space is
  * usable the moment it is granted and the customer asked for it. A decrease
@@ -106,6 +111,14 @@ class GalleryRentalService
         // leave a customer stuck at 50 GB they can no longer reduce — the month
         // they already paid for is theirs either way.
         $growing = $rental === null ? $gb > 0 : $gb > $rental->gb;
+
+        // Storage is sold with the plan now. What is rented stays theirs and
+        // stays reducible; nothing new is sold through the balance.
+        if ($growing) {
+            throw ValidationException::withMessages([
+                'gb' => 'Extra storage is now added to your plan, on the Billing page.',
+            ]);
+        }
 
         if ($growing && ! MarketCapabilities::allowsFor($tenant, MarketCapability::GalleryStorage->value)) {
             throw ValidationException::withMessages([

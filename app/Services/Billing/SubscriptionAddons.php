@@ -11,14 +11,15 @@ use App\Models\Invoice;
 use App\Models\SavedCard;
 use App\Models\Subscription;
 use App\Models\Tenant;
+use App\Services\Gallery\GalleryStorage;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Extra agents and WhatsApp connections bought on a running plan, one unit at
- * a time, at **the plan's** price for them.
+ * Extra agents, WhatsApp connections and gigabytes of gallery storage bought
+ * on a running plan, one unit at a time, at **the plan's** price for them.
  *
  * The rule, in one sentence: **a unit added today is paid now for what is left
  * of the paid period, and from the next renewal on it is simply part of the
@@ -74,7 +75,7 @@ class SubscriptionAddons
                 'key' => $addon->value,
                 'quota' => $quota,
                 // Null: the plan does not limit it, so there is nothing to buy.
-                'included' => isset($included[$quota]) ? (int) $included[$quota] : null,
+                'included' => $addon->included($included),
                 'available' => isset($prices[$addon->value]),
                 'quantity' => $held[$addon->value] ?? 0,
                 'scheduled_quantity' => $scheduled === null ? null : ($scheduled[$addon->value] ?? 0),
@@ -149,7 +150,7 @@ class SubscriptionAddons
                     'unit_cents' => $unit, 'charge_cents' => (int) ceil($part),
                 ];
             } elseif ($delta < 0) {
-                $plan = (int) ($included[$addon->quota()->value] ?? 0);
+                $plan = $addon->included($included) ?? 0;
                 $used = $this->used($tenant, $addon);
 
                 // Refused below what is in use: agents and numbers past the
@@ -512,6 +513,9 @@ class SubscriptionAddons
         return match ($addon) {
             Addon::Agent => $tenant->users()->count(),
             Addon::WhatsappConnection => $this->gate->connectionsUsed($tenant, Quota::MaxWhatsappConnections),
+            // Whole gigabytes, rounded up: half a gigabyte in use still needs
+            // that gigabyte to stay.
+            Addon::GalleryStorage => (int) ceil(app(GalleryStorage::class)->usedBytes($tenant) / GalleryStorage::BYTES_PER_GB),
         };
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services\Gallery;
 
+use App\Enums\Billing\Addon;
 use App\Enums\Billing\Quota;
 use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\StorageRentalStatus;
@@ -50,6 +51,12 @@ class GalleryStorage
     public function planGb(Tenant $tenant): int
     {
         return max(0, $this->gate->quota($tenant, Quota::GalleryStorageGb->value) ?? 0);
+    }
+
+    /** Gigabytes bought on top of the plan, as a plan add-on. */
+    public function extraGb(Tenant $tenant): int
+    {
+        return $tenant->currentSubscription?->addonQuantities()[Addon::GalleryStorage->value] ?? 0;
     }
 
     public function rental(Tenant $tenant): ?GalleryStorageRental
@@ -115,7 +122,7 @@ class GalleryStorage
      * `files` counts what the meter charges for; `linked_files` is everything
      * else the gallery lists, which is free and never read-only.
      *
-     * @return array{plan_gb: int, rented_gb: int, limit_bytes: int, used_bytes: int, remaining_bytes: int, files: int, linked_files: int, over_quota: bool, read_only: bool}
+     * @return array{plan_gb: int, extra_gb: int, rented_gb: int, limit_bytes: int, used_bytes: int, remaining_bytes: int, files: int, linked_files: int, over_quota: bool, read_only: bool}
      */
     public function summary(Tenant $tenant): array
     {
@@ -125,7 +132,10 @@ class GalleryStorage
         $used = $this->usedBytes($tenant);
 
         return [
+            // The plan's allowance **including** the extra gigabytes bought
+            // with it — what the subscription gives. `extra_gb` is that part.
             'plan_gb' => $planGb,
+            'extra_gb' => min($this->extraGb($tenant), $planGb),
             'rented_gb' => $rentedGb,
             'limit_bytes' => $limit,
             'used_bytes' => $used,

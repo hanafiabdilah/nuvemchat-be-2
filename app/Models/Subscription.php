@@ -251,10 +251,11 @@ class Subscription extends Model
         // The extras bought on top. Only onto a limit the plan sets — an
         // unlimited quota has nothing to add to.
         foreach ($this->addonQuantities() as $key => $quantity) {
-            $quota = Addon::from($key)->quota()->value;
+            $addon = Addon::from($key);
+            $included = $addon->included($quotas);
 
-            if (isset($quotas[$quota])) {
-                $quotas[$quota] = (int) $quotas[$quota] + $quantity;
+            if ($included !== null) {
+                $quotas[$addon->quota()->value] = $included + $quantity;
             }
         }
 

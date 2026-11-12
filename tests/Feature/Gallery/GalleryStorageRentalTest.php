@@ -14,10 +14,26 @@ use Laravel\Sanctum\Sanctum;
 use Tests\Support\GalleryFixtures;
 
 /**
- * Renting library space: the asymmetry between growing and shrinking, and what
- * the deadline does when nobody can pay.
+ * Renting library space from the balance — **retired for new sales (Nov
+ * 2026)**: extra storage is a plan add-on now. What these tests keep honest is
+ * the rental that already exists: it still counts, still renews, still shrinks
+ * and cancels, and nobody can start or grow one any more.
  */
 uses(RefreshDatabase::class);
+
+/** A rental bought before storage moved to the plan: active, paid for a month. */
+function legacyRental($tenant, int $gb, ?\DateTimeInterface $renewsAt = null): GalleryStorageRental
+{
+    return GalleryStorageRental::query()->create([
+        'tenant_id' => $tenant->id,
+        'gb' => $gb,
+        'price_per_gb_cents' => 200,
+        'currency' => 'BRL',
+        'status' => StorageRentalStatus::Active,
+        'started_at' => now(),
+        'renews_at' => $renewsAt ?? now()->addMonth(),
+    ]);
+}
 
 beforeEach(function () {
     cache()->flush();
@@ -26,68 +42,39 @@ beforeEach(function () {
     Setting::set(GalleryPricing::KEY_MAX_RENT_GB, '500');
 });
 
-it('rents space for a full month and grants it immediately', function () {
+it('no longer rents new space from the balance', function () {
     $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 10_000);
     Sanctum::actingAs($tenant->user);
 
     $this->putJson('/api/gallery/storage', ['gb' => 10])
-        ->assertOk()
-        ->assertJsonPath('data.rental.gb', 10)
-        ->assertJsonPath('data.storage.rented_gb', 10);
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('gb');
+
+    // Nothing created, nothing charged: the space is sold with the plan now.
+    expect(GalleryStorageRental::count())->toBe(0)
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(10_000);
+});
+
+it('keeps counting a rental that already exists, but will not grow it', function () {
+    $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 50_000);
+    legacyRental($tenant, 10);
+    Sanctum::actingAs($tenant->user);
 
     // Plan + rental, added up in one place so no screen can disagree with the
     // check that gates an upload.
     expect(app(GalleryStorage::class)->limitBytes($tenant->fresh()))
         ->toBe(11 * GalleryStorage::BYTES_PER_GB);
 
-    expect(app(CreditService::class)->balanceCents($tenant))->toBe(10_000 - 2_000);
-});
+    $this->putJson('/api/gallery/storage', ['gb' => 20])->assertStatus(422);
 
-it('refuses to rent what the balance will not cover, and names the shortfall', function () {
-    $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 500);
-    Sanctum::actingAs($tenant->user);
-
-    $this->putJson('/api/gallery/storage', ['gb' => 10])
-        ->assertStatus(422)
-        ->assertJsonPath('code', 'insufficient_credit')
-        ->assertJsonPath('shortfall_cents', 1_500);
-
-    // A row that was created to hang the charge reference on must not be left
-    // granting free space.
-    $rental = GalleryStorageRental::where('tenant_id', $tenant->id)->first();
-    expect($rental?->status)->not->toBe(StorageRentalStatus::Active)
-        ->and(app(GalleryStorage::class)->rentedGb($tenant->fresh()))->toBe(0);
-});
-
-it('charges only the rest of the cycle when the amount goes up', function () {
-    $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 50_000);
-    $rentals = app(GalleryRentalService::class);
-
-    $this->travelTo(now()->startOfDay());
-    $rentals->setAmount($tenant, 10);
-    $spentOnFirstMonth = 10 * 200;
-
-    // Half-way through the paid month, add another 10 GB.
-    $this->travelTo(now()->addDays(15));
-    $rentals->setAmount($tenant->fresh(), 20);
-
-    $charged = app(CreditService::class)->balanceCents($tenant) - 50_000;
-    $prorated = abs($charged) - $spentOnFirstMonth;
-
-    // A full month for the added 10 GB would be 2000 cents; roughly half the
-    // cycle is left, so anything near a full month means the proration was
-    // skipped.
-    expect($prorated)->toBeGreaterThan(700)->toBeLessThan(1_300);
-
-    expect(app(GalleryStorage::class)->rentedGb($tenant->fresh()))->toBe(20);
+    expect(app(GalleryStorage::class)->rentedGb($tenant->fresh()))->toBe(10)
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(50_000);
 });
 
 it('schedules a reduction for the renewal instead of taking back a paid month', function () {
     $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 50_000);
+    legacyRental($tenant, 20);
     Sanctum::actingAs($tenant->user);
-
-    $this->putJson('/api/gallery/storage', ['gb' => 20])->assertOk();
-    $balanceAfterRent = app(CreditService::class)->balanceCents($tenant);
 
     $this->putJson('/api/gallery/storage', ['gb' => 5])
         ->assertOk()
@@ -95,7 +82,7 @@ it('schedules a reduction for the renewal instead of taking back a paid month', 
         ->assertJsonPath('data.rental.pending_gb', 5); // and 5 from the renewal
 
     // Nothing is charged and nothing is refunded: the month is already paid.
-    expect(app(CreditService::class)->balanceCents($tenant))->toBe($balanceAfterRent)
+    expect(app(CreditService::class)->balanceCents($tenant))->toBe(50_000)
         ->and(app(GalleryStorage::class)->rentedGb($tenant->fresh()))->toBe(20);
 });
 
@@ -117,10 +104,8 @@ it('charges a cycle once even when the pass dies after taking the money', functi
     $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 50_000);
     $rentals = app(GalleryRentalService::class);
 
-    $rentals->setAmount($tenant, 10);
-    $rental = GalleryStorageRental::where('tenant_id', $tenant->id)->first();
     $due = now()->addDay();
-    $rental->forceFill(['renews_at' => $due])->save();
+    $rental = legacyRental($tenant, 10, $due);
 
     $balanceBefore = app(CreditService::class)->balanceCents($tenant);
 
@@ -142,10 +127,8 @@ it('catches up from today instead of billing every month the scheduler missed', 
     $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 50_000);
     $rentals = app(GalleryRentalService::class);
 
-    $rentals->setAmount($tenant, 10);
-    $rental = GalleryStorageRental::where('tenant_id', $tenant->id)->first();
     // Three cycles went by with the pass down.
-    $rental->forceFill(['renews_at' => now()->subMonths(3)])->save();
+    $rental = legacyRental($tenant, 10, now()->subMonths(3));
 
     $balanceBefore = app(CreditService::class)->balanceCents($tenant);
     $rentals->chargeRenewal($rental->fresh());
@@ -160,11 +143,10 @@ it('applies a scheduled reduction at the renewal, and charges the smaller size',
     $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 50_000);
     $rentals = app(GalleryRentalService::class);
 
-    $rentals->setAmount($tenant, 20);
+    legacyRental($tenant, 20, now()->addDay());
     $rentals->setAmount($tenant->fresh(), 5);
 
     $rental = GalleryStorageRental::where('tenant_id', $tenant->id)->first();
-    $rental->forceFill(['renews_at' => now()->addDay()])->save();
 
     $balanceBefore = app(CreditService::class)->balanceCents($tenant);
     $rentals->chargeRenewal($rental->fresh());
@@ -182,11 +164,8 @@ it('cancels at the renewal without charging another month', function () {
     Sanctum::actingAs($tenant->user);
     $rentals = app(GalleryRentalService::class);
 
-    $rentals->setAmount($tenant, 10);
+    $rental = legacyRental($tenant, 10, now()->addDay());
     $this->deleteJson('/api/gallery/storage')->assertOk()->assertJsonPath('data.rental.pending_gb', 0);
-
-    $rental = GalleryStorageRental::where('tenant_id', $tenant->id)->first();
-    $rental->forceFill(['renews_at' => now()->addDay()])->save();
 
     $balanceBefore = app(CreditService::class)->balanceCents($tenant);
     $rentals->chargeRenewal($rental->fresh());
@@ -196,14 +175,10 @@ it('cancels at the renewal without charging another month', function () {
 });
 
 it('ends an unpayable rental at the deadline and deletes nothing', function () {
-    $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 2_000);
-    $rentals = app(GalleryRentalService::class);
+    $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 0);
 
-    $rentals->setAmount($tenant, 10);           // spends the whole balance
     $asset = GalleryFixtures::asset($tenant, 5_000_000);
-
-    $rental = GalleryStorageRental::where('tenant_id', $tenant->id)->first();
-    $rental->forceFill(['renews_at' => now()->subMinute()])->save();
+    $rental = legacyRental($tenant, 10, now()->subMinute());
 
     $this->artisan('gallery:renew')->assertSuccessful();
 
@@ -219,13 +194,9 @@ it('ends an unpayable rental at the deadline and deletes nothing', function () {
 });
 
 it('warns before the charge window rather than only at the deadline', function () {
-    $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 2_000);
-    $rentals = app(GalleryRentalService::class);
+    $tenant = GalleryFixtures::tenant(planGb: 1, balanceCents: 0);
 
-    $rentals->setAmount($tenant, 10); // spends the balance
-
-    $rental = GalleryStorageRental::where('tenant_id', $tenant->id)->first();
-    $rental->forceFill(['renews_at' => now()->addDays(5)])->save();
+    $rental = legacyRental($tenant, 10, now()->addDays(5));
 
     $this->artisan('gallery:renew')->assertSuccessful();
 
@@ -235,9 +206,9 @@ it('warns before the charge window rather than only at the deadline', function (
     // days before the space would go.
     expect($rental->status)->toBe(StorageRentalStatus::Active)
         ->and($rental->renewal_reminder_sent_at)->not->toBeNull()
-        // Only the original rent: the pass warned, it did not reach for money
-        // that is not due for another five days.
-        ->and(CreditTransaction::where('tenant_id', $tenant->id)->count())->toBe(1);
+        // The pass warned; it did not reach for money that is not due for
+        // another five days.
+        ->and(CreditTransaction::where('tenant_id', $tenant->id)->count())->toBe(0);
 });
 
 it('refuses to sell less than the platform minimum, but always allows zero', function () {
