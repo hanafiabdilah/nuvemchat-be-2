@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Http\Controllers\Api\Admin\Concerns\AdminListing;
 use App\Http\Controllers\Controller;
 use App\Models\Otp;
 use Illuminate\Http\Request;
@@ -12,9 +13,18 @@ use Illuminate\Http\Request;
  */
 class OtpController extends Controller
 {
+    use AdminListing;
+
     public function index(Request $request)
     {
-        $perPage = (int) $request->query('per_page', 25);
+        // Capped: an uncapped per_page let one request read the whole table.
+        $perPage = max(1, min((int) $request->query('per_page', 25), 100));
+        $dates = $request->validate([
+            'from' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'to' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+        ]);
+        $from = $dates['from'] ?? null;
+        $to = $dates['to'] ?? null;
         $statusFilter = $request->query('status'); // pending | verified | expired
         $search = $request->query('search');       // number, or the user's e-mail / name, contains
         $purpose = $request->query('purpose');     // whatsapp_verification | password_reset
@@ -30,6 +40,7 @@ class OtpController extends Controller
                     ->where('email', 'like', "%{$search}%")
                     ->orWhere('name', 'like', "%{$search}%"))))
             ->when($purpose, fn ($q) => $q->where('purpose', $purpose))
+            ->when($from || $to, fn ($q) => $this->whereDayRange($q, 'created_at', $from, $to))
             ->when($statusFilter === 'verified', fn ($q) => $q->whereNotNull('verified_at'))
             ->when($statusFilter === 'pending', fn ($q) => $q->whereNull('verified_at')->where('expires_at', '>', now()))
             ->when($statusFilter === 'expired', fn ($q) => $q->whereNull('verified_at')->where('expires_at', '<=', now()))

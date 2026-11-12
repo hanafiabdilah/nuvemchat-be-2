@@ -42,7 +42,7 @@ class AdminNumbersController extends Controller
         ]);
 
         $rows = VirtualNumber::query()
-            ->with('tenant:id,name')
+            ->with('tenant.user:id,name')
             ->when($validated['tenant_id'] ?? null, fn ($q, $id) => $q->where('tenant_id', $id))
             ->when($validated['status'] ?? null, fn ($q, $status) => $q->where('status', $status))
             ->when($validated['search'] ?? null, fn ($q, $term) => $q->where('msisdn', 'like', "%{$term}%"))
@@ -52,7 +52,7 @@ class AdminNumbersController extends Controller
         $rows->getCollection()->transform(fn (VirtualNumber $row) => [
             'id' => $row->id,
             'tenant_id' => $row->tenant_id,
-            'tenant_name' => $row->tenant?->name,
+            'tenant_name' => $row->tenant?->user?->name,
             'provider_number_id' => $row->provider_number_id,
             'msisdn' => $row->msisdn,
             'app' => $row->app,

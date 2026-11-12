@@ -246,7 +246,7 @@ class AdminTrainedAgentController extends Controller
     public function hires(Request $request)
     {
         $hires = TrainedAgentHire::query()
-            ->with(['tenant:id,name', 'blueprint:id,name'])
+            ->with(['tenant.user:id,name', 'blueprint:id,name'])
             ->when($request->boolean('attention'), fn ($q) => $q->needsAttention())
             ->when($request->filled('blueprint_id'), fn ($q) => $q->where('trained_agent_blueprint_id', $request->integer('blueprint_id')))
             ->when($request->filled('tenant_id'), fn ($q) => $q->where('tenant_id', $request->integer('tenant_id')))
@@ -257,7 +257,7 @@ class AdminTrainedAgentController extends Controller
             'data' => $hires->getCollection()->map(fn (TrainedAgentHire $hire) => [
                 'id' => $hire->id,
                 'tenant_id' => $hire->tenant_id,
-                'tenant_name' => $hire->tenant?->name,
+                'tenant_name' => $hire->tenant?->user?->name,
                 'blueprint_id' => $hire->trained_agent_blueprint_id,
                 'blueprint_name' => $hire->blueprint?->name ?? ($hire->blueprint_snapshot['name'] ?? null),
                 'agent_name' => $hire->agent_name,

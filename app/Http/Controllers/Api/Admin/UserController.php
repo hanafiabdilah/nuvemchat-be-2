@@ -2,9 +2,11 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Http\Controllers\Api\Admin\Concerns\AdminListing;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Admin\AdminUserResource;
 use App\Models\AuditLog;
+use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -12,28 +14,45 @@ use Illuminate\Validation\Rules\Password;
 
 class UserController extends Controller
 {
+    use AdminListing;
+
     /**
      * Paginated list of tenant users across every customer (platform-wide).
      *
      * Only users that belong to a tenant are returned; a row without one is an
      * account caught mid-registration, not a customer. Back Office admins are
-     * a separate table entirely (see the Admins page). Supports ?search=,
-     * ?tenant_id=, ?per_page= and ?sort= (newest|oldest).
+     * a separate table entirely (see the Admins page).
+     *
+     * ?search= (name, e-mail, WhatsApp), ?tenant_id=, ?role=owner|member,
+     * ?per_page=, ?sort=created_at|name|email (+ dir) — newest|oldest still work.
      */
     public function index(Request $request)
     {
-        $perPage = max(1, min((int) $request->integer('per_page', 20), 100));
-        $search = trim((string) $request->query('search', ''));
-        $sort = $request->query('sort', 'newest') === 'oldest' ? 'asc' : 'desc';
+        $validated = $request->validate([
+            'search' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'tenant_id' => ['sometimes', 'nullable', 'integer'],
+            'role' => ['sometimes', 'nullable', Rule::in(['owner', 'member'])],
+            'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $search = trim((string) ($validated['search'] ?? ''));
+        $digits = preg_replace('/\D+/', '', $search);
+        [$sort, $dir] = $this->sortOf($request, ['created_at', 'name', 'email']);
+        // Owners are the users a tenant points at; everyone else was invited.
+        $owners = Tenant::query()->select('user_id');
 
         $users = User::query()
             ->whereNotNull('tenant_id')
             ->with(['roles', 'tenant.user'])
-            ->when($request->filled('tenant_id'), fn ($q) => $q->where('tenant_id', $request->integer('tenant_id')))
+            ->when($validated['tenant_id'] ?? null, fn ($q, $id) => $q->where('tenant_id', $id))
+            ->when(($validated['role'] ?? null) === 'owner', fn ($q) => $q->whereIn('id', $owners))
+            ->when(($validated['role'] ?? null) === 'member', fn ($q) => $q->whereNotIn('id', $owners))
             ->when($search !== '', fn ($q) => $q->where(fn ($w) => $w->where('name', 'like', "%{$search}%")
-                ->orWhere('email', 'like', "%{$search}%")))
-            ->orderBy('id', $sort)
-            ->paginate($perPage)
+                ->orWhere('email', 'like', "%{$search}%")
+                ->when(strlen($digits) >= 5, fn ($w2) => $w2->orWhere('whatsapp_number', 'like', "%{$digits}%"))))
+            ->orderBy($sort === 'created_at' ? 'id' : $sort, $dir)
+            ->orderBy('id', $dir)
+            ->paginate($validated['per_page'] ?? 20)
             ->withQueryString();
 
         return AdminUserResource::collection($users);

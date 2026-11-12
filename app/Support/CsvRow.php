@@ -21,6 +21,12 @@ final class CsvRow
     public static function write($out, array $cells): void
     {
         fputcsv($out, array_map(static function ($cell) {
+            // An enum cast (an invoice's purpose, a status) is written as its
+            // value; fputcsv itself cannot turn an object into text.
+            if ($cell instanceof \BackedEnum) {
+                $cell = $cell->value;
+            }
+
             if (! is_string($cell) || $cell === '') {
                 return $cell;
             }

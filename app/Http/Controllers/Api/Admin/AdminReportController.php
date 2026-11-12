@@ -158,7 +158,7 @@ class AdminReportController extends Controller
     {
         self::row($out, [
             'id', 'tenant_id', 'owner', 'email', 'status', 'method',
-            'amount_brl', 'currency', 'purpose', 'due_at', 'paid_at', 'created_at',
+            'amount', 'currency', 'purpose', 'due_date', 'paid_at', 'created_at',
         ]);
 
         Invoice::query()
@@ -177,7 +177,7 @@ class AdminReportController extends Controller
                         number_format((int) $i->amount_cents / 100, 2, '.', ''),
                         $i->currency,
                         $i->purpose,
-                        $i->due_at?->toDateString(),
+                        $i->due_date?->toDateString(),
                         $i->paid_at?->toDateTimeString(),
                         $i->created_at?->toDateTimeString(),
                     ]);

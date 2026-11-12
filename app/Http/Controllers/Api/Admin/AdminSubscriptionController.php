@@ -6,6 +6,7 @@ use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
+use App\Http\Controllers\Api\Admin\Concerns\AdminListing;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Billing\SubscriptionResource;
 use App\Models\Market;
@@ -21,6 +22,8 @@ use Illuminate\Validation\Rule;
 
 class AdminSubscriptionController extends Controller
 {
+    use AdminListing;
+
     public function __construct(
         protected BillingService $billing,
     ) {}
@@ -54,10 +57,13 @@ class AdminSubscriptionController extends Controller
             'market.*' => ['string', 'size:2'],
             'current' => ['sometimes', 'boolean'],
             'tenant_id' => ['sometimes', 'nullable', 'integer'],
+            'period_end_from' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'period_end_to' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
 
         $search = trim((string) ($validated['search'] ?? ''));
+        [$sort, $dir] = $this->sortOf($request, ['created_at', 'period_end', 'price']);
 
         $subscriptions = Subscription::query()
             ->with(['plan', 'tenant.user'])
@@ -75,7 +81,13 @@ class AdminSubscriptionController extends Controller
                 fn ($t) => $t->whereColumn('tenants.current_subscription_id', 'subscriptions.id'),
             ))
             ->when($search !== '', fn ($q) => $this->applySearch($q, $search))
-            ->orderByDesc('id')
+            // "Renews or ends between": the date the next charge or the end falls on.
+            ->when(($validated['period_end_from'] ?? null) || ($validated['period_end_to'] ?? null), fn ($q) => $this->whereDayRange(
+                $q, 'current_period_end', $validated['period_end_from'] ?? null, $validated['period_end_to'] ?? null,
+            ))
+            ->when($sort === 'period_end', fn ($q) => $this->orderByColumnNullsLast($q, 'current_period_end', $dir))
+            ->when($sort === 'price', fn ($q) => $q->orderBy('price_cents', $dir))
+            ->orderBy('id', $dir)
             ->paginate($validated['per_page'] ?? 20)
             ->withQueryString();
 

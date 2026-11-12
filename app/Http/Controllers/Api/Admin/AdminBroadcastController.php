@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Admin;
 
 use App\Enums\Broadcast\Status;
+use App\Http\Controllers\Api\Admin\Concerns\AdminListing;
 use App\Http\Controllers\Controller;
 use App\Models\Broadcast;
 use App\Services\Broadcast\BroadcastService;
@@ -23,6 +24,8 @@ use Illuminate\Http\Request;
  */
 class AdminBroadcastController extends Controller
 {
+    use AdminListing;
+
     /**
      * A running campaign whose pump has not checked in for this long has lost
      * its worker. Matches the watchdog's own threshold in `broadcasts:tick`.
@@ -36,10 +39,19 @@ class AdminBroadcastController extends Controller
     public function index(Request $request)
     {
         $perPage = max(1, min((int) $request->integer('per_page', 25), 100));
+        // Any of, "a,b": "everything that stopped" is failed and canceled together.
+        $statuses = $this->listsFrom($request, ['status'])['status'] ?? [];
+        $search = trim((string) $request->query('search', ''));
 
         $campaigns = Broadcast::query()
             ->with(['tenant.user:id,name,email', 'connection:id,name,channel', 'creator:id,name'])
-            ->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))
+            ->when($statuses, fn ($q) => $q->whereIn('status', $statuses))
+            // The campaign's name, or the customer running it.
+            ->when($search !== '', fn ($q) => $q->where(fn ($w) => $w
+                ->where('name', 'like', "%{$search}%")
+                ->orWhereHas('tenant.user', fn ($u) => $u
+                    ->where('name', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%"))))
             ->when($request->integer('tenant_id'), fn ($q, $id) => $q->where('tenant_id', $id))
             ->when($request->boolean('stalled'), fn ($q) => $this->applyStalled($q))
             ->orderByDesc('id')

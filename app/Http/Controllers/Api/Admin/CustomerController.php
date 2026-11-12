@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
+use App\Enums\Billing\SubscriptionStatus;
+use App\Http\Controllers\Api\Admin\Concerns\AdminListing;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Admin\CustomerResource;
 use App\Models\AuditLog;
 use App\Models\Market;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Market\MarketDocuments;
@@ -18,25 +22,100 @@ use Illuminate\Validation\Rules\Password;
 
 class CustomerController extends Controller
 {
+    use AdminListing;
+
     /**
      * Paginated list of every customer (tenant) on the platform.
      *
-     * Supports ?search= (owner name/email/WhatsApp number), ?per_page=, and ?sort=
-     * (newest|oldest). Not tenant-scoped — this is a platform admin view.
+     * Not tenant-scoped — this is a platform admin view. Every filter applies
+     * on the server, before paging: a filter that only narrowed the 20 rows on
+     * screen would say "no customers" while the next page had matches.
+     *
+     * - search: owner name, e-mail or WhatsApp number
+     * - status: the current subscription's status, any of; "none" = no plan
+     * - plan_id, market: any of
+     * - verified: yes|no — the owner's WhatsApp confirmed by OTP
+     * - activity: active|inactive — has had at least one conversation
+     * - created_from/created_to, period_end_from/period_end_to: Y-m-d, inclusive
+     * - sort: created_at|name|email|plan|status|period_end|users|connections|
+     *   conversations (+ dir=asc|desc); newest|oldest still accepted
      */
     public function index(Request $request)
     {
-        $perPage = (int) $request->integer('per_page', 15);
-        $perPage = max(1, min($perPage, 100));
+        $request->merge($this->listsFrom($request, ['status', 'plan_id', 'market']));
 
-        $search = trim((string) $request->query('search', ''));
-        $sort = $request->query('sort', 'newest');
+        $validated = $request->validate([
+            'search' => ['sometimes', 'nullable', 'string', 'max:120'],
+            'status' => ['sometimes', 'array'],
+            'status.*' => [Rule::in([...array_map(fn (SubscriptionStatus $s) => $s->value, SubscriptionStatus::cases()), 'none'])],
+            'plan_id' => ['sometimes', 'array'],
+            'plan_id.*' => ['integer'],
+            'market' => ['sometimes', 'array'],
+            'market.*' => ['string', 'size:2'],
+            'verified' => ['sometimes', 'nullable', Rule::in(['yes', 'no'])],
+            'activity' => ['sometimes', 'nullable', Rule::in(['active', 'inactive'])],
+            'created_from' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'created_to' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'period_end_from' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'period_end_to' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
+        ]);
 
-        $customers = Tenant::query()
+        $query = $this->filtered($validated)
             // The plan and whether it is being paid is the first thing an
             // operator reads in this list, before any count.
             ->with($this->relations($request))
-            ->withCount(['users', 'connections', 'contacts', 'conversations'])
+            ->withCount(['users', 'connections', 'contacts', 'conversations']);
+
+        $this->sort($query, $request);
+
+        return CustomerResource::collection(
+            $query->paginate($validated['per_page'] ?? 15)->withQueryString(),
+        );
+    }
+
+    /**
+     * What the list's filters pick from, and how many customers signed up this
+     * week (shown beside the total).
+     *
+     * Served here, under the same permission as the list, rather than read
+     * from /admin/plans and /admin/markets — those sit behind permissions that
+     * edit a plan or open a country, which the person reading customers may
+     * not hold.
+     */
+    public function summary(): JsonResponse
+    {
+        return response()->json([
+            'data' => [
+                'total' => Tenant::query()->count(),
+                'new_7d' => Tenant::query()->where('created_at', '>=', now()->subDays(7))->count(),
+                'filters' => [
+                    'statuses' => array_map(fn (SubscriptionStatus $s) => $s->value, SubscriptionStatus::cases()),
+                    // Retired plans included: their customers are still here.
+                    'plans' => Plan::query()
+                        ->orderByDesc('is_active')
+                        ->orderBy('sort_order')
+                        ->orderBy('name')
+                        ->get(['id', 'name', 'is_active'])
+                        ->map(fn (Plan $plan) => ['id' => $plan->id, 'name' => $plan->name, 'is_active' => (bool) $plan->is_active]),
+                    'markets' => Market::query()
+                        ->orderBy('name')
+                        ->get(['code', 'name'])
+                        ->map(fn (Market $market) => ['code' => $market->code, 'name' => $market->name]),
+                ],
+            ],
+        ]);
+    }
+
+    /** @param  array<string, mixed>  $f  validated filters */
+    private function filtered(array $f)
+    {
+        $search = trim((string) ($f['search'] ?? ''));
+        $statuses = $f['status'] ?? [];
+        $withoutPlan = in_array('none', $statuses, true);
+        $statuses = array_values(array_diff($statuses, ['none']));
+
+        return Tenant::query()
             ->when($search !== '', function ($query) use ($search) {
                 // Numbers are stored as bare digits, so a search typed with spaces,
                 // dashes or a leading + would never match without stripping them first.
@@ -48,13 +127,64 @@ class CustomerController extends Controller
                         ->when($digits !== '', fn ($q2) => $q2->orWhere('whatsapp_number', 'like', "%{$digits}%"));
                 });
             })
+            ->when($statuses !== [] || $withoutPlan, fn ($query) => $query->where(function ($q) use ($statuses, $withoutPlan) {
+                if ($statuses !== []) {
+                    $q->whereHas('currentSubscription', fn ($s) => $s->whereIn('status', $statuses));
+                }
+                if ($withoutPlan) {
+                    $q->orWhereDoesntHave('currentSubscription');
+                }
+            }))
+            ->when($f['plan_id'] ?? [], fn ($query, $ids) => $query->whereHas('currentSubscription', fn ($s) => $s->whereIn('plan_id', $ids)))
             // The Markets page links its workspace count here.
-            ->when($request->filled('market'), fn ($query) => $query->where('market_code', strtoupper((string) $request->query('market'))))
-            ->orderBy('id', $sort === 'oldest' ? 'asc' : 'desc')
-            ->paginate($perPage)
-            ->withQueryString();
+            ->when($f['market'] ?? [], fn ($query, $codes) => $query->whereIn('market_code', array_map('strtoupper', $codes)))
+            ->when(($f['verified'] ?? null) === 'yes', fn ($query) => $query->whereHas('user', fn ($q) => $q->whereNotNull('whatsapp_verified_at')))
+            ->when(($f['verified'] ?? null) === 'no', fn ($query) => $query->whereDoesntHave('user', fn ($q) => $q->whereNotNull('whatsapp_verified_at')))
+            ->when(($f['activity'] ?? null) === 'active', fn ($query) => $query->has('conversations'))
+            ->when(($f['activity'] ?? null) === 'inactive', fn ($query) => $query->doesntHave('conversations'))
+            ->when(($f['created_from'] ?? null) || ($f['created_to'] ?? null), fn ($query) => $this->whereDayRange(
+                $query, 'tenants.created_at', $f['created_from'] ?? null, $f['created_to'] ?? null,
+            ))
+            ->when(($f['period_end_from'] ?? null) || ($f['period_end_to'] ?? null), fn ($query) => $query->whereHas(
+                'currentSubscription',
+                fn ($s) => $this->whereDayRange($s, 'current_period_end', $f['period_end_from'] ?? null, $f['period_end_to'] ?? null),
+            ));
+    }
 
-        return CustomerResource::collection($customers);
+    private function sort($query, Request $request): void
+    {
+        $sort = (string) $request->query('sort', 'created_at');
+        $dir = $this->direction($request);
+
+        // The two values the list sent before columns were sortable.
+        if ($sort === 'newest' || $sort === 'oldest') {
+            [$sort, $dir] = ['created_at', $sort === 'oldest' ? 'asc' : 'desc'];
+        }
+
+        $owner = fn (string $column) => User::query()->select($column)->whereColumn('users.id', 'tenants.user_id')->limit(1);
+        $current = fn (string $column) => Subscription::query()->select($column)->whereColumn('subscriptions.id', 'tenants.current_subscription_id')->limit(1);
+
+        match ($sort) {
+            'name' => $query->orderBy($owner('name'), $dir),
+            'email' => $query->orderBy($owner('email'), $dir),
+            'plan' => $this->orderBySubqueryNullsLast(
+                $query,
+                Plan::query()->select('plans.name')
+                    ->join('subscriptions', 'subscriptions.plan_id', '=', 'plans.id')
+                    ->whereColumn('subscriptions.id', 'tenants.current_subscription_id')
+                    ->limit(1),
+                $dir,
+            ),
+            'status' => $this->orderBySubqueryNullsLast($query, $current('status'), $dir),
+            'period_end' => $this->orderBySubqueryNullsLast($query, $current('current_period_end'), $dir),
+            'users' => $query->orderBy('users_count', $dir),
+            'connections' => $query->orderBy('connections_count', $dir),
+            'conversations' => $query->orderBy('conversations_count', $dir),
+            default => $query->orderBy('tenants.id', $dir),
+        };
+
+        // Stable pages: equal names or counts must not swap rows between pages.
+        $query->orderBy('tenants.id', $dir === 'asc' ? 'asc' : 'desc');
     }
 
     /**

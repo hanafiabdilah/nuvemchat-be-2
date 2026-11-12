@@ -1270,6 +1270,8 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
 
         Route::middleware('permission:bo.customers.view')->group(function () {
             Route::get('/customers', [AdminCustomerController::class, 'index']);
+            // Before {tenant}: "summary" is not a customer id.
+            Route::get('/customers/summary', [AdminCustomerController::class, 'summary']);
             Route::get('/customers/{tenant}', [AdminCustomerController::class, 'show']);
         });
 
@@ -1288,6 +1290,8 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
 
         // Audit log
         Route::get('/audit-logs', [AdminAuditLogController::class, 'index'])
+            ->middleware('permission:bo.audit.view');
+        Route::get('/audit-logs/meta', [AdminAuditLogController::class, 'meta'])
             ->middleware('permission:bo.audit.view');
 
         // Backend server logs (storage/logs)
