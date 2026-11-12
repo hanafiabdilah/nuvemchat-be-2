@@ -259,7 +259,7 @@ final class UpstreamError
             return match ($provider) {
                 UpstreamProvider::ApiwayNumbers => 'Não foi possível contratar este número com as opções escolhidas. Selecione outro aplicativo ou DDD e tente novamente.',
                 UpstreamProvider::AiHub => 'O serviço de IA não aceitou esta configuração. Revise as opções do agente e, se persistir, fale com o suporte.',
-                UpstreamProvider::ApiwayCore => 'A instância do WhatsApp não aceitou esta operação. Verifique se ela está conectada e tente novamente.',
+                UpstreamProvider::ApiwayCore => 'O WhatsApp desta conexão não aceitou esta operação. Verifique se o número está conectado e tente novamente.',
                 // Never "revise seus dados" for a payment we could not read:
                 // the overwhelming majority of unrecognised refusals here are
                 // configuration on our side, and sending someone back to
@@ -283,8 +283,8 @@ final class UpstreamError
             UpstreamProvider::MetaPixel => 'Não foi possível enviar o evento para a Meta agora. Tente novamente em instantes.',
             UpstreamProvider::GoogleAnalytics => 'Não foi possível enviar o evento para o Google Analytics agora. Tente novamente em instantes.',
             UpstreamProvider::AiHub => 'O serviço de IA está indisponível no momento. Tente novamente em instantes.',
-            UpstreamProvider::ApiwayPartner => 'A contratação de instâncias está indisponível no momento. Tente novamente em instantes.',
-            UpstreamProvider::ApiwayCore => 'Não foi possível falar com a instância do WhatsApp. Verifique se ela está ativa e tente novamente.',
+            UpstreamProvider::ApiwayPartner => 'Não foi possível preparar o número de WhatsApp agora. Tente novamente em instantes.',
+            UpstreamProvider::ApiwayCore => 'Não foi possível falar com o WhatsApp desta conexão. Verifique se o número está conectado e tente novamente.',
             UpstreamProvider::ApiwayNumbers => 'A contratação de números está indisponível no momento. Tente novamente em instantes.',
             UpstreamProvider::Youtube => 'Não foi possível falar com o YouTube agora. Tente novamente em instantes.',
             UpstreamProvider::PaymentService => 'Não foi possível processar o pagamento agora. Tente novamente em instantes.',
@@ -389,12 +389,12 @@ final class UpstreamError
             // is retried hourly, so the copy must not sound like a dead end.
             'platform_capacity_reached' => [
                 'apiway_capacity_hold',
-                'No momento não há instâncias disponíveis. Seu pedido ficou em espera e será concluído automaticamente assim que houver vaga.',
+                'No momento não há números disponíveis. Seu pedido ficou em espera e será concluído automaticamente assim que houver vaga.',
                 409,
             ],
             'no_enabled_subnet_capacity' => [
                 'apiway_out_of_stock',
-                'Não há instâncias disponíveis nesta localidade no momento. Escolha outra localidade ou tente novamente mais tarde.',
+                'Não há números de WhatsApp disponíveis no momento. Tente novamente mais tarde.',
                 409,
             ],
             'location_not_available' => [
@@ -414,19 +414,19 @@ final class UpstreamError
             ],
             'not_found' => [
                 'apiway_not_found',
-                'Esta instância não foi encontrada no provedor. Recarregue a página e tente novamente.',
+                'Este número de WhatsApp não foi encontrado. Recarregue a página e tente novamente.',
                 404,
             ],
             'invalid_body', 'invalid_state', 'confirmation_required' => [
                 'apiway_rejected',
-                'Não foi possível concluir esta operação com a instância. Recarregue a página e tente novamente.',
+                'Não foi possível concluir esta operação com o número de WhatsApp. Recarregue a página e tente novamente.',
                 422,
             ],
             // Platform-side configuration. Nothing the tenant can check, so the
             // copy says so instead of sending them to look at their own data.
             'partner_api_disabled', 'internal_token_platform_required', 'forbidden', 'apiway_unconfigured' => [
                 'apiway_unavailable',
-                'A contratação de instâncias está temporariamente indisponível. Nossa equipe já foi avisada.',
+                'O WhatsApp via API Way está temporariamente indisponível. Nossa equipe já foi avisada.',
                 503,
             ],
             default => null,
@@ -444,7 +444,7 @@ final class UpstreamError
             str_contains($m, 'not connected'),
             str_contains($m, 'node_error') => [
                 'apiway_instance_offline',
-                'A instância não está ativa no provedor, então esta ação não pode ser concluída. Verifique a assinatura da instância ou troque a conexão para outra instância.',
+                'O número de WhatsApp desta conexão não está disponível no momento, então esta ação não pode ser concluída. Tente novamente em alguns minutos; se continuar, fale com o suporte.',
                 422,
             ],
 
@@ -453,14 +453,14 @@ final class UpstreamError
             str_contains($m, 'unauthorized'),
             str_contains($m, 'invalid token') => [
                 'apiway_instance_unpaired',
-                'A instância não está pareada. Leia o QR Code novamente na tela da conexão.',
+                'O número de WhatsApp não está pareado. Leia o QR Code novamente na tela da conexão.',
                 422,
             ],
 
             str_contains($m, 'not exists'),
             str_contains($m, 'not found') => [
                 'apiway_instance_missing',
-                'Esta instância não existe mais no provedor. Vincule a conexão a outra instância.',
+                'O número de WhatsApp desta conexão não existe mais. Conecte-a novamente para gerar um novo QR Code.',
                 422,
             ],
 

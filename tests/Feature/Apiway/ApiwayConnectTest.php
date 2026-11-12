@@ -29,14 +29,16 @@ beforeEach(function () {
     Setting::set(ApiwayConfig::KEY_PARTNER_TOKEN, 'partner-token');
 });
 
-test('connect links an owned instance: partner token fetched, webhook registered, QR retrieved', function () {
+test('connect links a spare instance of the workspace: partner token fetched, webhook registered, QR retrieved', function () {
     $tenant = ApiwayFixtures::tenant();
     $instance = ApiwayFixtures::ownedInstance($tenant);
     $connection = ApiwayFixtures::connection($tenant);
 
     ApiwayFixtures::fakeLinkSurface($instance->provider_instance_id);
 
-    (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $instance->id, 'import_history' => true]);
+    // No instance id in the request: which instance serves a connection is
+    // decided server-side, and a spare one is used before ordering a new one.
+    (new WhatsappApiwayChannel)->connect($connection, ['import_history' => true]);
 
     $connection->refresh();
     $instance->refresh();
@@ -104,49 +106,36 @@ test('a logged-in status persists the paired WhatsApp number from the session ji
     expect($connection->fresh()->credentials['phone_number'])->toBeNull();
 });
 
-test('an instance owned by another connection cannot be linked', function () {
-    $tenant = ApiwayFixtures::tenant();
-    $other = ApiwayFixtures::connection($tenant);
-    $instance = ApiwayFixtures::ownedInstance($tenant, ['connection_id' => $other->id]);
-    $connection = ApiwayFixtures::connection($tenant);
-
-    try {
-        (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $instance->id]);
-        $this->fail('Expected ConnectionException');
-    } catch (AppConnectionException $e) {
-        expect($e->getHttpStatusCode())->toBe(422);
-    }
-});
-
-test('an instance from an expired subscription cannot be linked', function () {
-    $tenant = ApiwayFixtures::tenant();
-    $instance = ApiwayFixtures::ownedInstance($tenant);
-    $instance->subscription->update(['status' => ApiwaySubscriptionStatus::Expired]);
-    $connection = ApiwayFixtures::connection($tenant);
-
-    try {
-        (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $instance->id]);
-        $this->fail('Expected ConnectionException');
-    } catch (AppConnectionException $e) {
-        expect($e->getHttpStatusCode())->toBe(422);
-    }
-});
-
-test('another tenant\'s instance is invisible', function () {
+test('an instance is never handed out from another connection, a dead subscription or another workspace', function () {
     $tenant = ApiwayFixtures::tenant();
     $stranger = ApiwayFixtures::tenant();
-    $instance = ApiwayFixtures::ownedInstance($stranger);
+
+    // Each of these is an instance this connection must not get.
+    $held = ApiwayFixtures::ownedInstance($tenant, ['connection_id' => ApiwayFixtures::connection($tenant)->id]);
+    $expired = ApiwayFixtures::ownedInstance($tenant);
+    $expired->subscription->update(['status' => ApiwaySubscriptionStatus::Expired]);
+    $foreign = ApiwayFixtures::ownedInstance($stranger);
+
     $connection = ApiwayFixtures::connection($tenant);
 
+    // No spare left, and no plan to make a new one on: the refusal proves none
+    // of the three was taken, and nothing reached ProxyBR.
     try {
-        (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $instance->id]);
+        (new WhatsappApiwayChannel)->connect($connection, ['apiway_instance_id' => $foreign->id]);
         $this->fail('Expected ConnectionException');
     } catch (AppConnectionException $e) {
-        expect($e->getHttpStatusCode())->toBe(404);
+        expect($e->getHttpStatusCode())->toBe(403);
     }
+
+    expect($held->fresh()->connection_id)->not->toBe($connection->id)
+        ->and($expired->fresh()->connection_id)->toBeNull()
+        ->and($foreign->fresh()->connection_id)->toBeNull()
+        ->and($connection->fresh()->credentials)->toBeNull();
+
+    Http::assertNothingSent();
 });
 
-test('deleting the connection releases the instance back to the pool without touching the provider', function () {
+test('deleting the connection returns the instance to the spares without touching the provider', function () {
     $tenant = ApiwayFixtures::tenant();
     $connection = ApiwayFixtures::connection($tenant);
     $instance = ApiwayFixtures::ownedInstance($tenant, ['connection_id' => $connection->id]);

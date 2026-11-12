@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api\Admin;
 
-use App\Enums\Apiway\ApiwaySubscriptionSource;
 use App\Enums\Apiway\ApiwaySubscriptionStatus;
 use App\Enums\Broadcast\Status as BroadcastStatus;
 use App\Enums\Connection\Channel;
@@ -13,7 +12,6 @@ use App\Models\Broadcast;
 use App\Models\Connection;
 use App\Models\DeviceToken;
 use App\Models\SystemHeartbeat;
-use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Connection\ConnectionCredentials;
 use App\Services\Push\FirebaseConfig;
 use App\Services\Webhook\ChatWebhookSecret;
@@ -192,6 +190,12 @@ class AdminHealthController extends Controller
     /**
      * API Way renewals are the one deadline on this platform with no second
      * chance: ProxyBR revokes on expiry, permanently, with no grace period.
+     *
+     * Renewals are free and automatic now (apiway:renew, three days ahead), so
+     * "expiring soon" is only a problem for an instance that should have been
+     * renewed and was not — one that serves a connection on a usable plan and
+     * is still less than two days from its expiry. That is a renewal that
+     * failed at ProxyBR, or a renew pass that is not running.
      */
     private function apiwayRenewals(): array
     {
@@ -200,100 +204,96 @@ class AdminHealthController extends Controller
             ApiwaySubscriptionStatus::Provisioning->value,
         ];
 
-        $expiringSoon = ApiwaySubscription::query()
-            ->whereIn('status', $live)
-            ->whereNotNull('expires_at')
-            ->whereBetween('expires_at', [now(), now()->addDays(3)])
-            ->count();
-
         $alreadyOverdue = ApiwaySubscription::query()
             ->whereIn('status', $live)
             ->whereNotNull('expires_at')
             ->where('expires_at', '<', now())
             ->count();
 
-        // Which of those are actually in trouble. Since renewals are charged to
-        // the prepaid balance they now happen on their own, so "expiring in
-        // three days" is the healthy case and warning on it would leave this
-        // check permanently yellow — which is the same as switched off. What
-        // deserves attention is a renewal the balance will not cover.
-        $atRisk = app(ApiwayService::class)->renewalsAtRisk();
+        $missed = ApiwaySubscription::query()
+            ->whereIn('status', $live)
+            ->whereNotNull('expires_at')
+            ->whereBetween('expires_at', [now(), now()->addDays(2)])
+            ->whereHas('instances', fn ($q) => $q->whereNotNull('connection_id'))
+            ->with('tenant.user:id,name', 'tenant.currentSubscription')
+            ->orderBy('expires_at')
+            ->get()
+            ->filter(fn (ApiwaySubscription $row) => $row->tenant?->currentSubscription?->isUsable())
+            ->values();
 
         return $this->check(
             'apiway:renewals',
             'API Way',
-            'Renewals that will not go through',
+            'Renewals that did not go through',
             match (true) {
                 $alreadyOverdue > 0 => 'down',
-                $atRisk->isNotEmpty() => 'warn',
+                $missed->isNotEmpty() => 'warn',
                 default => 'ok',
             },
-            (string) ($atRisk->count() + $alreadyOverdue),
-            'ProxyBR has no grace period — an instance past its expiry is revoked permanently, not suspended. These tenants do not have the balance to cover their renewal; a call before the date is the only thing that saves the number.',
+            (string) ($missed->count() + $alreadyOverdue),
+            'ProxyBR has no grace period — an instance past its expiry is revoked permanently, together with the number paired on it. These serve a connection and should have been renewed three days ahead; check the apiway:renew process and the partner logs, then renew from the API Way Instances page.',
             [
-                'at_risk' => $atRisk->count(),
-                'expiring_3d' => $expiringSoon,
+                'missed' => $missed->count(),
                 'overdue' => $alreadyOverdue,
-                // Named, not counted: nobody can phone a number.
-                'rows' => $atRisk->take(25)->map(fn (ApiwaySubscription $row) => [
+                // Named, not counted: an operator cannot act on a number.
+                'rows' => $missed->take(25)->map(fn (ApiwaySubscription $row) => [
                     'id' => $row->id,
                     'tenant_id' => $row->tenant_id,
                     'tenant' => $row->tenant?->user?->name,
-                    'quantity' => $row->quantity,
-                    'amount_cents' => $row->total_price_cents,
                     'expires_at' => $row->expires_at?->toDateString(),
-                    'reason' => $row->source === ApiwaySubscriptionSource::PlanIncluded
-                        ? 'plan_lapsed'
-                        : 'insufficient_credit',
                 ])->values(),
             ],
         );
     }
 
     /**
-     * Purchases where money moved and nothing was delivered.
+     * Instances that could not be made.
      *
-     * Provisioning happens after the charge settles, so every failure past
-     * that point leaves a customer who paid for an instance they do not have.
-     * The row was already flagged `needs_refund` in `meta` — nothing has ever
-     * read it, which made a captured payment with no instance the one incident
-     * on this platform with no screen at all. Holds are counted beside it: a
-     * hold is not yet an incident, but an operator raising ProxyBR's cap now
-     * is what stops it from becoming one.
+     * Nobody pays for an instance any more, so this is no longer about money:
+     * each row is somebody who tried to connect a WhatsApp number and did not
+     * get one. Held rows are ProxyBR at its platform cap (retried hourly until
+     * an operator raises it); failed rows are the last day's permanent
+     * refusals — the customer can try again from the wizard, but the same
+     * refusal usually means the same answer until something changes upstream.
      */
     private function apiwayUndelivered(): array
     {
-        $rows = ApiwaySubscription::query()
-            ->needsAttention()
+        $held = ApiwaySubscription::query()
+            ->whereNotNull('meta->capacity_hold')
             ->with('tenant.user:id,name')
             ->orderByDesc('id')
             ->limit(25)
             ->get();
 
-        $owed = $rows->filter(fn (ApiwaySubscription $row) => ! empty($row->meta['needs_refund']));
-        $held = $rows->count() - $owed->count();
+        $failed = ApiwaySubscription::query()
+            ->where('status', ApiwaySubscriptionStatus::Failed->value)
+            ->where('updated_at', '>=', now()->subDay())
+            ->with('tenant.user:id,name')
+            ->orderByDesc('id')
+            ->limit(25)
+            ->get();
+
+        $rows = $held->concat($failed);
 
         return $this->check(
             'apiway:undelivered',
             'API Way',
-            'Paid but not delivered',
+            'Instances that could not be made',
             match (true) {
-                $owed->isNotEmpty() => 'down',
-                $held > 0 => 'warn',
+                $held->isNotEmpty() => 'warn',
+                $failed->isNotEmpty() => 'warn',
                 default => 'ok',
             },
             (string) $rows->count(),
-            'Purchases charged on our side that ProxyBR never provisioned. Refund each one at the payment service, then mark it settled on the customer page — this stays red until you do.',
+            'Customers who tried to connect a WhatsApp via API Way number and did not get one. Held = ProxyBR at its platform cap (raise it in the ProxyBR admin; retried hourly). Failed = refused in the last 24 hours; retry from the API Way Instances page once the cause is fixed.',
             [
-                'awaiting_refund' => $owed->count(),
-                'held_at_capacity' => $held,
+                'held_at_capacity' => $held->count(),
+                'failed_24h' => $failed->count(),
                 // Named, not just counted: an operator cannot act on a number.
                 'rows' => $rows->map(fn (ApiwaySubscription $row) => [
                     'id' => $row->id,
                     'tenant_id' => $row->tenant_id,
                     'tenant' => $row->tenant?->user?->name,
-                    'quantity' => $row->quantity,
-                    'amount_cents' => $row->total_price_cents,
                     'reason' => $row->meta['failure']['code'] ?? ($row->meta['capacity_hold']['code'] ?? null),
                     'held_since' => $row->meta['capacity_hold']['since'] ?? null,
                 ])->values(),

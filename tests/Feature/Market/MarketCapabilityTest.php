@@ -1,5 +1,11 @@
 <?php
 
+use App\Enums\Connection\Channel;
+use App\Enums\Connection\Status as ConnectionStatus;
+use App\Exceptions\ConnectionException as AppConnectionException;
+use App\Models\ApiwaySubscription;
+use App\Models\Connection;
+use App\Services\Connection\Apiway\ApiwayService;
 use App\Enums\Market\MarketCapability;
 use App\Models\Market;
 use App\Models\Tenant;
@@ -131,7 +137,7 @@ it('still lets a workspace read and cancel a number it already rents', function 
     // with an asset that keeps billing and cannot be cancelled — so these two
     // routes carry no capability gate, and that is a guarantee worth a test
     // rather than a comment.
-    foreach (['numbers.index', 'numbers.cancel', 'apiway.subscriptions.renew', 'apiway.subscriptions.cancel'] as $name) {
+    foreach (['numbers.index', 'numbers.cancel'] as $name) {
         $route = Route::getRoutes()->getByName($name);
 
         expect($route)->not->toBeNull("route {$name} is missing")
@@ -140,13 +146,25 @@ it('still lets a workspace read and cancel a number it already rents', function 
     }
 });
 
-it('refuses an API Way instance where ProxyBR does not provision', function () {
+it('makes no API Way instance where ProxyBR does not provision', function () {
     capabilityMarket();
-    Sanctum::actingAs(capabilityOwner('ID', ['billing.manage']));
+    $tenant = capabilityOwner('ID')->tenant;
+    $connection = Connection::create([
+        'tenant_id' => $tenant->id,
+        'channel' => Channel::WhatsappApiway,
+        'name' => 'WhatsApp',
+        'status' => ConnectionStatus::Inactive,
+    ]);
 
-    $this->postJson('/api/apiway/instances', ['mode' => 'unit', 'quantity' => 1])
-        ->assertStatus(403)
-        ->assertJsonPath('code', 'not_available_in_market');
+    // Instances are free and made on connect, so the country gate lives there.
+    try {
+        app(ApiwayService::class)->instanceFor($connection);
+        $this->fail('Expected ConnectionException');
+    } catch (AppConnectionException $e) {
+        expect($e->getHttpStatusCode())->toBe(422);
+    }
+
+    expect(ApiwaySubscription::count())->toBe(0);
 });
 
 it('gates growing a storage rental, never shrinking one', function () {

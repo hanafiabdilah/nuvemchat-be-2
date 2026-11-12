@@ -4,8 +4,13 @@ namespace App\Enums\Apiway;
 
 enum ApiwaySubscriptionSource: string
 {
-    /** Granted by the tenant's plan (`included_instances` quota) — renewed free while the plan is usable. */
+    /**
+     * Free: made when a WhatsApp via API Way connection needed an instance, and
+     * renewed for free while it serves one on a usable plan. The value predates
+     * that (it meant "covered by the plan's included_instances quota") and is
+     * kept because it is stored on every row.
+     */
     case PlanIncluded = 'plan_included';
-    /** Bought at catalog unit price — renewals billed to the tenant (Pix invoice or card preapproval). */
+    /** Legacy: bought at catalog unit price before instances became free. Renewed free now, like the rest. */
     case Unit = 'unit';
 }

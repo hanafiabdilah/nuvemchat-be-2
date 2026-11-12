@@ -154,8 +154,8 @@ Schedule::command('billing:reconcile')
 
 // --- API Way (ProxyBR partner) -------------------------------------------
 
-// ProxyBR has NO grace period: renew included subscriptions free and invoice
-// unit ones a few days ahead. Runs after billing:pix-generate.
+// ProxyBR has NO grace period: renew, for free, the instances that serve a
+// connection, a few days before they expire.
 Schedule::command('apiway:renew --days-before=3')
     ->dailyAt('08:30')
     ->timezone($platformTimezone)

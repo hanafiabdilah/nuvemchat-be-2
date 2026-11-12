@@ -14,12 +14,11 @@ use Symfony\Component\HttpFoundation\Response;
 class EnsureSubscriptionActive
 {
     /**
-     * Route-name prefixes that remain accessible while suspended. `apiway.`
-     * stays open so a tenant with no (or lapsed) plan can still buy and manage
-     * unit-purchased API Way instances — mode 1 of that offering. `numbers.`
-     * for the same reason, plus one of its own: a rented number keeps costing
-     * the platform money every month, so locking the customer out of the screen
-     * that cancels it would be charging them for a page they cannot open.
+     * Route-name prefixes that remain accessible while suspended. `numbers.`
+     * because a rented number keeps costing the platform money every month, so
+     * locking the customer out of the screen that cancels it would be charging
+     * them for a page they cannot open. (`apiway.` used to sit here for bought
+     * instances; nothing is bought there any more, and the routes are gone.)
      * `gallery.` is exempt on that second ground alone: rented storage renews
      * every month from the balance, so the screen that stops it has to stay
      * reachable — and a suspended workspace that cannot see its own files
@@ -30,7 +29,7 @@ class EnsureSubscriptionActive
      * `onboarding.` because the first-run guide is for exactly the workspace
      * that has not paid for anything yet.
      */
-    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'apiway.', 'numbers.', 'gallery.', 'credits.', 'onboarding.'];
+    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'numbers.', 'gallery.', 'credits.', 'onboarding.'];
 
     /**
      * Exact route URIs (relative) that remain accessible.

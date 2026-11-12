@@ -52,10 +52,7 @@ use App\Http\Controllers\Api\AiHub\VocabularyTestController as AiHubVocabularyTe
 use App\Http\Controllers\Api\AiHub\VoiceController as AiHubVoiceController;
 use App\Http\Controllers\Api\AiSuggestController;
 use App\Http\Controllers\Api\ApiKeyController;
-use App\Http\Controllers\Api\Apiway\ApiwayCatalogController;
-use App\Http\Controllers\Api\Apiway\ApiwayInstanceController;
 use App\Http\Controllers\Api\Apiway\ApiwaySendPolicyController;
-use App\Http\Controllers\Api\Apiway\ApiwaySubscriptionController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\Billing\BillingController;
 use App\Http\Controllers\Api\Billing\SavedCardController;
@@ -294,28 +291,8 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     });
     Route::get('/plans', [BillingController::class, 'plans'])->middleware('permission:billing.view')->name('plans.index');
 
-    // API Way instances (purchased assets via ProxyBR partner API). The
-    // `apiway.` name prefix is exempt from the subscription.active gate — a
-    // tenant with no plan can own and manage unit-purchased instances.
-    Route::prefix('apiway')->name('apiway.')->group(function () {
-        // Selling is gated on the country (ProxyBR provisions Brazilian
-        // infrastructure); owning is not. Renew, rename and cancel stay open on
-        // purpose: turning a capability off stops new sales, and stranding
-        // somebody with an instance they can neither renew nor cancel would be
-        // the platform breaking a contract it already took money for.
-        Route::get('/catalog', [ApiwayCatalogController::class, 'catalog'])->middleware('capability:apiway_instances')->name('catalog');
-        Route::post('/quote', [ApiwayCatalogController::class, 'quote'])->middleware('capability:apiway_instances')->name('quote');
-        Route::get('/instances', [ApiwayInstanceController::class, 'index'])->name('instances.index');
-        Route::post('/instances', [ApiwayInstanceController::class, 'store'])->middleware(['permission:billing.manage', 'capability:apiway_instances'])->name('instances.store');
-        Route::patch('/instances/{instance}', [ApiwayInstanceController::class, 'rename'])->middleware('permission:connections.connect')->name('instances.rename');
-        Route::post('/instances/{instance}/token/reveal', [ApiwayInstanceController::class, 'revealToken'])->middleware('permission:connections.connect')->name('instances.token');
-        Route::post('/subscriptions/{subscription}/renew', [ApiwaySubscriptionController::class, 'renew'])->middleware('permission:billing.manage')->name('subscriptions.renew');
-        Route::post('/subscriptions/{subscription}/abandon', [ApiwaySubscriptionController::class, 'abandon'])->middleware('permission:billing.manage')->name('subscriptions.abandon');
-        Route::post('/subscriptions/{subscription}/cancel', [ApiwaySubscriptionController::class, 'cancel'])->middleware('permission:billing.manage')->name('subscriptions.cancel');
-    });
-
-    // Virtual numbers rented from API Way (SMS / OTP reception). Same exemption
-    // from the subscription.active gate as `apiway.`, and for the same reason:
+    // Virtual numbers rented from API Way (SMS / OTP reception). Exempt from
+    // the subscription.active gate, and for a reason of their own:
     // these are prepaid assets the workspace already owns, and a plan that
     // lapses must not lock somebody out of a code arriving on a number they
     // paid for — nor out of cancelling it before it renews.
@@ -967,10 +944,6 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     Route::put('/connections/{id}/credentials', [ConnectionController::class, 'updateCredentials'])->middleware('permission:connections.connect');
     Route::put('/connections/{id}', [ConnectionController::class, 'update'])->middleware('permission:connections.update');
     Route::post('/connections/{id}/check-status', [ConnectionController::class, 'checkStatus'])->middleware('permission:connections.check-status');
-    // Move a connection onto a different purchased API Way instance. Gated on
-    // connections.connect — it is the same act as linking one in the first
-    // place, only against a connection that already has one.
-    Route::post('/connections/{id}/apiway/instance', [ConnectionController::class, 'switchApiwayInstance'])->middleware('permission:connections.connect');
     // The number's anti-ban send policy on the API Way core (daily cap, pace)
     // and the queue it builds up. Reading is open to whoever sees the
     // connection; changing the policy or emptying the queue is connection
@@ -1499,9 +1472,13 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::get('/subscriptions/meta', [AdminSubscriptionController::class, 'meta']);
             Route::get('/apiway/subscriptions', [AdminApiwayController::class, 'subscriptions']);
             Route::get('/apiway/subscriptions/summary', [AdminApiwayController::class, 'summary']);
-            // Books a manual refund against a purchase that was
-            // captured but never provisioned — clears it off the Health page.
-            Route::post('/apiway/subscriptions/{subscription}/settle-refund', [AdminApiwayController::class, 'settleRefund']);
+            // One row = one API Way instance (free since Nov 2026). Actions
+            // for troubleshooting, all audited: re-read from ProxyBR, retry a
+            // stuck provision, renew by hand, revoke.
+            Route::post('/apiway/subscriptions/{subscription}/sync', [AdminApiwayController::class, 'sync']);
+            Route::post('/apiway/subscriptions/{subscription}/retry', [AdminApiwayController::class, 'retry']);
+            Route::post('/apiway/subscriptions/{subscription}/renew', [AdminApiwayController::class, 'renew']);
+            Route::post('/apiway/subscriptions/{subscription}/cancel', [AdminApiwayController::class, 'cancel']);
             Route::get('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'show']);
             Route::post('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'assign']);
             Route::delete('/customers/{tenant}/subscription', [AdminSubscriptionController::class, 'cancel']);

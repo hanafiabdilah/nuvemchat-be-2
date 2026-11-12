@@ -177,12 +177,9 @@ class SubscriptionGate
                     ];
                 }
 
-                // Owning live instances (or having included ones in the plan)
-                // implies the whatsapp_api capability even if the plan's
-                // feature list doesn't spell it out.
-                $includedQuota = (int) ($base['quotas']['included_instances'] ?? 0);
-
-                if ($instances > 0 || $includedQuota > 0) {
+                // Owning live instances implies the whatsapp_api capability
+                // even if the plan's feature list doesn't spell it out.
+                if ($instances > 0) {
                     $base['features'] = array_merge($base['features'] ?? [], [
                         Feature::WhatsappApi->value => true,
                     ]);

@@ -4,21 +4,19 @@ namespace App\Services\Connection\Apiway;
 
 use App\Enums\Apiway\ApiwaySubscriptionSource;
 use App\Enums\Apiway\ApiwaySubscriptionStatus;
-use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\InvoicePurpose;
-use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Connection\Status as ConnectionStatus;
-use App\Enums\Credit\CreditTransactionType;
 use App\Enums\Market\MarketCapability;
 use App\Enums\Notification\NotificationType;
 use App\Events\ApiwaySubscriptionUpdated;
 use App\Events\ConnectionUpdated;
 use App\Exceptions\ApiwayPartnerException;
-use App\Exceptions\Billing\InsufficientCreditException;
+use App\Exceptions\ConnectionException;
 use App\Jobs\ProvisionApiwaySubscription;
 use App\Jobs\RenewApiwaySubscription;
 use App\Models\ApiwayInstance;
 use App\Models\ApiwaySubscription;
+use App\Models\Connection;
 use App\Models\Invoice;
 use App\Models\Tenant;
 use App\Services\Billing\BillingNotifier;
@@ -27,8 +25,8 @@ use App\Services\Billing\SubscriptionGate;
 use App\Services\Connection\Channels\WhatsappApiwayChannel;
 use App\Services\Credits\CreditService;
 use App\Services\Market\MarketCapabilities;
-use App\Services\Money\MarketMoney;
 use App\Support\Money;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -36,17 +34,24 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 /**
- * Orchestrates the API Way instance lifecycle: purchase (included in the plan
- * or unit at catalog price), provisioning at ProxyBR, renewals and cancels.
- * ProxyBR never charges — every payment is collected here first, then mirrored
- * to the partner API. ProxyBR has NO grace period, so anything past expires_at
- * is revoked permanently on their side.
+ * Orchestrates the API Way instance lifecycle: provisioning at ProxyBR,
+ * renewals and cancels. ProxyBR has NO grace period, so anything past
+ * expires_at is revoked permanently on their side.
+ *
+ * ⚠️ Instances are not a product any more (Nov 2026). A customer never buys,
+ * picks or renews one: connecting a "WhatsApp via API Way" connection gets it
+ * an instance — a spare one the workspace already has, or a new one made for
+ * it — and that instance renews for free while it serves a connection and the
+ * workspace's plan is usable. The WhatsApp connection quota, enforced where
+ * connections are created, is the only limit. What the customer sees is a
+ * number and a QR code; instance ids, subscriptions and tokens are ours.
+ *
+ * The paid paths (unit purchases, balance-charged renewals) are gone. Rows they
+ * left behind (`source = unit`, open Pix invoices) are still read, renewed for
+ * free and cancelled like the rest — nothing here charges anybody any more.
  */
 class ApiwayService
 {
-    /** Included-instance quota key on plan `quotas` JSON. */
-    public const INCLUDED_QUOTA_KEY = 'included_instances';
-
     private const CATALOG_CACHE_KEY = 'apiway:partner-catalog';
 
     private const CATALOG_CACHE_TTL = 300; // seconds
@@ -63,19 +68,6 @@ class ApiwayService
     public static function purchaseReference(ApiwaySubscription $row): string
     {
         return "apiway:buy:{$row->id}";
-    }
-
-    /**
-     * The ledger reference for one cycle's renewal.
-     *
-     * Carries the expiry it is paying to move, because that is what makes the
-     * charge unique: the same subscription is renewed again next month, and a
-     * reference naming only the subscription would let the ledger refuse the
-     * second renewal as a duplicate of the first.
-     */
-    public static function renewalReference(ApiwaySubscription $row): string
-    {
-        return "apiway:renew:{$row->id}:".($row->expires_at?->toDateString() ?? 'none');
     }
 
     // --- Catalog -----------------------------------------------------------
@@ -113,191 +105,150 @@ class ApiwayService
         return Cache::remember(self::CATALOG_CACHE_KEY, self::CATALOG_CACHE_TTL, fn () => $this->partner->plans());
     }
 
-    public function usageSummary(Tenant $tenant): array
-    {
-        $includedQuota = $this->gate->quota($tenant, self::INCLUDED_QUOTA_KEY) ?? 0;
-
-        $includedUsed = (int) $tenant->apiwaySubscriptions()
-            ->where('source', ApiwaySubscriptionSource::PlanIncluded->value)
-            ->whereIn('status', [
-                ApiwaySubscriptionStatus::Provisioning->value,
-                ApiwaySubscriptionStatus::Active->value,
-                ApiwaySubscriptionStatus::Suspended->value,
-            ])
-            ->sum('quantity');
-
-        return [
-            'included_quota' => $includedQuota,
-            'included_used' => $includedUsed,
-            'instances_total' => $tenant->apiwayInstances()
-                ->whereHas('subscription', fn ($q) => $q->live())
-                ->count(),
-            'instances_available' => $tenant->apiwayInstances()->available()->count(),
-        ];
-    }
-
-    // --- Purchase ----------------------------------------------------------
+    // --- Instances for connections ----------------------------------------
 
     /**
-     * Provision instances covered by the plan's `included_instances` quota.
-     * No charge — the cost is part of the plan price. Renewed for free while
-     * the plan subscription stays usable. The tenant still picks the location
-     * (an invalid one is refused by the partner quote/create).
+     * The instance a "WhatsApp via API Way" connection should run on: a spare
+     * one the workspace already has, or a new one made for it. Free either way.
      *
-     * Takes a quantity for the same reason the paid path does: a tenant whose
-     * plan includes four numbers was opening this dialog four times, and each
-     * pass was its own subscription, its own partner call and its own renewal.
-     * One row of four is what the allowance actually granted.
+     * Spare first, always. An instance whose connection was deleted was logged
+     * out on the way and stays live until its period ends (it is not renewed —
+     * see apiway:renew), so handing it to the next connection costs nothing,
+     * where a new one is another subscription at ProxyBR. An instance an earlier
+     * attempt made for this very connection is preferred among the spares, so
+     * a retried connect lands on the number that was being prepared for it.
      *
-     * ⚠️ The cap is `used + quantity`, not `used < quota`. Checking only that
-     * one is free would let a request for four go through on the last slot —
-     * ProxyBR would provision all four and the plan would be over its allowance
-     * with nothing charged for the excess.
+     * Serialised per workspace: two wizards connecting at the same moment must
+     * not both see "no spare" and each order a new instance.
+     *
+     * @return ApiwayInstance|null null while a new instance is still being made
+     *                             at ProxyBR — the caller says "preparing your
+     *                             number" and asks again.
+     *
+     * @throws ConnectionException when the workspace cannot have one at all
      */
-    public function createIncludedInstance(
-        Tenant $tenant,
-        ?string $locationCode = null,
-        int $quantity = 1,
-    ): ApiwaySubscription {
-        $this->assertSoldHere($tenant);
+    public function instanceFor(Connection $connection): ?ApiwayInstance
+    {
+        $tenant = $connection->tenant;
 
-        if (! $tenant->currentSubscription?->isUsable()) {
-            throw ValidationException::withMessages([
-                'included' => 'An active plan subscription is required for included instances.',
-            ]);
+        try {
+            return Cache::lock("apiway:instance-for:{$tenant->id}", 90)
+                ->block(15, fn () => $this->findOrProvisionInstance($tenant, $connection));
+        } catch (LockTimeoutException) {
+            // Another request is preparing one right now; asking again shortly
+            // finds it, which is exactly what "preparing" tells the caller to do.
+            return null;
+        }
+    }
+
+    private function findOrProvisionInstance(Tenant $tenant, Connection $connection): ?ApiwayInstance
+    {
+        $spare = $tenant->apiwayInstances()
+            ->available()
+            ->with('subscription')
+            ->orderBy('id')
+            ->get()
+            ->sortByDesc(fn (ApiwayInstance $instance) => $this->madeFor($instance->subscription, $connection))
+            ->first();
+
+        if ($spare) {
+            return $spare;
         }
 
-        $quantity = max(1, $quantity);
-        $usage = $this->usageSummary($tenant);
-        $remaining = max(0, $usage['included_quota'] - $usage['included_used']);
+        // An earlier attempt for this connection that ProxyBR has not finished.
+        // Filtered in PHP: provisioning rows are few, and a JSON path predicate
+        // reads differently on MySQL and SQLite.
+        $preparing = $tenant->apiwaySubscriptions()
+            ->where('status', ApiwaySubscriptionStatus::Provisioning->value)
+            ->doesntHave('instances')
+            ->get()
+            ->contains(fn (ApiwaySubscription $row) => $this->madeFor($row, $connection));
 
-        if ($remaining === 0) {
-            throw ValidationException::withMessages([
-                'included' => 'All instances included in your plan are already in use.',
-            ]);
+        if ($preparing) {
+            return null;
         }
 
-        if ($quantity > $remaining) {
-            // Says the number, because "not enough" leaves the customer to work
-            // out how many they may ask for by trying again.
-            throw ValidationException::withMessages([
-                'included' => "Your plan has {$remaining} included instance(s) left.",
-            ]);
-        }
+        $this->assertCanProvision($tenant);
 
         $row = $this->createLocalSubscription($tenant, [
+            // "plan_included" is the free kind of row; the name predates the
+            // instances being free for everybody on a plan.
             'source' => ApiwaySubscriptionSource::PlanIncluded,
             'status' => ApiwaySubscriptionStatus::Provisioning,
-            'quantity' => $quantity,
-            'cycle' => $this->cycleForBillingCycle($tenant->currentSubscription->billing_cycle),
-            'location_code' => $locationCode ?: $this->defaultLocationCode(),
-        ]);
-
-        $this->provisionOrQueue($row, 'included');
-
-        return $row->fresh();
-    }
-
-    /**
-     * Both ways of getting an instance pass through here.
-     *
-     * The plan-included path needs it as much as the paid one: a plan sold in a
-     * country that does not carry instances would otherwise hand them out for
-     * free, which is the same delivery problem without the invoice. Renewing and
-     * cancelling stay open — see routes/api.php.
-     */
-    private function assertSoldHere(Tenant $tenant): void
-    {
-        if (! MarketCapabilities::allowsFor($tenant, MarketCapability::ApiwayInstances->value)) {
-            throw ValidationException::withMessages([
-                'instances' => 'API Way instances are not available in your country.',
-            ]);
-        }
-
-        // ProxyBR quotes in the platform's money, so without a rate for this
-        // country there is no price to charge — only the base number wearing the
-        // wrong currency sign. Refusing is the only answer that is not a lie.
-        if (! MarketMoney::quotableFor($tenant)) {
-            throw ValidationException::withMessages([
-                'instances' => 'Instances are not priced in your currency yet. Please contact support.',
-            ]);
-        }
-    }
-
-    /**
-     * Buy instances at catalog price, paid from the prepaid balance.
-     *
-     * There is no pending-payment step any more: the balance is already the
-     * customer's money, so the charge settles in the same request and the row
-     * goes straight to provisioning. That removes the state where an instance
-     * existed locally but had not been paid for — which is what `pending_payment`,
-     * the Pix QR, the abandon endpoint and the daily sweep of dead checkouts all
-     * existed to manage.
-     *
-     * Charged BEFORE ProxyBR is called, deliberately. Provisioning after the
-     * money lands is the rule this whole surface was built on, and it is
-     * affordable here in a way it never was with Pix because a failure gives the
-     * money straight back to the balance — see markProvisionFailed().
-     *
-     * @throws InsufficientCreditException when the balance will not cover it
-     */
-    public function purchaseUnits(
-        Tenant $tenant,
-        int $quantity,
-        string $cycle,
-        string $locationCode,
-    ): ApiwaySubscription {
-        $this->assertSoldHere($tenant);
-
-        // ProxyBR is the price authority — never trust a client-provided total.
-        $quote = $this->partner->quote($quantity, $locationCode, $cycle);
-        // ProxyBR quotes in the platform's own money; the workspace pays in
-        // theirs, at the market's rate and rounding.
-        $totalCents = MarketMoney::orBase($this->toCents($quote['total_price'] ?? 0), $tenant);
-
-        // Checked here as well as inside the debit's lock: this one exists to
-        // fail before a subscription row is created, so an unaffordable attempt
-        // leaves nothing behind. The one in the lock is the real gate.
-        if (! $this->credits->canAfford($tenant, $totalCents)) {
-            throw new InsufficientCreditException(
-                $this->credits->balanceCents($tenant),
-                $totalCents,
-                $this->credits->currencyFor($tenant),
-            );
-        }
-
-        $row = $this->createLocalSubscription($tenant, [
-            'source' => ApiwaySubscriptionSource::Unit,
-            'status' => ApiwaySubscriptionStatus::Provisioning,
-            'quantity' => $quantity,
-            'cycle' => $this->normalizeCycle($quote['cycle'] ?? $cycle),
-            'location_code' => $locationCode,
-            'unit_price_cents' => MarketMoney::orBase($this->toCents($quote['unit_price'] ?? 0), $tenant),
-            'total_price_cents' => $totalCents,
-            'currency' => $this->credits->currencyFor($tenant),
-            'meta' => ['quote' => $quote],
+            // One instance per subscription, always: every row the Back Office
+            // lists is then exactly one number, and cancelling one never takes
+            // another workspace's number down with it.
+            'quantity' => 1,
+            'cycle' => 'mensal',
+            'location_code' => $this->defaultLocationCode(),
+            'meta' => ['for_connection_id' => $connection->id],
         ]);
 
         try {
-            $this->credits->debit(
-                $tenant,
-                $totalCents,
-                CreditTransactionType::Purchase,
-                self::purchaseReference($row),
-                "API Way — {$quantity} instância(s)",
-                ['apiway_subscription_id' => $row->id, 'quantity' => $quantity, 'cycle' => $row->cycle],
+            $this->provisionOrQueue($row, 'instance');
+        } catch (ValidationException) {
+            throw new ConnectionException(
+                'Não foi possível preparar um número de WhatsApp agora. Tente novamente em alguns minutos.',
+                502,
             );
-        } catch (InsufficientCreditException $e) {
-            // Lost the race against a concurrent purchase. Nothing was charged,
-            // so the row must not survive to look like an instance being made.
-            $row->delete();
-
-            throw $e;
         }
 
-        ApiwaySubscriptionUpdated::dispatch($row->fresh());
+        return $tenant->apiwayInstances()
+            ->available()
+            ->where('apiway_subscription_id', $row->id)
+            ->first();
+    }
 
-        $this->provisionOrQueue($row, 'unit');
+    private function madeFor(?ApiwaySubscription $row, Connection $connection): bool
+    {
+        return (int) ($row?->meta['for_connection_id'] ?? 0) === $connection->id;
+    }
+
+    /**
+     * Whether this workspace may have a new instance made for it.
+     *
+     * Two rules, and no money: the country has to carry API Way (ProxyBR runs
+     * Brazilian infrastructure), and the plan has to be usable — the instance
+     * is free because the plan is paid, so a workspace without one gets none.
+     */
+    private function assertCanProvision(Tenant $tenant): void
+    {
+        if (! MarketCapabilities::allowsFor($tenant, MarketCapability::ApiwayInstances->value)) {
+            throw new ConnectionException('O WhatsApp via API Way não está disponível no seu país.', 422);
+        }
+
+        if (! $tenant->currentSubscription?->isUsable()) {
+            throw new ConnectionException('Sua assinatura precisa estar ativa para conectar um número de WhatsApp.', 403);
+        }
+    }
+
+    /**
+     * Try a stuck or failed free instance again — the Back Office's button.
+     *
+     * Only free rows: a legacy paid row that failed was refunded when it did,
+     * and delivering it now would hand out what was already given back.
+     */
+    public function retryProvision(ApiwaySubscription $row): ApiwaySubscription
+    {
+        if ($row->provider_subscription_id || $row->source !== ApiwaySubscriptionSource::PlanIncluded) {
+            throw ValidationException::withMessages([
+                'subscription' => 'Only a free instance that never finished provisioning can be retried.',
+            ]);
+        }
+
+        if ($row->status === ApiwaySubscriptionStatus::Failed) {
+            $meta = $row->meta ?? [];
+            unset($meta['failure'], $meta['capacity_hold']);
+            $row->update(['status' => ApiwaySubscriptionStatus::Provisioning, 'meta' => $meta]);
+        }
+
+        if ($row->status !== ApiwaySubscriptionStatus::Provisioning) {
+            throw ValidationException::withMessages([
+                'subscription' => 'Only a free instance that never finished provisioning can be retried.',
+            ]);
+        }
+
+        ProvisionApiwaySubscription::dispatch($row->id);
 
         return $row->fresh();
     }
@@ -414,9 +365,15 @@ class ApiwayService
 
         $this->gate->forget($row->tenant);
         ApiwaySubscriptionUpdated::dispatch($row->fresh());
-        $this->notifier->notifyTenant(NotificationType::ApiwayPurchaseActivated, $row->tenant, [
-            'quantity' => $row->quantity,
-        ]);
+
+        // A free instance is made because somebody is connecting a number and
+        // is watching the QR code appear — a message about "your instance" is
+        // telling them about plumbing they were never shown.
+        if ($row->source === ApiwaySubscriptionSource::Unit) {
+            $this->notifier->notifyTenant(NotificationType::ApiwayPurchaseActivated, $row->tenant, [
+                'quantity' => $row->quantity,
+            ]);
+        }
     }
 
     /**
@@ -566,6 +523,13 @@ class ApiwayService
 
         ApiwaySubscriptionUpdated::dispatch($row->fresh());
 
+        // A free instance that failed is reported where it was asked for — the
+        // connection wizard says it could not prepare a number. Only a paid
+        // row has something else to tell: where the money went.
+        if ($row->source !== ApiwaySubscriptionSource::Unit) {
+            return;
+        }
+
         // Two different messages because two different things are true. Telling
         // someone "our team will contact you" when their money is already back
         // in their balance sends them to support for a problem that is over.
@@ -631,122 +595,6 @@ class ApiwayService
     }
 
     // --- Renewal / cancel / sync ------------------------------------------
-
-    /**
-     * Renewals coming up that the balance will not cover.
-     *
-     * The one question worth asking ahead of an API Way expiry, because it is
-     * the only one with an irreversible answer: ProxyBR revokes on the day, so
-     * a renewal nobody can pay for is a WhatsApp number that stops existing.
-     *
-     * ⚠️ Cumulative per tenant, in expiry order. Several subscriptions share one
-     * balance, and checking each against the full balance would report three
-     * instances as safe when the money only stretches to one. Ordering by expiry
-     * makes the arithmetic match what will actually happen: the earliest renewal
-     * is charged first and the later ones are the ones that fall off.
-     *
-     * @return \Illuminate\Support\Collection<int, ApiwaySubscription>
-     */
-    public function renewalsAtRisk(?Tenant $tenant = null, int $days = 7): \Illuminate\Support\Collection
-    {
-        $rows = ApiwaySubscription::query()
-            ->renewable()
-            ->whereNotNull('provider_subscription_id')
-            ->whereNotNull('expires_at')
-            ->whereBetween('expires_at', [now(), now()->addDays($days)])
-            ->when($tenant, fn ($q) => $q->where('tenant_id', $tenant->id))
-            ->with('tenant.currentSubscription')
-            ->orderBy('expires_at')
-            ->get();
-
-        if ($rows->isEmpty()) {
-            return collect();
-        }
-
-        // Legacy rows still being paid elsewhere. Loaded in one query rather
-        // than per row: this runs on every dashboard load.
-        $withOpenInvoice = Invoice::query()
-            ->whereIn('apiway_subscription_id', $rows->pluck('id'))
-            ->where('purpose', InvoicePurpose::ApiwayRenewal->value)
-            ->where('status', InvoiceStatus::Pending->value)
-            ->pluck('apiway_subscription_id')
-            ->all();
-
-        $balances = [];
-        $committed = [];
-
-        return $rows->filter(function (ApiwaySubscription $row) use (&$balances, &$committed, $withOpenInvoice) {
-            if ($row->source === ApiwaySubscriptionSource::PlanIncluded) {
-                // Free while the plan lives, so money is not the risk — the plan
-                // lapsing is.
-                return ! $row->tenant?->currentSubscription?->isUsable();
-            }
-
-            if (in_array($row->id, $withOpenInvoice, true)) {
-                return false;
-            }
-
-            $balances[$row->tenant_id] ??= $this->credits->balanceCents($row->tenant);
-            $committed[$row->tenant_id] = ($committed[$row->tenant_id] ?? 0) + $row->total_price_cents;
-
-            return $balances[$row->tenant_id] < $committed[$row->tenant_id];
-        })->values();
-    }
-
-    /**
-     * Charge one cycle to the balance and hand the renewal to the queue.
-     *
-     * The charge is what this method is for; the renewal itself is the job's
-     * job, because ProxyBR can be slow or down and a customer clicking "renew"
-     * must not wait on it. The ledger reference doubles as the partner's
-     * idempotency key — both need exactly the same thing (one renewal per
-     * cycle), and deriving them separately is how they drift apart.
-     *
-     * ⚠️ Re-quoted first, always. ProxyBR prices the renewal at call time from
-     * the current catalog, so charging the price stored on the row would take an
-     * amount their invoice then disagrees with.
-     *
-     * @return bool false when the balance will not cover it — the caller decides
-     *              what that means, because it means different things to a
-     *              scheduled renewal and to a person who just clicked a button.
-     */
-    public function renewFromBalance(ApiwaySubscription $row, ?string $cycle = null): bool
-    {
-        $quote = $this->partner->quote($row->quantity, $row->location_code, $cycle ?? $row->cycle);
-        $tenant = $row->tenant;
-
-        $row->update([
-            // Re-quoted upstream in the platform's money, then converted into
-            // the workspace's — the same two steps as the first purchase.
-            'unit_price_cents' => MarketMoney::orBase($this->toCents($quote['unit_price'] ?? 0), $tenant),
-            'total_price_cents' => MarketMoney::orBase($this->toCents($quote['total_price'] ?? 0), $tenant),
-            'currency' => $this->credits->currencyFor($tenant),
-        ]);
-
-        $row->refresh();
-        $reference = self::renewalReference($row);
-
-        try {
-            // A null return means this cycle was already charged — a run that
-            // died between the debit and the dispatch. The work still has to
-            // happen, so it falls through to the dispatch below rather than
-            // reporting success and doing nothing.
-            $this->credits->debit(
-                $row->tenant,
-                $row->total_price_cents,
-                CreditTransactionType::Renewal,
-                $reference,
-                "Renovação API Way — {$row->quantity} instância(s)",
-                ['apiway_subscription_id' => $row->id, 'expires_at' => $row->expires_at?->toDateString()],
-            );
-        } catch (InsufficientCreditException) {
-            return false;
-        }
-
-        RenewApiwaySubscription::dispatch($row->id, $reference, $cycle);
-
-        return true;
-    }
 
     /**
      * Renew at ProxyBR. Price is re-quoted by them at call time; the local row
@@ -902,9 +750,14 @@ class ApiwayService
         $this->voidOpenInvoices($row);
         $this->gate->forget($row->tenant);
         ApiwaySubscriptionUpdated::dispatch($row->fresh());
-        $this->notifier->notifyTenant(NotificationType::ApiwayExpired, $row->tenant, [
-            'quantity' => $row->quantity,
-        ]);
+
+        // A free instance only lapses when nothing was using it, or when the
+        // plan behind it stopped — and the plan has its own messages for that.
+        if ($row->source === ApiwaySubscriptionSource::Unit) {
+            $this->notifier->notifyTenant(NotificationType::ApiwayExpired, $row->tenant, [
+                'quantity' => $row->quantity,
+            ]);
+        }
     }
 
     /** Pull partner-side state for live rows (status, expiry, instance status). */
@@ -1084,11 +937,6 @@ class ApiwayService
         }
 
         return 'br';
-    }
-
-    public function cycleForBillingCycle(?BillingCycle $cycle): string
-    {
-        return $cycle === BillingCycle::Yearly ? 'anual' : 'mensal';
     }
 
     public function normalizeCycle(?string $cycle): string

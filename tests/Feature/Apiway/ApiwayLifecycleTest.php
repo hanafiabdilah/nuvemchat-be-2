@@ -195,99 +195,81 @@ test('an expired instance grants nothing', function () {
 
 // --- apiway:renew ----------------------------------------------------------
 
-test('included subscriptions renew free while the plan is usable', function () {
+/** A connection the instance on $row serves, as connect() would leave it. */
+function lifecycleLinked(ApiwaySubscription $row): ApiwayInstance
+{
+    $connection = Connection::create([
+        'tenant_id' => $row->tenant_id,
+        'channel' => Channel::WhatsappApiway,
+        'name' => 'API '.uniqid(),
+        'status' => ConnectionStatus::Active,
+    ]);
+
+    return lifecycleInstance($row, ['connection_id' => $connection->id]);
+}
+
+test('an instance serving a connection renews free while the plan is usable', function () {
     $tenant = lifecycleTenant();
     lifecyclePlanSubscription($tenant, SubscriptionStatus::Active);
     $row = lifecycleSubscription($tenant, [
         'source' => ApiwaySubscriptionSource::PlanIncluded,
         'expires_at' => now()->addDays(2),
     ]);
+    lifecycleLinked($row);
 
     $this->artisan('apiway:renew')->assertSuccessful();
 
     Bus::assertDispatched(RenewApiwaySubscription::class, function (RenewApiwaySubscription $job) use ($row) {
         return $job->apiwaySubscriptionId === $row->id
-            && $job->idempotencyKey === 'pingly-inc-renew-' . $row->id . '-' . $row->expires_at->format('Ymd');
+            && $job->idempotencyKey === 'pingly-free-renew-'.$row->id.'-'.$row->expires_at->format('Ymd');
     });
+
+    // Free: no charge, no quote, no invoice.
+    expect(CreditTransaction::count())->toBe(0)->and(Invoice::count())->toBe(0);
+    Http::assertNothingSent();
 });
 
-test('included subscriptions stop renewing once the plan is suspended', function () {
+test('an instance stops renewing once the plan is suspended', function () {
     $tenant = lifecycleTenant();
     lifecyclePlanSubscription($tenant, SubscriptionStatus::Suspended);
-    lifecycleSubscription($tenant, [
+    $row = lifecycleSubscription($tenant, [
         'source' => ApiwaySubscriptionSource::PlanIncluded,
         'expires_at' => now()->addDays(2),
     ]);
+    lifecycleLinked($row);
 
     $this->artisan('apiway:renew')->assertSuccessful();
 
     Bus::assertNotDispatched(RenewApiwaySubscription::class);
 });
 
-test('a unit subscription near expiry is charged to the balance at a freshly quoted price', function () {
-    Http::fake([
-        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
-            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 59.9, 'total_price' => 59.9,
-        ]]),
-    ]);
-
+test('a spare instance is left to run out instead of renewing', function () {
     $tenant = lifecycleTenant();
+    lifecyclePlanSubscription($tenant, SubscriptionStatus::Active);
+    $row = lifecycleSubscription($tenant, [
+        'source' => ApiwaySubscriptionSource::PlanIncluded,
+        'expires_at' => now()->addDays(2),
+    ]);
+    // Its connection was deleted: the instance is spare.
+    lifecycleInstance($row);
+
+    $this->artisan('apiway:renew')->assertSuccessful();
+
+    Bus::assertNotDispatched(RenewApiwaySubscription::class);
+});
+
+test('an instance bought before they were free renews free like the rest', function () {
+    $tenant = lifecycleTenant();
+    lifecyclePlanSubscription($tenant, SubscriptionStatus::Active);
     CreditWallet::create(['tenant_id' => $tenant->id, 'balance_cents' => 20_000, 'currency' => 'BRL']);
     $row = lifecycleSubscription($tenant, ['expires_at' => now()->addDays(2)]);
+    lifecycleLinked($row);
 
     $this->artisan('apiway:renew')->assertSuccessful();
-    // A second run inside the same cycle must not charge again: the reference
-    // carries the expiry, which has not moved because the renew is still queued.
-    $this->artisan('apiway:renew')->assertSuccessful();
-
-    $debits = CreditTransaction::where('tenant_id', $tenant->id)->get();
-
-    expect($debits)->toHaveCount(1)
-        ->and($debits->first()->type)->toBe(CreditTransactionType::Renewal)
-        // The re-quoted price, not the stale one stored on the row.
-        ->and($debits->first()->amount_cents)->toBe(-5990)
-        ->and($debits->first()->reference)->toBe("apiway:renew:{$row->id}:" . $row->expires_at->toDateString())
-        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(14_010)
-        ->and(Invoice::count())->toBe(0);
 
     Bus::assertDispatched(RenewApiwaySubscription::class);
-});
-
-test('a renewal the balance cannot cover warns instead of charging', function () {
-    Http::fake([
-        'portal.proxybr.com.br/api/partner/v1/apiway/quote' => Http::response(['data' => [
-            'quantity' => 1, 'cycle' => 'mensal', 'unit_price' => 59.9, 'total_price' => 59.9,
-        ]]),
-    ]);
-
-    $tenant = lifecycleTenant();
-    CreditWallet::create(['tenant_id' => $tenant->id, 'balance_cents' => 500, 'currency' => 'BRL']);
-    $row = lifecycleSubscription($tenant, ['expires_at' => now()->addDays(2)]);
-
-    $this->artisan('apiway:renew')->assertSuccessful();
-
-    // Nothing taken, nothing renewed — and a reminder stamped so the warning
-    // repeats daily rather than once.
     expect(CreditTransaction::count())->toBe(0)
-        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(500)
-        ->and($row->fresh()->renewal_reminder_sent_at)->not->toBeNull();
-
-    Bus::assertNotDispatched(RenewApiwaySubscription::class);
-});
-
-test('an insufficient balance is warned about a week out, before anything is charged', function () {
-    $tenant = lifecycleTenant();
-    CreditWallet::create(['tenant_id' => $tenant->id, 'balance_cents' => 0, 'currency' => 'BRL']);
-    // Outside the three-day charge window, inside the seven-day warning window.
-    $row = lifecycleSubscription($tenant, ['expires_at' => now()->addDays(6)]);
-
-    // No quote is faked on purpose: the early warning must price itself from the
-    // row it already has rather than calling the partner for every subscription
-    // every day. A stray request fails this suite.
-    $this->artisan('apiway:renew')->assertSuccessful();
-
-    expect($row->fresh()->renewal_reminder_sent_at)->not->toBeNull()
-        ->and(CreditTransaction::count())->toBe(0);
+        ->and(app(CreditService::class)->balanceCents($tenant))->toBe(20_000);
 });
 
 // --- renew() ---------------------------------------------------------------

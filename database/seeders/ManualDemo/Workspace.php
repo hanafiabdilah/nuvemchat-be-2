@@ -71,7 +71,7 @@ trait Workspace
             'features' => $all,
             'quotas' => [
                 'max_whatsapp_connections' => 6, 'max_other_connections' => 10, 'max_agents' => 8,
-                'included_instances' => 2, 'included_trained_agents' => 3, 'gallery_storage_gb' => 2,
+                'included_trained_agents' => 3, 'gallery_storage_gb' => 2,
             ],
         ])->save();
 

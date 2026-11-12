@@ -8,7 +8,6 @@ use App\Http\Resources\Credit\CreditTransactionResource;
 use App\Models\CreditTransaction;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\SavedCardService;
-use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Credits\CreditPricing;
 use App\Services\Credits\CreditService;
 use App\Services\Money\ExchangeRates;
@@ -89,17 +88,15 @@ class CreditController extends Controller
      * separate from `index()`, which is heavy (a hundred statement rows and the
      * whole model price list) and only wanted on one screen.
      *
-     * Two things, in order of consequence. A renewal the balance cannot cover
-     * is first because it has a deadline and no undo — ProxyBR revokes the
-     * number on the day. A low balance is only a nudge.
+     * Only the low-balance nudge now. It used to lead with API Way renewals the
+     * balance could not cover — those had a deadline and no undo — but the
+     * instances are free since Nov 2026 and nothing renews from the balance.
      */
-    public function alerts(Request $request, ApiwayService $apiway): JsonResponse
+    public function alerts(Request $request): JsonResponse
     {
         $tenant = $request->user()->tenant;
         $balance = $this->credits->balanceCents($tenant);
         $currency = $this->credits->currencyFor($tenant);
-
-        $atRisk = $apiway->renewalsAtRisk($tenant);
 
         return response()->json([
             'data' => [
@@ -108,14 +105,6 @@ class CreditController extends Controller
                 // Only meaningful once there has been money to run low on: a
                 // workspace that has never topped up is not "running out".
                 'low_balance' => $balance > 0 && $balance < CreditPricing::lowBalanceCents($currency),
-                'renewals_at_risk' => [
-                    'count' => $atRisk->count(),
-                    'instances' => (int) $atRisk->sum('quantity'),
-                    // The soonest deadline and what it would take to clear the
-                    // whole window — the two numbers a banner has to state.
-                    'next_expires_at' => $atRisk->first()?->expires_at?->toIso8601String(),
-                    'shortfall_cents' => max(0, (int) $atRisk->sum('total_price_cents') - $balance),
-                ],
             ],
         ]);
     }

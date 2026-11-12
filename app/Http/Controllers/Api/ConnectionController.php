@@ -10,19 +10,18 @@ use App\Enums\Connection\HumanAvailability;
 use App\Enums\Connection\Status as ConnectionStatus;
 use App\Enums\Connection\SyncStatus;
 use App\Events\ConnectionUpdated;
+use App\Exceptions\Apiway\NumberPreparingException;
 use App\Exceptions\ConnectionException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\ConnectionResource;
 use App\Jobs\SyncEmailInbox;
 use App\Models\AiHubAgent;
-use App\Models\AuditLog;
 use App\Models\Connection;
 use App\Models\Conversation;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\BusinessHours;
 use App\Services\HumanAvailabilityGate;
 use App\Services\Connection\Channels\EmailChannel;
-use App\Services\Connection\Channels\WhatsappApiwayChannel;
 use App\Services\Connection\ConnectionActivity;
 use App\Services\Connection\ConnectionService;
 use App\Services\Connection\Meta\FacebookConfig;
@@ -683,6 +682,14 @@ class ConnectionController extends Controller
             ], 200);
         } catch (ValidationException $th) {
             throw $th;
+        } catch (NumberPreparingException $th) {
+            // Not an error: the number behind a WhatsApp via API Way connection
+            // is still being made. The wizard keeps waiting and asks again.
+            return response()->json([
+                'message' => $th->getMessage(),
+                'code' => NumberPreparingException::CODE,
+                'data' => $connection->fresh()->toResource(ConnectionResource::class),
+            ], 202);
         } catch (ConnectionException $th) {
             $status = $th->getHttpStatusCode();
             $message = $th->getMessage();
@@ -711,74 +718,6 @@ class ConnectionController extends Controller
         } finally {
             broadcast(new ConnectionUpdated($connection));
         }
-    }
-
-    /**
-     * Move this connection onto a different API Way instance.
-     *
-     * Deliberately its own endpoint rather than a parameter on connect(). The
-     * connect button doubles as "reload QR code" and gets pressed repeatedly by
-     * someone watching a code that will not scan; a swap hiding behind it would
-     * be one stray click away from re-pairing an inbox onto another number.
-     * This one is asked for explicitly, confirmed in the UI, and audited.
-     */
-    public function switchApiwayInstance(int $id, Request $request)
-    {
-        $connection = $request->user()->tenant->connections()->findOrFail($id);
-
-        if ($connection->channel !== Channel::WhatsappApiway) {
-            return response()->json([
-                'message' => 'Somente conexões WhatsApp API Way usam instâncias.',
-            ], 422);
-        }
-
-        $validated = $request->validate([
-            'apiway_instance_id' => ['required', 'integer'],
-        ]);
-
-        $previous = $connection->credentials['apiway_instance_id'] ?? null;
-
-        try {
-            app(WhatsappApiwayChannel::class)->switchInstance($connection, (int) $validated['apiway_instance_id']);
-        } catch (ConnectionException $th) {
-            $status = $th->getHttpStatusCode();
-
-            return response()->json(
-                ['message' => $th->getMessage()],
-                in_array($status, [401, 419], true) ? 502 : $status,
-            );
-        } catch (ValidationException $th) {
-            throw $th;
-        } catch (\Throwable $th) {
-            Log::error('Failed to switch API Way instance', [
-                'connection_id' => $connection->id,
-                'from_instance' => $previous,
-                'to_instance' => $validated['apiway_instance_id'],
-                'exception' => $th::class,
-                'error' => $th->getMessage(),
-            ]);
-
-            return response()->json([
-                'message' => 'Não foi possível trocar a instância desta conexão.',
-            ], 500);
-        } finally {
-            broadcast(new ConnectionUpdated($connection->fresh()));
-        }
-
-        AuditLog::record(
-            'connection.apiway_instance_switched',
-            "Connection #{$connection->id} moved to API Way instance #{$validated['apiway_instance_id']}",
-            [
-                'connection_id' => $connection->id,
-                'from_instance' => $previous,
-                'to_instance' => (int) $validated['apiway_instance_id'],
-            ],
-        );
-
-        return response()->json([
-            'message' => 'Instância trocada com sucesso.',
-            'data' => $connection->fresh()->toResource(ConnectionResource::class),
-        ]);
     }
 
     public function checkStatus(int $id)

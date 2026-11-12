@@ -9,7 +9,6 @@ use App\Models\User;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\PlanChange;
 use App\Services\Billing\SubscriptionGate;
-use App\Services\Connection\Apiway\ApiwayService;
 use App\Services\Gallery\GalleryStorage;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -156,7 +155,6 @@ class SubscriptionResource extends JsonResource
             // service that enforces it — a usage panel showing two of five
             // limits leaves the customer to discover the other three by
             // hitting them.
-            'included_instances' => $tenant ? app(ApiwayService::class)->usageSummary($tenant)['included_used'] : 0,
             'included_trained_agents' => $tenant ? $gate->trainedAgentsUsed($tenant) : 0,
             // Bytes, against the plan's gigabytes **plus** any rented ones: the
             // limit a customer actually runs into is the sum.

@@ -5,6 +5,7 @@ namespace App\Services\Connection\Channels;
 use App\Enums\Connection\Status;
 use App\Events\ConnectionUpdated;
 use App\Exceptions\ApiwayPartnerException;
+use App\Exceptions\Apiway\NumberPreparingException;
 use App\Exceptions\ConnectionException as AppConnectionException;
 use App\Models\ApiwayInstance;
 use App\Models\Connection;
@@ -21,12 +22,13 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * WhatsApp API Way channel. Instances are PURCHASED assets provisioned by
- * ProxyBR (see ApiwayService); connecting links one owned, unused instance to
- * this Connection. Deleting/disconnecting never destroys the instance — it
- * returns to the tenant's pool. Everything here talks straight to the core
- * with the per-instance token; the partner API only hands that token over
- * (once — it's stored on the ApiwayInstance row afterwards).
+ * WhatsApp API Way channel. The instance behind a connection is provisioned by
+ * ProxyBR and handed out by ApiwayService::instanceFor() — free, and never
+ * chosen by the customer: connecting is what gets this Connection its instance.
+ * Deleting the connection logs the instance out and returns it to the
+ * workspace's spares, where the next connection picks it up. Everything here
+ * talks straight to the core with the per-instance token; the partner API only
+ * hands that token over (once — it's stored on the ApiwayInstance row after).
  */
 class WhatsappApiwayChannel implements ChannelInterface
 {
@@ -41,12 +43,17 @@ class WhatsappApiwayChannel implements ChannelInterface
     public function connect(Connection $connection, array $data)
     {
         if (! isset($connection->credentials['instance_id'], $connection->credentials['token'])) {
-            $this->linkInstance($connection, $data);
+            // Never from the request: which instance serves a connection is not
+            // the customer's to say (or to know). A spare one, or a new one.
+            $instance = app(ApiwayService::class)->instanceFor($connection);
+
+            if (! $instance) {
+                throw new NumberPreparingException;
+            }
+
+            $this->linkInstance($connection, ['apiway_instance_id' => $instance->id]);
         } else {
-            // Already linked: connect only refreshes status/QR. Pointing this
-            // connection at a *different* instance is switchInstance() — a
-            // separate, confirmed action, never a side effect of pressing the
-            // button that reloads a QR code.
+            // Already linked: connect only refreshes status/QR.
             $this->checkInstanceStatus($connection);
         }
 
@@ -70,40 +77,6 @@ class WhatsappApiwayChannel implements ChannelInterface
             return;
         }
 
-        $this->retrieveQrCode($connection);
-    }
-
-    /**
-     * Point this connection at a different purchased instance.
-     *
-     * Two situations, one operation: the instance behind a connection was
-     * cancelled or expired and the tenant bought a replacement, or they simply
-     * want this inbox served by another number. Everything that makes the
-     * connection what it is — its conversations, flow, agents, automated
-     * messages, tags — belongs to the Connection row and stays put; only the
-     * WhatsApp session underneath changes.
-     *
-     * The instance being left behind is logged out of WhatsApp first. It goes
-     * back to the pool, and a pooled instance still holding somebody's session
-     * is a number that keeps receiving messages nobody reads. That call is
-     * best-effort: an instance whose subscription was revoked no longer
-     * answers its own token, and that is the most common reason for asking for
-     * a swap in the first place — it must not block one.
-     */
-    public function switchInstance(Connection $connection, int $apiwayInstanceId): void
-    {
-        $current = (int) ($connection->credentials['apiway_instance_id'] ?? 0);
-
-        if ($current === $apiwayInstanceId) {
-            throw new AppConnectionException('Esta conexão já usa essa instância.', 422);
-        }
-
-        $this->logoutInstance($connection);
-
-        // linkInstance() releases whatever this connection was holding — it has
-        // to, because apiway_instances.connection_id is unique.
-        $this->linkInstance($connection, ['apiway_instance_id' => $apiwayInstanceId]);
-        $this->registerWebhook($connection);
         $this->retrieveQrCode($connection);
     }
 
@@ -168,8 +141,8 @@ class WhatsappApiwayChannel implements ChannelInterface
     }
 
     /**
-     * Link an owned, available instance to this connection: fetch its API
-     * token via the partner console and persist. Webhook registration happens
+     * Link an available instance of this workspace to this connection: fetch
+     * its API token via the partner console and persist. Webhook registration happens
      * in connect(), straight on the core, once credentials are stored.
      */
     private function linkInstance(Connection $connection, array $data): void
@@ -186,27 +159,29 @@ class WhatsappApiwayChannel implements ChannelInterface
             ->first();
 
         if (! $instance) {
-            throw new AppConnectionException('Instância API Way não encontrada.', 404);
+            throw new AppConnectionException('Não foi possível preparar o número de WhatsApp. Tente novamente.', 404);
         }
 
         if ($instance->connection_id !== null && $instance->connection_id !== $connection->id) {
-            throw new AppConnectionException('Esta instância já está em uso por outra conexão.', 422);
+            throw new AppConnectionException('Não foi possível preparar o número de WhatsApp. Tente novamente.', 409);
         }
 
         if (! $instance->isUsable()) {
-            throw new AppConnectionException('Esta instância não está mais ativa. Renove ou contrate uma nova.', 422);
+            throw new AppConnectionException('Não foi possível preparar o número de WhatsApp. Tente novamente.', 409);
         }
 
         try {
             $token = app(ApiwayService::class)->instanceCoreToken($instance);
         } catch (ApiwayPartnerException $e) {
-            Log::error('API Way instance token fetch failed', ['instance' => $instance->id, 'error' => $e->getMessage()]);
-            throw new AppConnectionException(
-                $e->getErrorCode() === 'token_missing'
-                    ? $e->getMessage()
-                    : 'Não foi possível obter as credenciais da instância. Tente novamente.',
-                502,
-            );
+            Log::error('API Way instance token fetch failed', [
+                'instance' => $instance->id,
+                'code' => $e->getErrorCode(),
+                'error' => $e->getMessage(),
+            ]);
+            // Same sentence whatever ProxyBR said: the instance and its token
+            // are plumbing the customer never sees, so naming them would only
+            // tell them about a part they cannot do anything with.
+            throw new AppConnectionException('Não foi possível preparar o número de WhatsApp. Tente novamente.', 502);
         }
 
         // The import opt-in is a preference about this connection, not about
@@ -376,8 +351,10 @@ class WhatsappApiwayChannel implements ChannelInterface
         $message = is_array($body) ? ($body['message'] ?? null) : null;
 
         if ($error === 'node_error' || $message === 'not connected') {
-            return 'A instância não está ativa no provedor, então nenhum QR Code pode ser gerado. '
-                . 'Verifique a assinatura desta instância ou troque a conexão para outra instância.';
+            // Instances are not something the customer sees or manages any
+            // more, so the sentence names what they do see: the number.
+            return 'O número de WhatsApp desta conexão não está disponível no momento, então nenhum QR Code '
+                . 'pode ser gerado. Tente novamente em alguns minutos; se continuar, fale com o suporte.';
         }
 
         return UpstreamError::message(
@@ -617,9 +594,10 @@ class WhatsappApiwayChannel implements ChannelInterface
     }
 
     /**
-     * Return the linked instance to the tenant's pool. The purchased asset
-     * (and its ProxyBR subscription) stays alive — cancelling is a separate,
-     * explicit action on the Instances page.
+     * Return the linked instance to the workspace's spares. Its ProxyBR
+     * subscription stays alive until the period ends — apiway:renew only
+     * renews instances that serve a connection — so the next connection made
+     * in that time picks it up instead of ordering a new one.
      */
     public function releaseInstance(Connection $connection): void
     {

@@ -25,8 +25,11 @@ enum Quota: string
     case MaxWhatsappConnections = 'max_whatsapp_connections';
     case MaxOtherConnections = 'max_other_connections';
     case MaxAgents = 'max_agents';
-    case IncludedInstances = 'included_instances';
     case IncludedTrainedAgents = 'included_trained_agents';
+
+    // `included_instances` (API Way) was removed in Nov 2026: instances are
+    // free and capped only by `max_whatsapp_connections` — a connection gets
+    // its instance when it connects. See migration 2026_11_12_000100.
 
     /**
      * Gallery storage the plan includes, in whole gigabytes.
@@ -52,7 +55,6 @@ enum Quota: string
             self::MaxWhatsappConnections => 'WhatsApp connections',
             self::MaxOtherConnections => 'Other connections',
             self::MaxAgents => 'Agents',
-            self::IncludedInstances => 'Included API Way instances',
             self::IncludedTrainedAgents => 'Included trained agents',
             self::GalleryStorageGb => 'Gallery storage (GB)',
         };
@@ -64,7 +66,6 @@ enum Quota: string
             self::MaxWhatsappConnections => 'WhatsApp numbers the workspace may connect at once, WhatsApp Official and API Way together.',
             self::MaxOtherConnections => 'Every other channel the workspace may connect at once: Instagram, Messenger, Telegram, TikTok, Discord, e-mail and the website chat.',
             self::MaxAgents => 'User seats in the workspace.',
-            self::IncludedInstances => 'API Way instances provisioned free with the plan.',
             self::IncludedTrainedAgents => 'Pre-trained catalog agents the plan may hire at no extra cost.',
             self::GalleryStorageGb => 'Media library space included with the plan. Absent or 0 means none — the tenant can still rent space per GB.',
         };
@@ -77,7 +78,6 @@ enum Quota: string
             self::MaxWhatsappConnections => 'On creating or duplicating a WhatsApp connection.',
             self::MaxOtherConnections => 'On creating or duplicating any other connection.',
             self::MaxAgents => 'On inviting a new agent.',
-            self::IncludedInstances => 'On provisioning; extra instances are billed per unit.',
             self::IncludedTrainedAgents => 'On hiring from the catalog; past the limit the agent is a one-off purchase.',
             self::GalleryStorageGb => 'On uploading to the gallery. Over the limit the library goes read-only — nothing is ever deleted.',
         };
