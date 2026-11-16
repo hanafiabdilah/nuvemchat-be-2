@@ -6,7 +6,6 @@ use App\Enums\Affiliate\CommissionStatus;
 use App\Enums\Affiliate\CommissionType;
 use App\Http\Controllers\Controller;
 use App\Models\Affiliate;
-use App\Models\AffiliateClick;
 use App\Models\AffiliateCommission;
 use App\Models\AuditLog;
 use App\Models\Tenant;
@@ -93,7 +92,7 @@ class AdminAffiliateController extends Controller
         return response()->json([
             'data' => $this->summary($affiliate),
             'referrals' => $referrals,
-            'activity' => $this->activity($affiliate),
+            'activity' => $this->commissions->activity($affiliate),
         ]);
     }
 
@@ -360,81 +359,6 @@ class AdminAffiliateController extends Controller
         ]);
 
         return response()->json(['data' => ['hold_days' => AffiliateSettings::holdDays()]]);
-    }
-
-    /**
-     * What the detail page charts: visitors and sign-ups per day for the last
-     * 30 days, and commissions earned and paid per month for the last 12, per
-     * currency (two currencies are not one bar).
-     *
-     * @return array<string, mixed>
-     */
-    protected function activity(Affiliate $affiliate): array
-    {
-        $tz = config('app.timezone');
-        $from = now($tz)->startOfDay()->subDays(29);
-
-        $clicks = AffiliateClick::query()
-            ->where('affiliate_id', $affiliate->id)
-            ->where('day', '>=', $from->toDateString())
-            ->selectRaw('day, COUNT(*) as total')
-            ->groupBy('day')
-            ->pluck('total', 'day')
-            ->mapWithKeys(fn ($total, $day) => [substr((string) $day, 0, 10) => (int) $total]);
-
-        $signups = Tenant::query()
-            ->where('referred_by_affiliate_id', $affiliate->id)
-            ->where('referred_at', '>=', $from->copy()->utc())
-            ->pluck('referred_at')
-            ->countBy(fn ($at) => $at->copy()->setTimezone($tz)->toDateString());
-
-        $days = [];
-
-        for ($day = $from->copy(); $day->lte(now($tz)); $day->addDay()) {
-            $key = $day->toDateString();
-            $days[] = ['date' => $key, 'clicks' => $clicks[$key] ?? 0, 'signups' => $signups[$key] ?? 0];
-        }
-
-        $since = now($tz)->startOfMonth()->subMonths(11);
-        $months = [];
-
-        $rows = AffiliateCommission::query()
-            ->where('affiliate_id', $affiliate->id)
-            ->where('status', '!=', CommissionStatus::Reversed->value)
-            ->where(fn ($q) => $q->where('created_at', '>=', $since->copy()->utc())->orWhere('paid_at', '>=', $since->copy()->utc()))
-            ->get(['currency', 'amount_cents', 'created_at', 'paid_at']);
-
-        foreach ($rows as $row) {
-            $earnedMonth = $row->created_at?->copy()->setTimezone($tz)->format('Y-m');
-            $paidMonth = $row->paid_at?->copy()->setTimezone($tz)->format('Y-m');
-
-            if ($earnedMonth && $row->created_at->gte($since)) {
-                $months[$row->currency][$earnedMonth]['earned_cents'] = ($months[$row->currency][$earnedMonth]['earned_cents'] ?? 0) + $row->amount_cents;
-            }
-
-            if ($paidMonth && $row->paid_at->gte($since)) {
-                $months[$row->currency][$paidMonth]['paid_cents'] = ($months[$row->currency][$paidMonth]['paid_cents'] ?? 0) + $row->amount_cents;
-            }
-        }
-
-        $series = [];
-
-        foreach ($months as $currency => $byMonth) {
-            $points = [];
-
-            for ($month = $since->copy(); $month->lte(now($tz)); $month->addMonth()) {
-                $key = $month->format('Y-m');
-                $points[] = [
-                    'month' => $key,
-                    'earned_cents' => $byMonth[$key]['earned_cents'] ?? 0,
-                    'paid_cents' => $byMonth[$key]['paid_cents'] ?? 0,
-                ];
-            }
-
-            $series[] = ['currency' => $currency, 'months' => $points];
-        }
-
-        return ['days' => $days, 'commissions' => $series];
     }
 
     /** @return array<string, mixed> */

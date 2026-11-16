@@ -458,13 +458,48 @@ it('shows the affiliator their link, numbers and balances, and nobody else', fun
         ->assertJsonPath('data.code', 'ana')
         ->assertJsonPath('data.stats', ['clicks' => 1, 'signups' => 1, 'customers' => 1])
         ->assertJsonPath('data.balances.0.holding_cents', 2000)
-        ->assertJsonPath('data.commissions.0.customer', 'Ana D.');
+        ->assertJsonPath('data.referrals.0.customer', 'Ana D.')
+        ->assertJsonPath('data.referrals.0.charges', 1)
+        ->assertJsonMissingPath('data.referrals.0.email')
+        ->assertJsonCount(30, 'data.activity.days');
 
     $this->actingAs($affiliate->user, 'sanctum')->getJson('/api/user')->assertJsonPath('data.affiliate.code', 'ana');
 
     $stranger = affWorkspace()->user;
     $this->actingAs($stranger, 'sanctum')->getJson('/api/user/affiliate')->assertNotFound();
+    $this->actingAs($stranger, 'sanctum')->getJson('/api/user/affiliate/commissions')->assertNotFound();
     $this->actingAs($stranger, 'sanctum')->getJson('/api/user')->assertJsonPath('data.affiliate', null);
+});
+
+it('lists the affiliator their own commissions only, by state, with what was paid', function () {
+    AffiliateSettings::setHoldDays(30);
+    $affiliate = affAffiliate(['commission_percent' => 10]);
+    $subscription = affSubscribeAndPay(affReferred($affiliate), affPlan(10000));
+    $other = affAffiliate(['commission_percent' => 10]);
+    affSubscribeAndPay(affReferred($other), affPlan(10000));
+
+    $this->travel(31)->days();
+    affRenewAndPay($subscription);
+    $first = AffiliateCommission::where('affiliate_id', $affiliate->id)->orderBy('id')->first();
+    app(\App\Services\Affiliates\AffiliateCommissions::class)->payCommissions([$first->id], 'pix', 'E2E-7', null, null);
+
+    $this->actingAs($affiliate->user, 'sanctum')
+        ->getJson('/api/user/affiliate/commissions')
+        ->assertOk()
+        ->assertJsonCount(2, 'data')
+        ->assertJsonPath('data.0.status', 'holding')
+        ->assertJsonPath('data.1.status', 'paid')
+        ->assertJsonPath('data.1.customer', 'Ana D.')
+        ->assertJsonPath('data.1.payout.reference', 'E2E-7')
+        ->assertJsonPath('totals.0.paid_cents', 1000)
+        ->assertJsonPath('totals.0.holding_cents', 1000)
+        ->assertJsonPath('payouts.0.amount_cents', 1000);
+
+    $this->actingAs($affiliate->user, 'sanctum')
+        ->getJson('/api/user/affiliate/commissions?status[]=paid')
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.id', $first->id);
 });
 
 it('lets the affiliator say where to be paid', function () {

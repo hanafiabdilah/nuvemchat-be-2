@@ -230,6 +230,7 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     // payouts and where to be paid. The person's, not the workspace's, so no
     // permission — only being an affiliator (404 otherwise).
     Route::get('/user/affiliate', [\App\Http\Controllers\Api\AffiliateController::class, 'show'])->name('affiliate.show');
+    Route::get('/user/affiliate/commissions', [\App\Http\Controllers\Api\AffiliateController::class, 'commissions'])->name('affiliate.commissions');
     Route::put('/user/affiliate/payout-details', [\App\Http\Controllers\Api\AffiliateController::class, 'updatePayoutDetails'])
         ->middleware('throttle:10,1,affiliate-payout-details')
         ->name('affiliate.payout-details');
