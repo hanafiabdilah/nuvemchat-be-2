@@ -354,6 +354,97 @@ it('pays only what is past its holding period, net of clawbacks', function () {
         ->and(AuditLog::where('action', 'affiliates.payout')->exists())->toBeTrue();
 });
 
+it('pays one commission at a time, and only once it is past its waiting period', function () {
+    AffiliateSettings::setHoldDays(30);
+    $affiliate = affAffiliate(['commission_percent' => 10]);
+    $subscription = affSubscribeAndPay(affReferred($affiliate), affPlan(10000));
+    $admin = affAdmin();
+    $early = AffiliateCommission::sole();
+
+    $this->actingAs($admin, 'sanctum')
+        ->postJson('/api/admin/affiliates/commissions/pay', ['commission_ids' => [$early->id], 'method' => 'pix'])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('commission_ids');
+
+    $this->travel(31)->days();
+    $later = affRenewAndPay($subscription);
+
+    $this->actingAs($admin, 'sanctum')
+        ->getJson("/api/admin/affiliates/commissions?affiliate_id={$affiliate->id}&status[]=available")
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.id', $early->id)
+        ->assertJsonPath('data.0.affiliate.code', $affiliate->code)
+        ->assertJsonPath('totals.0.available_cents', 1000)
+        ->assertJsonPath('totals.0.holding_cents', 1000);
+
+    $this->actingAs($admin, 'sanctum')
+        ->postJson('/api/admin/affiliates/commissions/pay', ['commission_ids' => [$early->id], 'method' => 'pix', 'reference' => 'E2E-9'])
+        ->assertCreated()
+        ->assertJsonPath('data.amount_cents', 1000);
+
+    // Paid once: a second click on the same row is refused, and the newer
+    // commission is still waiting.
+    $this->actingAs($admin, 'sanctum')
+        ->postJson('/api/admin/affiliates/commissions/pay', ['commission_ids' => [$early->id], 'method' => 'pix'])
+        ->assertStatus(422);
+
+    expect($early->fresh()->status)->toBe(CommissionStatus::Paid)
+        ->and(AffiliateCommission::where('invoice_id', $later->id)->sole()->status)->toBe(CommissionStatus::Pending)
+        ->and(AuditLog::where('action', 'affiliates.payout')->exists())->toBeTrue();
+
+    $this->actingAs($admin, 'sanctum')
+        ->getJson('/api/admin/affiliates/commissions?status[]=paid')
+        ->assertOk()
+        ->assertJsonCount(1, 'data')
+        ->assertJsonPath('data.0.payout.reference', 'E2E-9');
+});
+
+it('refuses to pay two affiliators at once, and a refund larger than what is paid', function () {
+    AffiliateSettings::setHoldDays(0);
+    $one = affAffiliate(['commission_percent' => 10]);
+    $two = affAffiliate(['commission_percent' => 10]);
+    affSubscribeAndPay(affReferred($one), affPlan(10000));
+    affSubscribeAndPay(affReferred($two), affPlan(10000));
+    $admin = affAdmin();
+
+    $this->actingAs($admin, 'sanctum')
+        ->postJson('/api/admin/affiliates/commissions/pay', ['commission_ids' => AffiliateCommission::pluck('id')->all(), 'method' => 'pix'])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('commission_ids');
+
+    // A paid commission refunded: the clawback alone cannot be "paid".
+    $paid = AffiliateCommission::where('affiliate_id', $one->id)->sole();
+    app(\App\Services\Affiliates\AffiliateCommissions::class)->payCommissions([$paid->id], 'pix', null, null, null);
+    $paid->invoice->update(['status' => InvoiceStatus::Refunded]);
+    $clawback = AffiliateCommission::whereNotNull('reversal_of_id')->sole();
+
+    $this->actingAs($admin, 'sanctum')
+        ->postJson('/api/admin/affiliates/commissions/pay', ['commission_ids' => [$clawback->id], 'method' => 'pix'])
+        ->assertStatus(422);
+});
+
+it('shows the affiliator page with referrals and day and month activity', function () {
+    AffiliateSettings::setHoldDays(0);
+    $affiliate = affAffiliate(['code' => 'ana', 'commission_percent' => 10]);
+    affSubscribeAndPay(affReferred($affiliate), affPlan(10000));
+    $this->get('/r/ana');
+
+    $response = $this->actingAs(affAdmin(), 'sanctum')
+        ->getJson("/api/admin/affiliates/{$affiliate->id}")
+        ->assertOk()
+        ->assertJsonCount(1, 'referrals')
+        ->assertJsonCount(30, 'activity.days')
+        ->assertJsonMissingPath('commissions')
+        ->assertJsonMissingPath('payouts');
+
+    $today = collect($response->json('activity.days'))->last();
+    expect($today['clicks'])->toBe(1)->and($today['signups'])->toBe(1);
+
+    $months = collect($response->json('activity.commissions.0.months'));
+    expect($months)->toHaveCount(12)->and($months->last()['earned_cents'])->toBe(1000);
+});
+
 // --- The affiliator's page -----------------------------------------------------
 
 it('shows the affiliator their link, numbers and balances, and nobody else', function () {

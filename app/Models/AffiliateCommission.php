@@ -60,4 +60,22 @@ class AffiliateCommission extends Model
     {
         return $this->belongsTo(Invoice::class);
     }
+
+    public function payout()
+    {
+        return $this->belongsTo(AffiliatePayout::class, 'payout_id');
+    }
+
+    /**
+     * Where the commission stands, in the words the Back Office and the
+     * affiliator's page use: holding / available / paid / reversed.
+     */
+    public function state(): string
+    {
+        if ($this->status === CommissionStatus::Pending) {
+            return $this->available_at && $this->available_at->isPast() ? 'available' : 'holding';
+        }
+
+        return $this->status->value;
+    }
 }

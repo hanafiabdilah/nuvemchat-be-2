@@ -1479,6 +1479,8 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
         Route::middleware('permission:bo.affiliates.manage')->group(function () {
             Route::get('/affiliates', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'index']);
             Route::get('/affiliates/candidates', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'candidates']);
+            Route::get('/affiliates/commissions', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'commissions']);
+            Route::post('/affiliates/commissions/pay', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'payCommissions']);
             Route::put('/affiliates/settings', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'updateSettings']);
             Route::post('/affiliates', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'store']);
             Route::get('/affiliates/{affiliate}', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'show'])->whereNumber('affiliate');

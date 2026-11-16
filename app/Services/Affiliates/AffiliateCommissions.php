@@ -231,6 +231,86 @@ class AffiliateCommissions
     }
 
     /**
+     * Record that an admin paid a chosen set of commissions. They must all
+     * belong to one affiliator, be in one currency and be past their holding
+     * period — one payout is one transfer, to one person, in one currency.
+     * A clawback (a negative row) can be chosen alongside commissions: it is
+     * deducted from them, and the total must still be above zero.
+     *
+     * @param  list<int>  $ids
+     */
+    public function payCommissions(array $ids, string $method, ?string $reference, ?string $note, ?Admin $admin): AffiliatePayout
+    {
+        $ids = array_values(array_unique(array_map('intval', $ids)));
+
+        $first = AffiliateCommission::query()->whereIn('id', $ids)->orderBy('id')->first();
+
+        if ($first === null) {
+            throw ValidationException::withMessages(['commission_ids' => __('Choose at least one commission.')]);
+        }
+
+        return Cache::lock("affiliate:payout:{$first->affiliate_id}", 30)->block(10, function () use ($ids, $first, $method, $reference, $note, $admin) {
+            return DB::transaction(function () use ($ids, $first, $method, $reference, $note, $admin) {
+                $commissions = AffiliateCommission::query()->whereIn('id', $ids)->lockForUpdate()->get();
+
+                if ($commissions->count() !== count($ids)) {
+                    throw ValidationException::withMessages(['commission_ids' => __('Some of these commissions no longer exist.')]);
+                }
+
+                if ($commissions->pluck('affiliate_id')->unique()->count() > 1) {
+                    throw ValidationException::withMessages(['commission_ids' => __('A payment can only pay one affiliate. Choose commissions of the same affiliate.')]);
+                }
+
+                if ($commissions->pluck('currency')->unique()->count() > 1) {
+                    throw ValidationException::withMessages(['commission_ids' => __('A payment is in one currency. Choose commissions in the same currency.')]);
+                }
+
+                // Read again under the lock: another admin may have paid one,
+                // or a refund reversed it, since the page was loaded.
+                $notPayable = $commissions->first(fn (AffiliateCommission $row) => $row->state() !== 'available');
+
+                if ($notPayable !== null) {
+                    throw ValidationException::withMessages(['commission_ids' => match ($notPayable->state()) {
+                        'holding' => __('A commission can only be paid after its waiting period.'),
+                        'paid' => __('This commission has already been paid.'),
+                        default => __('This commission was reversed and cannot be paid.'),
+                    }]);
+                }
+
+                $total = (int) $commissions->sum('amount_cents');
+
+                if ($total <= 0) {
+                    throw ValidationException::withMessages(['commission_ids' => __('The refunds deducted are larger than the commissions chosen. Choose more commissions to pay.')]);
+                }
+
+                $currency = $first->currency;
+
+                $payout = AffiliatePayout::create([
+                    'affiliate_id' => $first->affiliate_id,
+                    'amount_cents' => $total,
+                    'currency' => $currency,
+                    'method' => $method,
+                    'reference' => $reference,
+                    'note' => $note,
+                    'paid_at' => now(),
+                    'admin_id' => $admin?->id,
+                ]);
+
+                AffiliateCommission::query()
+                    ->whereIn('id', $commissions->pluck('id'))
+                    ->update([
+                        'status' => CommissionStatus::Paid->value,
+                        'payout_id' => $payout->id,
+                        'paid_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+
+                return $payout;
+            });
+        });
+    }
+
+    /**
      * Record that an admin paid an affiliator what is available in one
      * currency — every commission past its holding period, minus any
      * clawbacks. The money moves outside the system; this is the record of it.

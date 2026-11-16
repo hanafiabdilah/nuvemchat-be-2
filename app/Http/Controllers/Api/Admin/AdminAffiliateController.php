@@ -6,6 +6,7 @@ use App\Enums\Affiliate\CommissionStatus;
 use App\Enums\Affiliate\CommissionType;
 use App\Http\Controllers\Controller;
 use App\Models\Affiliate;
+use App\Models\AffiliateClick;
 use App\Models\AffiliateCommission;
 use App\Models\AuditLog;
 use App\Models\Tenant;
@@ -76,7 +77,7 @@ class AdminAffiliateController extends Controller
                     ->where('tenant_id', $tenant->id)
                     ->where('status', '!=', CommissionStatus::Reversed->value)
                     ->groupBy('currency')
-                    ->selectRaw('currency, SUM(amount_cents) as cents, COUNT(*) as charges')
+                    ->selectRaw('currency, SUM(amount_cents) as cents, COUNT(invoice_id) as charges')
                     ->get();
 
                 return [
@@ -89,14 +90,84 @@ class AdminAffiliateController extends Controller
                 ];
             });
 
-        $commissions = AffiliateCommission::query()
-            ->with('tenant:id,billing_name,user_id', 'tenant.user:id,name')
-            ->where('affiliate_id', $affiliate->id)
-            ->orderByDesc('id')
-            ->limit(200)
-            ->get()
-            ->map(fn (AffiliateCommission $row) => [
+        return response()->json([
+            'data' => $this->summary($affiliate),
+            'referrals' => $referrals,
+            'activity' => $this->activity($affiliate),
+        ]);
+    }
+
+    /**
+     * Every affiliator's commissions in one list: what is still owed and what
+     * was paid, filterable by affiliator and state, with the totals per
+     * currency for the same affiliator filter.
+     */
+    public function commissions(Request $request)
+    {
+        $data = $request->validate([
+            'affiliate_id' => ['nullable', 'integer'],
+            'status' => ['nullable', 'array'],
+            'status.*' => [Rule::in(['holding', 'available', 'paid', 'reversed'])],
+            'search' => ['nullable', 'string', 'max:120'],
+            'page' => ['nullable', 'integer', 'min:1'],
+        ]);
+
+        $affiliateId = $data['affiliate_id'] ?? null;
+        $statuses = $data['status'] ?? [];
+        $search = trim((string) ($data['search'] ?? ''));
+
+        $scoped = fn () => AffiliateCommission::query()
+            ->when($affiliateId, fn ($q) => $q->where('affiliate_id', $affiliateId));
+
+        $query = $scoped()
+            ->with([
+                'affiliate:id,code,user_id',
+                'affiliate.user:id,name,email',
+                'tenant:id,billing_name,user_id',
+                'tenant.user:id,name,email',
+                'payout:id,method,reference,admin_id,paid_at',
+                'payout.admin:id,name',
+            ])
+            ->when($statuses !== [], fn ($q) => $q->where(fn ($w) => collect($statuses)->each(fn (string $status) => $w->orWhere(fn ($one) => match ($status) {
+                'holding' => $one->holding(),
+                'available' => $one->available(),
+                'paid' => $one->where('status', CommissionStatus::Paid->value),
+                'reversed' => $one->where('status', CommissionStatus::Reversed->value),
+            }))))
+            ->when($search !== '', fn ($q) => $q->where(fn ($w) => $w
+                ->whereHas('tenant', fn ($t) => $t->where('billing_name', 'like', "%{$search}%")
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$search}%")->orWhere('email', 'like', "%{$search}%")))
+                ->orWhereHas('affiliate', fn ($a) => $a->where('code', 'like', '%'.strtolower($search).'%')
+                    ->orWhereHas('user', fn ($u) => $u->where('name', 'like', "%{$search}%")->orWhere('email', 'like', "%{$search}%")))))
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
+
+        $page = $query->paginate(50);
+
+        $totals = [];
+
+        foreach ($scoped()->where('status', '!=', CommissionStatus::Reversed->value)->get(['currency', 'status', 'available_at', 'amount_cents']) as $row) {
+            $bucket = &$totals[$row->currency];
+            $bucket ??= ['currency' => $row->currency, 'holding_cents' => 0, 'available_cents' => 0, 'paid_cents' => 0];
+            $bucket[match ($row->state()) {
+                'paid' => 'paid_cents',
+                'available' => 'available_cents',
+                default => 'holding_cents',
+            }] += $row->amount_cents;
+            unset($bucket);
+        }
+
+        ksort($totals);
+
+        return response()->json([
+            'data' => collect($page->items())->map(fn (AffiliateCommission $row) => [
                 'id' => $row->id,
+                'affiliate' => $row->affiliate ? [
+                    'id' => $row->affiliate->id,
+                    'code' => $row->affiliate->code,
+                    'name' => $row->affiliate->user?->name,
+                    'email' => $row->affiliate->user?->email,
+                ] : null,
                 'tenant_id' => $row->tenant_id,
                 'customer' => $row->tenant?->billing_name ?: $row->tenant?->user?->name,
                 'invoice_id' => $row->invoice_id,
@@ -105,29 +176,61 @@ class AdminAffiliateController extends Controller
                 'percent' => $row->percent,
                 'amount_cents' => $row->amount_cents,
                 'currency' => $row->currency,
-                'status' => $row->status === CommissionStatus::Pending
-                    ? ($row->available_at && $row->available_at->isPast() ? 'available' : 'holding')
-                    : $row->status->value,
+                'status' => $row->state(),
                 'available_at' => $row->available_at?->toIso8601String(),
                 'paid_at' => $row->paid_at?->toIso8601String(),
                 'created_at' => $row->created_at?->toIso8601String(),
-            ]);
-
-        return response()->json([
-            'data' => $this->summary($affiliate),
-            'referrals' => $referrals,
-            'commissions' => $commissions,
-            'payouts' => $affiliate->payouts()->with('admin:id,name')->orderByDesc('paid_at')->limit(100)->get()->map(fn ($payout) => [
-                'id' => $payout->id,
-                'amount_cents' => $payout->amount_cents,
-                'currency' => $payout->currency,
-                'method' => $payout->method,
-                'reference' => $payout->reference,
-                'note' => $payout->note,
-                'paid_at' => $payout->paid_at?->toIso8601String(),
-                'admin' => $payout->admin?->name,
-            ]),
+                'payout' => $row->payout ? [
+                    'id' => $row->payout->id,
+                    'method' => $row->payout->method,
+                    'reference' => $row->payout->reference,
+                    'admin' => $row->payout->admin?->name,
+                ] : null,
+            ])->values(),
+            'meta' => [
+                'current_page' => $page->currentPage(),
+                'last_page' => $page->lastPage(),
+                'per_page' => $page->perPage(),
+                'total' => $page->total(),
+                'from' => $page->firstItem(),
+                'to' => $page->lastItem(),
+            ],
+            'totals' => array_values($totals),
         ]);
+    }
+
+    /** Mark the chosen commissions as paid: the money moved outside the system. */
+    public function payCommissions(Request $request)
+    {
+        $data = $request->validate([
+            'commission_ids' => ['required', 'array', 'min:1', 'max:500'],
+            'commission_ids.*' => ['integer'],
+            'method' => ['required', Rule::in(['pix', 'bank_transfer', 'other'])],
+            'reference' => ['nullable', 'string', 'max:191'],
+            'note' => ['nullable', 'string', 'max:1000'],
+        ]);
+
+        $payout = $this->commissions->payCommissions(
+            $data['commission_ids'],
+            $data['method'],
+            $data['reference'] ?? null,
+            $data['note'] ?? null,
+            $request->user(),
+        );
+
+        $affiliate = $payout->affiliate;
+
+        AuditLog::record('affiliates.payout', "Recorded payout to affiliate {$affiliate?->code}", [
+            'affiliate_id' => $payout->affiliate_id,
+            'payout_id' => $payout->id,
+            'commission_ids' => $payout->commissions()->pluck('id')->all(),
+            'amount_cents' => $payout->amount_cents,
+            'currency' => $payout->currency,
+            'method' => $payout->method,
+            'reference' => $payout->reference,
+        ]);
+
+        return response()->json(['data' => $payout], 201);
     }
 
     public function store(Request $request)
@@ -257,6 +360,81 @@ class AdminAffiliateController extends Controller
         ]);
 
         return response()->json(['data' => ['hold_days' => AffiliateSettings::holdDays()]]);
+    }
+
+    /**
+     * What the detail page charts: visitors and sign-ups per day for the last
+     * 30 days, and commissions earned and paid per month for the last 12, per
+     * currency (two currencies are not one bar).
+     *
+     * @return array<string, mixed>
+     */
+    protected function activity(Affiliate $affiliate): array
+    {
+        $tz = config('app.timezone');
+        $from = now($tz)->startOfDay()->subDays(29);
+
+        $clicks = AffiliateClick::query()
+            ->where('affiliate_id', $affiliate->id)
+            ->where('day', '>=', $from->toDateString())
+            ->selectRaw('day, COUNT(*) as total')
+            ->groupBy('day')
+            ->pluck('total', 'day')
+            ->mapWithKeys(fn ($total, $day) => [substr((string) $day, 0, 10) => (int) $total]);
+
+        $signups = Tenant::query()
+            ->where('referred_by_affiliate_id', $affiliate->id)
+            ->where('referred_at', '>=', $from->copy()->utc())
+            ->pluck('referred_at')
+            ->countBy(fn ($at) => $at->copy()->setTimezone($tz)->toDateString());
+
+        $days = [];
+
+        for ($day = $from->copy(); $day->lte(now($tz)); $day->addDay()) {
+            $key = $day->toDateString();
+            $days[] = ['date' => $key, 'clicks' => $clicks[$key] ?? 0, 'signups' => $signups[$key] ?? 0];
+        }
+
+        $since = now($tz)->startOfMonth()->subMonths(11);
+        $months = [];
+
+        $rows = AffiliateCommission::query()
+            ->where('affiliate_id', $affiliate->id)
+            ->where('status', '!=', CommissionStatus::Reversed->value)
+            ->where(fn ($q) => $q->where('created_at', '>=', $since->copy()->utc())->orWhere('paid_at', '>=', $since->copy()->utc()))
+            ->get(['currency', 'amount_cents', 'created_at', 'paid_at']);
+
+        foreach ($rows as $row) {
+            $earnedMonth = $row->created_at?->copy()->setTimezone($tz)->format('Y-m');
+            $paidMonth = $row->paid_at?->copy()->setTimezone($tz)->format('Y-m');
+
+            if ($earnedMonth && $row->created_at->gte($since)) {
+                $months[$row->currency][$earnedMonth]['earned_cents'] = ($months[$row->currency][$earnedMonth]['earned_cents'] ?? 0) + $row->amount_cents;
+            }
+
+            if ($paidMonth && $row->paid_at->gte($since)) {
+                $months[$row->currency][$paidMonth]['paid_cents'] = ($months[$row->currency][$paidMonth]['paid_cents'] ?? 0) + $row->amount_cents;
+            }
+        }
+
+        $series = [];
+
+        foreach ($months as $currency => $byMonth) {
+            $points = [];
+
+            for ($month = $since->copy(); $month->lte(now($tz)); $month->addMonth()) {
+                $key = $month->format('Y-m');
+                $points[] = [
+                    'month' => $key,
+                    'earned_cents' => $byMonth[$key]['earned_cents'] ?? 0,
+                    'paid_cents' => $byMonth[$key]['paid_cents'] ?? 0,
+                ];
+            }
+
+            $series[] = ['currency' => $currency, 'months' => $points];
+        }
+
+        return ['days' => $days, 'commissions' => $series];
     }
 
     /** @return array<string, mixed> */
