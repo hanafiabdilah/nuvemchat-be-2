@@ -226,6 +226,13 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     // on the account so the choice follows them to another browser; applied by
     // the dashboard, which is the only place that knows who is looking at what.
     Route::put('/user/notification-preferences', [UserController::class, 'updateNotificationPreferences']);
+    // The affiliator's own page (Settings → Affiliate): their link, earnings,
+    // payouts and where to be paid. The person's, not the workspace's, so no
+    // permission — only being an affiliator (404 otherwise).
+    Route::get('/user/affiliate', [\App\Http\Controllers\Api\AffiliateController::class, 'show'])->name('affiliate.show');
+    Route::put('/user/affiliate/payout-details', [\App\Http\Controllers\Api\AffiliateController::class, 'updatePayoutDetails'])
+        ->middleware('throttle:10,1,affiliate-payout-details')
+        ->name('affiliate.payout-details');
     // The number WhatsApp alerts go to (the account's own) and a test send. Throttled:
     // each call sends a WhatsApp message on the platform's number.
     Route::post('/user/whatsapp-number', [\App\Http\Controllers\Api\WhatsappAlertController::class, 'requestNumber'])->middleware('throttle:5,1,whatsapp-number');
@@ -1465,6 +1472,19 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::post('/plans', [AdminPlanController::class, 'store']);
             Route::put('/plans/{plan}', [AdminPlanController::class, 'update']);
             Route::delete('/plans/{plan}', [AdminPlanController::class, 'destroy']);
+        });
+
+        // Affiliators: terms, what their link brought in, what they are owed,
+        // and the payouts made to them by hand.
+        Route::middleware('permission:bo.affiliates.manage')->group(function () {
+            Route::get('/affiliates', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'index']);
+            Route::get('/affiliates/candidates', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'candidates']);
+            Route::put('/affiliates/settings', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'updateSettings']);
+            Route::post('/affiliates', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'store']);
+            Route::get('/affiliates/{affiliate}', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'show'])->whereNumber('affiliate');
+            Route::put('/affiliates/{affiliate}', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'update'])->whereNumber('affiliate');
+            Route::delete('/affiliates/{affiliate}', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'destroy'])->whereNumber('affiliate');
+            Route::post('/affiliates/{affiliate}/payouts', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'recordPayout'])->whereNumber('affiliate');
         });
 
         // Billing — coupons: a percentage off plan charges, or a bonus on

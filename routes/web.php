@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AffiliateLinkController;
 use App\Http\Controllers\ConnectionController;
 use App\Http\Controllers\FlowInvoiceDocumentController;
 use App\Http\Controllers\FlowPaymentDoneController;
@@ -36,6 +37,14 @@ Route::middleware(['auth', 'verified'])->group(function () {
 */
 
 Route::middleware('platform.only')->group(function () {
+
+    // Affiliate links: lock the visitor to the affiliator, then on to the
+    // marketing site. Written into posts and bios outside the platform, so it
+    // names the host that cannot be retired.
+    Route::get('/r/{code}', AffiliateLinkController::class)
+        ->where('code', '[A-Za-z0-9_-]{1,32}')
+        ->middleware('throttle:60,1')
+        ->name('affiliate.link');
 
     Route::get('/oauth/instagram/callback', [ConnectionController::class, 'instagramCallback'])
         ->name('oauth.instagram.callback');

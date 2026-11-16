@@ -42,6 +42,8 @@ class AppServiceProvider extends ServiceProvider
         // Register observers
         Conversation::observe(ConversationObserver::class);
         Message::observe(MessageAttachmentObserver::class);
+        // Affiliate commissions: every invoice that turns paid or refunded.
+        \App\Models\Invoice::observe(\App\Observers\InvoiceAffiliateObserver::class);
         Message::observe(MessageGalleryObserver::class);
         Message::observe(\App\Observers\MessageAdReferralObserver::class);
         \App\Models\Contact::observe(\App\Observers\ContactObserver::class);

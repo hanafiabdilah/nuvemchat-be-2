@@ -28,8 +28,10 @@ class EnsureSubscriptionActive
      * out of topping up made the numbers it was allowed to buy unpayable.
      * `onboarding.` because the first-run guide is for exactly the workspace
      * that has not paid for anything yet.
+     * `affiliate.` because an affiliator's earnings are theirs, not their
+     * workspace's: a lapsed plan must not hide what they are owed.
      */
-    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'numbers.', 'gallery.', 'credits.', 'onboarding.'];
+    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'numbers.', 'gallery.', 'credits.', 'onboarding.', 'affiliate.'];
 
     /**
      * Exact route URIs (relative) that remain accessible.

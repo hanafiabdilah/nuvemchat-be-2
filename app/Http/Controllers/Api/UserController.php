@@ -73,6 +73,15 @@ class UserController extends Controller
             $data['onboarding'] = OnboardingController::payloadFor($tenant, app(OnboardingState::class));
         }
 
+        // An affiliator: the Settings → Affiliate page appears for them. The
+        // person, not the workspace — the commission is theirs.
+        $affiliate = \App\Models\Affiliate::query()->where('user_id', $user->id)->first();
+        $data['affiliate'] = $affiliate ? [
+            'code' => $affiliate->code,
+            'link' => $affiliate->link(),
+            'is_active' => $affiliate->is_active,
+        ] : null;
+
         // Platform switches the dashboard has to follow. Today one: whether the
         // AI Hub accepts tool definitions yet (config ai.tools.enabled). While
         // it does not, the builder hides the "AI agent with actions" node —

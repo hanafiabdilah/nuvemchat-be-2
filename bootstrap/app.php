@@ -71,7 +71,9 @@ return Application::configure(basePath: dirname(__DIR__))
         ['prefix' => 'api', 'middleware' => ['api', 'auth:sanctum']],
     )
     ->withMiddleware(function (Middleware $middleware): void {
-        $middleware->encryptCookies(except: ['appearance', 'sidebar_state']);
+        // pingly_ref: the affiliate lock, read by the API's signup route, which
+        // does not run the cookie decrypter. Its value is a public code.
+        $middleware->encryptCookies(except: ['appearance', 'sidebar_state', 'pingly_ref']);
 
         // An SDP must end in CRLF (RFC 8866), and a trimmed one is refused by
         // the browser that has to answer it. Two patterns because the rule is

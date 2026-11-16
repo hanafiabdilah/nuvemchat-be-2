@@ -143,6 +143,25 @@ final class Money
         return (int) (ceil($cents / $stepCents) * $stepCents);
     }
 
+    /**
+     * `$percent` of an amount, rounded **down** to what the currency is
+     * written in — a rupiah has no cents, so 10% of Rp 149.905 is Rp 14.990.
+     * Down because every caller is a share the platform gives away (a coupon's
+     * discount, a top-up bonus, an affiliate commission): never more than the
+     * percentage promised.
+     */
+    public static function percentOf(int $cents, int $percent, ?string $currency): int
+    {
+        if ($cents <= 0 || $percent <= 0) {
+            return 0;
+        }
+
+        $step = 10 ** max(0, 2 - self::decimals($currency));
+        $raw = intdiv($cents * min(100, $percent), 100);
+
+        return intdiv($raw, $step) * $step;
+    }
+
     /** @return array{symbol?: string, decimals: int, thousands: string, decimal: string} */
     private static function formatFor(?string $currency): array
     {

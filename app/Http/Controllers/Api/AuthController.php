@@ -7,6 +7,7 @@ use App\Http\Resources\UserResource;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Rules\NotDisposableEmail;
+use App\Services\Affiliates\AffiliateLinks;
 use App\Services\Auth\LoginThrottle;
 use App\Services\Auth\SingleSession;
 use App\Services\Auth\TwoFactor;
@@ -43,9 +44,14 @@ class AuthController extends Controller
             'password' => ['required', 'string', Password::defaults(), 'confirmed'],
             // WhatsApp number in E.164 (client formats it); we store bare digits.
             'whatsapp_number' => ['required', 'string', 'max:32'],
+            // An affiliate code the sign-up page carried over from its URL. The
+            // cookie set by the affiliate link wins over it (first touch).
+            'ref' => ['nullable', 'string', 'max:64'],
         ]);
 
-        $user = DB::transaction(function () use ($validated) {
+        $affiliate = app(AffiliateLinks::class)->forSignup($request);
+
+        $user = DB::transaction(function () use ($validated, $affiliate) {
             $user = User::create([
                 'name' => $validated['name'],
                 'email' => $validated['email'],
@@ -58,6 +64,11 @@ class AuthController extends Controller
             $user->save();
 
             $user->assignRole('owner');
+
+            // Locked to the affiliator whose link brought them, for good.
+            if ($affiliate) {
+                app(AffiliateLinks::class)->attach($tenant, $affiliate, $user);
+            }
 
             return $user;
         });

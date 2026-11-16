@@ -33,6 +33,8 @@ const PLATFORM_ONLY_PREFIXES = [
     // name the host that cannot be retired.
     'mcp',
     '.well-known/',
+    // Affiliate links, shared in posts and bios outside the platform.
+    'r/',
 ];
 
 function registerCountryDomain(): void

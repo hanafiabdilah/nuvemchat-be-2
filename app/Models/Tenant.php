@@ -33,6 +33,9 @@ class Tenant extends Model
         'crm_lead_scoring' => 'array',
         // "Set up later" in the first-run guide — see OnboardingState.
         'onboarding_skipped_at' => 'datetime',
+        // The affiliator whose link this workspace signed up through. Written
+        // once, at signup, never from a request body (not fillable).
+        'referred_at' => 'datetime',
     ];
 
     /**
@@ -238,6 +241,12 @@ class Tenant extends Model
     /**
      * The tenant's current subscription (denormalised pointer for O(1) lookup).
      */
+    /** The affiliator this workspace was brought in by, if any. */
+    public function referredBy()
+    {
+        return $this->belongsTo(Affiliate::class, 'referred_by_affiliate_id');
+    }
+
     public function savedCards()
     {
         return $this->hasMany(SavedCard::class);

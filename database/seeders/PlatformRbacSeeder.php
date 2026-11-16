@@ -80,6 +80,9 @@ class PlatformRbacSeeder extends Seeder
         // Coupons: a percentage off plan charges or a bonus on top-ups. Money
         // given away on every charge it touches, so not part of bo.plans.manage.
         'bo.coupons.manage',
+        // Affiliators: who earns a share of the plans they bring in, and the
+        // payouts made to them.
+        'bo.affiliates.manage',
     ];
 
     public function run(): void

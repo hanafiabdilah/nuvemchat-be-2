@@ -197,14 +197,7 @@ class Coupons
      */
     public function percentOf(int $baseCents, int $percent, ?string $currency): int
     {
-        if ($baseCents <= 0 || $percent <= 0) {
-            return 0;
-        }
-
-        $step = 10 ** max(0, 2 - Money::decimals($currency));
-        $raw = intdiv($baseCents * min(100, $percent), 100);
-
-        return intdiv($raw, $step) * $step;
+        return Money::percentOf($baseCents, $percent, $currency);
     }
 
     /**
