@@ -411,6 +411,40 @@ it('turns a user into an affiliator with a readable code, and refuses a second t
     expect(AuditLog::where('action', 'affiliates.create')->exists())->toBeTrue();
 });
 
+it('offers and accepts only workspace owners, never their agents', function () {
+    $tenant = affWorkspace();
+    $owner = $tenant->user;
+    $owner->update(['name' => 'Owner Person']);
+
+    $agent = User::factory()->create(['name' => 'Agent Person', 'tenant_id' => $tenant->id]);
+
+    // Holding the owner role makes a second person an owner too.
+    Role::findOrCreate('owner', 'web');
+    $coOwner = User::factory()->create(['name' => 'Co Owner', 'tenant_id' => $tenant->id]);
+    $coOwner->assignRole('owner');
+
+    $admin = affAdmin();
+
+    $ids = collect($this->actingAs($admin, 'sanctum')
+        ->getJson('/api/admin/affiliates/candidates?search=Person')
+        ->assertOk()
+        ->json('data'))->pluck('id');
+
+    expect($ids)->toContain($owner->id)->not->toContain($agent->id);
+
+    $this->actingAs($admin, 'sanctum')
+        ->getJson('/api/admin/affiliates/candidates?search=Co%20Owner')
+        ->assertOk()
+        ->assertJsonPath('data.0.id', $coOwner->id);
+
+    $this->actingAs($admin, 'sanctum')
+        ->postJson('/api/admin/affiliates', ['user_id' => $agent->id, 'commission_percent' => 20, 'commission_type' => 'once'])
+        ->assertStatus(422)
+        ->assertJsonValidationErrors('user_id');
+
+    expect(Affiliate::where('user_id', $agent->id)->exists())->toBeFalse();
+});
+
 it('drops the month limit on a once affiliator and refuses to delete one with referrals', function () {
     $affiliate = affAffiliate(['code' => 'ana']);
     affReferred($affiliate);

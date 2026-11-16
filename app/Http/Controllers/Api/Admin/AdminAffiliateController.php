@@ -37,15 +37,18 @@ class AdminAffiliateController extends Controller
         ]);
     }
 
-    /** Users who can be made affiliators: picked from a search, never typed as an id. */
+    /**
+     * Users who can be made affiliators: picked from a search, never typed as
+     * an id. Workspace owners only — an agent is somebody else's employee, and
+     * the commission is a deal with the business, not with its staff.
+     */
     public function candidates(Request $request)
     {
         $search = trim((string) $request->validate([
             'search' => ['nullable', 'string', 'max:120'],
         ])['search'] ?? '');
 
-        $users = User::query()
-            ->whereNotNull('tenant_id')
+        $users = $this->owners()
             ->whereNotIn('id', Affiliate::query()->whereNotNull('user_id')->select('user_id'))
             ->when($search !== '', fn ($q) => $q->where(fn ($w) => $w
                 ->where('name', 'like', "%{$search}%")
@@ -136,8 +139,12 @@ class AdminAffiliateController extends Controller
         $data = $request->validate([
             'user_id' => [
                 'required', 'integer',
-                Rule::exists('users', 'id')->whereNotNull('tenant_id'),
                 Rule::unique('affiliates', 'user_id'),
+                function (string $attribute, mixed $value, \Closure $fail) {
+                    if (! $this->owners()->whereKey($value)->exists()) {
+                        $fail(__('Only a workspace owner can be an affiliate.'));
+                    }
+                },
             ],
             ...$this->termRules(),
             'code' => ['nullable', 'string', 'regex:/^[a-z0-9_-]{3,32}$/', Rule::unique('affiliates', 'code')],
@@ -305,6 +312,20 @@ class AdminAffiliateController extends Controller
     }
 
     /** @return array<string, string> */
+    /**
+     * Owners of a workspace: the account that created it, or anyone holding
+     * the owner role in it. Both, because the role can be given to a second
+     * person and the creator always counts.
+     */
+    protected function owners()
+    {
+        return User::query()
+            ->whereNotNull('tenant_id')
+            ->where(fn ($q) => $q
+                ->whereIn('id', Tenant::query()->select('user_id'))
+                ->orWhereHas('roles', fn ($r) => $r->where('name', 'owner')));
+    }
+
     protected function messages(): array
     {
         return ['code.regex' => __('Use 3 to 32 letters, numbers, - or _.')];
