@@ -14,6 +14,10 @@ class Subscription extends Model
     protected $fillable = [
         'tenant_id',
         'plan_id',
+        // The coupon this subscription was sold with, and what it promised
+        // (percentage, cycles, extras) frozen at checkout — see Coupons.
+        'coupon_id',
+        'coupon_terms',
         // An upgrade waiting for its first charge: the subscription it takes
         // over from once paid — see BillingService::completePlanSwitch().
         'replaces_subscription_id',
@@ -86,6 +90,7 @@ class Subscription extends Model
         'scheduled_change_at' => 'datetime',
         'payment_card' => 'array',
         'auto_renew' => 'boolean',
+        'coupon_terms' => 'array',
     ];
 
     /**
@@ -122,6 +127,11 @@ class Subscription extends Model
     public function plan()
     {
         return $this->belongsTo(Plan::class);
+    }
+
+    public function coupon()
+    {
+        return $this->belongsTo(Coupon::class);
     }
 
     public function scheduledPlan()

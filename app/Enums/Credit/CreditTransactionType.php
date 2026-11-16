@@ -43,6 +43,14 @@ enum CreditTransactionType: string
      * a discount (a Mercado Pago preapproval charges its fixed amount). Positive.
      */
     case PlanCredit = 'plan_credit';
+    /**
+     * The bonus a top-up coupon adds on top of a paid top-up. Positive.
+     *
+     * Its own row, never folded into the `Topup` one: the top-up row is the
+     * money that arrived and has to match the gateway's statement to the cent,
+     * and the bonus is credit the platform gave away on top of it.
+     */
+    case TopupBonus = 'topup_bonus';
     /** A top-up the bank later refunded or charged back. Negative. */
     case Refund = 'refund';
     /** A Back Office correction, either direction. */
@@ -57,6 +65,7 @@ enum CreditTransactionType: string
             self::Renewal => 'Renovação',
             self::Reversal => 'Devolução',
             self::PlanCredit => 'Crédito de troca de plano',
+            self::TopupBonus => 'Bônus de cupom',
             self::Refund => 'Estorno',
             self::Adjustment => 'Ajuste manual',
         };

@@ -520,3 +520,36 @@ it('reports Stripe to the Back Office without ever returning its secret key', fu
         ->assertJsonPath('data.account', 'Pingly')
         ->assertJsonPath('data.charges_enabled', true);
 });
+
+it('charges a coupon on the first card charge and on the off-session renewals it covers', function () {
+    stripeFakes();
+
+    $coupon = \App\Models\Coupon::create([
+        'code' => 'CARTAO20',
+        'name' => 'Cartão',
+        'scope' => 'plan',
+        'percent_off' => 20,
+        'duration' => 'repeating',
+        'duration_cycles' => 2,
+        'is_active' => true,
+    ]);
+
+    $subscription = app(BillingService::class)->subscribe(stripeWorkspace(), stripePlan(10000), PaymentMethod::Card, [
+        'card_token' => 'pm_1',
+        'payer_email' => 'ana@example.test',
+        'coupon_code' => 'cartao20',
+    ]);
+
+    $first = $subscription->invoices()->first();
+    expect($first->amount_cents)->toBe(8000)->and($first->coupon_id)->toBe($coupon->id);
+    Http::assertSent(fn ($request) => $request->url() === 'https://api.stripe.com/v1/payment_intents'
+        && (int) $request->data()['amount'] === 8000);
+
+    // Second cycle: still discounted. Third: full price.
+    foreach ([8000, 10000] as $expected) {
+        $this->travelTo($subscription->fresh()->current_period_end->copy()->subDay());
+        Artisan::call('billing:charge-renewals', ['--days-before' => 3]);
+
+        expect($subscription->invoices()->latest('id')->first()->amount_cents)->toBe($expected);
+    }
+});

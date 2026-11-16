@@ -24,6 +24,11 @@ class Invoice extends Model
         // Unused value of the plan this one replaced, already taken off
         // amount_cents. Kept so the period's full value can be read back.
         'proration_credit_cents',
+        // A coupon on the charge: on a plan invoice, what it took off
+        // amount_cents; on a top-up, the bonus credited on top of it.
+        'coupon_id',
+        'coupon_discount_cents',
+        'coupon_bonus_cents',
         'currency',
         'period_start',
         'period_end',
@@ -47,6 +52,8 @@ class Invoice extends Model
         'purpose' => InvoicePurpose::class,
         'amount_cents' => 'integer',
         'proration_credit_cents' => 'integer',
+        'coupon_discount_cents' => 'integer',
+        'coupon_bonus_cents' => 'integer',
         'period_start' => 'datetime',
         'period_end' => 'datetime',
         'due_date' => 'date',
@@ -64,6 +71,11 @@ class Invoice extends Model
     public function subscription()
     {
         return $this->belongsTo(Subscription::class);
+    }
+
+    public function coupon()
+    {
+        return $this->belongsTo(Coupon::class);
     }
 
     public function apiwaySubscription()

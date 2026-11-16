@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Billing;
 
 use App\Enums\Billing\Addon;
 use App\Enums\Billing\BillingCycle;
+use App\Enums\Billing\CouponScope;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
 use App\Exceptions\Billing\PaymentAlreadySettledException;
@@ -15,6 +16,7 @@ use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Tenant;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\Coupons;
 use App\Services\Billing\PlanChange;
 use App\Services\Billing\SavedCardService;
 use App\Services\Billing\SubscriptionAddons;
@@ -102,6 +104,7 @@ class BillingController extends Controller
             // Absent = the plan's own cycle (a client that predates this).
             'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
             'payer_email' => ['nullable', 'email'],
+            ...self::couponRules(),
             ...self::addonRules(),
         ]);
 
@@ -113,6 +116,7 @@ class BillingController extends Controller
                 $plan,
                 $validated['payer_email'] ?? $request->user()->email,
                 $this->addonsFrom($request, $validated),
+                $validated['coupon_code'] ?? null,
             ),
         ]);
     }
@@ -257,6 +261,7 @@ class BillingController extends Controller
             // A card paid by hand each cycle carries an upgrade's credit on
             // the charge, where a self-renewing one sometimes cannot.
             'auto_renew' => ['sometimes', 'boolean'],
+            ...self::couponRules(),
             ...self::addonRules(),
         ]);
 
@@ -270,6 +275,7 @@ class BillingController extends Controller
                 $method,
                 autoRenew: $request->boolean('auto_renew', true),
                 addons: $this->addonsFrom($request, $validated),
+                couponCode: $validated['coupon_code'] ?? null,
             ),
         ]);
     }
@@ -366,6 +372,7 @@ class BillingController extends Controller
             // same way. Absent = renews by itself, as a card always did.
             'auto_renew' => ['sometimes', 'boolean'],
             'payer_email' => ['required', 'email'],
+            ...self::couponRules(),
             ...self::addonRules(),
         ]);
 
@@ -394,6 +401,7 @@ class BillingController extends Controller
                     'auto_renew' => (bool) ($validated['auto_renew'] ?? true),
                     'payer_email' => $validated['payer_email'],
                     'addons' => $this->addonsFrom($request, $validated),
+                    'coupon_code' => $validated['coupon_code'] ?? null,
                 ],
             );
         } catch (\Throwable $e) {
@@ -482,6 +490,65 @@ class BillingController extends Controller
             'invoice' => $result['invoice'] ? new InvoiceResource($result['invoice']) : null,
             'payment' => $result['payment'],
         ]);
+    }
+
+    // --- Coupons ---------------------------------------------------------------
+
+    /**
+     * The public coupons this workspace can use now: the list the checkout
+     * (scope=plan, for the plan and cycle on screen) and the top-up modal
+     * (scope=topup) offer to apply with one click. Coupons that are not public
+     * are never listed — they are typed.
+     */
+    public function coupons(Request $request)
+    {
+        $validated = $request->validate([
+            'scope' => ['required', Rule::enum(CouponScope::class)],
+            'plan_id' => ['nullable', 'exists:plans,id'],
+            'billing_cycle' => ['nullable', Rule::enum(BillingCycle::class)],
+        ]);
+
+        $scope = CouponScope::from($validated['scope']);
+        $plan = $scope === CouponScope::Plan && filled($validated['plan_id'] ?? null)
+            ? $this->planFor($request, $validated)
+            : null;
+        $coupons = app(Coupons::class);
+
+        return response()->json([
+            'data' => $coupons->available($this->tenant($request), $scope, $plan)
+                ->map(fn ($coupon) => $coupons->describe($coupon))
+                ->values(),
+        ]);
+    }
+
+    /**
+     * Whether a typed top-up coupon can be used, and the bonus it adds to this
+     * amount. A plan coupon is checked by the plan-change quote instead, which
+     * is the number the checkout shows.
+     */
+    public function checkCoupon(Request $request)
+    {
+        $validated = $request->validate([
+            'code' => ['required', 'string', 'max:40'],
+            'amount_cents' => ['nullable', 'integer', 'min:0', 'max:10000000'],
+        ]);
+
+        $tenant = $this->tenant($request);
+        $coupons = app(Coupons::class);
+        $coupon = $coupons->resolveForTopup($tenant, $validated['code']);
+
+        return response()->json([
+            'data' => [
+                ...$coupons->describe($coupon),
+                'bonus_cents' => $coupons->percentOf((int) ($validated['amount_cents'] ?? 0), $coupon->percent_off, $tenant->currency()),
+            ],
+        ]);
+    }
+
+    /** @return array<string, array<int, string>> */
+    protected static function couponRules(): array
+    {
+        return ['coupon_code' => ['nullable', 'string', 'max:40']];
     }
 
     /**

@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\Admin\AdminLiveController;
 use App\Http\Controllers\Api\Admin\AdminMarketController;
 use App\Http\Controllers\Api\Admin\AdminNumbersController;
 use App\Http\Controllers\Api\Admin\AdminPaymentServiceController;
+use App\Http\Controllers\Api\Admin\AdminCouponController;
 use App\Http\Controllers\Api\Admin\AdminPlanController;
 use App\Http\Controllers\Api\Admin\AdminReportController;
 use App\Http\Controllers\Api\Admin\AdminSettingsController;
@@ -273,6 +274,11 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
         Route::get('/invoices/{invoice}/status', [BillingController::class, 'invoiceStatus'])->middleware('permission:billing.view')->name('invoice-status');
         Route::post('/invoices/{invoice}/pay-card', [BillingController::class, 'payInvoiceWithCard'])->middleware('permission:billing.manage')->name('invoice-pay-card');
         Route::post('/subscribe', [BillingController::class, 'subscribe'])->middleware('permission:billing.manage')->name('subscribe');
+        // Coupons: the public list, and a typed top-up coupon checked before
+        // paying (throttled — a code is something that can be guessed at).
+        Route::get('/coupons', [BillingController::class, 'coupons'])->middleware('permission:billing.view')->name('coupons');
+        Route::post('/coupons/check', [BillingController::class, 'checkCoupon'])
+            ->middleware(['permission:billing.manage', 'throttle:20,1,coupon-check'])->name('coupons.check');
         Route::get('/plan-change', [BillingController::class, 'planChangeQuote'])->middleware('permission:billing.view')->name('plan-change.quote');
         Route::post('/plan-change/schedule', [BillingController::class, 'schedulePlanChange'])->middleware('permission:billing.manage')->name('plan-change.schedule');
         Route::delete('/plan-change/schedule', [BillingController::class, 'cancelScheduledPlanChange'])->middleware('permission:billing.manage')->name('plan-change.cancel');
@@ -1459,6 +1465,17 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::post('/plans', [AdminPlanController::class, 'store']);
             Route::put('/plans/{plan}', [AdminPlanController::class, 'update']);
             Route::delete('/plans/{plan}', [AdminPlanController::class, 'destroy']);
+        });
+
+        // Billing — coupons: a percentage off plan charges, or a bonus on
+        // balance top-ups. Usage is read off the invoices that carry them.
+        Route::middleware('permission:bo.coupons.manage')->group(function () {
+            Route::get('/coupons', [AdminCouponController::class, 'index']);
+            Route::get('/coupons/meta', [AdminCouponController::class, 'meta']);
+            Route::post('/coupons', [AdminCouponController::class, 'store']);
+            Route::get('/coupons/{coupon}', [AdminCouponController::class, 'show'])->whereNumber('coupon');
+            Route::put('/coupons/{coupon}', [AdminCouponController::class, 'update'])->whereNumber('coupon');
+            Route::delete('/coupons/{coupon}', [AdminCouponController::class, 'destroy'])->whereNumber('coupon');
         });
 
         // Per-tenant exceptions to the plan: a feature for a month, a raised

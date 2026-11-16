@@ -62,6 +62,7 @@ class BillingService
         protected BillingNotifier $notifier,
         protected SavedCardService $savedCards,
         protected PlanChange $planChange,
+        protected Coupons $coupons,
     ) {}
 
     /**
@@ -103,7 +104,11 @@ class BillingService
      * in units by add-on key, charged with it in the same payment. Null keeps
      * the capacity the workspace already has (PlanChange::carriedUnits()).
      *
-     * @param  array{card_token?:string, provider?:string, payer_email:string, addons?: array<string, int>|null}  $opts
+     * `coupon_code` — a plan coupon typed or picked at checkout. Validated by
+     * the quote (CouponException), and under the coupon's lock when it has a
+     * redemption cap, so the last one cannot be taken twice.
+     *
+     * @param  array{card_token?:string, provider?:string, payer_email:string, addons?: array<string, int>|null, coupon_code?: ?string}  $opts
      */
     public function subscribe(Tenant $tenant, Plan $plan, PaymentMethod $method, array $opts): Subscription
     {
@@ -141,7 +146,23 @@ class BillingService
             ]);
         }
 
-        $quote = $this->planChange->quote($tenant, $plan, $method, autoRenew: ! $perCycleCard, addons: $opts['addons'] ?? null);
+        return $this->coupons->underCap(
+            $this->coupons->findByCode($opts['coupon_code'] ?? null),
+            fn () => $this->subscribeQuoted($tenant, $plan, $method, $opts, $perCycleCard),
+        );
+    }
+
+    /** subscribe(), once the coupon (if any) is held. */
+    protected function subscribeQuoted(Tenant $tenant, Plan $plan, PaymentMethod $method, array $opts, bool $perCycleCard): Subscription
+    {
+        $quote = $this->planChange->quote(
+            $tenant,
+            $plan,
+            $method,
+            autoRenew: ! $perCycleCard,
+            addons: $opts['addons'] ?? null,
+            couponCode: $opts['coupon_code'] ?? null,
+        );
 
         if ($quote['type'] === PlanChange::DOWNGRADE) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -331,7 +352,7 @@ class BillingService
      *
      * @return array{checkout_token: string, expires_at: string}
      */
-    public function openCardCheckout(Tenant $tenant, Plan $plan, ?string $payerEmail = null, ?array $addons = null): array
+    public function openCardCheckout(Tenant $tenant, Plan $plan, ?string $payerEmail = null, ?array $addons = null, ?string $couponCode = null): array
     {
         $price = $plan->priceForMarket($tenant->market_code);
 
@@ -357,7 +378,7 @@ class BillingService
 
         $this->assertBillable($tenant);
 
-        $quote = $this->planChange->quote($tenant, $plan, PaymentMethod::Card, addons: $addons);
+        $quote = $this->planChange->quote($tenant, $plan, PaymentMethod::Card, addons: $addons, couponCode: $couponCode);
 
         if (in_array($quote['type'], [PlanChange::DOWNGRADE, PlanChange::CURRENT], true)) {
             throw \Illuminate\Validation\ValidationException::withMessages([
@@ -395,6 +416,10 @@ class BillingService
             'replaces_subscription_id' => $quote['current']['subscription_id'] ?? null,
             'discount_cents' => $quote['discount_cents'],
             'balance_credit_cents' => $quote['balance_credit_cents'],
+            // The coupon the amount was worked out with: confirming without it
+            // (or with another) is a different charge.
+            'coupon_id' => $quote['coupon']['id'] ?? null,
+            'coupon_discount_cents' => $quote['coupon']['discount_cents'] ?? null,
             'currency' => $currency,
             'order_reference' => $reference,
             'payment_id' => $opened['payment']['id'] ?? null,
@@ -1083,7 +1108,7 @@ class BillingService
         $periodEnd = $due['terms']['cycle']->advance(Carbon::instance($due['period_start']));
 
         $invoice = $invoice
-            ? $this->reopenRenewal($invoice, (int) $due['terms']['price_cents'], ['card_update' => true])
+            ? $this->reopenRenewal($invoice, $due['terms'], ['card_update' => true])
             : Invoice::create([
                 'tenant_id' => $subscription->tenant_id,
                 'subscription_id' => $subscription->id,
@@ -1091,6 +1116,8 @@ class BillingService
                 'payment_method' => PaymentMethod::Card,
                 'gateway' => $gateway->name(),
                 'amount_cents' => (int) $due['terms']['price_cents'],
+                'coupon_id' => $due['terms']['coupon_id'],
+                'coupon_discount_cents' => $due['terms']['coupon_discount_cents'],
                 'currency' => $subscription->currency ?: ($subscription->plan?->currency ?? 'BRL'),
                 'period_start' => $due['period_start'],
                 'period_end' => $periodEnd,
@@ -1227,6 +1254,8 @@ class BillingService
             'gateway' => $gateway,
             'amount_cents' => $first['amount_cents'],
             'proration_credit_cents' => $first['proration_credit_cents'],
+            'coupon_id' => $first['coupon_id'],
+            'coupon_discount_cents' => $first['coupon_discount_cents'],
             // From the subscription, which froze both halves of the price when
             // it was created — see createPendingSubscription().
             'currency' => $subscription->currency ?: ($plan->currency ?? 'BRL'),
@@ -1292,7 +1321,8 @@ class BillingService
             || ($opened['gateway'] ?? null) !== $gateway->name()
             || $price === null
             || (int) ($opened['plan_price_cents'] ?? $opened['amount_cents']) !== (int) $price->amount_cents
-            || ($opened['addons'] ?? []) != ($quote['addons']['units'] ?? [])) {
+            || ($opened['addons'] ?? []) != ($quote['addons']['units'] ?? [])
+            || (int) ($opened['coupon_id'] ?? 0) !== (int) ($quote['coupon']['id'] ?? 0)) {
             throw \Illuminate\Validation\ValidationException::withMessages([
                 'checkout_token' => __('This card form has expired. Please enter your card again.'),
             ]);
@@ -1302,6 +1332,10 @@ class BillingService
             $quote['discount_cents'] = (int) ($opened['discount_cents'] ?? 0);
             $quote['balance_credit_cents'] = (int) ($opened['balance_credit_cents'] ?? 0);
             $quote['charge_now_cents'] = (int) $opened['amount_cents'];
+
+            if ($quote['coupon'] ?? null) {
+                $quote['coupon']['discount_cents'] = (int) ($opened['coupon_discount_cents'] ?? $quote['coupon']['discount_cents']);
+            }
         }
 
         $subscription = $this->createPendingSubscription($tenant, $plan, PaymentMethod::Card, $gateway->name(), $quote);
@@ -1315,6 +1349,8 @@ class BillingService
             'gateway' => $gateway->name(),
             'amount_cents' => $opened['amount_cents'],
             'proration_credit_cents' => ($opened['discount_cents'] ?? 0) ?: null,
+            'coupon_id' => ($opened['coupon_discount_cents'] ?? 0) > 0 ? $opened['coupon_id'] : null,
+            'coupon_discount_cents' => ($opened['coupon_discount_cents'] ?? 0) ?: null,
             'currency' => $opened['currency'],
             'period_start' => $subscription->current_period_start,
             'period_end' => $periodEnd,
@@ -1462,6 +1498,10 @@ class BillingService
             'gateway' => $gateway->name(),
             'amount_cents' => $first['amount_cents'] ?? $terms['price_cents'],
             'proration_credit_cents' => $first['proration_credit_cents'] ?? null,
+            // The first charge brings its own coupon (the quote's); a renewal
+            // reads the subscription's for the cycle it bills.
+            'coupon_id' => $first !== null ? ($first['coupon_id'] ?? null) : $terms['coupon_id'],
+            'coupon_discount_cents' => $first !== null ? ($first['coupon_discount_cents'] ?? null) : $terms['coupon_discount_cents'],
             // The snapshot taken when the workspace subscribed, not today's
             // plan: the price is frozen, so its unit has to be frozen with it.
             'currency' => $subscription->currency ?: ($plan?->currency ?? 'BRL'),
@@ -1656,6 +1696,10 @@ class BillingService
             'payment_method' => $paymentMethod,
             'gateway' => $gateway->name(),
             'amount_cents' => $amountCents,
+            // A coupon that includes the extras discounts them here too,
+            // already taken off amount_cents (SubscriptionAddons::quote()).
+            'coupon_id' => ($meta['coupon']['discount_cents'] ?? 0) > 0 ? $meta['coupon']['id'] : null,
+            'coupon_discount_cents' => ($meta['coupon']['discount_cents'] ?? 0) ?: null,
             // The subscription's money: the extras are priced in it.
             'currency' => $subscription->currency ?: $tenant->currency(),
             // The paid time it buys, so an upgrade later credits what is left.
@@ -1837,7 +1881,7 @@ class BillingService
      * it does not renew, and `period_start`/`period_end` would only be
      * describing a cycle that does not exist.
      */
-    public function createCreditTopupInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null): Invoice
+    public function createCreditTopupInvoice(Tenant $tenant, int $amountCents, ?string $payerEmail = null, ?string $couponCode = null): Invoice
     {
         $this->assertBillable($tenant);
 
@@ -1858,19 +1902,23 @@ class BillingService
         $gateway = $this->gateways->forTenant($tenant);
         $expiresAt = now()->addHours(self::PIX_WINDOW_HOURS);
 
-        $invoice = Invoice::create([
-            'tenant_id' => $tenant->id,
-            'purpose' => InvoicePurpose::CreditTopup,
-            'status' => InvoiceStatus::Pending,
-            'payment_method' => $method,
-            'gateway' => $gateway->name(),
-            'amount_cents' => $amountCents,
-            // The balance this tops up is in the workspace's own currency, so
-            // the charge that fills it has to be too.
-            'currency' => $tenant->currency(),
-            'due_date' => $expiresAt->toDateString(),
-            'idempotency_key' => (string) Str::uuid(),
-        ]);
+        $invoice = $this->coupons->underCap(
+            $this->coupons->findByCode($couponCode),
+            fn () => Invoice::create([
+                'tenant_id' => $tenant->id,
+                'purpose' => InvoicePurpose::CreditTopup,
+                'status' => InvoiceStatus::Pending,
+                'payment_method' => $method,
+                'gateway' => $gateway->name(),
+                'amount_cents' => $amountCents,
+                // The balance this tops up is in the workspace's own currency, so
+                // the charge that fills it has to be too.
+                'currency' => $tenant->currency(),
+                'due_date' => $expiresAt->toDateString(),
+                'idempotency_key' => (string) Str::uuid(),
+                ...$this->topupCoupon($tenant, $amountCents, $couponCode),
+            ]),
+        );
 
         // A top-up has no period, so the invoice id is the whole identity —
         // unlike a subscription, where the reference must carry the cycle.
@@ -1921,6 +1969,7 @@ class BillingService
         string $cardToken,
         bool $discardCardOnFailure = false,
         bool $keepCard = true,
+        ?string $couponCode = null,
     ): Invoice {
         $this->assertBillable($tenant);
 
@@ -1937,17 +1986,21 @@ class BillingService
             ]);
         }
 
-        $invoice = Invoice::create([
-            'tenant_id' => $tenant->id,
-            'purpose' => InvoicePurpose::CreditTopup,
-            'status' => InvoiceStatus::Pending,
-            'payment_method' => PaymentMethod::Card,
-            'gateway' => $gateway->name(),
-            'amount_cents' => $amountCents,
-            'currency' => $tenant->currency(),
-            'due_date' => now()->toDateString(),
-            'idempotency_key' => (string) Str::uuid(),
-        ]);
+        $invoice = $this->coupons->underCap(
+            $this->coupons->findByCode($couponCode),
+            fn () => Invoice::create([
+                'tenant_id' => $tenant->id,
+                'purpose' => InvoicePurpose::CreditTopup,
+                'status' => InvoiceStatus::Pending,
+                'payment_method' => PaymentMethod::Card,
+                'gateway' => $gateway->name(),
+                'amount_cents' => $amountCents,
+                'currency' => $tenant->currency(),
+                'due_date' => now()->toDateString(),
+                'idempotency_key' => (string) Str::uuid(),
+                ...$this->topupCoupon($tenant, $amountCents, $couponCode),
+            ]),
+        );
 
         $invoice->update(['order_reference' => "pingly-topup-{$invoice->id}"]);
 
@@ -2002,6 +2055,26 @@ class BillingService
         }
 
         return $invoice->fresh();
+    }
+
+    /**
+     * A top-up coupon's columns on the invoice: which coupon, and the bonus it
+     * adds on top of what is paid, frozen now. The customer pays the amount
+     * they chose; the bonus is credited beside it once paid (CreditService).
+     * A bonus that rounds to nothing does not spend the coupon.
+     *
+     * @return array{coupon_id?: int, coupon_bonus_cents?: int}
+     */
+    protected function topupCoupon(Tenant $tenant, int $amountCents, ?string $couponCode): array
+    {
+        if (blank($couponCode)) {
+            return [];
+        }
+
+        $coupon = $this->coupons->resolveForTopup($tenant, $couponCode);
+        $bonus = $this->coupons->percentOf($amountCents, $coupon->percent_off, $tenant->currency());
+
+        return $bonus > 0 ? ['coupon_id' => $coupon->id, 'coupon_bonus_cents' => $bonus] : [];
     }
 
     /** @deprecated The top-up is no longer Pix-only; use createCreditTopupInvoice(). */
@@ -2112,7 +2185,7 @@ class BillingService
                 return null;
             }
 
-            $invoice = $this->reopenRenewal($existing, $terms['price_cents']);
+            $invoice = $this->reopenRenewal($existing, $terms);
         } else {
             $invoice = Invoice::create([
                 'tenant_id' => $subscription->tenant_id,
@@ -2121,6 +2194,8 @@ class BillingService
                 'payment_method' => PaymentMethod::Card,
                 'gateway' => $gateway->name(),
                 'amount_cents' => $terms['price_cents'],
+                'coupon_id' => $terms['coupon_id'],
+                'coupon_discount_cents' => $terms['coupon_discount_cents'],
                 // ⚠️ The snapshot, never the live plan. Reading the currency off
                 // the plan while the amount comes from the subscription meant a
                 // plan edited from one currency to another silently re-denominated
@@ -2209,9 +2284,10 @@ class BillingService
      * Back Office still sees every attempt, and `meta.failure` only ever
      * describes the latest one.
      *
+     * @param  array<string, mixed>  $terms  PlanChange::termsFor() of the cycle.
      * @param  array<string, mixed>  $meta  Merged in after the bookkeeping.
      */
-    protected function reopenRenewal(Invoice $invoice, int $amountCents, array $meta = []): Invoice
+    protected function reopenRenewal(Invoice $invoice, array $terms, array $meta = []): Invoice
     {
         $current = $invoice->meta ?? [];
         $failures = $current['failures'] ?? [];
@@ -2227,7 +2303,9 @@ class BillingService
             'payment_id' => null,
             // The cycle's price as it stands now: a downgrade scheduled after
             // the first attempt prices this cycle too.
-            'amount_cents' => $amountCents,
+            'amount_cents' => (int) $terms['price_cents'],
+            'coupon_id' => $terms['coupon_id'] ?? null,
+            'coupon_discount_cents' => $terms['coupon_discount_cents'] ?? null,
             'idempotency_key' => (string) Str::uuid(),
             'meta' => array_merge($current, [
                 'renewal_attempts' => RenewalRetry::attempts($invoice) + 1,
@@ -2523,6 +2601,8 @@ class BillingService
                     'payment_method' => PaymentMethod::Card,
                     'gateway' => $gateway,
                     'amount_cents' => $terms['price_cents'],
+                    'coupon_id' => $terms['coupon_id'],
+                    'coupon_discount_cents' => $terms['coupon_discount_cents'],
                     'currency' => $subscription->currency ?: 'BRL',
                     'period_start' => $periodStart,
                     'period_end' => $periodEnd,
@@ -3520,6 +3600,10 @@ class BillingService
             $subscription = Subscription::create([
                 'tenant_id' => $tenant->id,
                 'plan_id' => $plan->id,
+                // What the coupon promised, frozen now: a later edit of the
+                // coupon never reaches a subscription already sold.
+                'coupon_id' => $quote['coupon']['id'] ?? null,
+                'coupon_terms' => $quote['coupon']['terms'] ?? null,
                 'replaces_subscription_id' => $replaces,
                 'proration_balance_cents' => $upgrade && ($quote['balance_credit_cents'] ?? 0) > 0
                     ? (int) $quote['balance_credit_cents']
@@ -3563,21 +3647,33 @@ class BillingService
 
     /**
      * The first charge of a new subscription: the plan's price and its extras,
-     * minus the unused part of the plan an upgrade replaces.
+     * minus the coupon, minus the unused part of the plan an upgrade replaces
+     * (worked out by the quote in that order — see PlanChange).
      *
-     * @return array{amount_cents: int, proration_credit_cents: int|null}
+     * @return array{amount_cents: int, proration_credit_cents: int|null, coupon_id: int|null, coupon_discount_cents: int|null}
      */
     protected function firstCharge(Subscription $subscription, ?array $quote): array
     {
+        $coupon = (int) ($quote['coupon']['discount_cents'] ?? 0);
+        $couponColumns = [
+            'coupon_id' => $coupon > 0 ? (int) $quote['coupon']['id'] : null,
+            'coupon_discount_cents' => $coupon > 0 ? $coupon : null,
+        ];
+
         if (($quote['type'] ?? null) !== PlanChange::UPGRADE) {
-            return ['amount_cents' => $subscription->cycleTotalCents(), 'proration_credit_cents' => null];
+            return [
+                'amount_cents' => max(0, $subscription->cycleTotalCents() - $coupon),
+                'proration_credit_cents' => null,
+                ...$couponColumns,
+            ];
         }
 
         $discount = (int) ($quote['discount_cents'] ?? 0);
 
         return [
-            'amount_cents' => max(0, $subscription->cycleTotalCents() - $discount),
+            'amount_cents' => max(0, $subscription->cycleTotalCents() - $coupon - $discount),
             'proration_credit_cents' => $discount > 0 ? $discount : null,
+            ...$couponColumns,
         ];
     }
 

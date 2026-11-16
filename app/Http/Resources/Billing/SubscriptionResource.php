@@ -7,6 +7,7 @@ use App\Models\Connection;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Billing\BillingService;
+use App\Services\Billing\Coupons;
 use App\Services\Billing\PlanChange;
 use App\Services\Billing\SubscriptionGate;
 use App\Services\Gallery\GalleryStorage;
@@ -62,6 +63,9 @@ class SubscriptionResource extends JsonResource
             'next_renewal_cents' => $this->current_period_end
                 ? PlanChange::termsFor($this->resource, $this->current_period_end)['price_cents']
                 : null,
+            // The coupon it was sold with, while it still discounts something:
+            // `cycles_left` is the paid-for cycles still to come (null = no end).
+            'coupon' => $this->couponState(),
             // Snapshotted with the price when the workspace subscribed. Sent
             // because the dashboard used to fall back to the *plan's* currency,
             // which is the platform's home one — so a country whose plan was
@@ -161,5 +165,24 @@ class SubscriptionResource extends JsonResource
             'gallery_bytes' => $tenant ? app(GalleryStorage::class)->usedBytes($tenant) : 0,
             'gallery_limit_bytes' => $tenant ? app(GalleryStorage::class)->limitBytes($tenant) : 0,
         ];
+    }
+
+    /** @return array<string, mixed>|null */
+    protected function couponState(): ?array
+    {
+        $terms = $this->coupon_terms;
+
+        if (! is_array($terms) || empty($terms['coupon_id'])) {
+            return null;
+        }
+
+        $coupons = app(Coupons::class);
+        $left = $coupons->cyclesLeft($this->resource);
+
+        if ($left === 0) {
+            return null;
+        }
+
+        return [...$coupons->describeTerms($terms), 'cycles_left' => $left];
     }
 }

@@ -431,6 +431,8 @@ class CreditService
             ],
         );
 
+        $this->creditTopupBonus($invoice);
+
         if ($transaction !== null) {
             // A workspace that has just paid is not low on credit any more, and
             // leaving the stamp set would silence the next warning.
@@ -438,6 +440,37 @@ class CreditService
         }
 
         return $transaction;
+    }
+
+    /**
+     * The coupon bonus of a paid top-up, as its own row beside the top-up one.
+     *
+     * Keyed by its own reference (the top-up row already holds the invoice's
+     * unique `invoice_id`), which is what makes a second notification for the
+     * same payment a no-op here too.
+     */
+    protected function creditTopupBonus(Invoice $invoice): ?CreditTransaction
+    {
+        $bonus = (int) ($invoice->coupon_bonus_cents ?? 0);
+
+        if ($bonus <= 0 || $invoice->tenant === null) {
+            return null;
+        }
+
+        $code = $invoice->coupon?->code;
+
+        return $this->record(
+            $invoice->tenant,
+            CreditTransactionType::TopupBonus,
+            $bonus,
+            [
+                'reference' => "topup-bonus:{$invoice->id}",
+                'description' => $code
+                    ? "Bônus do cupom {$code} — fatura #{$invoice->id}"
+                    : "Bônus de cupom — fatura #{$invoice->id}",
+                'meta' => ['invoice_id' => $invoice->id, 'coupon_id' => $invoice->coupon_id],
+            ],
+        );
     }
 
     /**
@@ -463,13 +496,42 @@ class CreditService
             return null;
         }
 
-        return $this->record(
+        $refund = $this->record(
             $tenant,
             CreditTransactionType::Refund,
             -(int) $invoice->amount_cents,
             [
                 'description' => "Estorno da recarga — fatura #{$invoice->id}",
                 'meta' => ['invoice_id' => $invoice->id],
+            ],
+        );
+
+        // The bonus came with the money; it leaves with it.
+        $this->reverseTopupBonus($invoice);
+
+        return $refund;
+    }
+
+    /**
+     * Take back the coupon bonus of a refunded top-up — only when it was
+     * actually credited, and once (its own reference).
+     */
+    protected function reverseTopupBonus(Invoice $invoice): ?CreditTransaction
+    {
+        $bonus = CreditTransaction::where('reference', "topup-bonus:{$invoice->id}")->first();
+
+        if ($bonus === null || $invoice->tenant === null) {
+            return null;
+        }
+
+        return $this->record(
+            $invoice->tenant,
+            CreditTransactionType::Refund,
+            -(int) $bonus->amount_cents,
+            [
+                'reference' => "topup-bonus-refund:{$invoice->id}",
+                'description' => "Estorno do bônus de cupom — fatura #{$invoice->id}",
+                'meta' => ['invoice_id' => $invoice->id, 'coupon_id' => $invoice->coupon_id],
             ],
         );
     }

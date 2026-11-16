@@ -7,6 +7,8 @@ use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\InvoicePurpose;
 use App\Enums\Billing\InvoiceStatus;
 use App\Enums\Billing\PaymentMethod;
+use App\Exceptions\Billing\CouponException;
+use App\Models\Coupon;
 use App\Models\Invoice;
 use App\Models\Plan;
 use App\Models\Subscription;
@@ -46,6 +48,13 @@ use Illuminate\Validation\ValidationException;
  * That is what makes a renewal charged three days early (billing:charge-renewals
  * runs ahead of the period end) count as the prepaid cycle it is, and what makes
  * a previous upgrade's discounted invoice still worth the full plan.
+ *
+ * A **coupon** comes off before the upgrade credit: list price → coupon →
+ * credit → the one-day floor. It is only taken where something is charged now
+ * (new, upgrade); an upgrade carries the replaced plan's coupon over when it
+ * still has cycles and the new plan is one it is valid for (Coupons).
+ * The upgrade/downgrade decision itself reads list prices, never discounted
+ * ones — a coupon does not turn a bigger plan into a downgrade.
  */
 class PlanChange
 {
@@ -57,7 +66,10 @@ class PlanChange
 
     public const CURRENT = 'current';
 
-    public function __construct(protected BillingGateways $gateways) {}
+    public function __construct(
+        protected BillingGateways $gateways,
+        protected Coupons $coupons,
+    ) {}
 
     /**
      * `$addons` is the capacity bought on top of the new plan, in units by
@@ -65,10 +77,14 @@ class PlanChange
      * carriedUnits()), so a client that does not know about extras never
      * drops them by changing plan.
      *
+     * `$couponCode` is a coupon typed or picked at checkout; refused with a
+     * CouponException. Without one, an upgrade still carries the replaced
+     * plan's coupon over when it can.
+     *
      * @param  array<string, mixed>|null  $addons
      * @return array<string, mixed>
      */
-    public function quote(Tenant $tenant, Plan $plan, ?PaymentMethod $method = null, ?CarbonInterface $at = null, bool $autoRenew = true, ?array $addons = null): array
+    public function quote(Tenant $tenant, Plan $plan, ?PaymentMethod $method = null, ?CarbonInterface $at = null, bool $autoRenew = true, ?array $addons = null, ?string $couponCode = null): array
     {
         $at = $at ? Carbon::instance($at) : now();
         $price = $plan->priceForMarket($tenant->market_code);
@@ -90,6 +106,10 @@ class PlanChange
         $totalCents = $priceCents + $addonsCents;
 
         $type = $this->classify($current, $plan, $totalCents, $currency, $at);
+        $coupon = $this->couponFor($tenant, $plan, $current, $type, $couponCode, $priceCents, $addonsCents, $currency);
+        // What one cycle costs with the coupon on it — the amount the charge
+        // now (and the upgrade credit's floor) is worked out from.
+        $netCents = $totalCents - (int) ($coupon['discount_cents'] ?? 0);
 
         $base = [
             'type' => $type,
@@ -124,10 +144,11 @@ class PlanChange
             'next_renewal_cents' => $totalCents,
             'blocked_reason' => null,
             'scheduled' => false,
+            'coupon' => $coupon,
         ];
 
-        return match ($type) {
-            self::UPGRADE => $this->upgradeTerms($base, $current, $plan, $totalCents, $method, $at, $autoRenew),
+        $quote = match ($type) {
+            self::UPGRADE => $this->upgradeTerms($base, $current, $plan, $netCents, $method, $at, $autoRenew),
             self::DOWNGRADE => $this->downgradeTerms($base, $current, $plan),
             self::CURRENT => array_merge($base, [
                 'effective_at' => $current->current_period_end?->toIso8601String(),
@@ -135,10 +156,73 @@ class PlanChange
                 'next_renewal_cents' => $current->cycleTotalCents(),
             ]),
             default => array_merge($base, [
-                'charge_now_cents' => $totalCents,
+                'charge_now_cents' => $netCents,
                 'next_renewal_at' => $plan->billing_cycle->advance($at)->toIso8601String(),
             ]),
         };
+
+        // The renewal after this charge keeps the coupon only while it has
+        // cycles left.
+        if ($coupon !== null && ($coupon['cycles_left_after'] === null || $coupon['cycles_left_after'] > 0)) {
+            $quote['next_renewal_cents'] = $netCents;
+        }
+
+        return $quote;
+    }
+
+    /**
+     * The coupon on a charge made now: the one typed, or — on an upgrade with
+     * nothing typed — the replaced plan's, carried over. Typing the code the
+     * plan already carries keeps it rather than reading as a second use.
+     *
+     * @return array<string, mixed>|null
+     */
+    protected function couponFor(
+        Tenant $tenant,
+        Plan $plan,
+        ?Subscription $current,
+        string $type,
+        ?string $couponCode,
+        int $planCents,
+        int $addonsCents,
+        string $currency,
+    ): ?array {
+        $typed = Coupon::normalizeCode($couponCode);
+
+        if ($type === self::DOWNGRADE || $type === self::CURRENT) {
+            if ($typed !== '') {
+                throw new CouponException('not_charged_now');
+            }
+
+            return null;
+        }
+
+        $carried = $type === self::UPGRADE ? $this->coupons->carriedTerms($current, $plan) : null;
+
+        if ($typed !== '' && ($carried === null || $carried['code'] !== $typed)) {
+            $terms = $this->coupons->resolveForPlan($tenant, $plan, $typed)->termsSnapshot();
+            $carried = null;
+        } else {
+            $terms = $carried;
+        }
+
+        if ($terms === null) {
+            return null;
+        }
+
+        $cycles = $terms['cycles'] ?? null;
+
+        return [
+            ...$this->coupons->describeTerms($terms),
+            'discount_cents' => $this->coupons->planDiscount($terms, $planCents, $addonsCents, $currency),
+            'carried' => $carried !== null,
+            // Discounted cycles after the one charged now; null = no end.
+            'cycles_left_after' => $cycles === null
+                ? null
+                : max(0, (int) $cycles - (int) ($terms['cycles_used_before'] ?? 0) - 1),
+            // What the subscription stores — see createPendingSubscription().
+            'terms' => $terms,
+        ];
     }
 
     /**
@@ -260,6 +344,8 @@ class PlanChange
             $left = max(0, $from->diffInSeconds($invoice->period_end, false));
             // The period's whole value: an upgrade's first invoice carries a
             // discount, but what it bought is the full plan for that period.
+            // ⚠️ A coupon is NOT added back: the credit returns money that was
+            // paid, and a coupon's discount was money that never was.
             $value = (int) $invoice->amount_cents + (int) ($invoice->proration_credit_cents ?? 0);
 
             $cents += $value * min(1, $left / $length);
@@ -281,10 +367,12 @@ class PlanChange
      * the cycle after a downgrade must already be at the lower price, while
      * the plan itself only changes when that cycle actually starts.
      *
-     * `price_cents` is the whole cycle — the plan and its extras — so every
-     * renewal path charges both in one payment without knowing extras exist.
+     * `price_cents` is the whole cycle — the plan and its extras, minus the
+     * subscription's coupon — so every renewal path charges it in one payment
+     * without knowing extras or coupons exist. `coupon_id` and
+     * `coupon_discount_cents` go on the invoice beside it.
      *
-     * @return array{price_cents: int, plan_cents: int, addons_cents: int, addons: array<string, int>, cycle: BillingCycle, plan: ?Plan, scheduled: bool}
+     * @return array{price_cents: int, gross_cents: int, plan_cents: int, addons_cents: int, addons: array<string, int>, cycle: BillingCycle, plan: ?Plan, scheduled: bool, coupon_id: ?int, coupon_discount_cents: ?int}
      */
     public static function termsFor(Subscription $subscription, CarbonInterface $periodStart): array
     {
@@ -302,17 +390,28 @@ class PlanChange
             ? $subscription->scheduled_addon_unit_cents
             : $subscription->addon_unit_cents;
         $addonsCents = $subscription->addonsCents($units, $prices ?? []);
+        $cycle = $scheduled
+            ? ($subscription->scheduled_billing_cycle ?? $subscription->billing_cycle)
+            : $subscription->billing_cycle;
+        $plan = $scheduled ? $subscription->scheduledPlan : $subscription->plan;
+
+        // The coupon the subscription was sold with, while it has cycles left
+        // for this one and the period's plan is one it is valid for.
+        $coupon = app(Coupons::class)->forPeriod($subscription, $start, $plan, $cycle, $planCents, $addonsCents);
+        $discount = (int) ($coupon['discount_cents'] ?? 0);
 
         return [
-            'price_cents' => $planCents + $addonsCents,
+            // What the cycle is charged: the plan and its extras, minus the coupon.
+            'price_cents' => $planCents + $addonsCents - $discount,
+            'gross_cents' => $planCents + $addonsCents,
             'plan_cents' => $planCents,
             'addons_cents' => $addonsCents,
             'addons' => $units,
-            'cycle' => $scheduled
-                ? ($subscription->scheduled_billing_cycle ?? $subscription->billing_cycle)
-                : $subscription->billing_cycle,
-            'plan' => $scheduled ? $subscription->scheduledPlan : $subscription->plan,
+            'cycle' => $cycle,
+            'plan' => $plan,
             'scheduled' => $scheduled,
+            'coupon_id' => $coupon['coupon_id'] ?? null,
+            'coupon_discount_cents' => $discount > 0 ? $discount : null,
         ];
     }
 

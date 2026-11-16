@@ -132,6 +132,9 @@ class CreditController extends Controller
             'discard_card_on_failure' => ['sometimes', 'boolean'],
             // A new card the customer chose not to keep: removed after the charge.
             'keep_card' => ['sometimes', 'boolean'],
+            // A top-up coupon: the amount paid stays the amount chosen, and
+            // its bonus is credited beside it once paid.
+            'coupon_code' => ['nullable', 'string', 'max:40'],
         ]);
 
         $tenant = $request->user()->tenant;
@@ -144,11 +147,13 @@ class CreditController extends Controller
                 $validated['card_token'],
                 (bool) ($validated['discard_card_on_failure'] ?? false),
                 (bool) ($validated['keep_card'] ?? true),
+                $validated['coupon_code'] ?? null,
             )
             : $this->billing->createCreditTopupInvoice(
                 $tenant,
                 (int) $validated['amount_cents'],
                 $validated['payer_email'] ?? $request->user()->email,
+                $validated['coupon_code'] ?? null,
             );
 
         return response()->json([

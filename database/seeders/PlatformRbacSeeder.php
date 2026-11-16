@@ -77,6 +77,9 @@ class PlatformRbacSeeder extends Seeder
         // on. A market's currency is what its workspaces are billed in for
         // good, so this is not folded into bo.settings.manage.
         'bo.markets.manage',
+        // Coupons: a percentage off plan charges or a bonus on top-ups. Money
+        // given away on every charge it touches, so not part of bo.plans.manage.
+        'bo.coupons.manage',
     ];
 
     public function run(): void

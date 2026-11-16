@@ -18,6 +18,11 @@ class InvoiceResource extends JsonResource
             'amount_cents' => $this->amount_cents,
             // The unused value of a replaced plan, already taken off amount_cents.
             'proration_credit_cents' => $this->proration_credit_cents,
+            // A coupon on the charge: taken off amount_cents on a plan invoice,
+            // credited on top of it on a top-up.
+            'coupon_code' => $this->coupon_id ? $this->coupon?->code : null,
+            'coupon_discount_cents' => $this->coupon_discount_cents,
+            'coupon_bonus_cents' => $this->coupon_bonus_cents,
             'currency' => $this->currency,
             'period_start' => $this->period_start,
             'period_end' => $this->period_end,

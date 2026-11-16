@@ -50,6 +50,7 @@ class SubscriptionAddons
     public function __construct(
         protected BillingService $billing,
         protected SubscriptionGate $gate,
+        protected Coupons $coupons,
     ) {}
 
     /**
@@ -172,9 +173,18 @@ class SubscriptionAddons
         }
 
         $renewal = PlanChange::termsFor($subscription, $periodEnd);
+        $nextAddons = $subscription->addonsCents($targets, $prices);
+        $nextCoupon = $this->coupons->forPeriod($subscription, $periodEnd, $renewal['plan'], $renewal['cycle'], (int) $renewal['plan_cents'], $nextAddons);
+
+        // A coupon that includes the extras and discounts the period being
+        // topped up discounts the units bought into it by the same percentage.
+        $charge = (int) ceil($charge);
+        $coupon = $this->couponOnCurrentPeriod($subscription);
+        $couponCents = $coupon ? $this->coupons->percentOf($charge, (int) $coupon['percent_off'], $subscription->currency) : 0;
 
         return [
-            'charge_now_cents' => (int) ceil($charge),
+            'charge_now_cents' => $charge - $couponCents,
+            'coupon' => $couponCents > 0 ? [...$coupon, 'discount_cents' => $couponCents] : null,
             'covered_until' => $periodEnd->toIso8601String(),
             'increases' => $increases,
             'decreases' => $decreases,
@@ -182,7 +192,7 @@ class SubscriptionAddons
             'reductions_from' => $periodEnd->toIso8601String(),
             'targets' => $targets,
             'next_renewal_at' => $periodEnd->toIso8601String(),
-            'next_renewal_cents' => (int) $renewal['plan_cents'] + $subscription->addonsCents($targets, $prices),
+            'next_renewal_cents' => (int) $renewal['plan_cents'] + $nextAddons - (int) ($nextCoupon['discount_cents'] ?? 0),
             'currency' => $subscription->currency,
             'payment_options' => $this->billing->addonPaymentOptions($subscription),
         ];
@@ -218,8 +228,7 @@ class SubscriptionAddons
             // amount would charge for units the customer took away.
             $this->billing->syncRecurringAmount(
                 $subscription,
-                (int) PlanChange::termsFor($subscription, $subscription->current_period_end)['plan_cents']
-                    + $subscription->addonsCents($schedule ?? $held),
+                $this->renewalAmount($subscription, $subscription->addonsCents($schedule ?? $held)),
             );
 
             DB::transaction(function () use ($subscription, $schedule) {
@@ -240,10 +249,11 @@ class SubscriptionAddons
                 $subscription->fresh(),
                 $quote['charge_now_cents'],
                 Carbon::parse($quote['covered_until']),
-                [
+                array_filter([
                     'addons' => collect($quote['increases'])->mapWithKeys(fn ($line) => [$line['key'] => $line['to']])->all(),
                     'lines' => $quote['increases'],
-                ],
+                    'coupon' => $quote['coupon'],
+                ]),
                 (string) $payment['method'],
                 $payment,
             );
@@ -517,5 +527,46 @@ class SubscriptionAddons
             // that gigabyte to stay.
             Addon::GalleryStorage => (int) ceil(app(GalleryStorage::class)->usedBytes($tenant) / GalleryStorage::BYTES_PER_GB),
         };
+    }
+
+    /**
+     * The coupon of the period running now, when it includes the extras: the
+     * paid plan charge covering this moment carried it, so units bought into
+     * that period are discounted the same way. Null otherwise.
+     *
+     * @return array<string, mixed>|null
+     */
+    protected function couponOnCurrentPeriod(Subscription $subscription): ?array
+    {
+        $terms = $subscription->coupon_terms;
+
+        if (! is_array($terms) || empty($terms['coupon_id']) || ! ($terms['applies_to_addons'] ?? false)) {
+            return null;
+        }
+
+        $discounted = $subscription->invoices()
+            ->where('status', \App\Enums\Billing\InvoiceStatus::Paid->value)
+            ->where('coupon_id', $terms['coupon_id'])
+            ->where('period_start', '<=', now())
+            ->where('period_end', '>', now())
+            ->exists();
+
+        return $discounted ? $this->coupons->describeTerms($terms) : null;
+    }
+
+    /** What the next renewal charges with this many cents of extras, coupon included. */
+    protected function renewalAmount(Subscription $subscription, int $addonsCents): int
+    {
+        $renewal = PlanChange::termsFor($subscription, $subscription->current_period_end);
+        $coupon = $this->coupons->forPeriod(
+            $subscription,
+            $subscription->current_period_end,
+            $renewal['plan'],
+            $renewal['cycle'],
+            (int) $renewal['plan_cents'],
+            $addonsCents,
+        );
+
+        return (int) $renewal['plan_cents'] + $addonsCents - (int) ($coupon['discount_cents'] ?? 0);
     }
 }
