@@ -233,6 +233,10 @@ class UserController extends Controller
             // silently ignored by the frontend fallback.
             'theme' => ['sometimes', 'string', Rule::in(['classic', 'studio'])],
             'appearance' => ['sometimes', 'string', Rule::in(['light', 'dark', 'system'])],
+            // The primary colour (nuvemchat-fe-2 src/lib/accents.ts — keep the
+            // two lists in step). Only presets: each is checked to carry white
+            // text on its primary button, which a free colour could not promise.
+            'accent' => ['sometimes', 'string', Rule::in(['blue', 'indigo', 'violet', 'pink', 'orange', 'green', 'teal'])],
             // The same list markets choose their default from, so a person can
             // never pick a language a market could not have been launched in.
             // Nullable is a real value: it means "follow my workspace's country

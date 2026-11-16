@@ -57,3 +57,25 @@ it('exposes the preferences on the user payload the app boots from', function ()
         ->assertOk()
         ->assertJsonPath('data.ui_preferences.theme', 'studio');
 });
+
+it('stores the chosen primary colour beside the theme', function () {
+    $user = uiPrefsUser();
+    $user->forceFill(['ui_preferences' => ['theme' => 'classic', 'appearance' => 'light']])->save();
+
+    $this->actingAs($user)
+        ->putJson('/api/user/preferences', ['accent' => 'violet'])
+        ->assertOk()
+        ->assertJsonPath('ui_preferences.accent', 'violet');
+
+    expect($user->fresh()->ui_preferences)->toBe(['theme' => 'classic', 'appearance' => 'light', 'accent' => 'violet']);
+});
+
+it('rejects a primary colour that is not one of the presets', function () {
+    $user = uiPrefsUser();
+
+    $this->actingAs($user)
+        ->putJson('/api/user/preferences', ['accent' => '#ff00ff'])
+        ->assertStatus(422);
+
+    expect($user->fresh()->ui_preferences)->toBeNull();
+});
