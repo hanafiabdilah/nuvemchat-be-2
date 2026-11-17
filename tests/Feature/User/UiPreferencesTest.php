@@ -79,3 +79,31 @@ it('rejects a primary colour that is not one of the presets', function () {
 
     expect($user->fresh()->ui_preferences)->toBeNull();
 });
+
+it('stores the chat room theme beside the other choices', function () {
+    $user = uiPrefsUser();
+    $user->forceFill(['ui_preferences' => ['theme' => 'classic', 'appearance' => 'light', 'accent' => 'violet']])->save();
+
+    $this->actingAs($user)
+        ->putJson('/api/user/preferences', ['room' => 'wallpaper'])
+        ->assertOk()
+        ->assertJsonPath('ui_preferences.room', 'wallpaper');
+
+    expect($user->fresh()->ui_preferences)
+        ->toBe(['theme' => 'classic', 'appearance' => 'light', 'accent' => 'violet', 'room' => 'wallpaper']);
+
+    $this->actingAs($user)
+        ->getJson('/api/user')
+        ->assertOk()
+        ->assertJsonPath('data.ui_preferences.room', 'wallpaper');
+});
+
+it('rejects a chat room theme that does not exist', function () {
+    $user = uiPrefsUser();
+
+    $this->actingAs($user)
+        ->putJson('/api/user/preferences', ['room' => 'neon'])
+        ->assertStatus(422);
+
+    expect($user->fresh()->ui_preferences)->toBeNull();
+});

@@ -242,6 +242,9 @@ class UserController extends Controller
             // two lists in step). Only presets: each is checked to carry white
             // text on its primary button, which a free colour could not promise.
             'accent' => ['sometimes', 'string', Rule::in(['blue', 'indigo', 'violet', 'pink', 'orange', 'green', 'teal'])],
+            // The chat room theme: how a conversation is drawn (nuvemchat-fe-2
+            // src/lib/roomThemes.ts — keep the two lists in step).
+            'room' => ['sometimes', 'string', Rule::in(['plain', 'minimal', 'pingly', 'bubbles', 'outline', 'list', 'cards', 'solid', 'wallpaper', 'vivid'])],
             // The same list markets choose their default from, so a person can
             // never pick a language a market could not have been launched in.
             // Nullable is a real value: it means "follow my workspace's country
