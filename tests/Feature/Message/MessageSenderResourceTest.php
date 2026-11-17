@@ -130,3 +130,60 @@ test('a private incoming message still reports no sender at all', function () {
     // empty 'contact' shape.
     expect(MessageResource::make($message->fresh())->toArray(request())['sender'])->toBeNull();
 });
+
+/**
+ * Our own messages carry the face of the agent who sent them: the thread marks
+ * each one with an avatar instead of a name. Null, never a missing key, when
+ * the agent has no photo — the dashboard then draws their initials.
+ */
+function senderResourceAgentMessage(Connection $connection, ?string $avatarPath): Message
+{
+    $agent = User::factory()->create(['tenant_id' => $connection->tenant_id, 'name' => 'Juliana Pereira']);
+    $agent->forceFill(['avatar_path' => $avatarPath])->save();
+
+    $contact = Contact::create([
+        'tenant_id' => $connection->tenant_id,
+        'external_id' => '9003',
+        'channel' => $connection->channel,
+        'name' => 'Carla',
+    ]);
+
+    $conversation = Conversation::create([
+        'contact_id' => $contact->id,
+        'connection_id' => $connection->id,
+        'external_id' => '9003',
+        'status' => ConversationStatus::Active,
+        'user_id' => $agent->id,
+    ]);
+
+    return $conversation->messages()->create([
+        'external_id' => 'm-3',
+        'sender_type' => SenderType::Outgoing,
+        'message_type' => MessageType::Text,
+        'body' => 'Bom dia!',
+        'sent_at' => now(),
+        'sent_by_user_id' => $agent->id,
+    ]);
+}
+
+test('a message an agent sent carries their avatar url', function () {
+    Storage::fake('local');
+    $message = senderResourceAgentMessage(senderResourceConnection(), 'avatars/7_face.png');
+
+    $sender = MessageResource::make($message->fresh())->toArray(request())['sender'];
+
+    expect($sender['source'])->toBe('human')
+        ->and($sender['user']['name'])->toBe('Juliana Pereira')
+        ->and($sender['user']['avatar'])->toBeString()
+        ->and($sender['user']['avatar'])->toContain('avatars/7_face.png');
+});
+
+test('an agent without a photo reports a null avatar rather than omitting the key', function () {
+    Storage::fake('local');
+    $message = senderResourceAgentMessage(senderResourceConnection(), null);
+
+    $user = MessageResource::make($message->fresh())->toArray(request())['sender']['user'];
+
+    expect($user)->toHaveKey('avatar')
+        ->and($user['avatar'])->toBeNull();
+});

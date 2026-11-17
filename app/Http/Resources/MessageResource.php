@@ -167,6 +167,11 @@ class MessageResource extends JsonResource
                 'user' => $user ? [
                     'id' => $user->id,
                     'name' => $user->name,
+                    // The thread marks each of our messages with the face of
+                    // whoever sent it; null falls back to their initials. The
+                    // link's expiry is rounded to the month (User::avatar_url),
+                    // so the same face is the same URL across the thread.
+                    'avatar' => $user->avatar_url,
                 ] : null,
             ];
         }
