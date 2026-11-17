@@ -76,6 +76,19 @@ enum NotificationType: string
     /** Rented gallery storage ended for want of balance. Files are untouched. */
     case GalleryStorageCancelledNoCredit = 'gallery_storage_cancelled_no_credit';
 
+    /**
+     * The workspace storage crossed 80% or 95% of what it has.
+     *
+     * Sent once per threshold on the way up (storage:check-alerts), because
+     * every file the workspace stores counts since Nov 2026 and a full storage
+     * refuses uploads — including the flow, campaign and API uploads that keep
+     * its automation sending. Said before it happens, not after.
+     */
+    case StorageAlmostFull = 'storage_almost_full';
+
+    /** The workspace storage is full: new uploads are refused until it has room. */
+    case StorageFull = 'storage_full';
+
     /*
      * Operational alerts a person opts into for their own WhatsApp
      * (Settings → Notifications). Sent by App\Services\Notification\WhatsappAlerts.
@@ -126,6 +139,8 @@ enum NotificationType: string
             self::VirtualNumberRefunded => 'Virtual number not delivered (credit returned)',
             self::GalleryStorageRenewalNoCredit => 'Gallery storage renewal blocked by balance',
             self::GalleryStorageCancelledNoCredit => 'Gallery storage ended (no balance)',
+            self::StorageAlmostFull => 'Storage almost full (80% / 95%)',
+            self::StorageFull => 'Storage full (uploads refused)',
             self::AlertConnectionDown => 'Alert: connection disconnected',
             self::AlertFlowFailed => 'Alert: flow stopped (messages not sent)',
             self::AlertReceiptApproved => 'Alert: payment receipt approved',
@@ -216,6 +231,8 @@ enum NotificationType: string
             self::VirtualNumberRefunded => ['name', 'amount'],
             self::GalleryStorageRenewalNoCredit => ['name', 'gb', 'due_date', 'amount'],
             self::GalleryStorageCancelledNoCredit => ['name', 'gb'],
+            self::StorageAlmostFull => ['name', 'percent', 'used', 'limit'],
+            self::StorageFull => ['name', 'used', 'limit'],
             self::AlertConnectionDown => ['name', 'connection', 'reason'],
             self::AlertFlowFailed => ['name', 'count', 'flow', 'connection', 'reason'],
             self::AlertReceiptApproved => ['name', 'contact', 'amount', 'connection'],

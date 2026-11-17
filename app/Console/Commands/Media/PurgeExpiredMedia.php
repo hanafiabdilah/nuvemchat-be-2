@@ -4,6 +4,8 @@ namespace App\Console\Commands\Media;
 
 use App\Enums\Conversation\Type;
 use App\Enums\Message\AttachmentStatus;
+use App\Models\AiMediaGeneration;
+use App\Models\GalleryAsset;
 use App\Models\Message;
 use App\Services\Gallery\GalleryLibrary;
 use App\Services\Media\MediaRetention;
@@ -91,12 +93,17 @@ class PurgeExpiredMedia extends Command
         $files += $orphans['files'];
         $bytes += $orphans['bytes'];
 
+        $ai = $this->purgeAiMedia($limit, $dryRun);
+        $files += $ai['files'];
+        $bytes += $ai['bytes'];
+
         $summary = sprintf(
-            '%s %d file(s) from %d message(s) plus %d orphan upload(s), %s.',
+            '%s %d file(s) from %d message(s) plus %d orphan upload(s) and %d AI file(s), %s.',
             $dryRun ? 'Would free' : 'Freed',
-            $files - $orphans['files'],
+            $files - $orphans['files'] - $ai['files'],
             $messages,
             $orphans['files'],
+            $ai['files'],
             $this->humanBytes($bytes),
         );
 
@@ -215,6 +222,75 @@ class PurgeExpiredMedia extends Command
         ])->save());
 
         return true;
+    }
+
+    /**
+     * Files the AI media node made, past `media.retention.ai_days`.
+     *
+     * They count against the workspace's storage, and are usually consumed
+     * within minutes — cut into stickers, laid out in a PDF, sent once — so
+     * keeping them forever would be paying for the scaffolding of a delivery
+     * long after it was delivered.
+     *
+     * Its gallery row goes with it (so the meter comes down), and
+     * GalleryLibrary::forgetGenerated() clears the generation's path and marks
+     * every message that sent it expired — unlike the chat purge above, with
+     * `updated_at` moved, because those bubbles hold an absolute URL with no
+     * expiry a client could read. A few hundred a day per busy workspace.
+     *
+     * @return array{files: int, bytes: int}
+     */
+    private function purgeAiMedia(int $limit, bool $dryRun): array
+    {
+        $days = MediaRetention::aiDays();
+
+        if ($days === null) {
+            $this->line('  ai media: retention disabled, skipped.');
+
+            return ['files' => 0, 'bytes' => 0];
+        }
+
+        $generations = AiMediaGeneration::query()
+            ->whereNotNull('path')
+            ->where('created_at', '<', now()->subDays($days))
+            ->orderBy('id')
+            ->limit($limit)
+            ->get(['id', 'tenant_id', 'conversation_id', 'path', 'size_bytes']);
+
+        $disk = MediaStorage::published();
+        $files = 0;
+        $bytes = 0;
+
+        foreach ($generations as $generation) {
+            $files++;
+            $bytes += (int) $generation->size_bytes;
+
+            if ($dryRun) {
+                continue;
+            }
+
+            $path = $generation->path;
+
+            try {
+                $disk->delete($path);
+            } catch (\Throwable $e) {
+                // The rows still go: a file that will not delete today is a
+                // cleanup problem, and leaving the rows would keep charging the
+                // workspace for it.
+                Log::warning('media:purge could not delete an AI media file', ['path' => $path, 'error' => $e->getMessage()]);
+            }
+
+            GalleryAsset::where('tenant_id', $generation->tenant_id)->where('path', $path)->delete();
+            app(GalleryLibrary::class)->forgetGenerated($path);
+        }
+
+        $this->line(sprintf('  ai media: %d file(s) older than %d day(s), %s', $files, $days, $this->humanBytes($bytes)));
+
+        if ($generations->count() === $limit) {
+            $this->line("  ai media: hit the {$limit}-per-pass limit — more is still waiting, the next run continues.");
+        }
+
+        return ['files' => $files, 'bytes' => $bytes];
     }
 
     /**

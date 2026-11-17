@@ -36,11 +36,14 @@ class GalleryAssetResource extends JsonResource
             // builds the path itself.
             'folder_id' => $this->folder_id,
             'counts_toward_quota' => $this->origin->countsTowardQuota(),
-            // When a temporary (`message`) file disappears, so the tile can say
-            // so and offer "Salvar na galeria" before it happens.
-            'expires_at' => $this->origin === AssetOrigin::Message && $this->message !== null
-                ? MediaRetention::deadlineFor($this->message)?->toISOString()
-                : null,
+            // When a temporary file disappears (`message`: the chat retention;
+            // `ai`: the AI media retention), so the tile can say so and offer
+            // "Salvar na galeria" before it happens.
+            'expires_at' => match (true) {
+                $this->origin === AssetOrigin::Message && $this->message !== null => MediaRetention::deadlineFor($this->message)?->toISOString(),
+                $this->origin === AssetOrigin::Ai => MediaRetention::aiDeadline($this->created_at)?->toISOString(),
+                default => null,
+            },
             'filename' => $this->public_filename,
             // Which send endpoint this file goes out through, decided by the
             // same enum the backend validates against — so the composer never

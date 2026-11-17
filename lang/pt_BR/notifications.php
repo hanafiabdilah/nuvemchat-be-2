@@ -61,6 +61,8 @@ return [
     'gallery_storage_renewal_no_credit' => 'Olá {{name}}, seu armazenamento extra da galeria ({{gb}} GB) renova em {{due_date}} e seu saldo não cobre a renovação ({{amount}}). Recarregue antes do vencimento. Seus arquivos não serão apagados, mas novos envios para a galeria ficam bloqueados enquanto o espaço estiver acima do limite.',
 
     'gallery_storage_cancelled_no_credit' => 'Olá {{name}}, seu armazenamento extra da galeria ({{gb}} GB) foi encerrado por falta de saldo. Nenhum arquivo foi apagado — eles continuam disponíveis para envio. Para voltar a subir arquivos novos, recarregue e contrate o espaço novamente.',
+    'storage_almost_full' => 'Olá {{name}}, o armazenamento do seu workspace está em {{percent}}% ({{used}} de {{limit}}). Quando encher, novos arquivos (fluxos, campanhas, produtos, anexos e envios pela API) serão recusados. Faça upgrade do plano ou adicione armazenamento, ou exclua arquivos que não usa mais na Galeria.',
+    'storage_full' => 'Olá {{name}}, o armazenamento do seu workspace está cheio ({{used}} de {{limit}}). Novos arquivos (fluxos, campanhas, produtos, anexos e envios pela API) estão sendo recusados. Faça upgrade do plano ou adicione armazenamento, ou exclua arquivos que não usa mais na Galeria.',
 
     'alert_connection_down' => '⚠️ {{name}}, a conexão *{{connection}}* foi desconectada: {{reason}}. Abra o Pingly → Conexões para conectar de novo.',
 

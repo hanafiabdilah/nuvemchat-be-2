@@ -33,6 +33,7 @@ use App\Services\Conversation\ConversationResolver;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Conversation\SystemMessage;
 use App\Services\Gallery\GalleryMediaResolver;
+use App\Services\Gallery\GalleryStorage;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\ComposerVideo;
@@ -40,6 +41,8 @@ use App\Services\Message\MessageService;
 use App\Services\Message\StagedVideoUploads;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -399,6 +402,8 @@ class ConversationController extends Controller
         if ($connection->status !== ConnectionStatus::Active) {
             return response()->json(['message' => 'Connection is not active'], 400);
         }
+
+        $this->refuseIfStorageFull($request);
 
         $recipient = strtolower(trim($validated['to']));
         $subject = trim((string) ($validated['subject'] ?? ''));
@@ -808,6 +813,8 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        $this->refuseIfStorageFull($request);
+
         $messageService = new MessageService;
 
         try {
@@ -867,6 +874,8 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        $this->refuseIfStorageFull($request);
+
         // A file picked from the library arrives as an id, not a URL: the
         // ownership check and the URL signing both belong on this side. See
         // GalleryMediaResolver.
@@ -924,6 +933,8 @@ class ConversationController extends Controller
                 'message' => 'Conversation is not active',
             ], 400);
         }
+
+        $this->refuseIfStorageFull($request);
 
         // A file picked from the library arrives as an id, not a URL: the
         // ownership check and the URL signing both belong on this side. See
@@ -1006,6 +1017,12 @@ class ConversationController extends Controller
             'chunk' => ['required', 'file', 'max:'.(intdiv(\App\Services\Media\ChunkedUpload::CHUNK_BYTES, 1024) + 64)],
         ]);
 
+        // Before the first byte, against the whole video: no point carrying
+        // 200 MB up to be told at the end that there was never room for it.
+        if ((int) $piece['index'] === 0) {
+            app(GalleryStorage::class)->assertCanUpload($request->user()->tenant, (int) $piece['size']);
+        }
+
         $result = app(ComposerVideo::class)->receivePiece($conversation, $request->user(), $piece, $request->file('chunk'));
 
         return response()->json(['data' => $result], $result['done'] ? 201 : 200);
@@ -1026,6 +1043,8 @@ class ConversationController extends Controller
                 'message' => 'Conversation is not active',
             ], 400);
         }
+
+        $this->refuseIfStorageFull($request);
 
         // Bigger than this channel takes: compressed and sent from the queue,
         // and the composer keeps a "being prepared" bubble until then. See
@@ -1108,6 +1127,8 @@ class ConversationController extends Controller
             ], 400);
         }
 
+        $this->refuseIfStorageFull($request);
+
         // A file picked from the library arrives as an id, not a URL: the
         // ownership check and the URL signing both belong on this side. See
         // GalleryMediaResolver.
@@ -1147,6 +1168,35 @@ class ConversationController extends Controller
             return response()->json([
                 'message' => 'Não foi possível enviar o documento. Tente novamente em instantes.',
             ], 500);
+        }
+    }
+
+    /**
+     * Refuse a send whose files do not fit in the workspace's storage.
+     *
+     * What an agent attaches is stored as message media and listed in the
+     * gallery, where it counts against the quota (Nov 2026) — so it is refused
+     * here, before the channel is called, with the same 422
+     * `storage_quota_exceeded` every other upload answers, and the dashboard
+     * turns that into the "upgrade the plan or add storage" dialog.
+     *
+     * Only uploaded files: a file picked from the gallery (`gallery_asset_id`)
+     * or a `media_url` adds nothing to what the workspace stores.
+     *
+     * @throws \App\Exceptions\Media\StorageQuotaExceededException
+     */
+    private function refuseIfStorageFull(Request $request): void
+    {
+        $bytes = 0;
+
+        foreach (Arr::flatten($request->allFiles()) as $file) {
+            if ($file instanceof UploadedFile) {
+                $bytes += (int) $file->getSize();
+            }
+        }
+
+        if ($bytes > 0) {
+            app(GalleryStorage::class)->assertCanUpload($request->user()->tenant, $bytes);
         }
     }
 

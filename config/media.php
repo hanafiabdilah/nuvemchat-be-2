@@ -61,6 +61,13 @@ return [
 
         'private_days' => (int) env('MEDIA_RETENTION_PRIVATE_DAYS', 90),
 
+        // Files the AI media node makes (`uploads/{tenant}/ai-media/…`). They
+        // count against the workspace's storage, and are usually consumed
+        // within minutes — turned into stickers, a PDF, or sent once — so they
+        // follow a retention like chat media instead of growing forever.
+        // 0 = keep them.
+        'ai_days' => (int) env('MEDIA_RETENTION_AI_DAYS', 30),
+
     ],
 
     /*

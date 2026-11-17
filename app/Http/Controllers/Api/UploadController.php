@@ -18,8 +18,9 @@ class UploadController extends Controller
 {
     /**
      * Media for flows, carousel cards, campaigns and products. Every file also
-     * appears in the workspace's gallery, labelled by `purpose` and free of the
-     * storage quota — see GalleryLibrary.
+     * appears in the workspace's gallery, labelled by `purpose`, and counts
+     * against the storage quota: a file that does not fit is refused with 422
+     * `storage_quota_exceeded` before anything is written (PublishedUpload).
      *
      * The returned URL is written
      * into those and sent again for months, so it lives on the published disk,

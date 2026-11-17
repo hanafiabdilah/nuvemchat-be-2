@@ -52,6 +52,8 @@ return [
     'gallery_storage_renewal_no_credit' => 'Hi {{name}}, your extra gallery storage ({{gb}} GB) renews on {{due_date}} and your balance will not cover the renewal ({{amount}}). Top up before the due date. Your files will not be deleted, but new uploads to the gallery are blocked while you are over the limit.',
 
     'gallery_storage_cancelled_no_credit' => 'Hi {{name}}, your extra gallery storage ({{gb}} GB) ended for want of balance. No file was deleted — they are all still available to send. To upload new files again, top up and rent the space once more.',
+    'storage_almost_full' => 'Hi {{name}}, your workspace storage is at {{percent}}% ({{used}} of {{limit}}). Once it is full, new files (flows, campaigns, products, attachments and API uploads) will be refused. Upgrade your plan or add storage, or delete files you no longer use in the Gallery.',
+    'storage_full' => 'Hi {{name}}, your workspace storage is full ({{used}} of {{limit}}). New files (flows, campaigns, products, attachments and API uploads) are being refused. Upgrade your plan or add storage, or delete files you no longer use in the Gallery.',
 
     'alert_connection_down' => '⚠️ {{name}}, the connection *{{connection}}* was disconnected: {{reason}}. Open Pingly → Connections to connect it again.',
 

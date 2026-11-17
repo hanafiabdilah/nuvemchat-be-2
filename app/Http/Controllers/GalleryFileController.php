@@ -35,7 +35,7 @@ class GalleryFileController extends Controller
     {
         // Library files only: a linked row's bytes live on another disk and
         // are served from their own address (see GalleryAsset::publicUrl).
-        $asset = GalleryAsset::where('uuid', $uuid)->counted()->firstOrFail();
+        $asset = GalleryAsset::where('uuid', $uuid)->kept()->firstOrFail();
 
         $disk = Storage::disk((string) config('gallery.disk', 'local'));
 

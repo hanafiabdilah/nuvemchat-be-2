@@ -72,16 +72,21 @@ class AdminStorageController extends Controller
      * disk fill up needs to know which half is growing — one of them can be
      * priced, and the other can only be waited out.
      *
+     * ⚠️ Since every gallery row counts (Nov 2026), the two halves overlap a
+     * little: what agents and the AI sent in a conversation is message media
+     * above *and* counted here, because it is in the customer's meter. Flow,
+     * campaign, catalog, API and AI-media uploads sit on the published disk
+     * and appear only here.
+     *
      * Sizes here are exact. Unlike `messages.attachment_size` there is no
      * backfill to wait for: a gallery asset cannot be created without its size,
      * because the size is what the quota check is made of.
      */
     private function gallery(?int $tenantId): array
     {
-        // The files the meter charges for. Linked rows point at uploads and
-        // message media counted elsewhere on this page.
+        // The files the meter charges for — every gallery row since Nov 2026:
+        // the library plus the uploads, sent attachments and AI files it lists.
         $assets = GalleryAsset::query()
-            ->counted()
             ->when($tenantId, fn ($q) => $q->where('tenant_id', $tenantId));
 
         $totals = (clone $assets)
@@ -131,7 +136,6 @@ class AdminStorageController extends Controller
     private function galleryByTenant(): array
     {
         $rows = GalleryAsset::query()
-            ->counted()
             ->selectRaw('tenant_id, COUNT(*) as files, SUM(size_bytes) as bytes')
             ->groupBy('tenant_id')
             ->orderByDesc('bytes')

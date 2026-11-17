@@ -3,26 +3,25 @@
 namespace App\Enums\Gallery;
 
 /**
- * Where a gallery row came from, which decides the three things that differ
- * between rows: whether it is paid for, how long it lives, and where its bytes
- * sit.
+ * Where a gallery row came from, which decides the two things that still
+ * differ between rows: how long the file lives, and whose disk it sits on.
  *
- * Only `gallery` is a file the workspace put in its library on purpose, and it
- * is the only one the storage quota counts. Every other origin is a file that
- * already existed somewhere else before it appeared here — a flow node's
- * upload, a campaign's media, a product photo, an attachment an agent sent —
- * and the row only **points** at it. Listing those is what makes the gallery
- * "every file I have used"; charging for them would put every legacy workspace
- * (whose plans grant 0 GB) over its limit on the day this shipped, for files
- * it never chose to keep here.
+ * ⚠️ Every origin counts against the storage quota (Nov 2026). It used to be
+ * `gallery` alone, which made the meter measure "what you saved here on
+ * purpose" while the bytes the workspace actually stores — a flow's banner, a
+ * campaign's video, a PDF uploaded through the API for every customer — grew
+ * for free. Now the meter is the workspace's storage, and the gallery is the
+ * list of everything in it.
  *
- * ⚠️ `message` rows are the only temporary ones. Their bytes are message media,
- * which `media:purge` deletes on its retention schedule, and the row goes with
- * them. "Salvar na galeria" copies the file into a `gallery` row to keep it —
- * that is the only way anything here starts counting.
+ * Two things the quota still does not measure, both on purpose: files a
+ * customer sends (they arrive unbidden and can never be refused, so counting
+ * them would let a stranger fill the space an agent needs to reply), and
+ * widget visitors' uploads (same reason). Neither is ever registered here.
  *
- * Files customers send are never registered at all: they arrive unbidden, are
- * often private, and are exactly the volume retention exists to bound.
+ * ⚠️ `message` and `ai` rows are temporary. A message file is message media,
+ * which `media:purge` deletes on its retention schedule; an AI media file is
+ * deleted by the same purge after `media.retention.ai_days` (30 by default).
+ * The row goes with the file, so both free their space by themselves.
  */
 enum AssetOrigin: string
 {
@@ -33,6 +32,11 @@ enum AssetOrigin: string
     case Message = 'message';
     /** A published upload whose use could not be determined (backfilled rows). */
     case Upload = 'upload';
+    /**
+     * A file an AI made in a flow (the AI media node). Counted, never refused,
+     * and deleted after `media.retention.ai_days`.
+     */
+    case Ai = 'ai';
 
     /** @return list<string> */
     public static function values(): array
@@ -46,10 +50,10 @@ enum AssetOrigin: string
         return [self::Flow->value, self::Campaign->value, self::Catalog->value];
     }
 
-    /** Only files put in the library on purpose are paid for. */
+    /** Every file listed in the gallery is stored by the workspace, so all count. */
     public function countsTowardQuota(): bool
     {
-        return $this === self::Gallery;
+        return true;
     }
 
     /**
@@ -59,12 +63,24 @@ enum AssetOrigin: string
      */
     public function isPermanent(): bool
     {
-        return $this !== self::Message;
+        return $this !== self::Message && $this !== self::Ai;
+    }
+
+    /** @return list<string> the origins whose files a retention deletes */
+    public static function temporaryValues(): array
+    {
+        return [self::Message->value, self::Ai->value];
     }
 
     /** Whether the row points at bytes that belong to something else. */
     public function isLinked(): bool
     {
         return $this !== self::Gallery;
+    }
+
+    /** Whether the bytes sit on the published disk (`uploads/…`). */
+    public function isPublished(): bool
+    {
+        return $this->isLinked() && $this !== self::Message;
     }
 }

@@ -7,15 +7,16 @@ use App\Models\Message;
 use App\Services\Gallery\GalleryLibrary;
 
 /**
- * Lists the files agents send in the workspace's gallery.
+ * Lists the files agents (and the AI) send in the workspace's gallery, where
+ * they count against the storage quota.
  *
  * An observer for the same reason MessageAttachmentObserver is one: about
  * twenty handlers write `attachment`, usually as create-then-update, and
  * `sent_by_user_id` is stamped by yet another dozen paths. Waiting for whichever
  * save completes the picture is the only place that sees every one of them.
  *
- * Only what an agent sent — see GalleryLibrary::isAgentAttachment(). Files a
- * customer sends never appear in the gallery.
+ * Only what the workspace sent — see GalleryLibrary::isWorkspaceAttachment().
+ * Files a customer sends never appear in the gallery.
  */
 class MessageGalleryObserver
 {
@@ -40,14 +41,18 @@ class MessageGalleryObserver
             return;
         }
 
-        if ($message->wasChanged('attachment') || $message->wasChanged('sent_by_user_id')) {
+        // The AI's stamp arrives after the send exactly like an agent's does
+        // (FlowExecutor::stampAiMessage), so it has to wake this up too.
+        if ($message->wasChanged('attachment')
+            || $message->wasChanged('sent_by_user_id')
+            || $message->wasChanged('sent_by_ai_hub_agent_id')) {
             $this->register($message);
         }
     }
 
     private function register(Message $message): void
     {
-        if (! GalleryLibrary::isAgentAttachment($message)) {
+        if (! GalleryLibrary::isWorkspaceAttachment($message)) {
             return;
         }
 

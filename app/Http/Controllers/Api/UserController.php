@@ -10,6 +10,7 @@ use App\Http\Resources\UserResource;
 use App\Models\Connection;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\SubscriptionGate;
+use App\Services\Gallery\GalleryStorage;
 use App\Services\Notification\WhatsappAlerts;
 use App\Services\Onboarding\OnboardingState;
 use App\Services\Social\SocialFeatures;
@@ -65,6 +66,10 @@ class UserController extends Controller
                 // has no invoice to pay by hand — it is paid with a new card.
                 'card_payment_due' => $tenant->currentSubscription !== null
                     && app(BillingService::class)->renewalPaymentDue($tenant->currentSubscription) !== null,
+                // The storage banner: 80, 95 or 100 (%) of what the workspace
+                // has, or null. Every stored file counts, and a full storage
+                // refuses uploads — see GalleryStorage::alertFor().
+                'storage' => app(GalleryStorage::class)->alertFor($tenant),
             ];
 
             // Whether the first-run guide still stands between this workspace

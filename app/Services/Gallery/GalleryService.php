@@ -4,8 +4,12 @@ namespace App\Services\Gallery;
 
 use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\AssetType;
-use App\Exceptions\Gallery\GalleryQuotaExceededException;
+use App\Enums\Message\AttachmentStatus;
+use App\Events\MessageUpdated;
+use App\Exceptions\Media\FileInUseException;
+use App\Exceptions\Media\StorageQuotaExceededException;
 use App\Models\GalleryAsset;
+use App\Models\Message;
 use App\Models\Product;
 use App\Models\Tenant;
 use App\Models\User;
@@ -37,6 +41,7 @@ class GalleryService
 {
     public function __construct(
         private readonly GalleryStorage $storage,
+        private readonly GalleryAssetUsage $usage,
     ) {}
 
     /**
@@ -48,7 +53,7 @@ class GalleryService
      *                              are already in the library: that file stays
      *                              where somebody filed it.
      *
-     * @throws GalleryQuotaExceededException when the library has no room for it
+     * @throws StorageQuotaExceededException when the workspace has no room for it
      */
     public function store(Tenant $tenant, UploadedFile $file, ?User $uploader = null, ?string $name = null, ?int $folderId = null): GalleryAsset
     {
@@ -76,7 +81,7 @@ class GalleryService
             // the sense the person means — they are not kept, and a `message`
             // row will disappear with the message's media.
             $existing = GalleryAsset::where('tenant_id', $tenant->id)
-                ->counted()
+                ->kept()
                 ->where('checksum', $checksum)
                 ->first();
 
@@ -88,13 +93,17 @@ class GalleryService
                 return $existing;
             }
 
-            if (! $this->storage->canStore($tenant, $size)) {
-                throw new GalleryQuotaExceededException(
-                    $this->storage->usedBytes($tenant),
-                    $this->storage->limitBytes($tenant),
-                    $size,
-                );
-            }
+            // Linked rows holding these same bytes stop being listed once the
+            // library has them (supersedeLinkedTwins), and since every row
+            // counts, their space comes back as this one takes it. That is what
+            // lets "save to gallery" work in a workspace that is exactly full:
+            // the meter does not grow, so there is nothing to refuse.
+            $twinBytes = (int) GalleryAsset::where('tenant_id', $tenant->id)
+                ->where('checksum', $checksum)
+                ->where('origin', '!=', AssetOrigin::Gallery->value)
+                ->sum('size_bytes');
+
+            $this->storage->assertCanStore($tenant, $size - $twinBytes);
 
             $original = $file->getClientOriginalName() ?: 'arquivo';
 
@@ -143,13 +152,13 @@ class GalleryService
     /**
      * "Salvar na galeria": copy a linked file into the library so it is kept.
      *
-     * Only meaningful for `message` rows — they are the only ones that expire.
-     * The copy counts against the quota like any upload, and is refused the
-     * same way when there is no room; the linked row is then replaced by the
-     * library one (see supersedeLinkedTwins), so the tile stays where it was
-     * and stops being temporary.
+     * Only meaningful for temporary rows — `message` and `ai`, the ones a
+     * retention deletes.
+     * The linked row is replaced by the library one (see supersedeLinkedTwins),
+     * so the tile stays where it was and stops being temporary — and since the
+     * linked row was already counted, the meter does not move.
      *
-     * @throws GalleryQuotaExceededException
+     * @throws StorageQuotaExceededException
      */
     public function keep(GalleryAsset $asset, ?User $by = null): GalleryAsset
     {
@@ -196,35 +205,49 @@ class GalleryService
     }
 
     /**
-     * Remove the file and its row.
+     * Remove the file and its row — the bytes always go with it.
      *
-     * A hard delete, and the bytes go with it: the whole point of the meter is
-     * that deleting frees space, and a soft delete that kept the file would
-     * charge the customer for something the product told them was gone.
+     * A hard delete, because the whole point of the meter is that deleting
+     * frees space. Since every file counts (Nov 2026), that now includes files
+     * that came from a flow, a campaign, the catalog, the API or the AI: hiding
+     * their tile and keeping the bytes would leave a meter nobody could bring
+     * down, or a free shelf for anyone who noticed.
      *
-     * ⚠️ Messages already sent with this asset point at its URL and will lose
-     * their picture. That is inherent to a library whose files are referenced
-     * rather than copied — the alternative is duplicating every send, which is
-     * the cost this feature exists to remove — so the confirmation dialog says
-     * so before the click.
+     * ⚠️ Refused while a flow, a live campaign or a product still sends the
+     * file (GalleryAssetUsage) — deleting it would break that send somewhere
+     * else, weeks later, with nothing on screen to say why.
+     *
+     * ⚠️ Messages already sent with the file point at its URL and lose it. That
+     * is inherent to files that are referenced rather than copied, so the
+     * confirmation dialog says so before the click.
+     *
+     * @throws FileInUseException
      */
     public function delete(GalleryAsset $asset): void
     {
-        // ⚠️ A linked row loses its tile and nothing else. The file belongs to
-        // the flow node, campaign, product or message that uploaded it, and
-        // deleting it from here would break that — silently, somewhere else.
-        if ($asset->isLinked()) {
-            $asset->delete();
+        if ($asset->origin === AssetOrigin::Message) {
+            $this->deleteMessageFile($asset);
 
             return;
         }
 
+        $usedIn = $this->usage->find($asset);
+
+        if ($usedIn !== []) {
+            throw new FileInUseException($usedIn);
+        }
+
         $path = $asset->path;
+        $disk = $asset->origin->isPublished() ? MediaStorage::published() : Storage::disk($this->disk());
 
         $asset->delete();
 
+        if ($asset->origin === AssetOrigin::Ai) {
+            app(GalleryLibrary::class)->forgetGenerated($path);
+        }
+
         try {
-            Storage::disk($this->disk())->delete($path);
+            $disk->delete($path);
         } catch (\Throwable $e) {
             // The row is gone, so the space is already free as far as the meter
             // is concerned. An orphaned file on disk is a cleanup problem, not
@@ -235,6 +258,80 @@ class GalleryService
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Delete a file an agent (or the AI) sent in a conversation, before its
+     * retention would.
+     *
+     * The message keeps its place in the thread, the same way the retention
+     * purge leaves it: its attachment is cleared and marked expired, so the
+     * bubble says the media is gone instead of pointing at a missing file.
+     *
+     * ⚠️ Saved without model events, then broadcast by hand. MessageGalleryObserver
+     * answers a cleared attachment by forgetting *every* gallery row of the
+     * message — and an e-mail carries several, so deleting one attachment would
+     * silently drop the others from the meter while their bytes stayed. Unlike
+     * the purge, `updated_at` does move: this is a change the open dashboards
+     * should pick up, and the delta sync reads that column.
+     */
+    private function deleteMessageFile(GalleryAsset $asset): void
+    {
+        $message = $asset->message;
+        $path = $asset->path;
+
+        $asset->delete();
+
+        try {
+            MediaStorage::disk()->delete($path);
+        } catch (\Throwable $e) {
+            Log::warning('GalleryService: could not delete a sent attachment from disk', [
+                'gallery_asset_id' => $asset->id,
+                'path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        if ($message === null) {
+            return;
+        }
+
+        $changed = false;
+
+        if ($message->attachment === $path) {
+            $message->forceFill([
+                'attachment' => null,
+                'attachment_size' => null,
+                'attachment_status' => AttachmentStatus::Expired,
+            ]);
+            $changed = true;
+        }
+
+        $meta = $message->meta;
+
+        if (is_array($meta['email']['attachments'] ?? null)) {
+            foreach ($meta['email']['attachments'] as $index => $attachment) {
+                if (($attachment['path'] ?? null) === $path) {
+                    unset($meta['email']['attachments'][$index]['path']);
+                    $meta['email']['attachments'][$index]['expired'] = true;
+                    $changed = true;
+                }
+            }
+
+            $message->forceFill(['meta' => $meta]);
+        }
+
+        if (! $changed) {
+            return;
+        }
+
+        Message::withoutEvents(fn () => $message->save());
+
+        rescue(
+            fn () => broadcast(new MessageUpdated($message->load('reactions.contact', 'repliedMessage'))),
+            null,
+            false,
+        );
     }
 
     /**

@@ -106,6 +106,14 @@ Schedule::command('conversations:close-expired-windows')
 // is capped, so a large backlog drains steadily in the background instead of
 // one nightly run holding a worker for an hour. Once drained, a pass that
 // finds nothing costs two indexed queries.
+// Every file a workspace stores counts against its storage, and a full
+// storage refuses uploads (flows, campaigns, the API, chat attachments). The
+// owner is warned on WhatsApp at 80%, 95% and full — once per level.
+Schedule::command('storage:check-alerts')
+    ->hourlyAt(55)
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->error('Storage alerts failed'));
+
 Schedule::command('media:purge')
     ->hourlyAt(50)
     ->withoutOverlapping(30)

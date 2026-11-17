@@ -53,6 +53,8 @@ return [
     'gallery_storage_renewal_no_credit' => 'Halo {{name}}, penyimpanan galeri tambahan Anda ({{gb}} GB) diperpanjang pada {{due_date}} dan saldo Anda tidak mencukupi untuk perpanjangan ({{amount}}). Isi saldo sebelum jatuh tempo. Berkas Anda tidak akan dihapus, tetapi unggahan baru ke galeri diblokir selama pemakaian melebihi batas.',
 
     'gallery_storage_cancelled_no_credit' => 'Halo {{name}}, penyimpanan galeri tambahan Anda ({{gb}} GB) berakhir karena saldo tidak mencukupi. Tidak ada berkas yang dihapus — semuanya tetap bisa dikirim. Untuk mengunggah berkas baru lagi, isi saldo dan sewa ruang penyimpanannya kembali.',
+    'storage_almost_full' => 'Halo {{name}}, penyimpanan workspace Anda sudah {{percent}}% ({{used}} dari {{limit}}). Saat penuh, file baru (flow, kampanye, produk, lampiran, dan upload lewat API) akan ditolak. Upgrade paket atau tambah penyimpanan, atau hapus file yang tidak dipakai lagi di Galeri.',
+    'storage_full' => 'Halo {{name}}, penyimpanan workspace Anda sudah penuh ({{used}} dari {{limit}}). File baru (flow, kampanye, produk, lampiran, dan upload lewat API) sedang ditolak. Upgrade paket atau tambah penyimpanan, atau hapus file yang tidak dipakai lagi di Galeri.',
 
     'alert_connection_down' => '⚠️ {{name}}, koneksi *{{connection}}* terputus: {{reason}}. Buka Pingly → Koneksi untuk menyambungkannya lagi.',
 

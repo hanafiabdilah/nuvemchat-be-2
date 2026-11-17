@@ -86,8 +86,14 @@ class GalleryAsset extends Model
         return $query->where('tenant_id', $tenantId);
     }
 
-    /** Rows the storage quota counts: files put in the library on purpose. */
-    public function scopeCounted(Builder $query): Builder
+    /**
+     * Files put in the library on purpose (`origin = gallery`) — the ones the
+     * gallery owns, serves from its own route and deduplicates uploads against.
+     *
+     * ⚠️ Not "the files the quota counts" any more: since Nov 2026 every row
+     * counts (see AssetOrigin), and GalleryStorage sums the whole tenant.
+     */
+    public function scopeKept(Builder $query): Builder
     {
         return $query->where('origin', AssetOrigin::Gallery->value);
     }
@@ -97,13 +103,13 @@ class GalleryAsset extends Model
      *
      * ⚠️ Every caller that writes a gallery URL somewhere it will be sent again
      * later — a flow node, a campaign, a product, the flow assistant, MCP —
-     * must use this. A `message` row's URL dies with the message's media, and
-     * a flow that saved it would start failing a month later with nothing on
-     * the screen to say why.
+     * must use this. A `message` row's URL dies with the message's media, an
+     * `ai` row's after its retention, and a flow that saved either would start
+     * failing a month later with nothing on the screen to say why.
      */
     public function scopePermanent(Builder $query): Builder
     {
-        return $query->where('origin', '!=', AssetOrigin::Message->value);
+        return $query->whereNotIn('origin', AssetOrigin::temporaryValues());
     }
 
     public function isLinked(): bool

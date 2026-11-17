@@ -67,7 +67,7 @@ class ScanUnsafeUploads extends Command
         // Library files only: linked rows are uploads and message media, which
         // this command scans on their own disks.
         $rows = GalleryAsset::query()
-            ->counted()
+            ->kept()
             ->orderBy('tenant_id')
             ->get(['id', 'tenant_id', 'uuid', 'name', 'path', 'mime_type', 'created_at'])
             ->filter(fn (GalleryAsset $asset) => UploadPolicy::isRenderable($asset->mime_type)

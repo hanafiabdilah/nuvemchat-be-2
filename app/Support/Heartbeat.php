@@ -38,6 +38,7 @@ class Heartbeat
         'crm:automations-scan' => ['CRM automations (time-based)', 1800, 'Starts the CRM automations about time passing — stale deals, idle leads, overdue tasks. Without it those automations never run.'],
         'crm:link-contacts' => ['CRM contact linking', 7200, 'Gives channel contacts created outside the usual path their CRM customer.'],
         'media:purge' => ['Media purge', 7200, 'Deletes expired media. Storage only grows without it.'],
+        'storage:check-alerts' => ['Storage alerts', 7200, 'Warns owners on WhatsApp at 80%, 95% and full storage. Without it the first sign is an upload refused mid-automation.'],
         'billing:charge-renewals' => ['Card renewal charge', 7200, 'The only thing that renews a card subscription. Nothing else charges the stored card, so every card plan lapses silently without it.'],
         'apiway:renew' => ['API Way renewal', 7200, 'ProxyBR gives no grace period — a missed renewal is a permanent revoke.'],
         'apiway:sync' => ['API Way sync', 7200, 'Expires and releases instances whose subscription ended.'],

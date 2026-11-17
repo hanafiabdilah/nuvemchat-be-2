@@ -5,9 +5,12 @@ namespace App\Services\Media;
 use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Media\UploadConflict;
 use App\Exceptions\Media\FileAlreadyExistsException;
+use App\Exceptions\Media\StorageQuotaExceededException;
+use App\Models\GalleryAsset;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Gallery\GalleryLibrary;
+use App\Services\Gallery\GalleryStorage;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -57,10 +60,16 @@ final class PublishedUpload
      * @return array{url: string, path: string, filename: string, size: int|false, mime_type: string|null, replaced: bool, renamed: bool}
      *
      * `$origin` lists the file in the workspace's gallery as well — a row that
-     * points at it, free of the storage quota (see GalleryLibrary). Best-effort:
-     * a failure to list it never fails the upload.
+     * points at it (see GalleryLibrary). Best-effort: a failure to list it never
+     * fails the upload.
+     *
+     * ⚠️ Every file stored here counts against the workspace's storage quota
+     * (Nov 2026), so it is refused up front when it does not fit — checked
+     * under the same lock as the write, so two uploads at once cannot both
+     * squeeze into space only one of them has.
      *
      * @throws FileAlreadyExistsException when the name is taken and the caller said `cancel`
+     * @throws StorageQuotaExceededException when the workspace has no room for it
      */
     public static function store(
         UploadedFile $file,
@@ -92,6 +101,11 @@ final class PublishedUpload
                 ]);
             }
 
+            app(GalleryStorage::class)->assertCanUpload(
+                $tenant,
+                (int) $file->getSize() - self::replacedBytes($tenant, "{$folder}/{$name}", $onConflict),
+            );
+
             $stored = self::write($file, $folder, $name, $onConflict);
 
             if ($origin !== null) {
@@ -104,6 +118,20 @@ final class PublishedUpload
                 $lock->release();
             }
         }
+    }
+
+    /**
+     * The space a `replace` gives back: the file at that address goes, so only
+     * the difference has to fit. Read off the gallery row, the same figure the
+     * meter counted it at.
+     */
+    private static function replacedBytes(Tenant $tenant, string $path, UploadConflict $onConflict): int
+    {
+        if ($onConflict !== UploadConflict::Replace) {
+            return 0;
+        }
+
+        return (int) GalleryAsset::forTenant($tenant->id)->where('path', $path)->value('size_bytes');
     }
 
     /**

@@ -62,6 +62,13 @@ class IndexUploads extends Command
                 continue;
             }
 
+            // The AI media node's files have their own backfill, built from the
+            // generations table (gallery:index-ai-media) — listing them here
+            // would label them "other uploads" and read every one back to hash it.
+            if (str_contains($item->path(), '/ai-media/')) {
+                continue;
+            }
+
             $path = $item->path();
             [$tenantId, $origin] = $this->classify($path, $haystacks);
 

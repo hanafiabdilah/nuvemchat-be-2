@@ -4,6 +4,7 @@ namespace App\Services\AiAgentHub;
 
 use App\Models\AiMediaGeneration;
 use App\Services\Credits\CreditService;
+use App\Services\Gallery\GalleryLibrary;
 use App\Services\Media\MediaStorage;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
@@ -203,6 +204,12 @@ class AiMediaGenerator
         $path = "uploads/{$generation->tenant_id}/ai-media/".Str::lower(Str::random(12))."/{$generation->type}.{$extension}";
 
         MediaStorage::published()->put($path, $bytes);
+
+        // Listed in the gallery and counted against the workspace's storage —
+        // after the write, never as a gate in front of it (GalleryLibrary).
+        if ($generation->tenant !== null) {
+            app(GalleryLibrary::class)->registerGenerated($generation->tenant, $path, $bytes, $mime ?: null, "ai-{$generation->id}.{$extension}");
+        }
 
         $generation->update([
             'status' => AiMediaGeneration::STATUS_COMPLETED,

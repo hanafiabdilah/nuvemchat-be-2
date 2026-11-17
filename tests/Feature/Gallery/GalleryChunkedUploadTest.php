@@ -62,7 +62,7 @@ it('refuses on the first piece when the library has no room for the whole file',
 
     $this->post('/api/gallery/uploads/chunks', galleryPiece('video.mp4', 'x', ['size' => 150 * 1024 * 1024, 'total' => 19]), ['Accept' => 'application/json'])
         ->assertStatus(422)
-        ->assertJsonPath('code', 'gallery_quota_exceeded');
+        ->assertJsonPath('code', 'storage_quota_exceeded');
 
     expect(MediaStorage::staging()->allFiles())->toBe([]);
 });

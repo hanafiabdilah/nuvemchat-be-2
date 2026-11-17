@@ -4,7 +4,8 @@ namespace App\Http\Controllers\Api\Gallery;
 
 use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\AssetType;
-use App\Exceptions\Gallery\GalleryQuotaExceededException;
+use App\Exceptions\Media\FileInUseException;
+use App\Exceptions\Media\StorageQuotaExceededException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\Gallery\GalleryAssetResource;
 use App\Models\GalleryAsset;
@@ -68,7 +69,7 @@ class GalleryAssetController extends Controller
             ->when($validated['search'] ?? null, fn ($q, $search) => $q->where('name', 'like', "%{$search}%"))
             ->when($validated['type'] ?? null, fn ($q, $type) => $q->where('type', $type))
             ->when($validated['origin'] ?? null, fn ($q, $origin) => match ($origin) {
-                'kept' => $q->counted(),
+                'kept' => $q->kept(),
                 'linked' => $q->where('origin', '!=', AssetOrigin::Gallery->value),
                 default => $q->where('origin', $origin),
             })
@@ -121,12 +122,8 @@ class GalleryAssetController extends Controller
 
         // Before the first byte: no point carrying 200 MB up to be told at the
         // end that there was never room for it.
-        if ((int) $piece['index'] === 0 && ! $this->storage->canStore($tenant, (int) $piece['size'])) {
-            return $this->quotaExceeded(new GalleryQuotaExceededException(
-                $this->storage->usedBytes($tenant),
-                $this->storage->limitBytes($tenant),
-                (int) $piece['size'],
-            ));
+        if ((int) $piece['index'] === 0) {
+            $this->storage->assertCanStore($tenant, (int) $piece['size']);
         }
 
         $result = (new ChunkedUpload(
@@ -228,8 +225,8 @@ class GalleryAssetController extends Controller
                 $name,
                 $request->filled('folder_id') ? (int) $request->input('folder_id') : null,
             );
-        } catch (GalleryQuotaExceededException $e) {
-            return $this->quotaExceeded($e);
+        } catch (StorageQuotaExceededException $e) {
+            return $e->toResponse();
         }
 
         // Not a before/after count: storing a file the gallery already listed
@@ -262,8 +259,9 @@ class GalleryAssetController extends Controller
 
         try {
             $kept = $this->gallery->keep($asset, $request->user());
-        } catch (GalleryQuotaExceededException $e) {
-            return $this->quotaExceeded($e);
+        } catch (StorageQuotaExceededException $e) {
+            // Before the RuntimeException below, which it also is.
+            return $e->toResponse();
         } catch (\RuntimeException) {
             return response()->json([
                 'message' => 'Este arquivo não está mais disponível para ser guardado.',
@@ -321,7 +319,10 @@ class GalleryAssetController extends Controller
     }
 
     /**
-     * Delete the file for good.
+     * Delete the file for good — whichever origin it has.
+     *
+     * ⚠️ Refused with 409 `file_in_use` (and where it is used) while a flow, a
+     * live campaign or a product still sends it — see GalleryAssetUsage.
      *
      * ⚠️ Messages already sent with it point at its URL and lose their picture.
      * The dialog in front of this says so; there is no undo, because keeping
@@ -331,28 +332,17 @@ class GalleryAssetController extends Controller
     public function destroy(Request $request, int $id)
     {
         $asset = $this->find($request, $id);
-        $linked = $asset->isLinked();
 
-        $this->gallery->delete($asset);
+        try {
+            $this->gallery->delete($asset);
+        } catch (FileInUseException $e) {
+            return $e->toResponse();
+        }
 
         return response()->json([
-            // A linked file is only taken off the list; whatever uploaded it
-            // still has it. The sentence says which of the two happened.
-            'message' => $linked ? 'Arquivo ocultado da galeria.' : 'Arquivo removido da galeria.',
+            'message' => 'Arquivo excluído.',
             'storage' => $this->storage->summary($request->user()->tenant),
         ]);
-    }
-
-    private function quotaExceeded(GalleryQuotaExceededException $e)
-    {
-        return response()->json([
-            'message' => 'A galeria está sem espaço. Libere arquivos ou contrate mais armazenamento.',
-            'code' => 'gallery_quota_exceeded',
-            'used_bytes' => $e->usedBytes,
-            'limit_bytes' => $e->limitBytes,
-            'required_bytes' => $e->requestedBytes,
-            'shortfall_bytes' => $e->shortfallBytes(),
-        ], 422);
     }
 
     private function ownFolder(Request $request)

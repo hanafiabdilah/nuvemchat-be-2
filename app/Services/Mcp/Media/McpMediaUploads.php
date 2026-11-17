@@ -10,6 +10,7 @@ use App\Models\McpConnection;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Mcp\Tools\ToolException;
+use App\Exceptions\Media\StorageQuotaExceededException;
 use App\Services\Media\PublishedUpload;
 use App\Services\Media\UploadPolicy;
 use App\Support\OutboundHttp;
@@ -71,7 +72,18 @@ class McpMediaUploads
         // never asked to touch. Keeping both is the only answer that is always
         // safe and always succeeds. A caller who means to replace says so.
         // Listed in the gallery as a flow file: every MCP upload is for a flow.
-        $stored = PublishedUpload::store($file, $tenant, $onConflict ?? UploadConflict::Rename, AssetOrigin::Flow);
+        try {
+            $stored = PublishedUpload::store($file, $tenant, $onConflict ?? UploadConflict::Rename, AssetOrigin::Flow);
+        } catch (StorageQuotaExceededException $e) {
+            // Said so the model can relay it: a person has to act, and the two
+            // things they can do are the ones the dashboard offers.
+            throw new ToolException(sprintf(
+                'The workspace storage is full: %s used of %s, and this file needs %s more. Ask the person to upgrade their plan or add storage in the dashboard (Gallery), or to delete files they no longer use.',
+                self::formatBytes($e->usedBytes),
+                self::formatBytes($e->limitBytes),
+                self::formatBytes($e->shortfallBytes()),
+            ));
+        }
 
         return [
             'url' => $stored['url'],

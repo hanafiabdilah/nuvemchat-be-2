@@ -4,7 +4,9 @@ namespace App\Services\Gallery;
 
 use App\Enums\Gallery\AssetOrigin;
 use App\Enums\Gallery\AssetType;
+use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\SenderType;
+use App\Models\AiMediaGeneration;
 use App\Models\GalleryAsset;
 use App\Models\Message;
 use App\Models\Tenant;
@@ -19,8 +21,13 @@ use Illuminate\Support\Str;
  *
  * Every upload a person makes — for a flow node, a campaign, a product, or as an
  * attachment in a chat — shows up in the gallery without anyone putting it
- * there. The row only **points** at the file: no bytes are copied, and none of
- * it counts against the storage quota (see AssetOrigin).
+ * there, and so does what the AI makes (voice replies, the AI media node). The
+ * row only **points** at the file: no bytes are copied.
+ *
+ * ⚠️ Since Nov 2026 every row counts against the storage quota (see
+ * AssetOrigin), so this class is also what keeps the meter true. Registering
+ * still never refuses anything: the refusal happens before the upload, at the
+ * door (GalleryStorage::assertCanStore), and AI output is never refused at all.
  *
  * ⚠️ Everything here is best-effort and swallows its own failures. It runs
  * after the thing the person actually asked for — a flow saved, a message sent
@@ -95,27 +102,35 @@ class GalleryLibrary
     }
 
     /**
-     * Whether a message carries a file an agent sent, which is the only kind of
-     * message media the gallery lists.
+     * Whether a message carries a file the workspace sent on its own account —
+     * an agent's attachment, or the AI's voice reply — which is the only kind
+     * of message media the gallery lists (and the quota counts).
      *
-     * Not customer media — agreed explicitly: it arrives unbidden, is often
-     * private, and is the volume retention exists to bound. Not flow, AI or
+     * Not customer media — agreed explicitly: it arrives unbidden, can never be
+     * refused, and is the volume retention exists to bound. Not plain flow or
      * campaign sends either: those went out with a file that is already in the
      * gallery under its own origin.
      */
-    public static function isAgentAttachment(Message $message): bool
+    public static function isWorkspaceAttachment(Message $message): bool
     {
         return $message->sender_type === SenderType::Outgoing
-            && $message->sent_by_user_id !== null
+            && ($message->sent_by_user_id !== null || $message->sent_by_ai_hub_agent_id !== null)
             && is_string($message->attachment)
             && $message->attachment !== ''
             && ! MediaRetention::isExternal($message->attachment);
     }
 
-    /** Register an attachment an agent sent. Reads the file once to hash it. */
+    /**
+     * Register what an agent or the AI sent. Reads each file once to hash it.
+     *
+     * An e-mail carries one entry per attachment in meta and mirrors only the
+     * first into `attachment`, so the rest are registered from meta — each
+     * stored file is space the workspace uses, and listing only the first
+     * would let the other nineteen ride for free.
+     */
     public function registerMessageAttachment(Message $message): ?GalleryAsset
     {
-        if (! self::isAgentAttachment($message)) {
+        if (! self::isWorkspaceAttachment($message)) {
             return null;
         }
 
@@ -126,9 +141,100 @@ class GalleryLibrary
             return null;
         }
 
+        $tenant = Tenant::find($tenantId);
+        $filename = $message->meta['filename'] ?? null;
+
+        $first = $this->registerMessageFile($tenant, $message, $message->attachment, is_string($filename) && $filename !== '' ? basename($filename) : null, $message->attachment_size);
+
+        foreach ((array) ($message->meta['email']['attachments'] ?? []) as $attachment) {
+            $path = $attachment['path'] ?? null;
+
+            if (! is_string($path) || $path === '' || $path === $message->attachment || ! empty($attachment['expired'])) {
+                continue;
+            }
+
+            $name = is_string($attachment['name'] ?? null) && $attachment['name'] !== '' ? basename($attachment['name']) : null;
+
+            $this->registerMessageFile($tenant, $message, $path, $name, null);
+        }
+
+        return $first;
+    }
+
+    /**
+     * Register a file the AI media node made (`uploads/{tenant}/ai-media/…`).
+     *
+     * Counted like every other file, deleted after `media.retention.ai_days`
+     * (media:purge), and — unlike everything a person adds — never checked
+     * against the quota before it is written: a flow taking its
+     * failure branch, or a customer not getting the picture they were promised,
+     * because of a storage meter is the worse outcome. The meter may read over
+     * 100% afterwards; the next upload a person tries is what gets refused.
+     */
+    public function registerGenerated(Tenant $tenant, string $path, string $bytes, ?string $mimeType, ?string $name = null): ?GalleryAsset
+    {
+        try {
+            return $this->link($tenant, AssetOrigin::Ai, [
+                'path' => $path,
+                // Every generation is stored as `image.png` in its own folder,
+                // so the folder name alone would list a gallery of identical
+                // names; the caller says which generation it was.
+                'filename' => $name ?? basename($path),
+                'size' => strlen($bytes),
+                'mime_type' => $mimeType,
+                'checksum' => hash('sha256', $bytes),
+                'uploader_id' => null,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('GalleryLibrary: could not register an AI-generated file', [
+                'tenant_id' => $tenant->id,
+                'path' => $path,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * What has to happen once an AI media file is gone — by retention
+     * (media:purge) or because someone deleted it from the gallery.
+     *
+     * The generation stops claiming a file (FlowExecutor reads a null path as
+     * "not made"), and every message that sent it is marked expired. Those
+     * messages hold the file's absolute URL, which carries no expiry a client
+     * could read, so they are written with `updated_at` moved — otherwise the
+     * bubbles would stay broken images until a resync. Rows only: the caller
+     * deletes the bytes and the gallery row.
+     */
+    public function forgetGenerated(string $path): void
+    {
+        rescue(function () use ($path) {
+            $generations = AiMediaGeneration::where('path', $path)->get(['id', 'conversation_id']);
+
+            foreach ($generations as $generation) {
+                if ($generation->conversation_id !== null) {
+                    Message::query()
+                        ->where('conversation_id', $generation->conversation_id)
+                        ->where('attachment', 'like', '%'.$path)
+                        ->update([
+                            'attachment' => null,
+                            'attachment_size' => null,
+                            'attachment_status' => AttachmentStatus::Expired,
+                            'updated_at' => now(),
+                        ]);
+                }
+
+                AiMediaGeneration::whereKey($generation->id)->toBase()->update(['path' => null]);
+            }
+        }, null, false);
+    }
+
+    private function registerMessageFile(?Tenant $tenant, Message $message, string $path, ?string $filename, ?int $knownSize): ?GalleryAsset
+    {
         try {
             $disk = MediaStorage::disk();
-            $stream = $disk->readStream($message->attachment);
+            $stream = $disk->readStream($path);
 
             if (! is_resource($stream)) {
                 return null;
@@ -138,13 +244,11 @@ class GalleryLibrary
             hash_update_stream($context, $stream);
             fclose($stream);
 
-            $filename = $message->meta['filename'] ?? null;
-
-            return $this->link(Tenant::find($tenantId), AssetOrigin::Message, [
-                'path' => $message->attachment,
-                'filename' => is_string($filename) && $filename !== '' ? basename($filename) : basename($message->attachment),
-                'size' => (int) ($message->attachment_size ?? rescue(fn () => $disk->size($message->attachment), 0, false)),
-                'mime_type' => rescue(fn () => $disk->mimeType($message->attachment), null, false),
+            return $this->link($tenant, AssetOrigin::Message, [
+                'path' => $path,
+                'filename' => $filename ?? basename($path),
+                'size' => (int) ($knownSize ?? rescue(fn () => $disk->size($path), 0, false)),
+                'mime_type' => rescue(fn () => $disk->mimeType($path), null, false),
                 'checksum' => hash_final($context),
                 'uploader_id' => $message->sent_by_user_id,
                 'message_id' => $message->id,
@@ -152,6 +256,7 @@ class GalleryLibrary
         } catch (\Throwable $e) {
             Log::warning('GalleryLibrary: could not register a message attachment', [
                 'message_id' => $message->id,
+                'path' => $path,
                 'error' => $e->getMessage(),
             ]);
 

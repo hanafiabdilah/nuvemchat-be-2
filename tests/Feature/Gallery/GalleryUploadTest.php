@@ -72,7 +72,7 @@ it('refuses an upload that would not fit, and says how much is missing', functio
     ]);
 
     $response->assertStatus(422)
-        ->assertJsonPath('code', 'gallery_quota_exceeded');
+        ->assertJsonPath('code', 'storage_quota_exceeded');
 
     // The numbers are the point of the error: without them the screen can only
     // say "full" and leave the customer to guess between deleting and renting.
@@ -95,7 +95,7 @@ it('gives a plan that never mentioned gallery storage none of it', function () {
 
     $this->post('/api/gallery', ['file' => UploadedFile::fake()->image('a.jpg')->size(10)])
         ->assertStatus(422)
-        ->assertJsonPath('code', 'gallery_quota_exceeded');
+        ->assertJsonPath('code', 'storage_quota_exceeded');
 });
 
 it('refuses file types that must never be hosted on the platform domain', function () {

@@ -45,6 +45,31 @@ class MediaRetention
     }
 
     /**
+     * Days an AI media node file is kept, or null when it is kept for good
+     * (retention disabled, or `ai_days` = 0).
+     */
+    public static function aiDays(): ?int
+    {
+        if (! self::enabled()) {
+            return null;
+        }
+
+        $days = (int) config('media.retention.ai_days', 30);
+
+        return $days > 0 ? $days : null;
+    }
+
+    /** When an AI media file made at $createdAt is deleted, or null if never. */
+    public static function aiDeadline(?\DateTimeInterface $createdAt): ?CarbonImmutable
+    {
+        $days = self::aiDays();
+
+        return $days === null || $createdAt === null
+            ? null
+            : CarbonImmutable::instance($createdAt)->addDays($days);
+    }
+
+    /**
      * The moment this message's file becomes eligible for deletion.
      *
      * Measured from `created_at` — when the bytes landed on our disk — not
