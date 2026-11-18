@@ -75,7 +75,7 @@ it('bills a real run at the model markup', function () {
 
     $credits = app(CreditService::class);
     $credits->adjust($tenant, 10000, 'seed');
-    $credits->chargeRun(creditRun($tenant, $agent, 0.02));
+    $credits->chargeRun(CreditFixtures::run($tenant, $agent, 0.02));
 
     // The per-model markup is the half of this feature that moves money; the
     // published price list is only ever shown.

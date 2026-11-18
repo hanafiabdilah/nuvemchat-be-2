@@ -41,19 +41,7 @@ beforeEach(function () {
 /** A run row, in the shape `persistRun` would have written it. */
 function creditRun(Tenant $tenant, AiHubAgent $agent, ?float $costUsd): AiHubRun
 {
-    return AiHubRun::create([
-        'tenant_id' => $tenant->id,
-        'ai_hub_agent_id' => $agent->id,
-        'conversation_id' => CreditFixtures::conversation($tenant)->id,
-        'hub_run_id' => 'run-'.uniqid(),
-        'status' => 'COMPLETED',
-        'provider' => 'OPENAI',
-        'model' => 'gpt-4o-mini',
-        'input_message' => 'oi',
-        'output_message' => 'olá',
-        'total_tokens' => 120,
-        'cost_usd' => $costUsd,
-    ]);
+    return CreditFixtures::run($tenant, $agent, $costUsd);
 }
 
 /** Reaches the pre-run gate, which is protected because nothing else may call it. */

@@ -53,12 +53,23 @@ kebetulan mencoba lebih dulu. Karena itu ia diamati dulu.
 Sumber yang sudah diketahui dan sudah masuk kebijakan:
 
 ```
-script-src   'self' sdk.mercadopago.com connect.facebook.net
+script-src   'self' sdk.mercadopago.com js.stripe.com *.js.stripe.com
+             checkout(-sbx).dlocalgo.com connect.facebook.net
 style-src    'self' 'unsafe-inline' fonts.googleapis.com
 font-src     'self' data: fonts.gstatic.com
-connect-src  'self' wss://ws.pingly.com.br ewr1.vultrobjects.com …
-frame-src    connect.facebook.net www.facebook.com
+connect-src  'self' wss://ws.pingly.com.br ewr1.vultrobjects.com
+             sdk.mercadopago.com api.stripe.com checkout(-sbx).dlocalgo.com …
+frame-src    connect.facebook.net www.facebook.com js.stripe.com *.js.stripe.com
+             hooks.stripe.com checkout(-sbx).dlocalgo.com www.youtube-nocookie.com
 ```
+
+dLocal SmartFields (`lib/paymentSdk.ts`, kartu di market selain Brasil) dan
+embed YouTube (`components/youtube/VideoDetailModal.tsx`) masuk Nov 2026: dua
+sumber yang **terbukti dari kode** tapi belum ada di kebijakan, jadi keduanya
+akan mati begitu header ini ditegakkan. ⚠️ Host Mercado Pago selain
+`sdk.mercadopago.com` (iframe Secure Fields, API tokenisasi) **belum** ditambah:
+tak bisa dibuktikan dari kode kita, jadi tetap lewat langkah observasi di
+bawah — buka checkout kartu Brasil dan salin pelanggaran `[Report Only]`-nya.
 
 `'unsafe-inline'` pada `style-src` masih dibutuhkan: Tailwind dan beberapa
 komponen menulis gaya inline (mis. host widget, `chart.tsx`). Menghapusnya

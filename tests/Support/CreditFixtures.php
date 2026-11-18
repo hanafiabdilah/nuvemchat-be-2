@@ -7,6 +7,7 @@ use App\Enums\Billing\BillingCycle;
 use App\Enums\Billing\PaymentMethod;
 use App\Enums\Billing\SubscriptionStatus;
 use App\Models\AiHubAgent;
+use App\Models\AiHubRun;
 use App\Models\Setting;
 use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Models\AiHubTenant;
@@ -157,6 +158,31 @@ class CreditFixtures
             'name' => $name,
             'model' => 'gpt-4o-mini',
             'status' => 'ACTIVE',
+        ]);
+    }
+
+    /**
+     * A run row, in the shape `persistRun` would have written it.
+     *
+     * Here and not as a global function in one test file: Pest loads every
+     * file into one process, so a file that borrows its neighbour's helper
+     * fails whenever it runs without that neighbour (alone, or in a parallel
+     * worker that was not given it).
+     */
+    public static function run(Tenant $tenant, AiHubAgent $agent, ?float $costUsd): AiHubRun
+    {
+        return AiHubRun::create([
+            'tenant_id' => $tenant->id,
+            'ai_hub_agent_id' => $agent->id,
+            'conversation_id' => self::conversation($tenant)->id,
+            'hub_run_id' => 'run-'.uniqid(),
+            'status' => 'COMPLETED',
+            'provider' => 'OPENAI',
+            'model' => 'gpt-4o-mini',
+            'input_message' => 'oi',
+            'output_message' => 'olá',
+            'total_tokens' => 120,
+            'cost_usd' => $costUsd,
         ]);
     }
 }

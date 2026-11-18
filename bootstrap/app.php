@@ -97,6 +97,11 @@ return Application::configure(basePath: dirname(__DIR__))
             \App\Http\Middleware\SanitizeUpstreamErrors::class,
         ]);
 
+        // API JSON never lands in the browser's disk cache — see the class.
+        // Global, not in the `api` group: `auth` sorts ahead of group
+        // middleware, so a 401 would come back without passing through it.
+        $middleware->append(\App\Http\Middleware\PreventApiResponseCaching::class);
+
         $middleware->validateCsrfTokens([
             '/webhook/*',
             '/oauth/instagram/deauthorize',
