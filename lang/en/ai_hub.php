@@ -30,4 +30,6 @@ return [
         'too_large' => ':attribute is too long to be saved. Shorten the text and try again.',
     ],
 
+    'credential_status_fixed' => 'A key\'s status cannot be changed. To stop using it, delete the key.',
+
 ];

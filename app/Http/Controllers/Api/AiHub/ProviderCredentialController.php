@@ -61,7 +61,13 @@ class ProviderCredentialController extends Controller
             'name' => ['sometimes', 'string', 'max:255'],
             'apiKey' => ['sometimes', 'string'],
             'defaultModel' => ['sometimes', 'nullable', 'string', 'max:100'],
-            'status' => ['sometimes', 'string', 'in:ACTIVE,DISABLED'],
+            // Refused here rather than passed on: the hub rejects the field
+            // ("property status should not exist") and has no route that
+            // changes it — switching a key off there means deleting it. Said
+            // under the field instead of as the generic "not accepted".
+            'status' => ['prohibited'],
+        ], [
+            'status.prohibited' => AiHubFieldErrors::translate('ai_hub.credential_status_fixed'),
         ]);
 
         $credential = $this->findCredential($id);

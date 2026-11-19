@@ -144,7 +144,13 @@ class AiAgentHubTenantService
     /**
      * Update a provider credential on the hub and sync the local record.
      *
-     * $payload may include: name, apiKey, defaultModel, status, metadata
+     * $payload may include: name, apiKey, defaultModel, metadata.
+     *
+     * ⚠️ Never `status`: the hub answers it with "property status should not
+     * exist" (probed Nov 2026) and has no route that changes it. Its only way
+     * to switch a key off is DELETE, which leaves the record DISABLED there and
+     * cannot be undone — every DISABLED credential on the hub is one deleted
+     * from here.
      */
     public function updateProviderCredential(AiHubProviderCredential $credential, array $payload): AiHubProviderCredential
     {
@@ -194,16 +200,10 @@ class AiAgentHubTenantService
     }
 
     /**
-     * Disable a provider credential on the hub.
-     */
-    public function disableProviderCredential(AiHubProviderCredential $credential): AiHubProviderCredential
-    {
-        return $this->updateProviderCredential($credential, ['status' => 'DISABLED']);
-    }
-
-    /**
      * Delete a provider credential on the hub and locally.
-     * Assumes the hub exposes DELETE /provider-credentials/{id}.
+     *
+     * The hub keeps the record and marks it DISABLED; it has no way back, so
+     * the local row goes for good.
      */
     public function deleteProviderCredential(AiHubProviderCredential $credential): void
     {

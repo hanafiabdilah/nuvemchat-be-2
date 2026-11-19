@@ -31,4 +31,6 @@ return [
         'too_large' => 'O campo :attribute ficou grande demais para ser salvo. Encurte o texto e tente novamente.',
     ],
 
+    'credential_status_fixed' => 'O status de uma chave não pode ser alterado. Para deixar de usá-la, exclua a chave.',
+
 ];

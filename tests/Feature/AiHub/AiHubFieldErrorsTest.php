@@ -196,3 +196,37 @@ it('uses the flow assistant\'s own field names', function () {
 
     expect($errors)->toHaveKey('api_key');
 });
+
+it('refuses to change a key\'s status, which the hub has no way to do', function () {
+    [, $user, , $credential] = fieldErrorsWorkspace();
+
+    // The hub answers `property status should not exist` and has no route that
+    // changes it (probed Nov 2026) — sending it on would only buy the generic
+    // "not accepted". Its one way to switch a key off is DELETE.
+    $this->actingAs($user)
+        ->patchJson("/api/ai-hub/provider-credentials/{$credential->id}", ['status' => 'DISABLED'])
+        ->assertStatus(422)
+        ->assertJsonPath('errors.status.0', 'O status de uma chave não pode ser alterado. Para deixar de usá-la, exclua a chave.');
+
+    Http::assertNothingSent();
+});
+
+it('still edits a key without a status in the request', function () {
+    [, $user, , $credential] = fieldErrorsWorkspace();
+
+    $sent = null;
+    Http::fake([
+        '*/provider-credentials/*' => function ($request) use (&$sent) {
+            $sent = $request->data();
+
+            return Http::response(['id' => 'hub-cred-own', 'name' => $sent['name'], 'status' => 'ACTIVE'], 200);
+        },
+    ]);
+
+    $this->actingAs($user)
+        ->patchJson("/api/ai-hub/provider-credentials/{$credential->id}", ['name' => 'Chave de produção'])
+        ->assertOk();
+
+    expect($sent)->toBe(['name' => 'Chave de produção'])
+        ->and($credential->fresh()->name)->toBe('Chave de produção');
+});

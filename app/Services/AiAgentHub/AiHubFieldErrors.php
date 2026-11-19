@@ -194,6 +194,12 @@ final class AiHubFieldErrors
         return [($rename[$longest] ?? $longest) => self::sentence($longest, 'too_large')];
     }
 
+    /** One line of lang/{locale}/ai_hub.php, in the signed-in person's language. */
+    public static function translate(string $key, array $replace = []): string
+    {
+        return __($key, $replace, self::locale());
+    }
+
     private static function attribute(string $property, ?string $locale): string
     {
         $line = "ai_hub.attributes.{$property}";
