@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\TikTok\Concerns\ResolvesTikTokConnection;
 use App\Http\Controllers\Controller;
 use App\Models\Connection;
 use App\Models\TikTokPost;
+use App\Services\Social\PostQueueSummary;
 use App\Services\TikTok\TikTokAccountsClientFactory;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -45,15 +46,17 @@ class TikTokAccountController extends Controller
             ->orderBy('name')
             ->get();
 
-        $pending = TikTokPost::query()
-            ->whereIn('connection_id', $connections->pluck('id'))
-            ->whereIn('status', [PostStatus::Scheduled, PostStatus::Queued, PostStatus::Publishing])
-            ->selectRaw('connection_id, count(*) as aggregate')
-            ->groupBy('connection_id')
-            ->pluck('aggregate', 'connection_id');
+        $queue = PostQueueSummary::build(
+            TikTokPost::query(),
+            'connection_id',
+            $connections->pluck('id'),
+            scheduled: [PostStatus::Scheduled, PostStatus::Queued, PostStatus::Publishing],
+            drafts: [PostStatus::Draft],
+            failed: [PostStatus::Failed],
+        );
 
         return response()->json([
-            'data' => $connections->map(function (Connection $connection) use ($pending) {
+            'data' => $connections->map(function (Connection $connection) use ($queue) {
                 $client = $this->clients->for($connection);
 
                 return [
@@ -61,14 +64,34 @@ class TikTokAccountController extends Controller
                     'name' => $connection->name,
                     'username' => $connection->credentials['username'] ?? null,
                     'color' => $connection->color,
-                    // Only what a previous visit paid for: the card grid must
-                    // not spend one call per card.
+                    // Only what an earlier lookup already paid for: each card
+                    // asks for its own profile once the list is on screen.
                     'profile' => Cache::get($this->profileKey($connection)),
                     'has_post_permissions' => $client->hasPostPermissions(),
-                    'scheduled_count' => (int) ($pending[$connection->id] ?? 0),
-                ];
+                ] + $queue[(string) $connection->id];
             })->values(),
         ]);
+    }
+
+    /**
+     * The profile behind one card: followers, videos, likes. Cached per
+     * account, asked by each card on its own (see InstagramAccountController).
+     * A grant without the posting scopes is refused before any call, the same
+     * as the account page.
+     */
+    public function profile(Request $request, string $id)
+    {
+        $connection = $this->tiktokConnection($request, $id);
+        $client = $this->clients->for($connection);
+        $client->assertPostPermissions();
+
+        $profile = Cache::remember(
+            $this->profileKey($connection),
+            now()->addMinutes(self::PROFILE_TTL_MINUTES),
+            fn () => $client->profile(),
+        );
+
+        return response()->json(['data' => $profile]);
     }
 
     /**

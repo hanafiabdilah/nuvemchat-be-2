@@ -85,15 +85,17 @@ class InstagramGraphClient
     /**
      * The account behind this connection, as Instagram currently describes it.
      *
-     * `followers_count` is requested optimistically and dropped on refusal:
-     * it is not worth failing the whole account card over a counter, and which
-     * fields a given account exposes has moved around between API versions.
+     * The counters (`followers_count`, `follows_count`) and `account_type` are
+     * requested optimistically and dropped on refusal: it is not worth failing
+     * the whole account card over a counter, and which fields a given account
+     * exposes has moved around between API versions. All three are on the
+     * Instagram Login field list (get-started page, v27.0).
      */
     public function profile(): array
     {
         try {
             return $this->get('me', [
-                'fields' => 'id,username,name,profile_picture_url,media_count,followers_count',
+                'fields' => 'id,username,name,account_type,profile_picture_url,media_count,followers_count,follows_count',
             ]);
         } catch (InstagramApiException $e) {
             if ($e->isPermissionError()) {

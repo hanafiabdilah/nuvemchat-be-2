@@ -799,6 +799,8 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
         Route::prefix('instagram')->middleware('feature:'.Feature::InstagramManagement->value)->group(function () {
             Route::get('/accounts', [InstagramAccountController::class, 'index'])->middleware('permission:instagram-posts.view|instagram-comments.manage');
             Route::get('/accounts/{connection}', [InstagramAccountController::class, 'show'])->middleware('permission:instagram-posts.view|instagram-comments.manage');
+            // One card's profile (followers, following, posts), cached an hour.
+            Route::get('/accounts/{connection}/profile', [InstagramAccountController::class, 'profile'])->middleware('permission:instagram-posts.view|instagram-comments.manage');
 
             Route::get('/accounts/{connection}/posts', [InstagramPostController::class, 'index'])->middleware('permission:instagram-posts.view');
             Route::post('/accounts/{connection}/posts', [InstagramPostController::class, 'store'])->middleware('permission:instagram-posts.create');
@@ -863,6 +865,7 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
         Route::prefix('tiktok')->middleware(['social:tiktok', 'feature:'.Feature::TiktokManagement->value])->group(function () {
             Route::get('/accounts', [TikTokAccountController::class, 'index'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
             Route::get('/accounts/{connection}', [TikTokAccountController::class, 'show'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
+            Route::get('/accounts/{connection}/profile', [TikTokAccountController::class, 'profile'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
 
             Route::get('/accounts/{connection}/posts', [TikTokPostController::class, 'index'])->middleware('permission:tiktok-posts.view|tiktok-comments.manage');
             Route::post('/accounts/{connection}/posts', [TikTokPostController::class, 'store'])->middleware('permission:tiktok-posts.create');
@@ -898,6 +901,7 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
             Route::get('/accounts', [YoutubeAccountController::class, 'index'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');
             Route::get('/oauth-url', [YoutubeAccountController::class, 'authorizeUrl'])->middleware('permission:youtube-accounts.manage');
             Route::get('/accounts/{account}', [YoutubeAccountController::class, 'show'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');
+            Route::get('/accounts/{account}/statistics', [YoutubeAccountController::class, 'statistics'])->middleware('permission:youtube-posts.view|youtube-comments.manage|youtube-accounts.manage');
             Route::delete('/accounts/{account}', [YoutubeAccountController::class, 'destroy'])->middleware('permission:youtube-accounts.manage');
 
             Route::get('/accounts/{account}/posts', [YoutubePostController::class, 'index'])->middleware('permission:youtube-posts.view');

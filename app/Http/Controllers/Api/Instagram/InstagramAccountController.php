@@ -10,6 +10,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Connection;
 use App\Models\InstagramPost;
 use App\Services\Instagram\InstagramGraphClientFactory;
+use App\Services\Social\PostQueueSummary;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
@@ -24,7 +25,7 @@ class InstagramAccountController extends Controller
 {
     use ResolvesInstagramConnection;
 
-    /** Long enough to keep the card grid off the Graph API, short enough that a renamed account catches up the same session. */
+    /** Long enough to keep the card grid off the Graph API, short enough that a renamed account or a follower count catches up the same session. */
     private const PROFILE_TTL_MINUTES = 60;
 
     public function __construct(
@@ -45,13 +46,17 @@ class InstagramAccountController extends Controller
             ->orderBy('name')
             ->get();
 
-        // One grouped count instead of a query per card.
-        $pendingCounts = InstagramPost::query()
-            ->whereIn('connection_id', $connections->pluck('id'))
-            ->whereIn('status', [PostStatus::Scheduled, PostStatus::Queued, PostStatus::Publishing])
-            ->selectRaw('connection_id, count(*) as aggregate')
-            ->groupBy('connection_id')
-            ->pluck('aggregate', 'connection_id');
+        // One grouped query for the whole list, never one per card. "Scheduled"
+        // is everything on its way that has not landed: queued and publishing
+        // included, as the count always was.
+        $queue = PostQueueSummary::build(
+            InstagramPost::query(),
+            'connection_id',
+            $connections->pluck('id'),
+            scheduled: [PostStatus::Scheduled, PostStatus::Queued, PostStatus::Publishing],
+            drafts: [PostStatus::Draft],
+            failed: [PostStatus::Failed],
+        );
 
         return response()->json([
             'data' => $connections->map(fn (Connection $connection) => [
@@ -59,12 +64,34 @@ class InstagramAccountController extends Controller
                 'name' => $connection->name,
                 'username' => $connection->credentials['username'] ?? null,
                 'color' => $connection->color,
-                // Only if a previous visit already paid for it — the grid must
-                // not fan out one Graph call per card.
+                // Only what an earlier lookup already paid for. The list never
+                // waits on Meta: each card asks for its own profile afterwards
+                // (GET /accounts/{connection}/profile).
                 'profile' => Cache::get($this->profileKey($connection)),
-                'scheduled_count' => (int) ($pendingCounts[$connection->id] ?? 0),
-            ])->values(),
+            ] + $queue[(string) $connection->id])->values(),
         ]);
+    }
+
+    /**
+     * The profile behind one card: followers, following, posts, picture.
+     *
+     * Asked by each card after the list has rendered, so one slow or broken
+     * account never holds the others back. Cached per account, so a page of
+     * cards costs at most one Graph call per account per hour. A token that
+     * lost its permissions answers `instagram_permission_required`, which the
+     * card turns into "needs to be reconnected".
+     */
+    public function profile(Request $request, string $id)
+    {
+        $connection = $this->instagramConnection($request, $id);
+
+        $profile = Cache::remember(
+            $this->profileKey($connection),
+            now()->addMinutes(self::PROFILE_TTL_MINUTES),
+            fn () => $this->clients->for($connection)->profile(),
+        );
+
+        return response()->json(['data' => $profile]);
     }
 
     /**
