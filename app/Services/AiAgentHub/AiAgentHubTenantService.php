@@ -2042,27 +2042,37 @@ class AiAgentHubTenantService
      */
     public static function hubMessage(Response $response, string $fallback): string
     {
+        $messages = self::hubMessages($response);
+
+        return $messages === [] ? $fallback : implode(' ', $messages);
+    }
+
+    /**
+     * The same, one entry per complaint — what AiHubFieldErrors reads to put
+     * each one under its own field. Joined into a line they can no longer be
+     * told apart ("name should not be empty systemPrompt must be longer …").
+     *
+     * @return list<string>
+     */
+    public static function hubMessages(Response $response): array
+    {
         $message = $response->json()['message'] ?? null;
 
-        if (is_string($message) && trim($message) !== '') {
-            return $message;
+        if (is_string($message)) {
+            return trim($message) === '' ? [] : [$message];
         }
 
-        if (is_array($message)) {
-            $flat = [];
+        $flat = [];
 
+        if (is_array($message)) {
             array_walk_recursive($message, function ($value) use (&$flat) {
-                if (is_scalar($value)) {
+                if (is_scalar($value) && trim((string) $value) !== '') {
                     $flat[] = (string) $value;
                 }
             });
-
-            if ($flat !== []) {
-                return implode(' ', $flat);
-            }
         }
 
-        return $fallback;
+        return $flat;
     }
 
     protected function ensureSuccessful(Response $response, string $action, array $context = []): void
@@ -2086,6 +2096,11 @@ class AiAgentHubTenantService
                 self::hubMessage($response, 'Bad Request'),
                 status: 400,
                 context: array_merge($context, ['action' => $action]),
+                // Structure, not prose: which field failed which rule. The
+                // agent and credential forms turn it into a sentence of ours
+                // under that field (AiHubFieldErrors) instead of one line about
+                // "the configuration" that names none of them.
+                details: ['status' => 400, 'hub_messages' => self::hubMessages($response)],
             );
         } elseif ($response->status() === 404) {
             // Not an error we report — one we repair. See
@@ -2120,6 +2135,12 @@ class AiAgentHubTenantService
             self::hubMessage($response, "Failed to {$action}"),
             status: $response->status(),
             context: array_merge($context, ['action' => $action]),
+            // 413 too: the hub answers it for a body over its size limit (a
+            // pasted manual as the system prompt), and AiHubFieldErrors says
+            // which field made it too big.
+            details: in_array($response->status(), [413, 422], true)
+                ? ['status' => $response->status(), 'hub_messages' => self::hubMessages($response)]
+                : [],
         );
     }
 }

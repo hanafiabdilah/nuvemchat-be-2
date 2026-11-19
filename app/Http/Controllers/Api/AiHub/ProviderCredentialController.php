@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Resources\AiHubProviderCredentialResource;
 use App\Models\AiHubProviderCredential;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\AiAgentHub\AiHubFieldErrors;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -34,13 +35,19 @@ class ProviderCredentialController extends Controller
         $validated = $request->validate([
             'provider' => ['required', 'string', 'max:50'],
             'name' => ['required', 'string', 'max:255'],
+            // No length rule here on purpose: the hub owns it (8 today) and
+            // AiHubFieldErrors puts its refusal under this field.
             'apiKey' => ['required', 'string'],
             'defaultModel' => ['nullable', 'string', 'max:100'],
         ]);
 
         $aiHubTenant = $this->aiHubTenant();
 
-        $credential = $this->tenantService->createProviderCredential($aiHubTenant, $validated);
+        $credential = AiHubFieldErrors::guard(
+            fn () => $this->tenantService->createProviderCredential($aiHubTenant, $validated),
+            AiHubFieldErrors::CREDENTIAL,
+            payload: $validated,
+        );
 
         return response()->json([
             'message' => 'Provider credential created',
@@ -65,7 +72,11 @@ class ProviderCredentialController extends Controller
         // everyone — through an endpoint that looks like it edits their own row.
         $this->refuseIfRented($credential);
 
-        $updated = $this->tenantService->updateProviderCredential($credential, $validated);
+        $updated = AiHubFieldErrors::guard(
+            fn () => $this->tenantService->updateProviderCredential($credential, $validated),
+            AiHubFieldErrors::CREDENTIAL,
+            payload: $validated,
+        );
 
         return response()->json([
             'message' => 'Provider credential updated',

@@ -14,6 +14,7 @@ use App\Models\GalleryAsset;
 use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubService;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\AiAgentHub\AiHubFieldErrors;
 use App\Services\AiTokens\AiTokenPool;
 use App\Services\AiTokens\AiTokenRentalService;
 use App\Services\AiTokens\KnownModelPrices;
@@ -167,12 +168,16 @@ class FlowAssistantController extends Controller
                 throw ValidationException::withMessages(['provider' => 'Choose the provider this key belongs to.']);
             }
 
-            $credential = $hub->createProviderCredential(app(AiAgentHubService::class)->createTenant($tenant), [
-                'provider' => $provider,
-                'name' => trim((string) ($validated['name'] ?? '')) ?: 'Flow assistant key',
-                'apiKey' => trim($validated['api_key']),
-                'defaultModel' => $model,
-            ]);
+            $credential = AiHubFieldErrors::guard(
+                fn () => $hub->createProviderCredential(app(AiAgentHubService::class)->createTenant($tenant), [
+                    'provider' => $provider,
+                    'name' => trim((string) ($validated['name'] ?? '')) ?: 'Flow assistant key',
+                    'apiKey' => trim($validated['api_key']),
+                    'defaultModel' => $model,
+                ]),
+                AiHubFieldErrors::CREDENTIAL,
+                ['apiKey' => 'api_key', 'defaultModel' => 'model'],
+            );
         } else {
             $credential = $this->ownCredentials($tenant)
                 ->firstWhere('id', (int) ($validated['provider_credential_id'] ?? 0));

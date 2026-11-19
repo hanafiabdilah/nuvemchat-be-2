@@ -8,6 +8,7 @@ use App\Http\Resources\AiHubAgentResource;
 use App\Models\AiHubAgent;
 use App\Models\AiHubProviderCredential;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\AiAgentHub\AiHubFieldErrors;
 use App\Services\AiTokens\AiTokenRentalService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -58,9 +59,13 @@ class AgentController extends Controller
 
         $aiHubTenant = $this->aiHubTenant();
 
-        $payload = $this->resolveProviderCredentialId($validated, $aiHubTenant->id);
+        $payload = $this->toHubStatus($this->resolveProviderCredentialId($validated, $aiHubTenant->id));
 
-        $agent = $this->tenantService->createAgent($aiHubTenant, $payload);
+        $agent = AiHubFieldErrors::guard(
+            fn () => $this->tenantService->createAgent($aiHubTenant, $payload),
+            AiHubFieldErrors::AGENT,
+            payload: $payload,
+        );
         $agent->load('providerCredential');
 
         return response()->json([
@@ -75,9 +80,13 @@ class AgentController extends Controller
 
         $agent = $this->findAgent($id);
 
-        $payload = $this->resolveProviderCredentialId($validated, $agent->ai_hub_tenant_id);
+        $payload = $this->toHubStatus($this->resolveProviderCredentialId($validated, $agent->ai_hub_tenant_id));
 
-        $updated = $this->tenantService->updateAgent($agent, $payload);
+        $updated = AiHubFieldErrors::guard(
+            fn () => $this->tenantService->updateAgent($agent, $payload),
+            AiHubFieldErrors::AGENT,
+            payload: $payload,
+        );
         $updated->load('providerCredential');
 
         return response()->json([
@@ -112,13 +121,36 @@ class AgentController extends Controller
             'description' => ['sometimes', 'nullable', 'string'],
             'providerCredentialId' => array_merge($core, ['integer', 'exists:ai_hub_provider_credentials,id']),
             'model' => array_merge($core, ['string', 'max:100']),
+            // No length rule here on purpose: the hub owns it (10 today) and
+            // AiHubFieldErrors puts its refusal under this field.
             'systemPrompt' => ['sometimes', 'nullable', 'string'],
             'temperature' => ['sometimes', 'nullable', 'numeric', 'between:0,2'],
             'maxTokens' => ['sometimes', 'nullable', 'integer', 'min:1'],
-            'status' => ['sometimes', 'string', 'in:ACTIVE,DISABLED'],
+            'status' => ['sometimes', 'string', 'in:ACTIVE,DISABLED,PAUSED'],
             'handoffRules' => ['sometimes', 'nullable', 'array'],
             'metadata' => ['sometimes', 'nullable', 'array'],
         ]);
+    }
+
+    /**
+     * "Off", in the hub's words.
+     *
+     * The dashboard has always sent DISABLED for an agent switched off, and the
+     * hub has never accepted it — its agent statuses are DRAFT, ACTIVE, PAUSED
+     * and ARCHIVED (probed Nov 2026: `status must be one of the following
+     * values: …`). So every save of an inactive agent was refused. PAUSED is the
+     * hub's "configured, not answering", which is what the switch means.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    protected function toHubStatus(array $payload): array
+    {
+        if (($payload['status'] ?? null) === 'DISABLED') {
+            $payload['status'] = 'PAUSED';
+        }
+
+        return $payload;
     }
 
     /**

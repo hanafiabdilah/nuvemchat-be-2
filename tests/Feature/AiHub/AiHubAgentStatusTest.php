@@ -74,6 +74,9 @@ it('lets an agent be switched off without deleting it', function () {
         ->patchJson("/api/ai-hub/agents/{$agent->id}", ['status' => 'DISABLED'])
         ->assertOk();
 
-    expect($sent['status'])->toBe('DISABLED')
-        ->and($agent->fresh()->status)->toBe('DISABLED');
+    // In the hub's words. It answers DISABLED with `status must be one of the
+    // following values: DRAFT, ACTIVE, PAUSED, ARCHIVED` (probed Nov 2026), so
+    // the dashboard's "off" has to arrive as PAUSED or the save is refused.
+    expect($sent['status'])->toBe('PAUSED')
+        ->and($agent->fresh()->status)->toBe('PAUSED');
 });
