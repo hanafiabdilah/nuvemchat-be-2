@@ -131,7 +131,7 @@ final class AutomationActions
             ? [(int) ($action['user_id'] ?? 0)]
             : array_map('intval', (array) ($action['user_ids'] ?? []));
 
-        $people = User::query()->where('tenant_id', $subject->getAttribute('tenant_id'))->whereIn('id', $candidates)->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $people = User::query()->active()->where('tenant_id', $subject->getAttribute('tenant_id'))->whereIn('id', $candidates)->pluck('id')->map(fn ($id) => (int) $id)->all();
         // In the order the author listed them; whoever left is passed over.
         $people = array_values(array_filter($candidates, fn ($id) => in_array($id, $people, true)));
 
@@ -247,7 +247,7 @@ final class AutomationActions
     {
         $assignee = match ($action['assignee'] ?? 'owner') {
             'owner' => AutomationSubjects::ownerIdOf($subject),
-            'user' => User::query()->where('tenant_id', $subject->getAttribute('tenant_id'))->whereKey($action['user_id'] ?? 0)->value('id'),
+            'user' => User::query()->active()->where('tenant_id', $subject->getAttribute('tenant_id'))->whereKey($action['user_id'] ?? 0)->value('id'),
             default => null,
         };
 
@@ -301,7 +301,7 @@ final class AutomationActions
             $ids = [...$ids, ...array_map('intval', (array) ($action['user_ids'] ?? []))];
         }
 
-        $people = User::query()->where('tenant_id', $subject->getAttribute('tenant_id'))->whereIn('id', array_unique($ids))->get()
+        $people = User::query()->active()->where('tenant_id', $subject->getAttribute('tenant_id'))->whereIn('id', array_unique($ids))->get()
             // Nobody is told about a record they cannot open.
             ->filter(fn (User $user) => AutomationSubjects::visibleTo($subject, $user));
 

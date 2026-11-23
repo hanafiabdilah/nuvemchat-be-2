@@ -54,7 +54,10 @@ class PasswordResetController extends Controller
             OtpGuard::identityForEmail($validated['email']),
         );
 
-        $user = User::where('email', $validated['email'])->first();
+        // A deactivated account is answered as an address with no account: a
+        // former employee must not be able to set a password their way back
+        // in, and the response stays identical either way.
+        $user = User::active()->where('email', $validated['email'])->first();
 
         if ($user) {
             // An account with no WhatsApp number still gets a code: it is
@@ -158,7 +161,7 @@ class PasswordResetController extends Controller
      */
     private function userOrFail(string $email): User
     {
-        $user = User::where('email', $email)->first();
+        $user = User::active()->where('email', $email)->first();
 
         if (! $user) {
             $this->guard->phantomCheck(OtpService::PURPOSE_PASSWORD_RESET, OtpGuard::identityForEmail($email));

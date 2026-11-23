@@ -64,6 +64,14 @@ class AppServiceProvider extends ServiceProvider
         // Push notifications to the mobile app (docs/mobile-push.md).
         \App\Services\Push\PushEvents::register();
 
+        // A deactivated account's sessions are revoked when it is deactivated
+        // (AgentDeactivation); this refuses any token that survived anyway, on
+        // every route at once, rather than trusting each one to ask.
+        \Laravel\Sanctum\Sanctum::authenticateAccessTokensUsing(
+            fn ($token, bool $isValid) => $isValid
+                && ! ($token->tokenable instanceof \App\Models\User && $token->tokenable->isDeactivated()),
+        );
+
         $this->registerQueueHeartbeat();
         $this->registerPasswordPolicy();
 

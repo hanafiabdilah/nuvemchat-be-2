@@ -521,7 +521,8 @@ class SubscriptionAddons
     protected function used(Tenant $tenant, Addon $addon): int
     {
         return match ($addon) {
-            Addon::Agent => $tenant->users()->count(),
+            // Seats: a deactivated account is not one (AgentController::seatRefusal).
+            Addon::Agent => $tenant->users()->active()->count(),
             Addon::WhatsappConnection => $this->gate->connectionsUsed($tenant, Quota::MaxWhatsappConnections),
             // Whole gigabytes, rounded up: half a gigabyte in use still needs
             // that gigabyte to stay.

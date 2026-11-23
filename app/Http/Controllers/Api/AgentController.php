@@ -12,6 +12,7 @@ use App\Models\Conversation;
 use App\Models\User;
 use App\Services\Access\TenantRoles;
 use App\Services\Billing\SubscriptionAddons;
+use App\Services\User\AgentDeactivation;
 use App\Services\User\AgentRemoval;
 use App\Services\User\AvatarStorage;
 use Illuminate\Http\JsonResponse;
@@ -24,7 +25,13 @@ class AgentController extends Controller
 {
     public function index()
     {
-        $users = request()->user()->tenant->users()->with(['connections', 'roles', 'permissions'])->orderBy('created_at', 'DESC')->get();
+        // Deactivated people are listed too (the page shows them apart, and is
+        // where they are switched back on). Every picker that hands work to
+        // somebody filters them out on its own: see User::scopeActive().
+        $users = request()->user()->tenant->users()
+            ->with(['connections', 'roles', 'permissions', 'deactivatedBy:id,name'])
+            ->orderBy('created_at', 'DESC')
+            ->get();
 
         // How many unresolved conversations each person holds: the number the
         // delete dialog has to decide about. One grouped query for the page,
@@ -67,14 +74,8 @@ class AgentController extends Controller
                 ->all(),
         );
 
-        if (! app(\App\Services\Billing\SubscriptionGate::class)->canConsume($tenant, 'max_agents', $tenant->users()->count())) {
-            return response()->json([
-                'message' => 'You have reached the maximum number of agents for your plan.',
-                'code' => 'quota_exceeded',
-                'quota' => 'max_agents',
-                // Whether an extra seat can be bought instead (Billing → extras).
-                'addon_available' => app(SubscriptionAddons::class)->canBuy($tenant, Addon::Agent),
-            ], 422);
+        if ($refusal = $this->seatRefusal($tenant)) {
+            return $refusal;
         }
 
         $user = $tenant->users()->create([
@@ -188,7 +189,7 @@ class AgentController extends Controller
     private function agentPayload(User $user): UserResource
     {
         return $user->fresh()
-            ->load(['connections', 'roles', 'permissions'])
+            ->load(['connections', 'roles', 'permissions', 'deactivatedBy:id,name'])
             ->toResource(UserResource::class);
     }
 
@@ -218,13 +219,7 @@ class AgentController extends Controller
         $target = null;
 
         if (! empty($validated['reassign_to'])) {
-            $target = $actor->tenant->users()->find($validated['reassign_to']);
-
-            if (! $target || (int) $target->id === (int) $user->id) {
-                throw ValidationException::withMessages([
-                    'reassign_to' => 'Choose another person from this workspace to receive the conversations.',
-                ]);
-            }
+            $target = $this->reassignTarget($actor, $user, (int) $validated['reassign_to']);
         }
 
         $summary = $removal->remove($user, $actor, $target);
@@ -233,6 +228,136 @@ class AgentController extends Controller
             'message' => 'Agent deleted successfully',
             'data' => $summary,
         ], 200);
+    }
+
+    /**
+     * Close the account of someone who no longer works here, keeping their
+     * history. Same `reassign_to` as destroy() for their open conversations.
+     * See AgentDeactivation for everything that ends with it.
+     */
+    public function deactivate(Request $request, int $id, AgentDeactivation $deactivation)
+    {
+        $actor = $request->user();
+        $user = $actor->tenant->users()->findOrFail($id);
+
+        if ($user->hasRole('owner')) {
+            return response()->json([
+                'message' => 'The owner cannot be deactivated.',
+                'code' => 'agent_protected',
+            ], 403);
+        }
+
+        if ((int) $user->id === (int) $actor->id) {
+            return response()->json([
+                'message' => 'You cannot deactivate your own account.',
+                'code' => 'cannot_deactivate_self',
+            ], 422);
+        }
+
+        if ($refusal = $this->impersonationRefusal($request)) {
+            return $refusal;
+        }
+
+        $validated = $request->validate([
+            'reassign_to' => ['nullable', 'integer'],
+        ]);
+
+        $target = ! empty($validated['reassign_to'])
+            ? $this->reassignTarget($actor, $user, (int) $validated['reassign_to'])
+            : null;
+
+        $summary = $deactivation->deactivate($user, $actor, $target);
+
+        return response()->json([
+            'message' => $summary['changed'] ? 'Agent deactivated' : 'Agent was already deactivated',
+            'changed' => $summary['changed'],
+            'summary' => [
+                'transferred' => $summary['transferred'],
+                'returned_to_queue' => $summary['returned_to_queue'],
+            ],
+            'data' => $this->agentPayload($user),
+        ]);
+    }
+
+    /** Give a deactivated account back, if the plan still has a seat for it. */
+    public function reactivate(Request $request, int $id, AgentDeactivation $deactivation)
+    {
+        $actor = $request->user();
+        $user = $actor->tenant->users()->findOrFail($id);
+
+        if ($refusal = $this->impersonationRefusal($request)) {
+            return $refusal;
+        }
+
+        if ($user->isDeactivated() && ($refusal = $this->seatRefusal($actor->tenant))) {
+            return $refusal;
+        }
+
+        $changed = $deactivation->reactivate($user, $actor);
+
+        return response()->json([
+            'message' => $changed ? 'Agent reactivated' : 'Agent was already active',
+            'changed' => $changed,
+            'data' => $this->agentPayload($user),
+        ]);
+    }
+
+    /**
+     * The 422 to send when the plan has no seat left, or null.
+     *
+     * Counts the people who still work here: a deactivated account is not a
+     * seat, which is half the reason to deactivate rather than keep someone.
+     */
+    private function seatRefusal(\App\Models\Tenant $tenant): ?JsonResponse
+    {
+        $used = $tenant->users()->active()->count();
+
+        if (app(\App\Services\Billing\SubscriptionGate::class)->canConsume($tenant, 'max_agents', $used)) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'You have reached the maximum number of agents for your plan.',
+            'code' => 'quota_exceeded',
+            'quota' => 'max_agents',
+            // Whether an extra seat can be bought instead (Billing → extras).
+            'addon_available' => app(SubscriptionAddons::class)->canBuy($tenant, Addon::Agent),
+        ], 422);
+    }
+
+    /**
+     * Who receives a leaving person's open conversations: somebody else from
+     * this workspace who still works here.
+     */
+    private function reassignTarget(User $actor, User $leaving, int $id): User
+    {
+        $target = $actor->tenant->users()->active()->find($id);
+
+        if (! $target || (int) $target->id === (int) $leaving->id) {
+            throw ValidationException::withMessages([
+                'reassign_to' => 'Choose another person from this workspace to receive the conversations.',
+            ]);
+        }
+
+        return $target;
+    }
+
+    /**
+     * A Back Office operator viewing the workspace does not close anybody's
+     * account: that is a decision for the people who run it.
+     */
+    private function impersonationRefusal(Request $request): ?JsonResponse
+    {
+        $token = $request->user()?->currentAccessToken();
+
+        if ($token instanceof \Laravel\Sanctum\PersonalAccessToken && $token->name === 'impersonation') {
+            return response()->json([
+                'message' => 'This is not available while viewing as this workspace.',
+                'code' => 'impersonation_read_only',
+            ], 403);
+        }
+
+        return null;
     }
 
     /**

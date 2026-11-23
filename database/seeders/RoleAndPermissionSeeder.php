@@ -95,6 +95,8 @@ class RoleAndPermissionSeeder extends Seeder
             // (never back — the switch stays the agent's to turn on).
             'agents.set-offline',
             'agents.delete',
+            // Someone who left: no access, no seat, history kept.
+            'agents.deactivate',
             'agents.sync-connections',
             'agents.assign-roles',
             'agents.assign-permissions',

@@ -63,7 +63,10 @@ class AuthenticateMcp
         // The account was removed, or moved out of the workspace it was
         // connected to. The grant was to a person in a workspace; neither half
         // survives on its own.
-        if (! $user || ! $tenant || $user->tenant_id !== $tenant->id) {
+        // A deactivated account (someone who left) is the same answer: its
+        // connections are revoked on deactivation, this covers one that slipped
+        // through.
+        if (! $user || ! $tenant || $user->tenant_id !== $tenant->id || $user->isDeactivated()) {
             return $this->challenge('The account behind this connection is no longer available.');
         }
 

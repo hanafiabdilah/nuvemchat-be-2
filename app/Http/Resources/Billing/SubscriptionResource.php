@@ -154,7 +154,8 @@ class SubscriptionResource extends JsonResource
             'whatsapp_connections' => $tenant ? $gate->connectionsUsed($tenant, Quota::MaxWhatsappConnections) : 0,
             'other_connections' => $tenant ? $gate->connectionsUsed($tenant, Quota::MaxOtherConnections) : 0,
             'connections' => $tenant ? Connection::where('tenant_id', $tenant->id)->count() : 0,
-            'agents' => $tenant ? User::where('tenant_id', $tenant->id)->count() : 0,
+            // Seats: a deactivated account is not one.
+            'agents' => $tenant ? User::active()->where('tenant_id', $tenant->id)->count() : 0,
             // Every quota a plan can carry has a meter here, read from the same
             // service that enforces it — a usage panel showing two of five
             // limits leaves the customer to discover the other three by

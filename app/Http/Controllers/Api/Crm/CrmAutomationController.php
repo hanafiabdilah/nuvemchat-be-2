@@ -55,7 +55,7 @@ class CrmAutomationController extends Controller
         $tenantId = $request->user()->tenant_id;
 
         return response()->json(AutomationDefinition::meta() + [
-            'people' => User::query()->where('tenant_id', $tenantId)->orderBy('name')->get(['id', 'name'])
+            'people' => User::query()->active()->where('tenant_id', $tenantId)->orderBy('name')->get(['id', 'name'])
                 ->map(fn (User $user) => ['id' => $user->id, 'name' => $user->name])->values(),
             'flows' => Flow::query()->where('tenant_id', $tenantId)->orderBy('name')->get(['id', 'name']),
             'pipelines' => CrmPipelines::forTenant($tenantId)->map(fn (CrmPipeline $pipeline) => [

@@ -152,6 +152,12 @@ class AuthController extends Controller
 
         $throttle->clear($request, $email);
 
+        // The password was right, so saying why is no leak: only the person
+        // who knows it learns that the account exists and was closed.
+        if ($user?->isDeactivated()) {
+            return $this->deactivatedResponse();
+        }
+
         if ($this->hasTwoFactor($user)) {
             // Signed in as far as the password goes, but no token yet. Auth::attempt
             // put the user on the guard for this request; nothing carries over to
@@ -223,6 +229,12 @@ class AuthController extends Controller
 
     private function grant(User $user)
     {
+        // Also the second step's way in: an account can be deactivated
+        // between the password and the code.
+        if ($user->isDeactivated()) {
+            return $this->deactivatedResponse();
+        }
+
         $issued = $user->createToken(SingleSession::TOKEN_NAME);
         $token = $issued->plainTextToken;
 
@@ -242,6 +254,15 @@ class AuthController extends Controller
             'access_token' => $token,
             'user' => $user->toResource(UserResource::class),
         ]);
+    }
+
+    /** A former team member trying to sign in (AgentDeactivation). */
+    private function deactivatedResponse()
+    {
+        return response()->json([
+            'message' => 'This account has been deactivated. Ask the person who manages your workspace.',
+            'code' => 'account_deactivated',
+        ], 403);
     }
 
     private function hasTwoFactor(?User $user): bool

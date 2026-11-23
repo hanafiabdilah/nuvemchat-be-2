@@ -41,7 +41,8 @@ final class FlowVocabulary
                 ->map(fn (Tag $tag) => ['id' => $tag->id, 'name' => $tag->name])
                 ->all(),
 
-            'agents' => User::where('tenant_id', $tenantId)
+            'agents' => User::active()
+                ->where('tenant_id', $tenantId)
                 ->orderBy('name')
                 ->get(['id', 'name'])
                 ->map(fn (User $user) => ['id' => $user->id, 'name' => $user->name])

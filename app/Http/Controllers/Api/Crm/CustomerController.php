@@ -397,8 +397,16 @@ class CustomerController extends Controller
             'data' => User::query()
                 ->where('tenant_id', $request->user()->tenant_id)
                 ->orderBy('name')
-                ->get(['id', 'name', 'avatar_path'])
-                ->map(fn (User $user) => ['id' => $user->id, 'name' => $user->name, 'avatar' => $user->avatar_url])
+                ->get(['id', 'name', 'avatar_path', 'deactivated_at'])
+                // People who left stay on the list — records they owned still
+                // name them, and filtering by them is how those records are
+                // found to hand on — flagged so a picker can set them apart.
+                ->map(fn (User $user) => [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'avatar' => $user->avatar_url,
+                    'deactivated' => $user->isDeactivated(),
+                ])
                 ->values(),
         ]);
     }

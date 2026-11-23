@@ -62,6 +62,7 @@ class User extends Authenticatable
             'notification_preferences' => 'array',
             'last_seen_at' => 'datetime',
             'offline_since' => 'datetime',
+            'deactivated_at' => 'datetime',
         ];
     }
 
@@ -167,7 +168,7 @@ class User extends Authenticatable
      */
     public function isOnline(): bool
     {
-        if ($this->offline_since !== null || $this->last_seen_at === null) {
+        if ($this->deactivated_at !== null || $this->offline_since !== null || $this->last_seen_at === null) {
             return false;
         }
 
@@ -181,7 +182,33 @@ class User extends Authenticatable
     public function scopeOnline($query)
     {
         return $query->whereNull($query->qualifyColumn('offline_since'))
+            ->whereNull($query->qualifyColumn('deactivated_at'))
             ->where($query->qualifyColumn('last_seen_at'), '>=', self::onlineSince());
+    }
+
+    /**
+     * Whether this person no longer works here (AgentDeactivation).
+     *
+     * A deactivated account keeps its row, its name on its history and its
+     * roles, so it can be switched back on; everything else treats it as gone:
+     * it cannot sign in, reaches no connection, is never online, never routed
+     * to, never notified and does not count as a seat.
+     */
+    public function isDeactivated(): bool
+    {
+        return $this->deactivated_at !== null;
+    }
+
+    /** The people who still work here: the seat count, pickers and recipient lists. */
+    public function scopeActive($query)
+    {
+        return $query->whereNull($query->qualifyColumn('deactivated_at'));
+    }
+
+    /** Who deactivated this account. */
+    public function deactivatedBy()
+    {
+        return $this->belongsTo(User::class, 'deactivated_by_user_id');
     }
 
     /** The oldest heartbeat that still counts as being at the desk. */
@@ -278,7 +305,7 @@ class User extends Authenticatable
      */
     public function canAccessAllConnections(): bool
     {
-        return $this->hasRole('owner');
+        return ! $this->isDeactivated() && $this->hasRole('owner');
     }
 
     /**
@@ -290,6 +317,16 @@ class User extends Authenticatable
      */
     public function accessibleConnectionIds(): array
     {
+        // ⚠️ A deactivated person reaches nothing, and this is the one place
+        // that says so for every reader at once: the inbox (visibleTo), the
+        // transfer target check, the flow's assign-agent action, return-to-
+        // last-agent and the WhatsApp alerts all ask through here or through
+        // canAccessConnection(). The pivot rows are kept so reactivating gives
+        // back exactly the inboxes they had.
+        if ($this->isDeactivated()) {
+            return [];
+        }
+
         return $this->accessibleConnectionIdsCache ??= $this->connections()
             ->where('connections.tenant_id', $this->tenant_id)
             ->pluck('connections.id')
@@ -305,7 +342,7 @@ class User extends Authenticatable
      */
     public function canAccessConnection(Connection|int|string|null $connection): bool
     {
-        if ($connection === null) {
+        if ($connection === null || $this->isDeactivated()) {
             return false;
         }
 

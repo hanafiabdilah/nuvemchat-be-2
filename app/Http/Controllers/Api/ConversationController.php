@@ -1418,6 +1418,7 @@ class ConversationController extends Controller
         }
 
         $agents = Auth::user()->tenant->users()
+            ->active()
             ->where('users.id', '!=', $conversation->user_id)
             ->where(function ($q) use ($conversation) {
                 // Owners hold no connection_user rows — they qualify by role.

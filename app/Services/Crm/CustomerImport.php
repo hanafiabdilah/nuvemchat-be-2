@@ -110,7 +110,8 @@ final class CustomerImport
         $definitions = CustomFields::definitions($actor->tenant_id, 'customer')->keyBy('key');
         $context = [
             'companies' => Company::query()->where('tenant_id', $actor->tenant_id)->get(['id', 'name'])->keyBy(fn ($c) => mb_strtolower($c->name)),
-            'users' => User::query()->where('tenant_id', $actor->tenant_id)->get(['id', 'name', 'email']),
+            // An owner column naming someone who left imports with no owner.
+            'users' => User::query()->active()->where('tenant_id', $actor->tenant_id)->get(['id', 'name', 'email']),
             'tags' => Tag::query()->where('tenant_id', $actor->tenant_id)->get(['id', 'name'])->keyBy(fn ($t) => mb_strtolower($t->name)),
         ];
 

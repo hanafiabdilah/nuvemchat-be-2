@@ -2285,7 +2285,8 @@ class FlowExecutor
         $timezone = $conversation->connection->tenant?->displayTimezone() ?? config('app.timezone');
         $due = now($timezone)->addDays($days)->setTime(17, 0);
         $assignee = isset($parameters['task_assignee_id'])
-            ? User::where('tenant_id', $tenantId)->whereKey($parameters['task_assignee_id'])->value('id')
+            // Someone who left gets no task: it is created unassigned instead.
+            ? User::active()->where('tenant_id', $tenantId)->whereKey($parameters['task_assignee_id'])->value('id')
             : null;
 
         $task = CrmTimeline::attributing(

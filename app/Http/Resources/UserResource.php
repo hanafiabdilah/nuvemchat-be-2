@@ -47,6 +47,12 @@ class UserResource extends JsonResource
             // whether their dashboard is open (that is `last_seen_at`, and it
             // stays server-side). Online unless they flipped it.
             'presence' => $this->presenceStatus(),
+            // Set when this person no longer works here (AgentDeactivation):
+            // the account is kept for its history but cannot sign in. ISO 8601.
+            'deactivated_at' => $this->deactivated_at?->toIso8601String(),
+            'deactivated_by' => $this->whenLoaded('deactivatedBy', fn () => $this->deactivatedBy
+                ? ['id' => $this->deactivatedBy->id, 'name' => $this->deactivatedBy->name]
+                : null),
             'roles' => $this->whenLoaded('roles', function() {
                 return $this->roles->pluck('name');
             }),

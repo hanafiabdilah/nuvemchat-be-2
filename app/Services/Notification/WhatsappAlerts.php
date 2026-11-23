@@ -117,7 +117,9 @@ final class WhatsappAlerts
      */
     public static function recipients(int $tenantId, string $alert, ?Connection $connection = null): Collection
     {
-        return User::where('tenant_id', $tenantId)
+        // Never to someone who left: these land on a personal phone.
+        return User::active()
+            ->where('tenant_id', $tenantId)
             ->whereNotNull('whatsapp_verified_at')
             ->whereNotNull('whatsapp_number')
             ->whereNotNull('notification_preferences')

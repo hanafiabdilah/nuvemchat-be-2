@@ -682,6 +682,8 @@ final class LiveMonitor
             $users = DB::table('users')
                 ->when($this->tenantId, fn ($q) => $q->where('users.tenant_id', $this->tenantId))
                 ->whereNotNull('users.tenant_id')
+                // Former team members are not part of anybody's shift.
+                ->whereNull('users.deactivated_at')
                 // Same rule as User::isOnline(): an agent who switched to
                 // Offline is offline here too, even with the dashboard open.
                 ->when($onlineOnly, fn ($q) => $q->where('users.last_seen_at', '>=', $onlineSince)->whereNull('users.offline_since'))

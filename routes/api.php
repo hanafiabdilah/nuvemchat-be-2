@@ -995,6 +995,14 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     Route::post('/agents', [AgentController::class, 'store'])->middleware('permission:agents.create');
     Route::put('/agents/{id}', [AgentController::class, 'update'])->middleware('permission:agents.update');
     Route::delete('/agents/{id}', [AgentController::class, 'destroy'])->middleware('permission:agents.delete');
+    // Someone who left the company: access ends and the seat frees up, their
+    // history stays (AgentDeactivation). Reversible, unlike the delete above.
+    Route::post('/agents/{id}/deactivate', [AgentController::class, 'deactivate'])
+        ->whereNumber('id')
+        ->middleware(['permission:agents.deactivate', 'throttle:30,1,agent-deactivation']);
+    Route::post('/agents/{id}/reactivate', [AgentController::class, 'reactivate'])
+        ->whereNumber('id')
+        ->middleware(['permission:agents.deactivate', 'throttle:30,1,agent-deactivation']);
     // A photo, on its own permission. `agents.update` carries the e-mail and the
     // password an agent signs in with; putting a face on a roster should not
     // have to come with that.

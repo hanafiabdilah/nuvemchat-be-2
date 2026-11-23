@@ -38,7 +38,9 @@ class AgentControlController extends Controller
     {
         $actor = $request->user();
 
+        // The team's day: people who left (deactivated) are not on it.
         $users = $actor->tenant->users()
+            ->active()
             ->with(['roles', 'offlineSetBy:id,name'])
             ->get();
 
@@ -78,7 +80,7 @@ class AgentControlController extends Controller
             ], 403);
         }
 
-        $agent = $actor->tenant->users()->with(['roles'])->findOrFail($id);
+        $agent = $actor->tenant->users()->active()->with(['roles'])->findOrFail($id);
 
         if (! $this->mayTurnOff($actor, $agent)) {
             return response()->json([
