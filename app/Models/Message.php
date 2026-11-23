@@ -83,6 +83,21 @@ class Message extends Model
         return $query->whereNull('meta->'.ExternalAutomationReply::META_KEY);
     }
 
+    /**
+     * Leave out customer messages an incident notice already answered
+     * (IncidentResponder). Same readers as exceptExternalAutomation(), for the
+     * same reason: the AI turn scheduled for the customer's "oi" would
+     * otherwise read "meu proxy caiu" off the database and answer it a second
+     * time, right under the notice.
+     *
+     * The notice itself stays visible to the AI transcript — it is an
+     * automated message the agent should know was sent.
+     */
+    public function scopeExceptIncidentHandled(Builder $query): Builder
+    {
+        return $query->whereNull('meta->'.\App\Services\Incident\IncidentResponder::HANDLED_META);
+    }
+
     public function conversation()
     {
         return $this->belongsTo(Conversation::class);

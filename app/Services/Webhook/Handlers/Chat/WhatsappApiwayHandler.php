@@ -36,6 +36,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Services\Incident\IncidentResponder;
 
 /**
  * Inbound webhook handler for the WhatsApp API Way channel.
@@ -354,6 +355,12 @@ class WhatsappApiwayHandler implements ChatHandlerInterface, DownloadsInboundMed
                 Log::error('WhatsappApiwayHandler: failed to start flow', ['error' => $th->getMessage()]);
             }
 
+            return;
+        }
+
+        // An incident is on and its notice answered this message: the flow
+        // does not answer it again (IncidentResponder).
+        if (! $replayed && IncidentResponder::intercept($message)) {
             return;
         }
 

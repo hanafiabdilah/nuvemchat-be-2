@@ -67,6 +67,8 @@ return [
     'alert_lead_summary' => '📊 {{name}}, {{period}}: *{{leads}}* lead baru.{{details}}',
     'alert_ads_summary' => '📈 {{name}}, {{period}}: biaya iklan *{{spend}}*, *{{leads}}* lead, *{{sales}}* penjualan ({{revenue}}). ROAS: *{{roas}}*.{{details}}',
 
+    'alert_incident_expiring' => '⏳ {{name}}, insiden *{{incident}}* berakhir pukul {{time}}. Kalau masalahnya belum selesai, perpanjang di Pingly; setelah berakhir, pesan kembali dijawab seperti biasa.',
+
     'alert_test' => '✅ {{name}}, berhasil: alert Pingly akan dikirim ke nomor ini.',
 
 ];

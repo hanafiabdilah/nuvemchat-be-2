@@ -33,6 +33,7 @@ class Heartbeat
         'queue:broadcasts' => ['Broadcast worker', 300, 'Pumps campaign sends. Campaigns stall without it.'],
         'discord:gateway' => ['Discord gateway', 90, 'The only way Discord DMs arrive — Discord has no message webhook.'],
         'broadcasts:tick' => ['Broadcast watchdog', 180, 'Starts scheduled campaigns and revives stalled ones.'],
+        'incidents:tick' => ['Incident watchdog', 180, 'Starts scheduled incidents, ends expired ones and revives their paced sends. Without it an incident never ends on its own.'],
         'crm:task-reminders' => ['CRM task reminders', 180, 'Tells people their tasks are due. Without it no reminder ever goes out.'],
         'crm:score-leads' => ['CRM lead scoring', 7200, 'Keeps lead scores current where a rule depends on time. Only does work for workspaces with scoring on.'],
         'crm:automations-scan' => ['CRM automations (time-based)', 1800, 'Starts the CRM automations about time passing — stale deals, idle leads, overdue tasks. Without it those automations never run.'],

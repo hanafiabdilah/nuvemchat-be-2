@@ -211,6 +211,13 @@ class RoleAndPermissionSeeder extends Seeder
             'reservations.view',
             'reservations.manage',
             'reservations.confirm',
+
+            // Incidents: the workspace answering everyone who writes in while
+            // something is broken. `view` reads who was told and what they
+            // said; `manage` switches one on, which answers customers on every
+            // chosen connection.
+            'incidents.view',
+            'incidents.manage',
         ];
 
         foreach ($permissions as $permission) {

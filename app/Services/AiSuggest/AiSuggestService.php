@@ -10,6 +10,7 @@ use App\Services\AiAgentHub\AiAttachments;
 use App\Services\AiAgentHub\AiTranscription;
 use App\Services\AiAgentHub\AiTranscripts;
 use RuntimeException;
+use App\Services\Incident\IncidentAiContext;
 
 /**
  * "Respond with AI" — drafts a reply suggestion for the agent from the recent
@@ -67,6 +68,10 @@ class AiSuggestService
         }
 
         [$instruction, $lastMessageId, $attachmentEntries] = $this->buildInstruction($conversation);
+
+        // A live incident reaches the draft too: an attendant asking for a
+        // reply during an outage should not be handed troubleshooting steps.
+        $instruction = IncidentAiContext::prepend($conversation, $instruction);
 
         $attachments = array_column($attachmentEntries, 'attachment');
 

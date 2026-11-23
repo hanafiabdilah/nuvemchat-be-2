@@ -30,6 +30,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Services\Incident\IncidentResponder;
 
 class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
@@ -385,6 +386,12 @@ class WhatsappOfficialHandler implements ChatHandlerInterface, DownloadsInboundM
                     'kind' => $automation['kind'],
                 ]);
 
+                return;
+            }
+
+            // An incident is on and its notice answered this message: the flow
+            // does not answer it again (IncidentResponder).
+            if (IncidentResponder::intercept($message)) {
                 return;
             }
 

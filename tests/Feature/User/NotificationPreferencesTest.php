@@ -85,6 +85,7 @@ it('merges a partial update instead of dropping the other switch', function () {
                 'flow_failed' => false,
                 'receipt_approved' => false,
                 'receipt_rejected' => false,
+                'incident_expiring' => false,
                 'lead_summary' => 'off',
                 'ads_summary' => 'off',
             ],

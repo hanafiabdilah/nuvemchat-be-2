@@ -112,6 +112,9 @@ enum NotificationType: string
     /** Ad spend, leads, sales and ROAS for yesterday or last week (Meta Ads). */
     case AlertAdsSummary = 'alert_ads_summary';
 
+    /** An incident is about to run out while it may still be needed. */
+    case AlertIncidentExpiring = 'alert_incident_expiring';
+
     /** Sent from the settings page, so a person sees alerts reach the number. */
     case AlertTest = 'alert_test';
 
@@ -147,6 +150,7 @@ enum NotificationType: string
             self::AlertReceiptRejected => 'Alert: payment receipt rejected',
             self::AlertLeadSummary => 'Alert: new leads summary',
             self::AlertAdsSummary => 'Alert: ads summary (spend, leads, sales, ROAS)',
+            self::AlertIncidentExpiring => 'Alert: incident about to end',
             self::AlertTest => 'Alert: test message',
         };
     }
@@ -239,6 +243,7 @@ enum NotificationType: string
             self::AlertReceiptRejected => ['name', 'contact', 'reason', 'connection'],
             self::AlertLeadSummary => ['name', 'period', 'leads', 'details'],
             self::AlertAdsSummary => ['name', 'period', 'spend', 'leads', 'sales', 'revenue', 'roas', 'details'],
+            self::AlertIncidentExpiring => ['name', 'incident', 'time'],
             self::AlertTest => ['name'],
         };
     }

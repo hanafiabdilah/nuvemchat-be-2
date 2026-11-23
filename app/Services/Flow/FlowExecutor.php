@@ -59,6 +59,7 @@ use App\Observers\ConversationObserver;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
 use App\Services\AiAgentHub\AiAttachments;
 use App\Services\AiAgentHub\AiConversationContext;
+use App\Services\Incident\IncidentAiContext;
 use App\Services\AiAgentHub\AiDeliveryPolicy;
 use App\Services\AiAgentHub\AiFirstMessage;
 use App\Services\AiAgentHub\AiFollowUp;
@@ -1631,6 +1632,7 @@ class FlowExecutor
         $meta = Message::where('conversation_id', $conversation->id)
             ->where('sender_type', SenderType::Incoming)
             ->exceptExternalAutomation()
+            ->exceptIncidentHandled()
             ->latest('id')
             ->value('meta');
 
@@ -3835,6 +3837,7 @@ class FlowExecutor
             ->where('sender_type', SenderType::Incoming)
             ->where('message_type', '!=', MessageType::Info)
             ->exceptExternalAutomation()
+            ->exceptIncidentHandled()
             ->orderBy('id')
             ->pluck('body')
             ->map(fn ($body) => trim((string) $body))
@@ -4964,6 +4967,11 @@ class FlowExecutor
             );
         }
 
+        // An incident is live on this connection: the agent hears about it
+        // before the customer's words, so it does not troubleshoot an outage
+        // the business already announced (IncidentAiContext).
+        $input = IncidentAiContext::prepend($flowState->conversation, $input);
+
         try {
             $this->handleAIAgentInput(
                 $flowState,
@@ -5059,7 +5067,8 @@ class FlowExecutor
             ->where('sender_type', SenderType::Incoming)
             ->whereNull('unsend_at')
             // Taps on another system's buttons were answered by that system.
-            ->exceptExternalAutomation();
+            ->exceptExternalAutomation()
+            ->exceptIncidentHandled();
 
         if ($lastProcessedId === null) {
             // No watermark at all: the defensive path — answer the newest
@@ -7359,6 +7368,7 @@ class FlowExecutor
             ->where('sender_type', SenderType::Incoming)
             ->where('message_type', '!=', MessageType::Info)
             ->exceptExternalAutomation()
+            ->exceptIncidentHandled()
             ->orderByDesc('id')
             ->first();
 

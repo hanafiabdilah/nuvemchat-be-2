@@ -26,6 +26,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use App\Services\Incident\IncidentResponder;
 
 class WidgetController extends Controller
 {
@@ -260,6 +261,14 @@ class WidgetController extends Controller
         // opens, before the visitor has said anything, and assigning an empty
         // thread would push a blank row into the dashboard.
         if ($isOpeningMessage && LastAgentRouter::route($session->conversation)) {
+            return response()->json([
+                'message' => (new MessageResource($message))->resolve(),
+            ]);
+        }
+
+        // An incident is on and its notice answered this message: the flow
+        // does not answer it again (IncidentResponder).
+        if (IncidentResponder::intercept($message)) {
             return response()->json([
                 'message' => (new MessageResource($message))->resolve(),
             ]);

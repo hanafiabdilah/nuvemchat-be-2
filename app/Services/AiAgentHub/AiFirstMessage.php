@@ -191,8 +191,13 @@ class AiFirstMessage
     /**
      * Lowercase, unaccented, single-spaced, with punctuation turned into
      * boundaries — the shape the word lists are written against.
+     *
+     * Public because the incident keywords (IncidentMatcher) are matched in
+     * exactly this shape: "Não CONECTA!!" and "nao conecta" must be one
+     * message to both, or a greeting skipped here would be judged differently
+     * there.
      */
-    private static function normalize(string $text): string
+    public static function normalize(string $text): string
     {
         $text = Str::lower(Str::ascii(trim($text)));
 

@@ -295,6 +295,15 @@ class MessageResource extends JsonResource
             $meta = array_merge($meta ?? [], $sendQueue);
         }
 
+        // Sent by an incident (IncidentSender): the notice, or "it is fixed".
+        // The bubble says so, and which keyword made it go, so the attendant
+        // who opens the thread knows the platform said it, not a colleague.
+        $incident = $this->getIncidentMeta();
+
+        if ($incident !== null) {
+            $meta = array_merge($meta ?? [], ['incident' => $incident]);
+        }
+
         // The composer's own reference for a video it handed to the queue to
         // be compressed (SendCompressedVideo): how it knows which "being
         // prepared" bubble this message replaces. Any channel can carry one.
@@ -312,6 +321,24 @@ class MessageResource extends JsonResource
      * WhatsApp Official and the order reference stay on the server — the
      * bubble draws the key, the name and the amount.
      */
+    /** @return array{id: int, kind: string, title: string, keyword?: string, ai?: bool}|null */
+    private function getIncidentMeta(): ?array
+    {
+        $incident = $this->meta[\App\Services\Incident\IncidentResponder::SENT_META] ?? null;
+
+        if (! is_array($incident) || ! isset($incident['id'], $incident['kind'])) {
+            return null;
+        }
+
+        return array_filter([
+            'id' => (int) $incident['id'],
+            'kind' => (string) $incident['kind'],
+            'title' => Str::limit((string) ($incident['title'] ?? ''), 120, ''),
+            'keyword' => isset($incident['keyword']) ? (string) $incident['keyword'] : null,
+            'ai' => ! empty($incident['ai']) ? true : null,
+        ], fn ($value) => $value !== null);
+    }
+
     private function getPixMeta(): ?array
     {
         $pix = $this->meta['pix'] ?? null;

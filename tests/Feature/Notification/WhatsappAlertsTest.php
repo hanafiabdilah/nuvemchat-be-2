@@ -111,6 +111,7 @@ test('every alert is off until the person turns it on, and turning one on leaves
         'flow_failed' => false,
         'receipt_approved' => false,
         'receipt_rejected' => false,
+        'incident_expiring' => false,
         'lead_summary' => 'off',
         'ads_summary' => 'off',
     ]);

@@ -258,6 +258,14 @@ Schedule::command('broadcasts:tick')
     ->withoutOverlapping(5)
     ->onFailure(fn () => logger()->error('Broadcast tick failed'));
 
+// Incidents: start the scheduled ones, end the ones whose time ran out, warn
+// before they do, and revive paced sends whose pump died. Every minute, since
+// a scheduled maintenance window is announced to the minute.
+Schedule::command('incidents:tick')
+    ->everyMinute()
+    ->withoutOverlapping(5)
+    ->onFailure(fn () => logger()->error('Incident tick failed'));
+
 // Fire Instagram posts whose scheduled time has come, and re-dispatch any whose
 // publish chain died mid-flight. Both halves are idempotent: the job claims the
 // post before doing anything, and the publisher reuses containers it already

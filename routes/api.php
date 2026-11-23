@@ -61,6 +61,8 @@ use App\Http\Controllers\Api\Billing\SavedCardController;
 use App\Http\Controllers\Api\BroadcastController;
 use App\Http\Controllers\Api\Catalog\OrderController as CatalogOrderController;
 use App\Http\Controllers\Api\Catalog\ProductController as CatalogProductController;
+use App\Http\Controllers\Api\Incident\IncidentController;
+use App\Http\Controllers\Api\Incident\IncidentTemplateController;
 use App\Http\Controllers\Api\Reservations\ReservableServiceController;
 use App\Http\Controllers\Api\Reservations\ReservationController;
 use App\Http\Controllers\Api\ConnectionController;
@@ -107,6 +109,7 @@ use App\Http\Controllers\Api\Social\CommentMarkController;
 use App\Http\Controllers\Api\TikTok\TikTokAccountController;
 use App\Http\Controllers\Api\TikTok\TikTokCommentController;
 use App\Http\Controllers\Api\TikTok\TikTokPostController;
+use App\Http\Controllers\Api\V1\IncidentController as V1IncidentController;
 use App\Http\Controllers\Api\Youtube\YoutubeAccountController;
 use App\Http\Controllers\Api\Youtube\YoutubeCommentController;
 use App\Http\Controllers\Api\Youtube\YoutubePostController;
@@ -305,6 +308,34 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
         Route::post('/invoices/{invoice}/cancel', [BillingController::class, 'cancelInvoice'])->middleware('permission:billing.manage')->name('invoice-cancel');
     });
     Route::get('/plans', [BillingController::class, 'plans'])->middleware('permission:billing.view')->name('plans.index');
+
+    // Incidents: something is broken, and everyone who writes in on the
+    // chosen connections is told — once per conversation — until it is fixed
+    // (App\Services\Incident). `active` is the banner over the inbox and
+    // needs no permission: knowing why the inbox is answering itself is not a
+    // privilege, and it only lists the inboxes the person can see.
+    Route::middleware('user.locale')->group(function () {
+        Route::prefix('incidents')->name('incidents.')->group(function () {
+            Route::get('/active', [IncidentController::class, 'active'])->name('active');
+            Route::post('/keywords/test', [IncidentController::class, 'testKeywords'])->middleware('permission:incidents.view')->name('keywords-test');
+            Route::get('/', [IncidentController::class, 'index'])->middleware('permission:incidents.view')->name('index');
+            Route::post('/', [IncidentController::class, 'store'])->middleware('permission:incidents.manage')->name('store');
+            Route::get('/{id}', [IncidentController::class, 'show'])->whereNumber('id')->middleware('permission:incidents.view')->name('show');
+            Route::put('/{id}', [IncidentController::class, 'update'])->whereNumber('id')->middleware('permission:incidents.manage')->name('update');
+            Route::post('/{id}/extend', [IncidentController::class, 'extend'])->whereNumber('id')->middleware('permission:incidents.manage')->name('extend');
+            Route::post('/{id}/resolve', [IncidentController::class, 'resolve'])->whereNumber('id')->middleware('permission:incidents.manage')->name('resolve');
+            Route::post('/{id}/cancel', [IncidentController::class, 'cancel'])->whereNumber('id')->middleware('permission:incidents.manage')->name('cancel');
+            Route::get('/{id}/deliveries', [IncidentController::class, 'deliveries'])->whereNumber('id')->middleware('permission:incidents.view')->name('deliveries');
+            Route::post('/{id}/deliveries/{deliveryId}/send', [IncidentController::class, 'sendDelivery'])->whereNumber(['id', 'deliveryId'])->middleware('permission:incidents.manage')->name('deliveries.send');
+        });
+
+        Route::prefix('incident-templates')->name('incident-templates.')->group(function () {
+            Route::get('/', [IncidentTemplateController::class, 'index'])->middleware('permission:incidents.view')->name('index');
+            Route::post('/', [IncidentTemplateController::class, 'store'])->middleware('permission:incidents.manage')->name('store');
+            Route::put('/{id}', [IncidentTemplateController::class, 'update'])->whereNumber('id')->middleware('permission:incidents.manage')->name('update');
+            Route::delete('/{id}', [IncidentTemplateController::class, 'destroy'])->whereNumber('id')->middleware('permission:incidents.manage')->name('destroy');
+        });
+    });
 
     // Virtual numbers rented from API Way (SMS / OTP reception). Exempt from
     // the subscription.active gate, and for a reason of their own:
@@ -1243,6 +1274,14 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
 Route::prefix('/v1')->middleware([ApiKeyAuth::class, 'throttle:public-api'])->group(function () {
     Route::post('send-message', [SendMessageController::class, 'handle']);
     Route::get('connections', [V1ConnectionController::class, 'index']);
+
+    // Incidents opened and closed from another system — the monitoring tool
+    // that notices the outage first. Connections by public id (conn_…).
+    Route::get('incidents', [V1IncidentController::class, 'index']);
+    Route::post('incidents', [V1IncidentController::class, 'store']);
+    Route::get('incidents/{id}', [V1IncidentController::class, 'show'])->whereNumber('id');
+    Route::patch('incidents/{id}', [V1IncidentController::class, 'update'])->whereNumber('id');
+    Route::post('incidents/{id}/resolve', [V1IncidentController::class, 'resolve'])->whereNumber('id');
 
     // The AI Hub answering in a conversation it is already serving. Named by
     // the signed reference minted inside the run, never by a conversation id —

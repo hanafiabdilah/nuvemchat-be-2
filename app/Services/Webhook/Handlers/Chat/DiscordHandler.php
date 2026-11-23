@@ -24,6 +24,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Services\Incident\IncidentResponder;
 
 /**
  * Discord inbound events. There is no webhook: the discord:gateway daemon
@@ -301,6 +302,12 @@ class DiscordHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
             broadcast(new MessageReceived($message));
             broadcast(new ConversationUpdated($message->conversation->load('contact')));
+
+            // An incident is on and its notice answered this message: the flow
+            // does not answer it again (IncidentResponder).
+            if (IncidentResponder::intercept($message)) {
+                return;
+            }
 
             if ($isNewConversation && $conversationForWelcome) {
                 // A contact who came straight back reaches the agent who was

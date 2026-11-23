@@ -9,6 +9,7 @@ use App\Jobs\RunFlowTurn;
 use App\Models\Conversation;
 use App\Models\FlowState;
 use App\Services\Conversation\LastAgentRouter;
+use App\Services\Incident\IncidentResponder;
 use App\Services\Instagram\CommentDm\CommentDmAutomations;
 use App\Services\V1\SendMessage\SentMessageRecorder;
 
@@ -97,8 +98,10 @@ final class FlowRunner
         $said = $conversation->messages()
             ->where('message_type', '!=', MessageType::Info)
             // A tap on another system's button is not the customer opening
-            // this thread; the message they type next still is.
+            // this thread; the message they type next still is. Nor is one an
+            // incident notice answered in the flow's place.
             ->exceptExternalAutomation()
+            ->exceptIncidentHandled()
             ->selectRaw('sender_type, COUNT(*) as total')
             ->groupBy('sender_type')
             ->pluck('total', 'sender_type');
@@ -119,7 +122,11 @@ final class FlowRunner
             // answer them.
             ->where(fn ($q) => $q
                 ->whereNull('meta->'.SentMessageRecorder::META_KEY)
-                ->orWhereNotIn('meta->'.SentMessageRecorder::META_KEY, [SentMessageRecorder::VIA_API, CommentDmAutomations::VIA]));
+                ->orWhereNotIn('meta->'.SentMessageRecorder::META_KEY, [SentMessageRecorder::VIA_API, CommentDmAutomations::VIA]))
+            // An incident notice tells the customer something is broken; it
+            // is not anybody answering them, and the flow still greets them on
+            // the next thing they say.
+            ->whereNull('meta->'.IncidentResponder::SENT_META);
 
         if (! (clone $replies)->exists()) {
             return true;
@@ -129,6 +136,7 @@ final class FlowRunner
             ->where('message_type', '!=', MessageType::Info)
             ->where('sender_type', SenderType::Incoming)
             ->exceptExternalAutomation()
+            ->exceptIncidentHandled()
             ->toBase()
             ->value('sent_at');
 

@@ -289,6 +289,7 @@ class UserController extends Controller
             'whatsapp_alerts.flow_failed' => ['sometimes', 'boolean'],
             'whatsapp_alerts.receipt_approved' => ['sometimes', 'boolean'],
             'whatsapp_alerts.receipt_rejected' => ['sometimes', 'boolean'],
+            'whatsapp_alerts.incident_expiring' => ['sometimes', 'boolean'],
             'whatsapp_alerts.lead_summary' => ['sometimes', 'string', Rule::in(WhatsappAlerts::SUMMARY_MODES)],
             'whatsapp_alerts.ads_summary' => ['sometimes', 'string', Rule::in(WhatsappAlerts::ADS_SUMMARY_MODES)],
         ]);

@@ -21,7 +21,7 @@ use App\Services\Conversation\ConversationResolver;
 use App\Services\Conversation\OutboundConversationResolver;
 use App\Services\Message\Handlers\EmailHandler;
 use App\Services\Message\MessageService;
-use App\Services\Messaging\MessagingWindow;
+use App\Services\Messaging\FreeFormWindow;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
@@ -351,29 +351,11 @@ class BroadcastSender
 
     /**
      * Whether this conversation's channel would refuse free-form content right
-     * now. Two sources, checked separately because they cover different
-     * channels: MessagingWindow (WhatsApp Official, TikTok) also drives the
-     * live chat guard, while Channel::broadcastWindowHours() (Instagram,
-     * Messenger) exists only for campaigns — see its docblock for why those
-     * two cannot share one list.
+     * now. Shared with the incident sends, which ask the same question.
      */
     private function freeFormWindowClosed(Conversation $conversation): bool
     {
-        if (MessagingWindow::appliesTo($conversation)) {
-            return ! MessagingWindow::isOpen($conversation);
-        }
-
-        $hours = $conversation->connection?->channel?->broadcastWindowHours();
-
-        if ($hours === null) {
-            return false;
-        }
-
-        $lastInbound = MessagingWindow::lastInboundAt($conversation);
-
-        // Never written to us at all is closed too — there is no session to
-        // reply inside of, same reasoning as MessagingWindow::isOpen().
-        return $lastInbound === null || $lastInbound->copy()->addHours($hours)->isPast();
+        return FreeFormWindow::closed($conversation);
     }
 
     /**

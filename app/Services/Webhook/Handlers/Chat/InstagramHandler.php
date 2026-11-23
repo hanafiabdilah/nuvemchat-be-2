@@ -26,6 +26,7 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use App\Services\Incident\IncidentResponder;
 
 class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 {
@@ -425,6 +426,12 @@ class InstagramHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
             // Only process flow for incoming messages (from user, not from bot)
             if ($message->sender_type !== SenderType::Incoming) {
+                return;
+            }
+
+            // An incident is on and its notice answered this message: the flow
+            // does not answer it again (IncidentResponder).
+            if (IncidentResponder::intercept($message)) {
                 return;
             }
 

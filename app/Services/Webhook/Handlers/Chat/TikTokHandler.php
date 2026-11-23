@@ -23,6 +23,7 @@ use App\Services\Webhook\Contracts\DownloadsInboundMedia;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use App\Services\Incident\IncidentResponder;
 
 /**
  * Handles TikTok Business Messaging webhook events. The payload is the raw
@@ -218,6 +219,12 @@ class TikTokHandler implements ChatHandlerInterface, DownloadsInboundMedia
 
             // Only process flow for incoming messages (from user, not from business)
             if ($message->sender_type !== SenderType::Incoming) {
+                return;
+            }
+
+            // An incident is on and its notice answered this message: the flow
+            // does not answer it again (IncidentResponder).
+            if (IncidentResponder::intercept($message)) {
                 return;
             }
 

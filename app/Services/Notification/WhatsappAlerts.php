@@ -5,6 +5,7 @@ namespace App\Services\Notification;
 use App\Enums\Notification\NotificationType;
 use App\Jobs\SendFlowFailureAlert;
 use App\Models\Connection;
+use App\Models\Incident;
 use App\Models\Conversation;
 use App\Models\User;
 use App\Services\Contact\ContactIdentity;
@@ -51,7 +52,10 @@ final class WhatsappAlerts
     public const ADS_SUMMARY_MODES = [self::SUMMARY_OFF, self::SUMMARY_DAILY, self::SUMMARY_WEEKLY];
 
     /** The on/off alerts. */
-    public const TOGGLES = [self::CONNECTION_DOWN, self::FLOW_FAILED, self::RECEIPT_APPROVED, self::RECEIPT_REJECTED];
+    /** An incident is about to run out (IncidentService / incidents:tick). */
+    public const INCIDENT_EXPIRING = 'incident_expiring';
+
+    public const TOGGLES = [self::CONNECTION_DOWN, self::FLOW_FAILED, self::RECEIPT_APPROVED, self::RECEIPT_REJECTED, self::INCIDENT_EXPIRING];
 
     public const SUMMARY_OFF = 'off';
 
@@ -79,7 +83,7 @@ final class WhatsappAlerts
      * these go to a phone, and nobody signed up for messages they never asked for.
      *
      * @param  array<string, mixed>  $stored
-     * @return array{connection_down: bool, flow_failed: bool, receipt_approved: bool, receipt_rejected: bool, lead_summary: string, ads_summary: string}
+     * @return array{connection_down: bool, flow_failed: bool, receipt_approved: bool, receipt_rejected: bool, incident_expiring: bool, lead_summary: string, ads_summary: string}
      */
     public static function settings(array $stored): array
     {
@@ -250,6 +254,32 @@ final class WhatsappAlerts
                     'contact' => self::contactLabel($conversation),
                     'reason' => __($key, [], $locale) !== $key ? __($key, [], $locale) : __('alerts.receipt_reasons.unknown', [], $locale),
                     'connection' => $connection->name,
+                ]);
+            }
+        });
+    }
+
+    /**
+     * An incident is about to run out. Told to whoever asked and can reach one
+     * of its connections, once (incidents:tick stamps reminder_sent_at): an
+     * incident that ends while the servers are still down sends customers back
+     * to a flow that knows nothing about it.
+     */
+    public static function incidentExpiring(Incident $incident): void
+    {
+        self::safely('incident expiring', function () use ($incident) {
+            $connections = $incident->connections()->get();
+            $tenant = $incident->tenant;
+            $time = $incident->ends_at->copy()->setTimezone($tenant?->displayTimezone() ?? config('app.timezone'))->format('H:i');
+
+            foreach (self::recipients((int) $incident->tenant_id, self::INCIDENT_EXPIRING) as $user) {
+                if (! $connections->contains(fn (Connection $connection) => $user->canAccessConnection($connection))) {
+                    continue;
+                }
+
+                self::send(NotificationType::AlertIncidentExpiring, $user, [
+                    'incident' => $incident->title,
+                    'time' => $time,
                 ]);
             }
         });

@@ -75,6 +75,8 @@ return [
     'alert_lead_summary' => '📊 {{name}}, {{period}}: *{{leads}}* novos leads.{{details}}',
     'alert_ads_summary' => '📈 {{name}}, {{period}}: investimento de *{{spend}}* em anúncios, *{{leads}}* leads, *{{sales}}* vendas ({{revenue}}). ROAS: *{{roas}}*.{{details}}',
 
+    'alert_incident_expiring' => '⏳ {{name}}, o incidente *{{incident}}* termina às {{time}}. Se o problema continua, prolongue-o no Pingly; quando ele terminar, as mensagens voltam a ser respondidas normalmente.',
+
     'alert_test' => '✅ {{name}}, tudo certo: os alertas do Pingly vão chegar neste número.',
 
 ];
