@@ -101,6 +101,14 @@ class ConversationController extends Controller
         $limit = (int) $request->input('limit', 100);
         $limit = max(1, min($limit, 500));
 
+        // `order=recent`: the threads that last heard something, newest first.
+        // It answers one question only — "what does a browser that holds
+        // nothing need on screen right now" — so it returns a single page and
+        // no cursor. The rest of the history is walked by id, below: id never
+        // changes, while last_message_at moves every time a message lands, and
+        // a cursor on a moving key skips and repeats rows.
+        $recent = $request->input('order') === 'recent';
+
         // Stamped before the queries run, not after: anything that changes while
         // this request is being served then falls after the cursor and is picked
         // up by the next delta (a re-sent row is harmless — the client upserts).
@@ -149,10 +157,17 @@ class ConversationController extends Controller
             // contact" so conversations without a contact are unaffected.
             ->whereDoesntHave('contact', function ($q) {
                 $q->whereNotNull('group_removed_at');
-            })
+            });
+
+        if ($recent) {
+            $query->orderBy('last_message_at', 'DESC')->orderBy('id', 'DESC');
+            // A single page by definition — see $recent above.
+            $before = null;
+        } else {
             // Ordered by id (not last_message_at) so the `before` cursor is a plain
             // unique key — the client sorts by lastMessageAt locally from IndexedDB.
-            ->orderBy('id', 'DESC');
+            $query->orderBy('id', 'DESC');
+        }
 
         // Delta sync: only conversations touched since the last sync.
         if ($since !== null) {
@@ -186,7 +201,9 @@ class ConversationController extends Controller
             // convergence statement about the whole cache, not a delta.
             'connection_ids' => $this->accessibleConnectionIds($before),
             'has_more' => $hasMore,
-            'next_before' => $hasMore ? $conversations->last()?->id : null,
+            // Never a cursor on the recency page: last_message_at is not a key
+            // a walk can resume from.
+            'next_before' => $hasMore && ! $recent ? $conversations->last()?->id : null,
             'server_time' => $serverTime,
         ]);
     }

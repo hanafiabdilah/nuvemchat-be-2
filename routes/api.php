@@ -472,6 +472,9 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
         // text box: a debounce keeps the normal case to a few calls per phrase,
         // and this bounds the abnormal one.
         Route::get('/messages/search', [MessageController::class, 'search'])->middleware('throttle:90,1');
+        // The last messages of the most recent threads, in one request — what a
+        // browser with an empty cache asks for instead of the whole history.
+        Route::get('/messages/recent', [MessageController::class, 'recent'])->middleware('throttle:30,1,messages-recent');
 
         Route::get('/conversations', [ConversationController::class, 'index']);
         Route::post('/conversations', [ConversationController::class, 'store']);

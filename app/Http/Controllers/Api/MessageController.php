@@ -4,11 +4,13 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\MessageResource;
+use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\Message\MessageSearch;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class MessageController extends Controller
 {
@@ -95,6 +97,67 @@ class MessageController extends Controller
             'has_more' => $hasMore,
             'next_before' => $hasMore ? $messages->last()?->id : null,
             'server_time' => $serverTime,
+        ]);
+    }
+
+    /**
+     * The last few messages of the threads this user is most likely to open.
+     *
+     * Replaces the history backfill the dashboard used to run on first sign-in:
+     * every message the user could reach, 500 at a time, until none were left.
+     * In a workspace with 140k messages that was close to 300 requests per
+     * agent per browser — and all it bought was threads that open without a
+     * spinner, because a thread is read from the server when it is opened
+     * (ConversationController::messages()) whether the cache holds it or not.
+     * This buys the same thing for the threads that matter, in one request.
+     *
+     * One query ranks the messages inside each thread (ROW_NUMBER partitioned
+     * by conversation) so "the last N of each" never becomes one query per
+     * thread. Scoped with readableBy(), not visibleTo(): this returns content,
+     * and an exclusive thread's content is its handler's alone.
+     */
+    public function recent(Request $request)
+    {
+        $threads = max(1, min((int) $request->input('threads', 50), 100));
+        $perThread = max(1, min((int) $request->input('per_thread', 20), 50));
+        $connectionId = $request->input('connection_id');
+
+        $user = Auth::user();
+
+        $conversationIds = Conversation::query()
+            ->readableBy($user)
+            ->whereHas('messages')
+            // Same exclusion as the inbox: a removed group is not in the panel,
+            // so its messages are nothing anyone is about to open.
+            ->whereDoesntHave('contact', fn ($q) => $q->whereNotNull('group_removed_at'))
+            ->when(filled($connectionId), fn ($q) => $q->where('connection_id', $connectionId))
+            ->orderBy('last_message_at', 'DESC')
+            ->orderBy('id', 'DESC')
+            ->limit($threads)
+            ->pluck('id');
+
+        if ($conversationIds->isEmpty()) {
+            return response()->json(['data' => [], 'conversation_ids' => []]);
+        }
+
+        $ranked = DB::table('messages')
+            ->select('id')
+            ->selectRaw('ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY id DESC) AS position')
+            ->whereIn('conversation_id', $conversationIds);
+
+        $messageIds = DB::query()
+            ->fromSub($ranked, 'ranked')
+            ->where('position', '<=', $perThread)
+            ->pluck('id');
+
+        $messages = Message::with(self::RELATIONS)
+            ->whereIn('id', $messageIds)
+            ->orderBy('id')
+            ->get();
+
+        return response()->json([
+            'data' => MessageResource::collection($messages),
+            'conversation_ids' => $conversationIds->map(fn ($id) => (string) $id)->values(),
         ]);
     }
 
