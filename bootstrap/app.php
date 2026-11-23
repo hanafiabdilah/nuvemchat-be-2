@@ -93,8 +93,11 @@ return Application::configure(basePath: dirname(__DIR__))
         // block. The call sites do the real work (App\Support\Errors\
         // UpstreamError); this is what keeps the guarantee true after the next
         // integration is added. Exempts api/admin/* — see the middleware.
+        // A non-numeric id where the controller wants an int answers 404 instead
+        // of a TypeError, a 500 and a stack trace in the log — see the class.
         $middleware->api(append: [
             \App\Http\Middleware\SanitizeUpstreamErrors::class,
+            \App\Http\Middleware\RejectMalformedRouteIds::class,
         ]);
 
         // API JSON never lands in the browser's disk cache — see the class.
