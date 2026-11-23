@@ -8,7 +8,10 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
 /**
- * An agent flipped their own Online/Offline switch.
+ * An agent's Online/Offline switch moved — flipped by the agent, or turned
+ * off by a colleague on the agent control page (`changedBy` is then that
+ * colleague's name, so the agent is told who rather than finding their switch
+ * moved for no reason).
  *
  * Sent on the person's own channel so every tab they have open shows the same
  * status: the switch is one value on the account, and a second tab still
@@ -26,6 +29,7 @@ class UserPresenceUpdated implements ShouldBroadcastNow
     public function __construct(
         public int $userId,
         public string $presence,
+        public ?string $changedBy = null,
     ) {}
 
     /** @return array<int, \Illuminate\Broadcasting\Channel> */
@@ -41,6 +45,9 @@ class UserPresenceUpdated implements ShouldBroadcastNow
 
     public function broadcastWith(): array
     {
-        return ['presence' => $this->presence];
+        return array_filter([
+            'presence' => $this->presence,
+            'changed_by' => $this->changedBy,
+        ], fn ($value) => $value !== null);
     }
 }

@@ -91,6 +91,9 @@ class RoleAndPermissionSeeder extends Seeder
             // Held apart from agents.update, which also carries the e-mail and
             // the password: a photo is not a credential.
             'agents.update-avatar',
+            // The agent control page: turning a colleague's switch to Offline
+            // (never back — the switch stays the agent's to turn on).
+            'agents.set-offline',
             'agents.delete',
             'agents.sync-connections',
             'agents.assign-roles',

@@ -38,6 +38,7 @@ use App\Http\Controllers\Api\Admin\StatsController as AdminStatsController;
 use App\Http\Controllers\Api\Admin\UserController as AdminUserController;
 use App\Http\Controllers\Api\Admin\WhatsappLogController as AdminWhatsappLogController;
 use App\Http\Controllers\Api\AgentController;
+use App\Http\Controllers\Api\AgentControlController;
 use App\Http\Controllers\Api\AiHub\AgentController as AiHubAgentController;
 use App\Http\Controllers\Api\AiHub\AgentKnowledgeController as AiHubAgentKnowledgeController;
 use App\Http\Controllers\Api\AiHub\AgentPreviewController as AiHubAgentPreviewController;
@@ -1002,6 +1003,15 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     Route::post('/agents/{id}/connections', [AgentController::class, 'syncConnections'])->middleware('permission:agents.sync-connections');
     Route::post('/agents/{id}/assign-roles', [AgentController::class, 'assignRoles'])->middleware('permission:agents.assign-roles');
     Route::post('/agents/{id}/assign-permissions', [AgentController::class, 'assignPermissions'])->middleware('permission:agents.assign-permissions');
+
+    // The agent control page: the team's day, not its setup. One action for
+    // now — turning a colleague's switch to Offline, never back (going Online
+    // stays the agent's own act). Its own prefix so the page can grow without
+    // its routes colliding with /agents/{id}.
+    Route::get('/agent-control', [AgentControlController::class, 'index'])->middleware('permission:agents.set-offline');
+    Route::post('/agent-control/{id}/offline', [AgentControlController::class, 'setOffline'])
+        ->whereNumber('id')
+        ->middleware(['permission:agents.set-offline', 'throttle:60,1,agent-control-offline']);
 
     // Role management - protected by permissions
     // Also readable with agents.assign-roles: that permission's dialog is a

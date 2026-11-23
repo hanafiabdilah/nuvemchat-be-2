@@ -197,22 +197,40 @@ class User extends Authenticatable
     }
 
     /**
-     * Flip the agent's own switch. Returns whether anything changed, so a
-     * second click on the status already shown does not announce itself.
+     * Flip the agent's switch. Returns whether anything changed, so a second
+     * click on the status already shown does not announce itself.
+     *
+     * `$by` is somebody else turning it off from the agent control page
+     * (AgentControlController). Only ever towards Offline: going Online is the
+     * agent's own act, and it forgets who switched them off — the answer to
+     * "why is this person offline" is then simply that they are not.
      *
      * Written without touching `updated_at` for the same reason as markSeen().
      */
-    public function setPresence(bool $online): bool
+    public function setPresence(bool $online, ?User $by = null): bool
     {
         if ($online === ($this->offline_since === null)) {
             return false;
         }
 
-        static::withoutTimestamps(function () use ($online) {
-            $this->forceFill(['offline_since' => $online ? null : now()])->saveQuietly();
+        $setBy = ! $online && $by !== null && $by->getKey() !== $this->getKey()
+            ? $by->getKey()
+            : null;
+
+        static::withoutTimestamps(function () use ($online, $setBy) {
+            $this->forceFill([
+                'offline_since' => $online ? null : now(),
+                'offline_set_by_user_id' => $setBy,
+            ])->saveQuietly();
         });
 
         return true;
+    }
+
+    /** Who turned this agent's switch to Offline, when it was not the agent. */
+    public function offlineSetBy()
+    {
+        return $this->belongsTo(User::class, 'offline_set_by_user_id');
     }
 
     /**
