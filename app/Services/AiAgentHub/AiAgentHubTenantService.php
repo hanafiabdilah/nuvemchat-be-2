@@ -6,6 +6,7 @@ use App\Enums\Connection\Channel;
 use App\Exceptions\AiHubObjectMissingException;
 use App\Exceptions\Billing\CreditExhaustedException;
 use App\Exceptions\UpstreamServiceException;
+use App\Exceptions\UserFacingException;
 use App\Models\AiHubAgent;
 use App\Models\AiHubAgentProfile;
 use App\Models\AiHubKnowledge;
@@ -919,6 +920,19 @@ class AiAgentHubTenantService
 
         $this->assertCanSpendCredit($agent);
 
+        // The key that hears the voice note and the one that speaks the reply
+        // are always this workspace's own — see AiAudioCredential. A caller
+        // that cannot do without the transcript (a call summary) is refused
+        // rather than answered about audio nobody heard.
+        [$attachments, $inputAudio, $responseAudio, $metadata] = $this->scopeAudio(
+            $agent,
+            $attachments,
+            $inputAudio,
+            $responseAudio,
+            $metadata,
+            inputRequired: ! $retryWithoutExtras,
+        );
+
         // Recorded on the run so "did the agent actually see the screenshot /
         // hear the voice note?" is answerable afterwards from the row alone.
         $counts = array_count_values(array_column($attachments, 'type'));
@@ -1183,6 +1197,18 @@ class AiAgentHubTenantService
         $tenant = $agent->aiHubTenant;
 
         $this->assertCanSpendCredit($agent);
+
+        // The bench exists to try the audio, so a workspace without a key for
+        // it is told so instead of being shown a test of nothing.
+        [$attachments, $inputAudio, $responseAudio] = $this->scopeAudio(
+            $agent,
+            $attachments,
+            $inputAudio,
+            $responseAudio,
+            [],
+            inputRequired: true,
+            voiceRequired: true,
+        );
 
         // A fresh hub conversation per test: nothing said to the bench may
         // leak into the agent's memory of anything else, or into the next test.
@@ -2013,6 +2039,86 @@ class AiAgentHubTenantService
             'ai_hub_agent_id' => $agent->id,
             'hub_agent_id' => $agent->hub_agent_id,
         ]);
+    }
+
+    /**
+     * Name this workspace's own key on the audio blocks of a run, dropping a
+     * block the workspace has no key for (AiAudioCredential).
+     *
+     * A dropped transcription takes the audio attachments with it: without
+     * the block the hub ignores them, and a hub that ever started hearing them
+     * on its own would pick a key that is not this workspace's again.
+     *
+     * @param  array<int, array<string, mixed>>  $attachments
+     * @param  array<string, mixed>  $inputAudio
+     * @param  array<string, mixed>  $responseAudio
+     * @param  array<string, mixed>  $metadata
+     * @return array{0: array<int, array<string, mixed>>, 1: array<string, mixed>, 2: array<string, mixed>, 3: array<string, mixed>}
+     */
+    protected function scopeAudio(
+        AiHubAgent $agent,
+        array $attachments,
+        array $inputAudio,
+        array $responseAudio,
+        array $metadata,
+        bool $inputRequired = false,
+        bool $voiceRequired = false,
+    ): array {
+        $scopedInput = AiAudioCredential::scope($inputAudio, $agent);
+
+        if ($inputAudio !== [] && $scopedInput === []) {
+            if ($inputRequired) {
+                throw $this->audioKeyMissing((string) ($inputAudio['provider'] ?? ''));
+            }
+
+            Log::info('AiAgentHubTenantService: no key of this workspace can transcribe audio, sending the run without it', [
+                'ai_hub_tenant_id' => $agent->ai_hub_tenant_id,
+                'ai_hub_agent_id' => $agent->id,
+                'provider' => $inputAudio['provider'] ?? null,
+            ]);
+
+            $metadata['audioSkipped'] = 'no_workspace_key';
+            $attachments = array_values(array_filter(
+                $attachments,
+                fn (array $attachment) => ($attachment['type'] ?? null) !== 'audio',
+            ));
+        }
+
+        $scopedVoice = AiAudioCredential::scope($responseAudio, $agent);
+
+        if ($responseAudio !== [] && $scopedVoice === []) {
+            if ($voiceRequired) {
+                throw $this->audioKeyMissing((string) ($responseAudio['provider'] ?? ''));
+            }
+
+            // The reply still goes out, written: every caller already falls
+            // back to text when no audio comes back.
+            Log::info('AiAgentHubTenantService: no key of this workspace can speak the reply, answering in text', [
+                'ai_hub_tenant_id' => $agent->ai_hub_tenant_id,
+                'ai_hub_agent_id' => $agent->id,
+                'provider' => $responseAudio['provider'] ?? null,
+            ]);
+
+            $metadata['voiceSkipped'] = 'no_workspace_key';
+        }
+
+        return [$attachments, $scopedInput, $scopedVoice, $metadata];
+    }
+
+    protected function audioKeyMissing(string $provider): UserFacingException
+    {
+        $label = match (strtoupper($provider)) {
+            'ELEVENLABS' => 'ElevenLabs',
+            'ANTHROPIC' => 'Anthropic',
+            'GEMINI' => 'Gemini',
+            default => 'OpenAI',
+        };
+
+        return new UserFacingException(
+            AiHubFieldErrors::translate('ai_hub.audio_key_missing', ['provider' => $label]),
+            422,
+            'ai_audio_key_missing',
+        );
     }
 
     /**

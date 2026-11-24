@@ -515,10 +515,12 @@ test('ElevenLabs without a voice id speaks with OpenAI, and leaves its fields be
     // An ElevenLabs model handed to OpenAI is not a model, and its credential
     // is not a credential — the hub answers that mixture with
     // "credential not found", which reads like a broken account.
+    // The ElevenLabs key stays behind; the workspace's own OpenAI key (the
+    // agent's) speaks instead — never one the hub would pick for itself.
     expect($block['provider'])->toBe('OPENAI')
         ->and($block['voice'])->toBe('onyx')
         ->and($block['model'])->toBe('gpt-4o-mini-tts')
-        ->and($block)->not->toHaveKey('providerCredentialId')
+        ->and($block['providerCredentialId'])->toBe('cred_openai_1')
         ->and($block)->not->toHaveKey('voiceSettings')
         ->and($block)->not->toHaveKey('voiceId')
         ->and(outgoing(MessageType::Audio))->toHaveCount(1);
@@ -544,9 +546,12 @@ test('an API key pasted where a credential id belongs is dropped, not forwarded'
 
     $block = AiAgentFixtures::hubRuns()[0]['responseAudio'];
 
-    // Left out, so the hub falls back to the account's default credential.
+    // The secret never travels. The workspace's own ElevenLabs key is named
+    // instead: left to the hub, it would pick the newest one in an account
+    // every workspace shares.
     expect($block['provider'])->toBe('ELEVENLABS')
-        ->and($block)->not->toHaveKey('providerCredentialId');
+        ->and($block['providerCredentialId'])->toBe('cred_11labs_1')
+        ->and(json_encode($block))->not->toContain('sk_9482b8bf');
 });
 
 test('the stored file is named after what actually arrived, in either dialect', function (string $format, ?string $mime, string $expected) {

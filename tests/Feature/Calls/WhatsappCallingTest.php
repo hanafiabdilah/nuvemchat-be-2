@@ -751,8 +751,18 @@ function wcAiAgent(Connection $connection): \App\Models\AiHubAgent
 
     \App\Models\Setting::set(\App\Services\AiAgentHub\AiAgentHubConfig::KEY_TENANT_TOKEN, 'platform-hub-token');
 
+    // The recording is transcribed on the workspace's own key (AiAudioCredential).
+    $openAi = \App\Models\AiHubProviderCredential::create([
+        'ai_hub_tenant_id' => $hubTenant->id,
+        'hub_provider_credential_id' => 'cred-openai-wc',
+        'provider' => 'OPENAI',
+        'name' => 'OpenAI',
+        'status' => 'ACTIVE',
+    ]);
+
     $agent = \App\Models\AiHubAgent::create([
         'ai_hub_tenant_id' => $hubTenant->id,
+        'ai_hub_provider_credential_id' => $openAi->id,
         'hub_agent_id' => 'hub-agent-wc',
         'external_id' => 'agente_ligacoes',
         'name' => 'Atendimento',

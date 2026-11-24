@@ -32,4 +32,6 @@ return [
 
     'credential_status_fixed' => 'Status key tidak bisa diubah. Untuk berhenti memakainya, hapus key tersebut.',
 
+    'audio_key_missing' => 'Workspace ini belum punya key :provider yang aktif untuk audio. Tambahkan di Agen AI → Kredensial.',
+
 ];

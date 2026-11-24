@@ -32,4 +32,6 @@ return [
 
     'credential_status_fixed' => 'A key\'s status cannot be changed. To stop using it, delete the key.',
 
+    'audio_key_missing' => 'This workspace has no active :provider key for audio. Add one under AI Agents → Credentials.',
+
 ];

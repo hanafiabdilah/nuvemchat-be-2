@@ -10,6 +10,7 @@ use App\Enums\Message\AttachmentStatus;
 use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\AiHubAgent;
+use App\Models\AiHubProviderCredential;
 use App\Models\Setting;
 use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Models\AiHubTenant;
@@ -58,8 +59,28 @@ class AiAgentFixtures
         // single token stands behind every workspace's calls.
         Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, 'platform-hub-token');
 
+        // The workspace's own keys. Audio always runs on one of them
+        // (AiAudioCredential): the agent's OpenAI key transcribes and speaks
+        // by default, the ElevenLabs one when a node chooses ElevenLabs.
+        $openAi = AiHubProviderCredential::create([
+            'ai_hub_tenant_id' => $hubTenant->id,
+            'hub_provider_credential_id' => 'cred_openai_1',
+            'provider' => 'OPENAI',
+            'name' => 'OpenAI',
+            'status' => 'ACTIVE',
+        ]);
+
+        AiHubProviderCredential::create([
+            'ai_hub_tenant_id' => $hubTenant->id,
+            'hub_provider_credential_id' => 'cred_11labs_1',
+            'provider' => 'ELEVENLABS',
+            'name' => 'ElevenLabs',
+            'status' => 'ACTIVE',
+        ]);
+
         $agent = AiHubAgent::create([
             'ai_hub_tenant_id' => $hubTenant->id,
+            'ai_hub_provider_credential_id' => $openAi->id,
             'hub_agent_id' => 'hub-agent-1',
             'external_id' => 'agente_atendimento',
             'name' => 'Atendimento',

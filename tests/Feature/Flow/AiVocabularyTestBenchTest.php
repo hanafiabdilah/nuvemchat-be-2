@@ -41,8 +41,27 @@ function vocabularyBench(string ...$permissions): array
         'status' => 'ACTIVE',
     ]);
 
+    // The workspace's own keys: the bench runs on them like any other run
+    // (AiAudioCredential), and refuses a test it has no key for.
+    $openAi = \App\Models\AiHubProviderCredential::create([
+        'ai_hub_tenant_id' => $hubTenant->id,
+        'hub_provider_credential_id' => "cred-openai-bench-{$tenant->id}",
+        'provider' => 'OPENAI',
+        'name' => 'OpenAI',
+        'status' => 'ACTIVE',
+    ]);
+
+    \App\Models\AiHubProviderCredential::create([
+        'ai_hub_tenant_id' => $hubTenant->id,
+        'hub_provider_credential_id' => "cred-11labs-bench-{$tenant->id}",
+        'provider' => 'ELEVENLABS',
+        'name' => 'ElevenLabs',
+        'status' => 'ACTIVE',
+    ]);
+
     $agent = AiHubAgent::create([
         'ai_hub_tenant_id' => $hubTenant->id,
+        'ai_hub_provider_credential_id' => $openAi->id,
         'hub_agent_id' => "hub-agent-bench-{$tenant->id}",
         'external_id' => "agente_bench_{$tenant->id}",
         'name' => 'Atendimento',

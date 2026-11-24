@@ -90,10 +90,13 @@ class AiTranscription
      * "Audio speech credential not found or disabled", which reads like the
      * credential is broken rather than like the wrong thing was pasted.
      *
-     * Dropping it is better than forwarding it: with no id the hub falls back
-     * to the account's default credential for that provider, which is what
-     * most workspaces have anyway. And a secret must not travel in a field
-     * that is neither encrypted nor meant to hold one.
+     * Dropping it is better than forwarding it: with no id, the run names the
+     * workspace's own key for that provider (AiAudioCredential, at run time),
+     * which is what most workspaces want anyway. And a secret must not travel
+     * in a field that is neither encrypted nor meant to hold one.
+     *
+     * ⚠️ Never leave the id to the hub: it would pick the newest key of that
+     * provider in an account every workspace shares.
      */
     public static function credentialId(mixed $value): ?string
     {

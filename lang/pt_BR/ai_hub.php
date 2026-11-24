@@ -33,4 +33,6 @@ return [
 
     'credential_status_fixed' => 'O status de uma chave não pode ser alterado. Para deixar de usá-la, exclua a chave.',
 
+    'audio_key_missing' => 'Este workspace não tem uma chave :provider ativa para áudio. Adicione uma em Agentes de IA → Credenciais.',
+
 ];
