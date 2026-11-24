@@ -16,9 +16,13 @@ use App\Models\Setting;
  * every hub call this application makes, for every workspace.
  *
  * **A tenant in our platform** is a customer workspace (`tenants` table). It is
- * a local scope, not a hub identity — the hub has never heard of it and must
- * not: registering one would need the hub's *admin* token, which belongs to
- * whoever operates the hub and is not ours to hold.
+ * a local scope, never a hub *tenant*: registering one would need the hub's
+ * admin token, which belongs to whoever operates the hub and is not ours.
+ *
+ * With per-workspace accounts on, each workspace does get an *account inside
+ * our hub tenant* — opened through the hub's platform API with the same token,
+ * and named per call in `X-Hub-Tenant` (see {@see AiHubAccounts}). The token
+ * stays one; only the account the hub runs a request in changes.
  */
 class AiAgentHubConfig
 {
@@ -38,6 +42,13 @@ class AiAgentHubConfig
      */
     public const KEY_ADMIN_TOKEN = 'ai_agent_hub.admin_token';
 
+    /**
+     * Whether each workspace gets its own account inside our hub tenant (see
+     * {@see AiHubAccounts}). Off by default; off means no `/platform/*` call
+     * and no `X-Hub-Tenant` header anywhere — byte-identical to before.
+     */
+    public const KEY_PER_WORKSPACE_ACCOUNTS = 'ai_agent_hub.per_workspace_accounts';
+
     /** Default used until an admin overrides it in the database. */
     public const DEFAULT_BASE_URL = 'https://api-ia.ipbr.pro/v1';
 
@@ -55,6 +66,11 @@ class AiAgentHubConfig
     public static function tenantToken(): ?string
     {
         return Setting::get(self::KEY_TENANT_TOKEN) ?: Setting::get(self::KEY_ADMIN_TOKEN);
+    }
+
+    public static function perWorkspaceAccounts(): bool
+    {
+        return filter_var(Setting::get(self::KEY_PER_WORKSPACE_ACCOUNTS), FILTER_VALIDATE_BOOL);
     }
 
     /**

@@ -31,6 +31,9 @@ use Illuminate\Support\Str;
  */
 class AiMediaGenerator
 {
+    /** The hub account named on the last call sent, for its log lines. */
+    private ?string $hubTenantId = null;
+
     /** What the hub's MIME type becomes on disk. */
     private const EXTENSIONS = [
         'image/png' => 'png', 'image/jpeg' => 'jpg', 'image/webp' => 'webp',
@@ -78,7 +81,7 @@ class AiMediaGenerator
         ], fn ($value) => $value !== null);
 
         try {
-            $response = Http::timeout(170)->withHeaders($this->headers())->post($this->url(), $payload);
+            $response = Http::timeout(170)->withHeaders($this->headers($generation))->post($this->url(), $payload);
         } catch (ConnectionException $e) {
             // Unknown whether it started. The next poll repeats the create,
             // which the hub answers with the same generation.
@@ -97,7 +100,7 @@ class AiMediaGenerator
     public function refresh(AiMediaGeneration $generation): void
     {
         try {
-            $response = Http::timeout(30)->withHeaders($this->headers())
+            $response = Http::timeout(30)->withHeaders($this->headers($generation))
                 ->get($this->url().'/'.rawurlencode((string) $generation->hub_generation_id));
         } catch (ConnectionException) {
             return;
@@ -127,6 +130,8 @@ class AiMediaGenerator
             // The hub's own words go to the log and the row, never to a customer.
             Log::error("AiMediaGenerator: Validation failed to {$action} a media generation", [
                 'ai_media_generation_id' => $generation->id,
+                'hub_tenant_id' => $this->hubTenantId,
+                'hub_account_refused' => AiHubAccounts::isAccountRefusal($response),
                 'status' => $response->status(),
                 'body' => Str::limit($response->body(), 2000),
             ]);
@@ -252,12 +257,29 @@ class AiMediaGenerator
         return rtrim(AiAgentHubConfig::baseUrl(), '/').'/'.trim((string) config('ai.media.endpoint', 'media-generations'), '/');
     }
 
-    /** @return array<string, string> */
-    private function headers(): array
+    /**
+     * The platform token, plus — when per-workspace accounts are on — the hub
+     * account of the workspace whose key the generation runs on (see
+     * AiHubAccounts).
+     *
+     * @return array<string, string>
+     */
+    private function headers(AiMediaGeneration $generation): array
     {
-        return [
+        $headers = [
             'Authorization' => 'Bearer '.AiAgentHubConfig::tenantToken(),
             'Accept' => 'application/json',
         ];
+
+        $this->hubTenantId = null;
+
+        if (! AiHubAccounts::enabled()) {
+            return $headers;
+        }
+
+        $account = app(AiHubAccounts::class)->headerFor($generation->credential?->aiHubTenant);
+        $this->hubTenantId = $account[AiHubAccounts::HEADER] ?? null;
+
+        return array_merge($headers, $account);
     }
 }

@@ -9,6 +9,7 @@ use App\Models\FlowAssistantSetting;
 use App\Models\Tenant;
 use App\Services\AiAgentHub\AiAgentHubConfig;
 use App\Services\AiAgentHub\AiAgentHubTenantService;
+use App\Services\AiAgentHub\AiHubAccounts;
 use App\Services\Credits\CreditService;
 use App\Services\Flow\FlowBlueprint;
 use App\Services\Flow\FlowLanguages;
@@ -80,6 +81,9 @@ class FlowAssistantService
     public const SETUP_REQUIRED = 'flow_assistant_setup_required';
 
     private string $baseUrl;
+
+    /** The hub account named on the last call sent, for its log lines. */
+    private ?string $hubTenantId = null;
 
     public function __construct()
     {
@@ -256,10 +260,13 @@ class FlowAssistantService
         ];
 
         if ($setting->hub_agent_id) {
-            $response = Http::withHeaders($this->headers())
+            $response = Http::withHeaders($this->headers($setting))
                 ->patch("{$this->baseUrl}/agents/{$setting->hub_agent_id}", $payload);
 
-            if ($response->status() !== 404) {
+            // A 404 about the workspace's hub account is not a lost agent —
+            // creating one would knock on the same door. ensureSuccessful
+            // reports it.
+            if ($response->status() !== 404 || AiHubAccounts::isAccountRefusal($response)) {
                 $this->ensureSuccessful($response, 'update the flow assistant agent');
 
                 $this->recordAgent($setting, (string) $setting->hub_agent_id, $response->json('externalId') ?: $externalId);
@@ -273,7 +280,7 @@ class FlowAssistantService
             ]);
         }
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($setting))
             ->post("{$this->baseUrl}/agents", $payload);
 
         // `externalId` is unique at the hub, so an agent that exists without us
@@ -281,12 +288,12 @@ class FlowAssistantService
         // dead end AiTokenRentalService::rent() had to grow an adoption path
         // for. Find the one that is ours and take it back.
         if ($response->status() === 409) {
-            $adopted = $this->findAgentByExternalId($externalId);
+            $adopted = $this->findAgentByExternalId($setting, $externalId);
 
             if ($adopted !== null) {
                 Log::info('FlowAssistantService: adopted the existing workspace assistant agent', $adopted);
 
-                $patched = Http::withHeaders($this->headers())
+                $patched = Http::withHeaders($this->headers($setting))
                     ->patch("{$this->baseUrl}/agents/{$adopted['id']}", $payload);
 
                 $this->ensureSuccessful($patched, 'update the flow assistant agent');
@@ -331,10 +338,10 @@ class FlowAssistantService
     }
 
     /** @return array{id: string, externalId: string}|null */
-    private function findAgentByExternalId(string $externalId): ?array
+    private function findAgentByExternalId(FlowAssistantSetting $setting, string $externalId): ?array
     {
         try {
-            $response = Http::withHeaders($this->headers())
+            $response = Http::withHeaders($this->headers($setting))
                 ->get("{$this->baseUrl}/agents");
 
             if (! $response->successful()) {
@@ -639,14 +646,14 @@ class FlowAssistantService
         ];
 
         $response = Http::timeout($timeout)
-            ->withHeaders($this->headers())
+            ->withHeaders($this->headers($setting))
             ->post("{$this->baseUrl}/runs", $payload);
 
         // The hub no longer knows this workspace's agent (rebuilt, or deleted on
         // their side). Everything needed to put it back is here, and the person
         // waiting knows a flow, not an agent id — so it is rebuilt and the run
         // tried once more, silently.
-        if ($response->status() === 404 && ! $healed) {
+        if ($response->status() === 404 && ! $healed && ! AiHubAccounts::isAccountRefusal($response)) {
             Log::warning('FlowAssistantService: the hub does not know this workspace assistant agent, rebuilding it', [
                 'tenant_id' => $setting->tenant_id,
                 'agent_external_id' => $setting->agent_external_id,
@@ -1081,9 +1088,11 @@ class FlowAssistantService
 
     /**
      * Auth for every hub call — the platform's own tenant token, the same one
-     * behind every other hub request this application makes.
+     * behind every other hub request this application makes — plus, when
+     * per-workspace accounts are on, the account of the workspace whose key
+     * the assistant runs on (`X-Hub-Tenant`, see AiHubAccounts).
      */
-    private function headers(): array
+    private function headers(FlowAssistantSetting $setting): array
     {
         $token = AiAgentHubConfig::tenantToken();
 
@@ -1097,10 +1106,21 @@ class FlowAssistantService
             );
         }
 
-        return [
+        $headers = [
             'Authorization' => 'Bearer ' . $token,
             'Accept' => 'application/json',
         ];
+
+        $this->hubTenantId = null;
+
+        if (! AiHubAccounts::enabled()) {
+            return $headers;
+        }
+
+        $account = app(AiHubAccounts::class)->headerFor($setting->providerCredential?->aiHubTenant);
+        $this->hubTenantId = $account[AiHubAccounts::HEADER] ?? null;
+
+        return array_merge($headers, $account);
     }
 
     /**
@@ -1123,6 +1143,22 @@ class FlowAssistantService
             return;
         }
 
+        if (AiHubAccounts::isAccountRefusal($response)) {
+            Log::error("FlowAssistantService: the hub refused this workspace's account trying to {$action}", [
+                'hub_tenant_id' => $this->hubTenantId,
+                'status' => $response->status(),
+                'code' => $response->json('code'),
+            ]);
+
+            throw UpstreamError::exception(
+                UpstreamProvider::AiHub,
+                'The AI hub refused the workspace account.',
+                upstreamCode: AiHubAccounts::REFUSAL_CODE,
+                status: $response->status(),
+                context: ['action' => $action, 'hub_tenant_id' => $this->hubTenantId],
+            );
+        }
+
         $message = AiAgentHubTenantService::hubMessage($response, "Failed to {$action}");
 
         // The hub's own words go to the log and the `ref`, never to the
@@ -1130,6 +1166,7 @@ class FlowAssistantService
         // tenant client's line so one grep finds hub validation failures
         // whichever surface provoked them.
         Log::error("FlowAssistantService: Validation failed to {$action}", [
+            'hub_tenant_id' => $this->hubTenantId,
             'status' => $response->status(),
             'body' => $response->body(),
         ]);

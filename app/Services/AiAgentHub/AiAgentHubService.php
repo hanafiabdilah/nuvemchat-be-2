@@ -16,11 +16,15 @@ use Illuminate\Support\Facades\Cache;
  * not an operator** — it holds one tenant token (see {@see AiAgentHubConfig})
  * and every call it makes is that single tenant's.
  *
- * What remains is purely local. An `AiHubTenant` row is a scope: it owns the
- * workspace's agents, provider credentials and runs in our own database, and
- * the hub neither knows nor needs to know it exists. No network call is made
- * here — which is also why a new workspace can no longer be blocked by the hub
- * refusing a credential we should never have been sending.
+ * What remains is mostly local. An `AiHubTenant` row is a scope: it owns the
+ * workspace's agents, provider credentials and runs in our own database.
+ *
+ * With `ai_agent_hub.per_workspace_accounts` on, the scope also gets its own
+ * account *inside our hub tenant* — opened by the hub's platform API with the
+ * same platform token, never with an admin token — and its id is stored in
+ * `hub_tenant_id` (see {@see AiHubAccounts}). Off, nothing here calls the hub.
+ * Either way a workspace is never blocked by the hub: an account that cannot
+ * be opened is retried later and calls go on without it.
  */
 class AiAgentHubService
 {
@@ -36,6 +40,17 @@ class AiAgentHubService
      */
     public function createTenant(Tenant $tenant): AiHubTenant
     {
+        $scope = $this->openScope($tenant);
+
+        // Outside the scope lock: opening the hub account takes its own lock
+        // and may wait on the network. No-op while the flag is off.
+        app(AiHubAccounts::class)->ensure($scope);
+
+        return $scope;
+    }
+
+    protected function openScope(Tenant $tenant): AiHubTenant
+    {
         return Cache::lock($this->tenantLockKey($tenant), self::LOCK_TTL)
             ->block(self::LOCK_WAIT, function () use ($tenant) {
                 $existing = $tenant->aiHubTenant()->first();
@@ -47,9 +62,8 @@ class AiAgentHubService
                 $identifier = $this->buildTenantIdentifier($tenant);
 
                 return $tenant->aiHubTenant()->create([
-                    // Deliberately null: this row is ours, and there is no hub
-                    // tenant behind it. Rows created before this correction
-                    // keep the id of the hub tenant they once had.
+                    // Null until the workspace's hub account is opened (only
+                    // with per-workspace accounts on — see AiHubAccounts).
                     'hub_tenant_id' => null,
                     'external_id' => $identifier,
                     'name' => $identifier,

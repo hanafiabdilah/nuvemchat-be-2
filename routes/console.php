@@ -326,3 +326,10 @@ Schedule::command('push:prune-devices')
     ->timezone($platformTimezone)
     ->withoutOverlapping(30)
     ->onFailure(fn () => logger()->error('Push device prune failed'));
+
+// Workspaces whose AI hub account could not be opened on a live request (the
+// hub unreachable) get one here. No-op while per-workspace accounts are off.
+Schedule::command('ai-hub:provision-accounts')
+    ->hourlyAt(25)
+    ->withoutOverlapping(30)
+    ->onFailure(fn () => logger()->warning('AI hub account provisioning left workspaces without an account'));

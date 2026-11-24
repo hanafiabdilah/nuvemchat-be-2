@@ -12,10 +12,11 @@ class ProvisionController extends Controller
     use ResolvesAiHubTenant;
 
     /**
-     * Open the current workspace's local AI-hub scope (idempotent). Nothing is
-     * registered on the hub: the platform is the hub's tenant, not the
-     * workspace. `has_active_api_key` in the response reports whether the
-     * platform's own hub token is configured.
+     * Open the current workspace's local AI-hub scope (idempotent), and — with
+     * per-workspace accounts on — its account inside our hub tenant. The
+     * platform stays the hub's only tenant and keeps its one token.
+     * `has_active_api_key` in the response reports whether that token is
+     * configured.
      */
     public function store(): JsonResponse
     {

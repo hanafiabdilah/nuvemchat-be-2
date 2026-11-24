@@ -5,6 +5,7 @@ namespace App\Services\AiAgentHub;
 use App\Enums\Connection\Channel;
 use App\Exceptions\AiHubObjectMissingException;
 use App\Exceptions\Billing\CreditExhaustedException;
+use App\Exceptions\UpstreamServiceException;
 use App\Models\AiHubAgent;
 use App\Models\AiHubAgentProfile;
 use App\Models\AiHubKnowledge;
@@ -28,13 +29,21 @@ use Illuminate\Support\Str;
  *
  * The `AiHubTenant` threaded through these methods is a **customer workspace
  * of ours** — it says whose data a call concerns and where the local mirror
- * row belongs. It is not a hub identity and carries no credential: auth is
- * always the platform's own hub tenant token, because Pingly is a single
- * tenant of the hub. See {@see AiAgentHubConfig} for that distinction.
+ * row belongs. It carries no credential: auth is always the platform's own
+ * hub tenant token, because Pingly is a single tenant of the hub. See
+ * {@see AiAgentHubConfig} for that distinction.
+ *
+ * With per-workspace accounts on, it also decides which account inside our
+ * hub tenant a call runs in: {@see headers()} adds `X-Hub-Tenant` with the
+ * workspace's account id (see {@see AiHubAccounts}). Every call that touches
+ * a workspace's data passes that workspace in.
  */
 class AiAgentHubTenantService
 {
     protected string $baseUrl;
+
+    /** The hub account named on the last call sent, for its log lines. */
+    protected ?string $hubTenantId = null;
 
     public function __construct()
     {
@@ -51,7 +60,10 @@ class AiAgentHubTenantService
      */
     public function listModels(?AiHubTenant $tenant = null): array
     {
-        $response = Http::withHeaders($this->headers())
+        // Platform-level on purpose: no `X-Hub-Tenant`. The model catalogue is
+        // the hub's, the same for every account, and the Back Office reads it
+        // with no workspace behind the call at all.
+        $response = Http::withHeaders($this->headers(null))
             ->get("{$this->baseUrl}/models");
 
         // Nullable since the platform tenant token authenticates every call:
@@ -72,7 +84,7 @@ class AiAgentHubTenantService
      */
     public function listProviderCredentials(AiHubTenant $tenant): array
     {
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->get("{$this->baseUrl}/provider-credentials");
 
         $this->ensureSuccessful($response, 'list provider credentials', [
@@ -111,7 +123,7 @@ class AiAgentHubTenantService
             $payload['metadata']['usage'] = ['speech_to_text', 'text_to_speech'];
         }
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/provider-credentials", $payload);
 
         $this->ensureSuccessful($response, 'create provider credential', [
@@ -156,8 +168,8 @@ class AiAgentHubTenantService
     {
         $tenant = $credential->aiHubTenant;
 
-        $patch = function () use ($credential, $payload) {
-            return Http::withHeaders($this->headers())
+        $patch = function () use ($credential, $payload, $tenant) {
+            return Http::withHeaders($this->headers($tenant))
                 ->patch("{$this->baseUrl}/provider-credentials/{$credential->hub_provider_credential_id}", $payload);
         };
 
@@ -166,8 +178,9 @@ class AiAgentHubTenantService
         // The hub lost the record — put it back and apply the edit to the new
         // one. Someone changing the name of their key has no idea an id exists,
         // let alone that it stopped resolving; an error here would be about our
-        // bookkeeping, in their way.
-        if ($response->status() === 404) {
+        // bookkeeping, in their way. Not when it is the workspace's hub account
+        // that was refused: that 404 is not about the credential.
+        if ($response->status() === 404 && ! AiHubAccounts::isAccountRefusal($response)) {
             $this->repushProviderCredential($credential, $payload['apiKey'] ?? null);
             $credential->refresh();
             $response = $patch();
@@ -209,7 +222,7 @@ class AiAgentHubTenantService
     {
         $tenant = $credential->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->delete("{$this->baseUrl}/provider-credentials/{$credential->hub_provider_credential_id}");
 
         $this->ensureDeleted($response, 'delete provider credential', [
@@ -229,7 +242,7 @@ class AiAgentHubTenantService
      */
     public function listAgents(AiHubTenant $tenant): array
     {
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->get("{$this->baseUrl}/agents");
 
         $this->ensureSuccessful($response, 'list agents', [
@@ -259,7 +272,7 @@ class AiAgentHubTenantService
 
         $payload = $this->withHandoffMirror($payload);
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/agents", $payload);
 
         $this->ensureSuccessful($response, 'create agent', [
@@ -368,7 +381,7 @@ class AiAgentHubTenantService
 
         $response = $this->healingAgentCall(
             $agent,
-            fn () => Http::withHeaders($this->headers())
+            fn () => Http::withHeaders($this->headers($tenant))
                 ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}", $payload)
         );
 
@@ -412,7 +425,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}");
 
         $this->ensureDeleted($response, 'delete agent', [
@@ -441,7 +454,7 @@ class AiAgentHubTenantService
 
         $response = $this->healingAgentCall(
             $agent,
-            fn () => Http::withHeaders($this->headers())
+            fn () => Http::withHeaders($this->headers($tenant))
                 ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/profile", $payload)
         );
 
@@ -484,7 +497,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge");
 
         $this->ensureSuccessful($response, 'list agent knowledge', [
@@ -505,7 +518,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge", $payload);
 
         $this->ensureSuccessful($response, 'create agent knowledge', [
@@ -544,7 +557,7 @@ class AiAgentHubTenantService
         $agent = $knowledge->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge/{$knowledge->hub_knowledge_id}", $payload);
 
         $this->ensureSuccessful($response, 'update agent knowledge', [
@@ -579,7 +592,7 @@ class AiAgentHubTenantService
         $agent = $knowledge->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/knowledge/{$knowledge->hub_knowledge_id}");
 
         $this->ensureDeleted($response, 'delete agent knowledge', [
@@ -601,7 +614,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills");
 
         $this->ensureSuccessful($response, 'list agent skills', [
@@ -622,7 +635,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills", $payload);
 
         $this->ensureSuccessful($response, 'create agent skill', [
@@ -661,7 +674,7 @@ class AiAgentHubTenantService
         $agent = $skill->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills/{$skill->hub_skill_id}", $payload);
 
         $this->ensureSuccessful($response, 'update agent skill', [
@@ -696,7 +709,7 @@ class AiAgentHubTenantService
         $agent = $skill->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/skills/{$skill->hub_skill_id}");
 
         $this->ensureDeleted($response, 'delete agent skill', [
@@ -719,7 +732,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->get("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples");
 
         $this->ensureSuccessful($response, 'list agent training examples', [
@@ -740,7 +753,7 @@ class AiAgentHubTenantService
     {
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples", $payload);
 
         $this->ensureSuccessful($response, 'create agent training example', [
@@ -780,7 +793,7 @@ class AiAgentHubTenantService
         $agent = $example->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->patch("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples/{$example->hub_example_id}", $payload);
 
         $this->ensureSuccessful($response, 'update agent training example', [
@@ -816,7 +829,7 @@ class AiAgentHubTenantService
         $agent = $example->aiHubAgent;
         $tenant = $agent->aiHubTenant;
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->delete("{$this->baseUrl}/agents/{$agent->hub_agent_id}/training-examples/{$example->hub_example_id}");
 
         $this->ensureDeleted($response, 'delete agent training example', [
@@ -1036,7 +1049,9 @@ class AiAgentHubTenantService
         try {
             $data = $this->postRun($tenant, $payload, $context);
         } catch (\Throwable $th) {
-            if (! $carriesExtras) {
+            // A refused hub account is not about the extras; the same request
+            // without them would be refused the same way.
+            if (! $carriesExtras || self::isAccountRefused($th)) {
                 throw $th;
             }
 
@@ -1369,7 +1384,7 @@ class AiAgentHubTenantService
         try {
             $data = $this->postRun($tenant, $payload, $context);
         } catch (\Throwable $th) {
-            if ($attachments === []) {
+            if ($attachments === [] || self::isAccountRefused($th)) {
                 throw $th;
             }
 
@@ -1477,14 +1492,14 @@ class AiAgentHubTenantService
      */
     protected function postRun(AiHubTenant $tenant, array $payload, array $context): array
     {
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/runs", $payload);
 
         $this->ensureSuccessful($response, 'run agent', $context);
 
         $data = $response->json() ?? [];
 
-        Log::info('AiAgentHubTenantService: Agent run completed', array_merge($context, [
+        Log::info('AiAgentHubTenantService: Agent run completed', array_merge($this->withHubAccount($context), [
             'hub_run_id' => $data['id'] ?? null,
             'response' => $data,
         ]));
@@ -1643,7 +1658,9 @@ class AiAgentHubTenantService
     {
         $response = $call();
 
-        if ($response->status() !== 404) {
+        // A refused account is not a lost agent: rebuilding would only knock
+        // on the same door again. ensureSuccessful reports it.
+        if ($response->status() !== 404 || AiHubAccounts::isAccountRefusal($response)) {
             return $response;
         }
 
@@ -1725,7 +1742,7 @@ class AiAgentHubTenantService
             'metadata' => $metadata,
         ], fn ($v) => $v !== null);
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/provider-credentials", $payload);
 
         $this->ensureSuccessful($response, 'repush provider credential', [
@@ -1804,7 +1821,7 @@ class AiAgentHubTenantService
 
         $payload = $this->withHandoffMirror($payload);
 
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($tenant))
             ->post("{$this->baseUrl}/agents", $payload);
 
         $this->ensureSuccessful($response, 'repush agent', [
@@ -1876,7 +1893,7 @@ class AiAgentHubTenantService
      */
     protected function repushChild(AiHubAgent $agent, string $segment, string $action, array $payload): array
     {
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($agent))
             ->post("{$this->baseUrl}/agents/{$agent->hub_agent_id}/{$segment}", $payload);
 
         $this->ensureSuccessful($response, $action, [
@@ -1972,7 +1989,7 @@ class AiAgentHubTenantService
      */
     public function putPinglyTools(AiHubAgent $agent, array $tools): void
     {
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($agent))
             ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/pingly-tools", ['tools' => $tools]);
 
         $this->ensureSuccessful($response, 'register the agent tools', [
@@ -1989,7 +2006,7 @@ class AiAgentHubTenantService
      */
     public function putPinglyDelivery(AiHubAgent $agent, string $apiKey): void
     {
-        $response = Http::withHeaders($this->headers())
+        $response = Http::withHeaders($this->headers($agent))
             ->put("{$this->baseUrl}/agents/{$agent->hub_agent_id}/pingly-delivery", ['apiKey' => $apiKey]);
 
         $this->ensureSuccessful($response, 'register the agent Pingly credential', [
@@ -1998,12 +2015,92 @@ class AiAgentHubTenantService
         ]);
     }
 
-    protected function headers(): array
+    /**
+     * Auth headers for a hub call made for a workspace.
+     *
+     * Always the platform token. When per-workspace accounts are on and the
+     * workspace has one, `X-Hub-Tenant` names it and the hub runs the request
+     * inside that account only (see {@see AiHubAccounts}). `null` is a
+     * deliberate platform-level call — the caller says so in a comment.
+     *
+     * An agent is accepted as well as a workspace so the call sites that only
+     * hold the agent do not load its workspace while the flag is off.
+     */
+    protected function headers(AiHubTenant|AiHubAgent|null $scope): array
     {
-        return [
+        $headers = [
             'Authorization' => 'Bearer '.$this->resolveApiKey(),
             'Accept' => 'application/json',
         ];
+
+        $this->hubTenantId = null;
+
+        if ($scope === null || ! AiHubAccounts::enabled()) {
+            return $headers;
+        }
+
+        $tenant = $scope instanceof AiHubAgent ? $scope->aiHubTenant : $scope;
+        $account = app(AiHubAccounts::class)->headerFor($tenant);
+
+        $this->hubTenantId = $account[AiHubAccounts::HEADER] ?? null;
+
+        return array_merge($headers, $account);
+    }
+
+    /**
+     * Open the workspace's own hub account if it has none, and return its id.
+     * Null while the flag is off, or when the hub could not be reached — the
+     * workspace keeps working without the header, and the scheduled
+     * `ai-hub:provision-accounts` tries again.
+     */
+    public function ensureHubAccount(AiHubTenant $t): ?string
+    {
+        return app(AiHubAccounts::class)->ensure($t);
+    }
+
+    /**
+     * The account named on the call this service sent last, for its log lines.
+     *
+     * @param  array<string, mixed>  $context
+     * @return array<string, mixed>
+     */
+    protected function withHubAccount(array $context): array
+    {
+        return $this->hubTenantId === null
+            ? $context
+            : $context + ['hub_tenant_id' => $this->hubTenantId];
+    }
+
+    /**
+     * The hub refused the account the header named. Reported, never repaired
+     * and never retried without the header: either would put this workspace's
+     * call back into the shared account.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    protected function refuseAccount(Response $response, string $action, array $context): never
+    {
+        Log::error("AiAgentHubTenantService: the hub refused this workspace's account trying to {$action}", array_merge($context, [
+            'status' => $response->status(),
+            'code' => $response->json('code'),
+            'body' => mb_substr($response->body(), 0, 1000),
+        ]));
+
+        throw UpstreamError::exception(
+            UpstreamProvider::AiHub,
+            'The AI hub refused the workspace account.',
+            upstreamCode: AiHubAccounts::REFUSAL_CODE,
+            status: $response->status(),
+            context: array_merge($context, ['action' => $action]),
+            details: ['hub_account_refused' => true],
+        );
+    }
+
+    /** True for the exception {@see refuseAccount()} throws. */
+    protected static function isAccountRefused(\Throwable $th): bool
+    {
+        return $th instanceof UpstreamServiceException
+            && ($th->details['hub_account_refused'] ?? false) === true;
     }
 
     /**
@@ -2018,7 +2115,11 @@ class AiAgentHubTenantService
      */
     protected function ensureDeleted(Response $response, string $action, array $context = []): void
     {
-        if ($response->status() === 404) {
+        $context = $this->withHubAccount($context);
+
+        // A 404 about the account is not "the hub does not have it": deleting
+        // the local row on that answer would lose a record the hub still holds.
+        if ($response->status() === 404 && ! AiHubAccounts::isAccountRefusal($response)) {
             Log::info("AiAgentHubTenantService: nothing to {$action}, the hub does not have it", $context);
 
             return;
@@ -2079,6 +2180,12 @@ class AiAgentHubTenantService
     {
         if ($response->successful()) {
             return;
+        }
+
+        $context = $this->withHubAccount($context);
+
+        if (AiHubAccounts::isAccountRefusal($response)) {
+            $this->refuseAccount($response, $action, $context);
         }
 
         if ($response->status() === 400) {

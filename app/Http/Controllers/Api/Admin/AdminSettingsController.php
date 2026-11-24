@@ -154,6 +154,9 @@ class AdminSettingsController extends Controller
                     // rename keeps rendering this section.
                     'admin_token_set' => ! empty($aiToken),
                     'admin_token_preview' => $this->mask($aiToken),
+                    // One hub account per workspace (X-Hub-Tenant). Off until
+                    // the hub's platform endpoints are live and approved.
+                    'per_workspace_accounts' => AiAgentHubConfig::perWorkspaceAccounts(),
                 ],
                 'notifications' => [
                     'enabled' => NotificationConfig::enabled(),
@@ -281,6 +284,7 @@ class AdminSettingsController extends Controller
             // Old field name for the same value, still sent by Back Office
             // builds from before the rename.
             'ai_agent_hub.admin_token' => ['nullable', 'string', 'max:512'],
+            'ai_agent_hub.per_workspace_accounts' => ['sometimes', 'boolean'],
 
             'notifications' => ['sometimes', 'array'],
             'notifications.enabled' => ['sometimes', 'boolean'],
@@ -507,6 +511,23 @@ class AdminSettingsController extends Controller
 
             if (! empty($hubToken)) {
                 Setting::set(AiAgentHubConfig::KEY_TENANT_TOKEN, $hubToken);
+            }
+
+            // Recorded on its own: this switch decides which hub account every
+            // workspace's calls run in, so when it moved has to be findable.
+            if (array_key_exists('per_workspace_accounts', $ai)) {
+                $before = AiAgentHubConfig::perWorkspaceAccounts();
+                $after = (bool) $ai['per_workspace_accounts'];
+
+                Setting::set(AiAgentHubConfig::KEY_PER_WORKSPACE_ACCOUNTS, $after ? '1' : '0');
+
+                if ($before !== $after) {
+                    AuditLog::record(
+                        'settings.ai_hub_per_workspace_accounts',
+                        $after ? 'Turned on one AI hub account per workspace' : 'Turned off one AI hub account per workspace',
+                        ['before' => $before, 'after' => $after],
+                    );
+                }
             }
         }
 
