@@ -28,7 +28,7 @@ use Symfony\Component\HttpFoundation\Response;
 class EnsureOnboardingCompleted
 {
     /** Route-name prefixes the guide needs. */
-    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'numbers.', 'credits.', 'onboarding.'];
+    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'numbers.', 'credits.', 'onboarding.', 'tutorials.'];
 
     /**
      * Route URIs (relative) the guide needs: the user payload that says whether

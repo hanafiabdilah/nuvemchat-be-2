@@ -254,6 +254,17 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     Route::post('/user/heartbeat', [UserController::class, 'heartbeat'])->middleware('throttle:30,1');
     Route::put('/user/presence', [UserController::class, 'updatePresence'])->middleware('throttle:30,1,user-presence');
 
+    // Video tutorials beside each feature (Back Office → Tutorials). Exempt
+    // from the onboarding and subscription gates: a video on how to get
+    // started is most useful before anything is set up or paid.
+    Route::prefix('tutorials')->name('tutorials.')->group(function () {
+        Route::get('/', [\App\Http\Controllers\Api\TutorialController::class, 'index'])->name('index');
+        Route::post('/auto-open', [\App\Http\Controllers\Api\TutorialController::class, 'autoOpen'])
+            ->middleware('throttle:60,1,tutorial-auto-open')->name('auto-open');
+        Route::post('/{video}/view', [\App\Http\Controllers\Api\TutorialController::class, 'view'])
+            ->whereNumber('video')->middleware('throttle:60,1,tutorial-view')->name('view');
+    });
+
     // Billing (tenant-side). Exempt from the subscription.active gate so a
     // suspended tenant can still load the page and pay (see EnsureSubscriptionActive).
     Route::prefix('billing')->name('billing.')->group(function () {
@@ -1552,6 +1563,20 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::put('/affiliates/{affiliate}', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'update'])->whereNumber('affiliate');
             Route::delete('/affiliates/{affiliate}', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'destroy'])->whereNumber('affiliate');
             Route::post('/affiliates/{affiliate}/payouts', [\App\Http\Controllers\Api\Admin\AdminAffiliateController::class, 'recordPayout'])->whereNumber('affiliate');
+        });
+
+        // Tutorial videos: the library every workspace's dashboard shows next
+        // to the feature each one explains. Uploads arrive in 8 MB pieces.
+        Route::middleware('permission:bo.tutorials.manage')->group(function () {
+            Route::get('/tutorials', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'index']);
+            Route::get('/tutorials/meta', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'meta']);
+            Route::post('/tutorials/uploads', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'uploadChunk'])
+                ->middleware('throttle:600,1,tutorial-upload');
+            Route::put('/tutorials/order', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'reorder']);
+            Route::post('/tutorials', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'store']);
+            Route::get('/tutorials/{video}', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'show'])->whereNumber('video');
+            Route::put('/tutorials/{video}', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'update'])->whereNumber('video');
+            Route::delete('/tutorials/{video}', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'destroy'])->whereNumber('video');
         });
 
         // Billing — coupons: a percentage off plan charges, or a bonus on

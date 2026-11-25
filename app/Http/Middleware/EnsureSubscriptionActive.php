@@ -30,8 +30,10 @@ class EnsureSubscriptionActive
      * that has not paid for anything yet.
      * `affiliate.` because an affiliator's earnings are theirs, not their
      * workspace's: a lapsed plan must not hide what they are owed.
+     * `tutorials.` because a video explaining the product is part of what a
+     * workspace with a lapsed plan is deciding whether to pay for again.
      */
-    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'numbers.', 'gallery.', 'credits.', 'onboarding.', 'affiliate.'];
+    private const EXEMPT_PREFIXES = ['billing.', 'plans.', 'numbers.', 'gallery.', 'credits.', 'onboarding.', 'affiliate.', 'tutorials.'];
 
     /**
      * Exact route URIs (relative) that remain accessible.

@@ -83,6 +83,9 @@ class PlatformRbacSeeder extends Seeder
         // Affiliators: who earns a share of the plans they bring in, and the
         // payouts made to them.
         'bo.affiliates.manage',
+        // Tutorial videos: the library every workspace's dashboard shows next
+        // to the feature each video explains.
+        'bo.tutorials.manage',
     ];
 
     public function run(): void
