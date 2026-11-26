@@ -12,6 +12,7 @@ use App\Models\TutorialVideoTopic;
 use App\Services\Media\ChunkedUpload;
 use App\Services\Media\MediaStorage;
 use App\Services\Message\StagedVideoUploads;
+use App\Services\Tutorials\TutorialThumbnail;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -264,7 +265,7 @@ class AdminTutorialController extends Controller
     public function destroy(TutorialVideo $video): JsonResponse
     {
         $title = $video->title;
-        $published = [$video->path, $video->poster_path];
+        $published = [$video->path, $video->poster_path, $video->thumbnail_path];
         $source = $video->source_path;
 
         $video->delete();
@@ -277,6 +278,35 @@ class AdminTutorialController extends Controller
         AuditLog::record('tutorials.delete', "Deleted tutorial video \"{$title}\"", ['tutorial_video_id' => $video->id]);
 
         return response()->json(['message' => 'Tutorial video deleted.']);
+    }
+
+    /**
+     * The picture shown before the video plays, in place of the frame drawn
+     * from it. Optional; replacing the video file keeps it.
+     */
+    public function storeThumbnail(Request $request, TutorialVideo $video, TutorialThumbnail $thumbnails): JsonResponse
+    {
+        $request->validate(['thumbnail' => TutorialThumbnail::rules()]);
+
+        $thumbnails->store($video, $request->file('thumbnail'));
+
+        AuditLog::record('tutorials.thumbnail', "Set the thumbnail of tutorial video \"{$video->title}\"", [
+            'tutorial_video_id' => $video->id,
+        ]);
+
+        return $this->show($video->refresh());
+    }
+
+    /** Back to the frame drawn from the video. */
+    public function destroyThumbnail(TutorialVideo $video, TutorialThumbnail $thumbnails): JsonResponse
+    {
+        $thumbnails->clear($video);
+
+        AuditLog::record('tutorials.thumbnail', "Removed the thumbnail of tutorial video \"{$video->title}\"", [
+            'tutorial_video_id' => $video->id,
+        ]);
+
+        return $this->show($video->refresh());
     }
 
     /** The order one topic shows its videos in, as dragged in the list. */
@@ -402,7 +432,10 @@ class AdminTutorialController extends Controller
             'error' => $video->error,
             'original_name' => $video->original_name,
             'video_url' => $video->videoUrl(),
+            // What viewers see: the chosen thumbnail, else the drawn frame.
             'poster_url' => $video->posterUrl(),
+            'auto_poster_url' => $video->autoPosterUrl(),
+            'has_thumbnail' => $video->thumbnail_path !== null,
             'duration_seconds' => $video->duration_seconds,
             'width' => $video->width,
             'height' => $video->height,

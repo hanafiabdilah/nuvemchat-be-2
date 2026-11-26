@@ -31,6 +31,7 @@ class TutorialVideo extends Model
         'original_name',
         'path',
         'poster_path',
+        'thumbnail_path',
         'duration_seconds',
         'width',
         'height',
@@ -81,7 +82,19 @@ class TutorialVideo extends Model
         return $this->path ? MediaStorage::publishedUrl($this->path) : null;
     }
 
+    /**
+     * The picture shown before the video plays: the thumbnail the admin chose,
+     * else the frame ffmpeg drew from the video.
+     */
     public function posterUrl(): ?string
+    {
+        $path = $this->thumbnail_path ?: $this->poster_path;
+
+        return $path ? MediaStorage::publishedUrl($path) : null;
+    }
+
+    /** The frame drawn from the video, whatever thumbnail is chosen. */
+    public function autoPosterUrl(): ?string
     {
         return $this->poster_path ? MediaStorage::publishedUrl($this->poster_path) : null;
     }
@@ -92,9 +105,9 @@ class TutorialVideo extends Model
         return $this->topics->pluck('topic')->values()->all();
     }
 
-    /** Every file this row owns on the published disk. */
+    /** Every file this row owns on the published disk (the upload waiting on staging is not one). */
     public function storedPaths(): array
     {
-        return array_values(array_unique(array_filter([$this->source_path, $this->path, $this->poster_path])));
+        return array_values(array_unique(array_filter([$this->path, $this->poster_path, $this->thumbnail_path])));
     }
 }

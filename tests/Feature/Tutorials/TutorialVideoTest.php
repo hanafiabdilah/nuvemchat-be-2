@@ -325,6 +325,67 @@ it('does not encode twice, nor fail an encode still running, when the job is del
         ->and($video->fresh()->source_path)->toBe('tutorial-uploads/abc/long.mp4');
 });
 
+it('uses a chosen thumbnail over the drawn frame, shrunk, and falls back when it is removed', function () {
+    $admin = tutorialAdmin();
+    MediaStorage::published()->put('tutorials/v/poster.jpg', 'frame');
+    $video = tutorialVideo(['dashboard'], ['poster_path' => 'tutorials/v/poster.jpg', 'path' => 'tutorials/v/video.mp4']);
+
+    $set = $this->actingAs($admin)->post("/api/admin/tutorials/{$video->id}/thumbnail", [
+        'thumbnail' => UploadedFile::fake()->image('capa.png', 2400, 1350),
+    ], ['Accept' => 'application/json'])->assertOk();
+
+    $thumbnail = $video->fresh()->thumbnail_path;
+    expect($set->json('data.has_thumbnail'))->toBeTrue()
+        ->and($set->json('data.poster_url'))->toContain($thumbnail)
+        ->and($set->json('data.auto_poster_url'))->toContain('tutorials/v/poster.jpg');
+
+    // Shrunk to the longest edge the player needs.
+    [$width] = getimagesizefromstring(MediaStorage::published()->get($thumbnail));
+    expect($width)->toBe(1280);
+
+    // Viewers see it too.
+    $entry = collect($this->actingAs(tutorialUser())->getJson('/api/tutorials')->json('videos'))->firstWhere('id', $video->id);
+    expect($entry['poster_url'])->toContain($thumbnail);
+
+    $cleared = $this->actingAs($admin)->deleteJson("/api/admin/tutorials/{$video->id}/thumbnail")->assertOk();
+    expect($cleared->json('data.has_thumbnail'))->toBeFalse()
+        ->and($cleared->json('data.poster_url'))->toContain('tutorials/v/poster.jpg');
+    Storage::disk(MediaStorage::publishedDiskName())->assertMissing($thumbnail);
+});
+
+it('refuses a thumbnail that is not a picture it can serve', function () {
+    $admin = tutorialAdmin();
+    $video = tutorialVideo(['dashboard']);
+
+    $this->actingAs($admin)->post("/api/admin/tutorials/{$video->id}/thumbnail", [
+        'thumbnail' => UploadedFile::fake()->createWithContent('capa.svg', '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'),
+    ], ['Accept' => 'application/json'])->assertUnprocessable()->assertJsonValidationErrors('thumbnail');
+
+    expect($video->fresh()->thumbnail_path)->toBeNull();
+});
+
+it('keeps the chosen thumbnail when the video file is replaced, and deletes it with the video', function () {
+    $this->instance(TutorialVideoProcessor::class, new FakeTutorialProcessor);
+    $admin = tutorialAdmin();
+
+    $id = $this->actingAs($admin)->postJson('/api/admin/tutorials', [
+        'title' => 'Tour', 'locale' => 'pt_BR', 'topics' => ['dashboard'], 'upload_token' => tutorialUpload($this, $admin),
+    ])->json('data.id');
+
+    $this->actingAs($admin)->post("/api/admin/tutorials/{$id}/thumbnail", [
+        'thumbnail' => UploadedFile::fake()->image('capa.jpg', 640, 360),
+    ], ['Accept' => 'application/json'])->assertOk();
+    $thumbnail = TutorialVideo::findOrFail($id)->thumbnail_path;
+
+    $this->actingAs($admin)->putJson("/api/admin/tutorials/{$id}", ['upload_token' => tutorialUpload($this, $admin)])->assertOk();
+
+    expect(TutorialVideo::findOrFail($id)->thumbnail_path)->toBe($thumbnail);
+    Storage::disk(MediaStorage::publishedDiskName())->assertExists($thumbnail);
+
+    $this->actingAs($admin)->deleteJson("/api/admin/tutorials/{$id}")->assertOk();
+    Storage::disk(MediaStorage::publishedDiskName())->assertMissing($thumbnail);
+});
+
 // --- Dashboard -------------------------------------------------------------------
 
 it('shows a person only playable videos, on topics their role opens', function () {

@@ -1577,6 +1577,8 @@ Route::prefix('admin')->middleware('platform.only')->group(function () {
             Route::get('/tutorials/{video}', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'show'])->whereNumber('video');
             Route::put('/tutorials/{video}', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'update'])->whereNumber('video');
             Route::delete('/tutorials/{video}', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'destroy'])->whereNumber('video');
+            Route::post('/tutorials/{video}/thumbnail', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'storeThumbnail'])->whereNumber('video');
+            Route::delete('/tutorials/{video}/thumbnail', [\App\Http\Controllers\Api\Admin\AdminTutorialController::class, 'destroyThumbnail'])->whereNumber('video');
         });
 
         // Billing — coupons: a percentage off plan charges, or a bonus on
