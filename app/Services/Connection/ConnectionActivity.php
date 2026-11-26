@@ -3,6 +3,7 @@
 namespace App\Services\Connection;
 
 use App\Enums\Connection\Status as ConnectionStatus;
+use App\Enums\Message\MessageType;
 use App\Enums\Message\SenderType;
 use App\Models\Connection;
 use App\Support\SqlDialect;
@@ -10,7 +11,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Health and recent activity for a single connection, for the detail drawer.
+ * Health numbers for a single connection, for the detail drawer.
  *
  * Everything here is read back out of `messages` — the table every channel
  * already writes to. There is no new write path and no sampler, which is also
@@ -34,9 +35,6 @@ class ConnectionActivity
     public const DEFAULT_DAYS = 7;
 
     public const MAX_DAYS = 90;
-
-    /** Recent events shown in the drawer; the list is a sample, not a log. */
-    public const EVENT_LIMIT = 12;
 
     /** Above this share of failed sends the connection is called broken. */
     private const CRITICAL_FAILURE_RATE = 5.0;
@@ -64,7 +62,6 @@ class ConnectionActivity
 
         return [
             'health' => $this->health($daily),
-            'events' => $this->events(),
         ];
     }
 
@@ -181,93 +178,21 @@ class ConnectionActivity
     }
 
     /**
-     * The last few things that happened, newest first.
-     *
-     * Derived from messages rather than from an event log, because there is no
-     * event log — and because the four things worth showing (someone wrote in,
-     * the flow answered, the AI answered, a send was refused) are all already
-     * distinguishable on the message row via its `sent_by_*` attribution.
-     *
-     * Connection lifecycle events — connected, disconnected, token expired —
-     * are deliberately *not* here: only the current status is stored, never its
-     * history, so there is nothing to read. Recording those needs a new table.
-     */
-    private function events(): array
-    {
-        $rows = $this->scopedMessages()
-            ->leftJoin('contacts', 'contacts.id', '=', 'conversations.contact_id')
-            ->orderByDesc('messages.id')
-            ->limit(self::EVENT_LIMIT)
-            ->select(
-                'messages.id',
-                'messages.body',
-                'messages.error',
-                'messages.sender_type',
-                'messages.message_type',
-                'messages.created_at',
-                'messages.sent_by_flow_id',
-                'messages.sent_by_ai_hub_agent_id',
-                'messages.sent_by_user_id',
-                'conversations.id as conversation_id',
-                'contacts.name as contact_name'
-            )
-            ->get();
-
-        return $rows->map(fn ($row) => [
-            'id' => (int) $row->id,
-            'type' => $this->eventType($row),
-            'contact' => $row->contact_name,
-            'conversation_id' => (int) $row->conversation_id,
-            // The error wins the preview when there is one: on a failed send
-            // the body is what we tried to say, and the reason it did not go is
-            // the more useful half.
-            'preview' => $this->preview($row->error ?: $row->body),
-            'at' => CarbonImmutable::parse($row->created_at)->toIso8601String(),
-        ])->all();
-    }
-
-    private function eventType(object $row): string
-    {
-        if ($row->error) {
-            return 'send_failed';
-        }
-
-        if ($row->sender_type === SenderType::Incoming->value) {
-            return 'message_received';
-        }
-
-        if ($row->sent_by_ai_hub_agent_id) {
-            return 'ai_replied';
-        }
-
-        if ($row->sent_by_flow_id) {
-            return 'flow_replied';
-        }
-
-        return $row->sent_by_user_id ? 'agent_replied' : 'message_sent';
-    }
-
-    private function preview(?string $text): ?string
-    {
-        $text = trim((string) $text);
-
-        if ($text === '') {
-            return null;
-        }
-
-        return mb_strimwidth($text, 0, 120, '…');
-    }
-
-    /**
      * Messages on this connection inside the window. Joined through
      * conversations rather than filtered with whereHas so the planner can use
      * the connection_id index instead of testing an EXISTS per candidate row.
+     *
+     * Internal notes are left out. They are stored as Outgoing rows (transfer,
+     * status change, call log…) but never go to the channel, so counting them
+     * inflated "Sent" and, since none is ever delivered, pulled the delivery
+     * rate down on exactly the busy threads people pass between each other.
      */
     private function scopedMessages()
     {
         return DB::table('messages')
             ->join('conversations', 'conversations.id', '=', 'messages.conversation_id')
             ->where('conversations.connection_id', $this->connection->id)
-            ->where('messages.created_at', '>=', $this->from);
+            ->where('messages.created_at', '>=', $this->from)
+            ->where('messages.message_type', '!=', MessageType::Info->value);
     }
 }

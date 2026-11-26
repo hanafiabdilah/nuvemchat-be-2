@@ -127,9 +127,9 @@ class ConnectionController extends Controller
     }
 
     /**
-     * Health and recent activity for one connection — the detail drawer's
-     * lower half. Read entirely out of `messages`; see ConnectionActivity for
-     * what that does and does not make knowable.
+     * Health numbers for one connection — the detail drawer's health card.
+     * Read entirely out of `messages`; see ConnectionActivity for what that
+     * does and does not make knowable.
      */
     public function activity(int $id, Request $request)
     {

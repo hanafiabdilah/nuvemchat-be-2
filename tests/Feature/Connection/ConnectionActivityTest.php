@@ -145,25 +145,23 @@ test('the sparkline has one bucket per day including the days with no traffic', 
     expect(collect($daily)->sum('sent'))->toBe(1);
 });
 
-test('events name what happened, and a failed send leads with the reason', function () {
-    [, $owner, $connection, $conversation] = activityFixture();
+test('internal notes are not counted as sends', function () {
+    [, $owner, $connection, $conversation] = activityFixture(Channel::WhatsappApiway);
 
-    activityMessage($conversation, ['sender_type' => SenderType::Incoming, 'body' => 'Bom dia']);
-    activityMessage($conversation, ['sent_by_flow_id' => null, 'body' => 'resposta do fluxo']);
-    activityMessage($conversation, ['error' => 'Recipient not found', 'body' => 'texto que nao foi']);
+    activityMessage($conversation, ['delivery_at' => now()]);
+    // A transfer note: stored Outgoing, never sent to the channel, never delivered.
+    activityMessage($conversation, ['message_type' => MessageType::Info, 'body' => 'Ana transferiu esta conversa.']);
 
     Sanctum::actingAs($owner);
-    $events = $this->getJson("/api/connections/{$connection->id}/activity")
-        ->assertOk()
-        ->json('data.events');
+    $response = $this->getJson("/api/connections/{$connection->id}/activity")->assertOk();
+    $health = $response->json('data.health');
 
-    // Newest first.
-    expect($events[0]['type'])->toBe('send_failed');
-    expect($events[0]['preview'])->toBe('Recipient not found');
-    expect($events[0]['contact'])->toBe('Maria');
+    expect($health['sent'])->toBe(1);
+    expect($health['delivery_rate'])->toEqual(100); // JSON writes 100.0 as 100
+    expect(collect($health['daily'])->sum('sent'))->toBe(1);
 
-    expect($events[2]['type'])->toBe('message_received');
-    expect($events[2]['preview'])->toBe('Bom dia');
+    // The drawer no longer lists recent events, so the API stops building them.
+    expect($response->json('data'))->not->toHaveKey('events');
 });
 
 test('an agent cannot read the activity of a connection they do not hold', function () {
