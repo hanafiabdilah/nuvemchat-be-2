@@ -11,6 +11,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\NewAccessToken;
+use Laravel\Sanctum\PersonalAccessToken;
 
 /**
  * One computer and one phone per account: signing in ends the account's other
@@ -70,6 +71,42 @@ class SingleSession
         ])->save();
 
         return $issued;
+    }
+
+    /**
+     * The Pingly app has just registered for push on this session — proof that
+     * it is a phone, whatever the sign-in's User-Agent said. Corrects the kind
+     * (and fills a missing label) so the next computer sign-in does not end it.
+     *
+     * Deliberately not a claim(): a session re-filed as a phone after the fact
+     * does not end the account's other phone. It only stops being mistaken
+     * for the computer.
+     */
+    public static function markAsApp(int $tokenId, string $platform): void
+    {
+        $os = match ($platform) {
+            'ios' => 'iOS',
+            'android' => 'Android',
+            default => null,
+        };
+
+        $token = PersonalAccessToken::query()
+            ->whereKey($tokenId)
+            ->where('name', self::TOKEN_NAME)
+            ->first();
+
+        if ($token === null) {
+            return;
+        }
+
+        $token->forceFill([
+            'device_kind' => SessionDevice::Phone->value,
+            'device_label' => $token->device_label ?? implode(' · ', array_filter(['Pingly app', $os])),
+        ]);
+
+        if ($token->isDirty()) {
+            $token->save();
+        }
     }
 
     /**

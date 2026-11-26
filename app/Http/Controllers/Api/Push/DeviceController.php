@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Push;
 
 use App\Http\Controllers\Controller;
 use App\Models\DeviceToken;
+use App\Services\Auth\SingleSession;
 use App\Services\Push\FirebaseConfig;
 use App\Services\Push\PushNotifier;
 use Illuminate\Http\Request;
@@ -73,6 +74,12 @@ class DeviceController extends Controller
                 ],
             );
         });
+
+        // Only the app registers here, so this session is a phone — even when
+        // its sign-in was read as a computer.
+        if ($sessionId !== null) {
+            SingleSession::markAsApp($sessionId, $validated['platform']);
+        }
 
         return response()->json(['data' => $this->present($device, $request)], 201);
     }

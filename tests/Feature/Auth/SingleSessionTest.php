@@ -256,6 +256,89 @@ it('does not refuse a sign-in because the announcement failed', function () {
     callWith($first)->assertStatus(401);
 });
 
+/** Signs in the way the dashboard does now: declaring the kind of device in the body. */
+function signInDeclaring(User $user, string $userAgent, ?string $device): string
+{
+    forgetWhoSignedIn();
+
+    $body = ['email' => $user->email, 'password' => 'correct-horse-battery'];
+
+    if ($device !== null) {
+        $body['device'] = $device;
+    }
+
+    $token = test()->withHeaders(['User-Agent' => $userAgent])
+        ->postJson('/api/auth/login', $body)
+        ->assertOk()
+        ->json('access_token');
+
+    forgetWhoSignedIn();
+
+    return $token;
+}
+
+// What the iOS app's first sign-in looked like to the server: no device, no browser.
+const UNREADABLE_UA = 'Pingly/1 CFNetwork/1568.100.1 Darwin/24.0.0';
+
+it('takes the device the dashboard declares over a user agent that names none', function () {
+    $user = singleSessionUser();
+
+    $computer = signInAs($user, COMPUTER_UA);
+    $phone = signInDeclaring($user, UNREADABLE_UA, 'phone');
+
+    // Read from the User-Agent alone this was a computer, and it ended the real one.
+    callWith($computer)->assertOk();
+    callWith($phone)->assertOk();
+
+    expect(\Laravel\Sanctum\PersonalAccessToken::findToken($phone)->device_kind)->toBe('phone');
+});
+
+it('takes a declared phone behind a Mac user agent (an iPhone or iPad asking for the desktop site)', function () {
+    $user = singleSessionUser();
+
+    $computer = signInAs($user, COMPUTER_UA);
+    signInDeclaring($user, MAC_UA, 'phone');
+
+    callWith($computer)->assertOk();
+});
+
+it('falls back to the user agent when the declared device is not one it knows', function () {
+    $user = singleSessionUser();
+
+    $computer = signInAs($user, COMPUTER_UA);
+    $other = signInDeclaring($user, COMPUTER_UA, 'tablet');
+
+    callWith($computer)->assertStatus(401);
+    expect(\Laravel\Sanctum\PersonalAccessToken::findToken($other)->device_kind)->toBe('computer');
+});
+
+it('re-files a session as a phone once the app registers it for push', function () {
+    $user = singleSessionUser();
+
+    // An app build or client that does not declare the device yet.
+    $app = signInDeclaring($user, UNREADABLE_UA, null);
+
+    expect(\Laravel\Sanctum\PersonalAccessToken::findToken($app)->device_kind)->toBe('computer');
+
+    forgetWhoSignedIn();
+    test()->withHeaders(['Authorization' => 'Bearer '.$app])
+        ->postJson('/api/user/devices', [
+            'token' => 'fcm-'.uniqid(),
+            'device_id' => (string) \Illuminate\Support\Str::uuid(),
+            'platform' => 'ios',
+            'app_version' => '1.0.0',
+        ])
+        ->assertCreated();
+
+    $row = \Laravel\Sanctum\PersonalAccessToken::findToken($app);
+    expect($row->device_kind)->toBe('phone')
+        ->and($row->device_label)->toBe('Pingly app · iOS');
+
+    // The person's computer can now sign in without ending the phone.
+    signInAs($user, COMPUTER_UA);
+    callWith($app)->assertOk();
+});
+
 it('names a device from its user agent', function (string $userAgent, ?string $label) {
     expect(SingleSession::deviceLabel($userAgent))->toBe($label);
 })->with([
