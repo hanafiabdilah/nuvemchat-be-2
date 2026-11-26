@@ -84,7 +84,7 @@ class AuthController extends Controller
             ]);
         }
 
-        $token = $user->createToken(SingleSession::TOKEN_NAME)->plainTextToken;
+        $token = app(SingleSession::class)->issue($user, $request)->plainTextToken;
 
         return response()->json([
             'access_token' => $token,
@@ -235,12 +235,14 @@ class AuthController extends Controller
             return $this->deactivatedResponse();
         }
 
-        $issued = $user->createToken(SingleSession::TOKEN_NAME);
+        $sessions = app(SingleSession::class);
+        $issued = $sessions->issue($user, request());
         $token = $issued->plainTextToken;
 
-        // One sign-in per account: whoever was signed in before is told, in
-        // real time, and returned to the login screen with the reason on it.
-        app(SingleSession::class)->claim($user, $issued, request());
+        // One computer and one phone per account: whoever was signed in before
+        // on the same kind of device is told, in real time, and returned to the
+        // login screen with the reason on it.
+        $sessions->claim($user, $issued, request());
 
         // Present from this second rather than from the first heartbeat a
         // minute later — signing in is the clearest statement there is that

@@ -2,18 +2,31 @@
 
 namespace App\Services\Auth;
 
+use App\Enums\Auth\SessionDevice;
 use App\Events\SessionSuperseded;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\NewAccessToken;
 
 /**
- * One sign-in per account: signing in ends the account's other dashboard
- * sessions.
+ * One computer and one phone per account: signing in ends the account's other
+ * dashboard session of the same kind (App\Enums\Auth\SessionDevice), and
+ * only that one. A computer and a phone can be signed in at the same time;
+ * two computers, or two phones, cannot.
  *
- * Three things make that more than `tokens()->delete()`:
+ * Sessions from before the kind was recorded (`device_kind` null) count as
+ * both, so the next sign-in of either kind ends them — what it always did.
+ *
+ * Four things make that more than `tokens()->delete()`:
+ *
+ * - **The kind is decided at sign-in and kept on the token**
+ *   (`personal_access_tokens.device_kind`, with the label people read under
+ *   Profile → Signed-in devices). Every sign-in goes through issue(), so no
+ *   session is created without one.
  *
  * - **Only sign-ins are sessions.** Tokens are told apart by name. An
  *   impersonation token belongs to a Back Office operator looking at the
@@ -44,7 +57,48 @@ class SingleSession
     }
 
     /**
-     * Make `$token` the account's only session.
+     * Create a dashboard session for `$user`, marked with the kind and name of
+     * the device it was created from.
+     */
+    public function issue(User $user, ?Request $request = null): NewAccessToken
+    {
+        $issued = $user->createToken(self::TOKEN_NAME);
+
+        $issued->accessToken->forceFill([
+            'device_kind' => SessionDevice::fromRequest($request)->value,
+            'device_label' => self::deviceLabel($request?->userAgent()),
+        ])->save();
+
+        return $issued;
+    }
+
+    /**
+     * The account's dashboard sessions that are still alive, newest activity
+     * first. Impersonation tokens are not listed: they are a Back Office
+     * operator's, and API keys and MCP connections are not sessions at all.
+     *
+     * @return Collection<int, \Laravel\Sanctum\PersonalAccessToken>
+     */
+    public static function activeSessions(User $user): Collection
+    {
+        $query = $user->tokens()->where('name', self::TOKEN_NAME);
+
+        // Sanctum ends a token by age as well as by expires_at, without
+        // deleting the row, so a dead session can still be in the table.
+        $minutes = config('sanctum.expiration');
+
+        if ($minutes) {
+            $query->where('created_at', '>', now()->subMinutes((int) $minutes));
+        }
+
+        return $query
+            ->where(fn (Builder $q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()))
+            ->orderByRaw('COALESCE(last_used_at, created_at) DESC')
+            ->get();
+    }
+
+    /**
+     * Make `$token` the account's only session of its kind.
      *
      * Never throws: by the time this runs the person has proved who they are,
      * and a cache or broadcast hiccup is not a reason to refuse them.
@@ -57,13 +111,17 @@ class SingleSession
 
         try {
             $device = self::deviceLabel($request?->userAgent());
+            $kind = $token->accessToken->getAttribute('device_kind')
+                ?? SessionDevice::fromRequest($request)->value;
             $at = now()->getTimestamp();
             $keep = (int) $token->accessToken->getKey();
 
-            $ended = Cache::lock('single-session:'.$user->id, 10)->block(5, function () use ($user, $keep, $device, $at) {
+            $ended = Cache::lock('single-session:'.$user->id, 10)->block(5, function () use ($user, $keep, $kind, $device, $at) {
                 $others = $user->tokens()
                     ->where('name', self::TOKEN_NAME)
                     ->where('id', '!=', $keep)
+                    // Same kind, or a session from before kinds were kept.
+                    ->where(fn (Builder $q) => $q->where('device_kind', $kind)->orWhereNull('device_kind'))
                     ->get(['id', 'token']);
 
                 if ($others->isEmpty()) {
@@ -76,7 +134,7 @@ class SingleSession
                 // still valid is harmless, a deleted token nobody remembers is
                 // the unexplained logout this exists to prevent.
                 foreach ($others as $other) {
-                    Cache::put(self::CACHE_PREFIX.$other->token, ['device' => $device, 'at' => $at], $ttl);
+                    Cache::put(self::CACHE_PREFIX.$other->token, ['device' => $device, 'kind' => $kind, 'at' => $at], $ttl);
                 }
 
                 // Through the model, not a mass delete — the phone's push
@@ -88,13 +146,14 @@ class SingleSession
             });
 
             if ($ended !== []) {
-                broadcast(new SessionSuperseded($user->id, $ended, $device, $at));
+                broadcast(new SessionSuperseded($user->id, $ended, $device, $kind, $at));
 
-                Log::info('Sign-in ended the account\'s other sessions', [
+                Log::info('Sign-in ended the account\'s other session of the same kind', [
                     'user_id' => $user->id,
                     'tenant_id' => $user->tenant_id,
                     'ended' => count($ended),
                     'device' => $device,
+                    'kind' => $kind,
                 ]);
             }
         } catch (\Throwable $th) {
@@ -111,7 +170,7 @@ class SingleSession
      * Asked only once a request has already failed authentication, so it costs
      * nothing on the way in. Knowing the answer requires holding the token.
      *
-     * @return array{device: ?string, at: int}|null
+     * @return array{device: ?string, kind: ?string, at: int}|null
      */
     public static function supersededBy(?string $bearer): ?array
     {
@@ -128,8 +187,10 @@ class SingleSession
             return null;
         }
 
+        // `kind` is absent on markers written before the rule allowed one of
+        // each, and the dashboard then says "another device".
         return is_array($found)
-            ? ['device' => $found['device'] ?? null, 'at' => (int) ($found['at'] ?? 0)]
+            ? ['device' => $found['device'] ?? null, 'kind' => $found['kind'] ?? null, 'at' => (int) ($found['at'] ?? 0)]
             : null;
     }
 

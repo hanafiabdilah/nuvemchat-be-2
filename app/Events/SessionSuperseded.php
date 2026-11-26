@@ -8,8 +8,8 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
 /**
- * The account was just signed in to somewhere else, and its other sessions
- * were ended.
+ * The account was just signed in to somewhere else, and its other session of
+ * the same kind (computer or phone) was ended.
  *
  * Sent on the person's own channel, which every one of their devices is
  * subscribed to — including, a moment later, the one that just signed in, and
@@ -31,6 +31,8 @@ class SessionSuperseded implements ShouldBroadcastNow
         /** @var array<int, int> */
         public array $ended,
         public ?string $device,
+        /** "computer" or "phone" — the kind of the device that signed in. */
+        public ?string $kind,
         public int $at,
     ) {}
 
@@ -50,6 +52,7 @@ class SessionSuperseded implements ShouldBroadcastNow
         return [
             'ended' => array_map('strval', $this->ended),
             'device' => $this->device,
+            'kind' => $this->kind,
             'at' => $this->at,
         ];
     }

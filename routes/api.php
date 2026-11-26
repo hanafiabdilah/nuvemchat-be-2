@@ -253,6 +253,8 @@ Route::middleware(['auth:sanctum', 'throttle:dashboard', 'whatsapp.verified', 'o
     // counts per user — it is here to bound abuse, not to pace the SPA.
     Route::post('/user/heartbeat', [UserController::class, 'heartbeat'])->middleware('throttle:30,1');
     Route::put('/user/presence', [UserController::class, 'updatePresence'])->middleware('throttle:30,1,user-presence');
+    // The devices this account is signed in on (Profile). The caller's own.
+    Route::get('/user/sessions', [\App\Http\Controllers\Api\UserSessionController::class, 'index']);
 
     // Video tutorials beside each feature (Back Office → Tutorials). Exempt
     // from the onboarding and subscription gates: a video on how to get

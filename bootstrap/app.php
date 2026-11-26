@@ -242,9 +242,10 @@ return Application::configure(basePath: dirname(__DIR__))
             }
 
             return response()->json([
-                'message' => 'This account was signed in on another device, so this session was ended.',
+                'message' => 'This account was signed in on another device of the same kind, so this session was ended.',
                 'code' => 'session_superseded',
                 'device' => $by['device'],
+                'kind' => $by['kind'],
                 'at' => $by['at'],
             ], 401);
         });
