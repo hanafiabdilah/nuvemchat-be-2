@@ -144,6 +144,19 @@ return [
         'invalid_field' => 'O valor de :field não cabia no campo e ficou de fora.',
         'tags_need_contact' => 'As etiquetas não foram aplicadas: elas ficam em um contato de canal, e este cliente ainda não tem nenhum.',
         'matched_skipped' => 'Já é cliente (:name); mantido sem alterações.',
+        'no_area_code' => 'O número :value está sem DDD e não foi salvo. Escolha o DDD na importação para mantê-lo.',
+        // Colunas de uma agenda (.vcf ou CSV do Google Contatos) lida como planilha.
+        'columns' => [
+            'name' => 'Nome',
+            'phone' => 'Telefone',
+            'other_phones' => 'Outros telefones',
+            'email' => 'E-mail',
+            'company' => 'Empresa',
+            'job_title' => 'Cargo',
+            'birthday' => 'Aniversário',
+            'address' => 'Endereço',
+            'notes' => 'Observações',
+        ],
     ],
 
     'automations' => [

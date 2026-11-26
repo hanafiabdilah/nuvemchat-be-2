@@ -144,6 +144,19 @@ return [
         'invalid_field' => 'Nilai untuk :field tidak sesuai dan dilewati.',
         'tags_need_contact' => 'Tag tidak dipasang: tag tersimpan di kontak kanal, dan pelanggan ini belum punya.',
         'matched_skipped' => 'Sudah menjadi pelanggan (:name); tidak diubah.',
+        'no_area_code' => 'Nomor :value tidak punya kode area (DDD), jadi tidak disimpan. Pilih kode areanya saat impor agar nomor ini ikut.',
+        // Nama kolom buku kontak (.vcf atau CSV Google Contacts) yang dibaca sebagai spreadsheet.
+        'columns' => [
+            'name' => 'Nama',
+            'phone' => 'Telepon',
+            'other_phones' => 'Telepon lain',
+            'email' => 'Email',
+            'company' => 'Perusahaan',
+            'job_title' => 'Jabatan',
+            'birthday' => 'Tanggal lahir',
+            'address' => 'Alamat',
+            'notes' => 'Catatan',
+        ],
     ],
 
     'automations' => [

@@ -144,6 +144,19 @@ return [
         'invalid_field' => 'The value for :field did not fit the field and was left out.',
         'tags_need_contact' => 'Tags were not applied: they live on a channel contact, and this customer has none yet.',
         'matched_skipped' => 'Already a customer (:name); left unchanged.',
+        'no_area_code' => 'The number :value has no area code (DDD), so it was not saved. Choose the area code in the import to keep it.',
+        // Column names of an address book (a .vcf or a Google Contacts CSV) read as a spreadsheet.
+        'columns' => [
+            'name' => 'Name',
+            'phone' => 'Phone',
+            'other_phones' => 'Other phones',
+            'email' => 'E-mail',
+            'company' => 'Company',
+            'job_title' => 'Job title',
+            'birthday' => 'Birthday',
+            'address' => 'Address',
+            'notes' => 'Notes',
+        ],
     ],
 
     'automations' => [

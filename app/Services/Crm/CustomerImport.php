@@ -6,6 +6,7 @@ use App\Enums\Crm\CustomerStatus;
 use App\Models\Company;
 use App\Models\Customer;
 use App\Models\Tag;
+use App\Models\Tenant;
 use App\Models\User;
 use App\Services\Catalog\SpreadsheetReader;
 use App\Support\PhoneVariants;
@@ -25,6 +26,10 @@ use Illuminate\Validation\ValidationException;
  * either filled in (only what is empty), overwritten, or left alone. New rows
  * become customers with source "import"; when that person later writes in from
  * the same phone or e-mail, they are recognised as this customer.
+ *
+ * An address book — a phone's .vcf, or what Google Contacts exports — is read
+ * by ContactBook into the same table first, so it is mapped, matched and
+ * reported like any spreadsheet.
  *
  * Tags live on a customer's channel contacts, so they can only be put on
  * customers who already have one; anything that cannot be applied is reported
@@ -56,11 +61,24 @@ final class CustomerImport
     public function __construct(private CustomerService $customers) {}
 
     /**
-     * @return array{token: string, headers: list<string>, mapping: array<string, int|null>, custom_fields: list<array{key: string, label: string}>, rows: list<list<string>>, total_rows: int}
+     * @return array{token: string, format: string, ignored: int, headers: list<string>, mapping: array<string, int|null>, custom_fields: list<array{key: string, label: string}>, rows: list<list<string>>, total_rows: int, area_code: array{suggested: string|null, missing: array<int, int>}|null}
      */
     public function preview(int $tenantId, UploadedFile $file): array
     {
-        $rows = SpreadsheetReader::read($file->getRealPath(), $file->getClientOriginalExtension());
+        // An address book (a phone's or Google Contacts' export) becomes the
+        // same table a spreadsheet does; from here on nothing tells them apart.
+        $book = ContactBook::looksLikeVcard((string) file_get_contents($file->getRealPath(), length: 512))
+            ? ContactBook::fromVcard((string) file_get_contents($file->getRealPath()))
+            : null;
+
+        if ($book === null) {
+            $rows = SpreadsheetReader::read($file->getRealPath(), $file->getClientOriginalExtension());
+            $book = ContactBook::fromExportRows($rows);
+        }
+
+        if ($book !== null) {
+            $rows = $book->table();
+        }
 
         if (count($rows) < 2) {
             throw ValidationException::withMessages(['file' => __('crm.import.empty')]);
@@ -79,19 +97,75 @@ final class CustomerImport
 
         return [
             'token' => $token,
+            // "spreadsheet", or the address book it was read from.
+            'format' => $book?->format ?? 'spreadsheet',
+            'ignored' => $book?->ignored ?? 0,
             'headers' => $headers,
             'mapping' => $mapping,
             'custom_fields' => $definitions->map(fn ($d) => ['key' => $d->key, 'label' => $d->label])->values()->all(),
             'rows' => array_slice($rows, 0, 10),
             'total_rows' => count($rows),
+            'area_code' => self::areaCodeHint($rows, Tenant::find($tenantId)?->market?->phone_country),
         ];
     }
 
     /**
-     * @param  array<string, int|null>  $mapping  field (or "custom.{key}") => column index
-     * @return array{created: int, updated: int, unchanged: int, skipped: int, rows: list<array{row: int, status: string, message: string|null}>}
+     * For a Brazilian workspace: how many numbers in each column were saved
+     * without an area code, and the area code most of the others have — the
+     * owner's own, nearly always, since a local number is one saved in the
+     * owner's city. Per column because the person may map the phone to another
+     * column than the one guessed. Null when no column has such a number.
+     *
+     * @param  list<list<string>>  $rows
+     * @return array{suggested: string|null, missing: array<int, int>}|null
      */
-    public function commit(User $actor, string $token, array $mapping, string $onMatch): array
+    private static function areaCodeHint(array $rows, ?string $callingCode): ?array
+    {
+        $missing = [];
+        $seen = [];
+
+        foreach ($rows as $row) {
+            foreach ($row as $index => $value) {
+                $value = trim((string) $value);
+
+                // Only what could be a phone: no letters, and not a date
+                // (1990-05-12 has the eight digits of a local number).
+                if ($value === '' || preg_match('/[^\d\s()+\-.]/', $value) || preg_match('/^\d{4}-\d{2}-\d{2}$|^\d{1,2}[.\-]\d{1,2}[.\-]\d{2,4}$/', $value)) {
+                    continue;
+                }
+
+                if (ImportPhone::lacksAreaCode($value, $callingCode)) {
+                    $missing[$index] = ($missing[$index] ?? 0) + 1;
+                } elseif ($area = ImportPhone::areaCode($value, $callingCode)) {
+                    $seen[$index][$area] = ($seen[$index][$area] ?? 0) + 1;
+                }
+            }
+        }
+
+        if ($missing === []) {
+            return null;
+        }
+
+        // The suggestion comes from the columns that also hold the numbers
+        // with no area code, never from a column of something else.
+        $counts = [];
+        foreach (array_keys($missing) as $index) {
+            foreach ($seen[$index] ?? [] as $area => $count) {
+                $counts[$area] = ($counts[$area] ?? 0) + $count;
+            }
+        }
+
+        arsort($counts);
+
+        return ['suggested' => $counts === [] ? null : (string) array_key_first($counts), 'missing' => $missing];
+    }
+
+    /**
+     * @param  array<string, int|null>  $mapping  field (or "custom.{key}") => column index
+     * @param  string|null  $areaCode  put in front of Brazilian numbers saved without one
+     * @return array{created: int, updated: int, unchanged: int, skipped: int, rows: list<array{row: int, name: string|null, status: string, message: string|null}>}
+     */
+    public function commit(User $actor, string $token, array $mapping, string $onMatch, ?string $areaCode = null): array
     {
         $cached = Cache::get($this->cacheKey($actor->tenant_id, $token));
 
@@ -113,25 +187,31 @@ final class CustomerImport
             // An owner column naming someone who left imports with no owner.
             'users' => User::query()->active()->where('tenant_id', $actor->tenant_id)->get(['id', 'name', 'email']),
             'tags' => Tag::query()->where('tenant_id', $actor->tenant_id)->get(['id', 'name'])->keyBy(fn ($t) => mb_strtolower($t->name)),
+            'calling_code' => $actor->tenant?->market?->phone_country,
+            'area_code' => ImportPhone::valid($areaCode),
         ];
 
         $report = ['created' => 0, 'updated' => 0, 'unchanged' => 0, 'skipped' => 0, 'rows' => []];
 
         foreach ($cached['rows'] as $index => $raw) {
             $line = $index + 2;
+            $row = $this->mapRow($raw, $mapping);
+            // An address book has no row numbers anyone could look up; the
+            // name is what says which contact a note is about.
+            $name = filled($row['name'] ?? null) ? Str::limit(trim((string) $row['name']), 80) : null;
 
             try {
-                [$status, $notes] = $this->importRow($actor, $this->mapRow($raw, $mapping), $onMatch, $definitions, $context);
+                [$status, $notes] = $this->importRow($actor, $row, $onMatch, $definitions, $context);
                 $report[$status]++;
 
                 if ($notes !== [] && count($report['rows']) < 200) {
-                    $report['rows'][] = ['row' => $line, 'status' => $status, 'message' => implode(' ', $notes)];
+                    $report['rows'][] = ['row' => $line, 'name' => $name, 'status' => $status, 'message' => implode(' ', $notes)];
                 }
             } catch (ValidationException $e) {
                 $report['skipped']++;
 
                 if (count($report['rows']) < 200) {
-                    $report['rows'][] = ['row' => $line, 'status' => 'skipped', 'message' => (string) collect($e->errors())->flatten()->first()];
+                    $report['rows'][] = ['row' => $line, 'name' => $name, 'status' => 'skipped', 'message' => (string) collect($e->errors())->flatten()->first()];
                 }
             }
         }
@@ -202,13 +282,33 @@ final class CustomerImport
             }
         }
 
-        // Phone and e-mail checked the way a form would check them.
-        try {
-            $clean = $this->customers->validate($actor->tenant_id, array_intersect_key($fields, array_flip(['phone', 'email'])), creating: false);
-            $fields = [...$fields, ...$clean];
-        } catch (ValidationException $e) {
-            $notes[] = (string) collect($e->errors())->flatten()->first();
-            unset($fields['phone'], $fields['email']);
+        // A Brazilian number saved without its area code gets the one chosen
+        // in the preview; with none chosen it is left out, never stored as a
+        // number that belongs to somebody else.
+        if (isset($fields['phone'])) {
+            $phone = ImportPhone::prepare($fields['phone'], $context['calling_code'], $context['area_code']);
+
+            if ($phone === null) {
+                $notes[] = __('crm.import.no_area_code', ['value' => $fields['phone']]);
+                unset($fields['phone']);
+            } else {
+                $fields['phone'] = $phone;
+            }
+        }
+
+        // Phone and e-mail checked the way a form would check them — each on
+        // its own, so a bad e-mail does not cost the row its phone.
+        foreach (['phone', 'email'] as $field) {
+            if (! isset($fields[$field])) {
+                continue;
+            }
+
+            try {
+                $fields = [...$fields, ...$this->customers->validate($actor->tenant_id, [$field => $fields[$field]], creating: false)];
+            } catch (ValidationException $e) {
+                $notes[] = (string) collect($e->errors())->flatten()->first();
+                unset($fields[$field]);
+            }
         }
 
         $existing = $this->match($actor->tenant_id, $fields['phone'] ?? null, $fields['email'] ?? null);
